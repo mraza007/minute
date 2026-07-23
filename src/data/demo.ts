@@ -1,8 +1,10 @@
-// Test fixtures only. As of Stage 2 the app renders real data from the
-// Tauri backend (src/ipc/*) — nothing here is imported by production
-// components/state anymore. Kept around purely as reusable fixtures for
-// component tests (Sidebar.test, TranscriptList.test, AiNotesPanel.test,
-// MarkdownCard.test, RecordingView's still-demo live-insights panel, ...).
+// Test fixtures, mostly. As of Stage 2 the app renders real data from the
+// Tauri backend (src/ipc/*) for notes/models/settings — those components no
+// longer import this file at runtime. The one holdout is RecordingView,
+// which still renders `liveTranscript` from here directly: wiring the live
+// transcript to real `transcript-segment` events is Task 9's job, not this
+// one. Everything else here is a reusable fixture for component tests
+// (Sidebar.test, TranscriptList.test, AiNotesPanel.test, MarkdownCard.test).
 
 import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
 

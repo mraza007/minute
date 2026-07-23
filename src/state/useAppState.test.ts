@@ -1,4 +1,3 @@
-import { emit } from '@tauri-apps/api/event'
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -59,17 +58,22 @@ interface SetupOpts {
   notes?: NoteMeta[]
   reject?: boolean
   onCmd?: (cmd: string, args: unknown) => void
+  /** Overrides what `list_models` returns after the initial load (e.g. for a post-delete refetch). */
+  listModelsAfter?: () => ModelStatus[]
 }
 
 function setupIPC(opts: SetupOpts = {}) {
   const models = opts.models ?? [sttModelFixture({ state: 'installed' }), llmModelFixture()]
   const notes = opts.notes ?? [noteFixture()]
+  let listModelsCalls = 0
   mockIPC(
     (cmd, args) => {
       opts.onCmd?.(cmd, args)
       if (opts.reject) throw new Error('backend unavailable')
       switch (cmd) {
         case 'list_models':
+          listModelsCalls += 1
+          if (listModelsCalls > 1 && opts.listModelsAfter) return opts.listModelsAfter()
           return models
         case 'list_notes':
           return notes
@@ -146,17 +150,6 @@ describe('useAppState', () => {
     setupIPC({ models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })] })
     const result = await loaded()
     expect(result.current.sttModel).toBe('whisper-small')
-  })
-
-  it('initializes sttModel to the first installed model when the recommendation is not installed', async () => {
-    setupIPC({
-      models: [
-        sttModelFixture({ id: 'whisper-small', state: 'notInstalled' }),
-        sttModelFixture({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'installed' }),
-      ],
-    })
-    const result = await loaded()
-    expect(result.current.sttModel).toBe('whisper-medium')
   })
 
   it('setSttModel updates the local selection', async () => {
@@ -237,6 +230,11 @@ describe('useAppState', () => {
     vi.useRealTimers()
   })
 
+  // Model-manager internals (download progress/done events, cancel, plain
+  // delete-then-refetch, transient error timing) are unit-tested directly
+  // in useModelManager.test.ts. These are kept here as end-to-end wiring
+  // smoke tests through the real composed useAppState surface, plus the
+  // re-gate scenarios the coordinator asked to verify at this level too.
   it('downloadModel invokes download_model and optimistically marks the model as downloading', async () => {
     const calls: Array<{ cmd: string; args: unknown }> = []
     setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
@@ -247,114 +245,50 @@ describe('useAppState', () => {
     expect(result.current.downloads['whisper-small']).toEqual({ downloaded: 0, total: 466_000_000 })
   })
 
-  it('a model-download-progress event updates the downloads map', async () => {
-    setupIPC()
-    const result = await loaded()
-
-    await act(async () => {
-      await emit('model-download-progress', { modelId: 'whisper-small', downloaded: 100, total: 466_000_000 })
-    })
-
-    expect(result.current.downloads['whisper-small']).toEqual({ downloaded: 100, total: 466_000_000 })
-  })
-
-  it('a successful model-download-done event clears the download entry and refetches models', async () => {
-    let listModelsCalls = 0
-    setupIPC({
-      models: [sttModelFixture({ state: 'notInstalled' })],
-      onCmd: cmd => {
-        if (cmd === 'list_models') listModelsCalls += 1
-      },
-    })
-    const result = await loaded()
-    expect(listModelsCalls).toBe(1)
-
-    act(() => result.current.downloadModel('whisper-small'))
-    expect(result.current.downloads['whisper-small']).toBeDefined()
-
-    await act(async () => {
-      await emit('model-download-done', { modelId: 'whisper-small', ok: true, cancelled: false, error: null })
-    })
-
-    expect(result.current.downloads['whisper-small']).toBeUndefined()
-    expect(listModelsCalls).toBe(2)
-  })
-
-  it('a failed model-download-done event reports a transient error that clears after 5s', async () => {
-    setupIPC()
-    const result = await loaded()
-
-    vi.useFakeTimers()
-    await act(async () => {
-      await emit('model-download-done', {
-        modelId: 'whisper-small',
-        ok: false,
-        cancelled: false,
-        error: 'checksum mismatch',
-      })
-    })
-    expect(result.current.lastError).toBe('checksum mismatch')
-
-    act(() => vi.advanceTimersByTime(5000))
-    expect(result.current.lastError).toBeNull()
-    vi.useRealTimers()
-  })
-
-  it('a cancelled model-download-done event does not report an error', async () => {
-    setupIPC()
-    const result = await loaded()
-    await act(async () => {
-      await emit('model-download-done', { modelId: 'whisper-small', ok: false, cancelled: true, error: null })
-    })
-    expect(result.current.lastError).toBeNull()
-  })
-
-  it('cancelDownload invokes cancel_download with the model id', async () => {
+  it('deleteModel invokes delete_model then refetches list_models', async () => {
     const calls: Array<{ cmd: string; args: unknown }> = []
     setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
     const result = await loaded()
-    act(() => result.current.cancelDownload('whisper-small'))
-    expect(calls.some(c => c.cmd === 'cancel_download' && (c.args as { id: string }).id === 'whisper-small')).toBe(true)
+
+    act(() => result.current.deleteModel('whisper-small'))
+    await waitFor(() => expect(calls.filter(c => c.cmd === 'list_models')).toHaveLength(2))
+    expect(calls.some(c => c.cmd === 'delete_model' && (c.args as { id: string }).id === 'whisper-small')).toBe(true)
   })
 
-  it('deleteModel invokes delete_model then refetches list_models', async () => {
-    let listModelsCalls = 0
+  it('re-gate: deleting the last installed STT model bounces the view to onboarding and reassigns sttModel', async () => {
     setupIPC({
-      onCmd: cmd => {
-        if (cmd === 'list_models') listModelsCalls += 1
-      },
+      models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+      listModelsAfter: () => [sttModelFixture({ id: 'whisper-small', state: 'notInstalled' })],
     })
     const result = await loaded()
-    expect(listModelsCalls).toBe(1)
-    await act(async () => {
-      result.current.deleteModel('whisper-small')
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(listModelsCalls).toBe(2)
+    expect(result.current.view).toBe('notes')
+    expect(result.current.sttModel).toBe('whisper-small')
+
+    act(() => result.current.deleteModel('whisper-small'))
+
+    await waitFor(() => expect(result.current.view).toBe('onboarding'))
+    expect(result.current.sttModel).toBe('whisper-small') // reassigned to the (bare) recommendation placeholder
+    expect(result.current.models.every(m => m.state !== 'installed')).toBe(true)
   })
 
-  it('a rejected downloadModel call reports the error and clears the optimistic download entry', async () => {
-    setupIPC({ reject: false })
-    const result = await loaded()
-    // Only the download itself fails — event (un)subscription plumbing
-    // (invoked again on unmount by useTauriEvent's cleanup) must keep working.
-    mockIPC(
-      cmd => {
-        if (cmd === 'download_model') throw new Error('disk full')
-        return null
-      },
-      { shouldMockEvents: true },
-    )
-
-    vi.useFakeTimers()
-    await act(async () => {
-      result.current.downloadModel('whisper-small')
-      await Promise.resolve()
-      await Promise.resolve()
+  it('deleting a non-selected model does not change the view', async () => {
+    setupIPC({
+      models: [
+        sttModelFixture({ id: 'whisper-small', state: 'installed' }),
+        sttModelFixture({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'installed' }),
+      ],
+      listModelsAfter: () => [
+        sttModelFixture({ id: 'whisper-small', state: 'installed' }),
+        sttModelFixture({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'notInstalled' }),
+      ],
     })
-    expect(result.current.lastError).toContain('disk full')
-    expect(result.current.downloads['whisper-small']).toBeUndefined()
-    vi.useRealTimers()
+    const result = await loaded()
+    expect(result.current.view).toBe('notes')
+
+    act(() => result.current.deleteModel('whisper-medium'))
+    await waitFor(() => expect(result.current.models.find(m => m.id === 'whisper-medium')?.state).toBe('notInstalled'))
+
+    expect(result.current.view).toBe('notes')
+    expect(result.current.sttModel).toBe('whisper-small')
   })
 })

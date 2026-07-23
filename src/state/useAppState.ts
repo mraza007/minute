@@ -1,31 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
-import { onDownloadDone, onDownloadProgress } from '../ipc/events'
-import type { Hardware, ModelStatus, NoteMeta, Recommendation, StorageStats } from '../ipc/types'
+import type { Hardware, NoteMeta, StorageStats } from '../ipc/types'
 import type { NoteTab, View } from '../types'
-import { formatBytes, notesToSidebarItems, pickInitialSttModel, type DownloadProgressState } from './adapters'
-import { useTauriEvent } from './useTauriEvent'
-
-const LAST_ERROR_TIMEOUT_MS = 5000
+import { formatBytes, notesToSidebarItems } from './adapters'
+import { useModelManager } from './useModelManager'
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+const LAST_ERROR_TIMEOUT_MS = 5000
+
 export function useAppState() {
   const [view, setView] = useState<View>('loading')
-  const [models, setModels] = useState<ModelStatus[]>([])
-  const [downloads, setDownloads] = useState<Record<string, DownloadProgressState>>({})
+  const [loaded, setLoaded] = useState(false)
   const [notes, setNotes] = useState<NoteMeta[]>([])
   const [hardware, setHardware] = useState<Hardware | null>(null)
-  const [recommendation, setRecommendation] = useState<Recommendation | null>(null)
   const [storage, setStorage] = useState<StorageStats | null>(null)
   const [lastError, setLastErrorState] = useState<string | null>(null)
-
-  // TODO(settings-persistence): once settings.json (a backend task) lands,
-  // read the persisted selection here instead of re-deriving it from the
-  // recommendation on every launch, and write through set_settings on change.
-  const [sttModel, setSttModel] = useState('')
 
   const [sel, setSel] = useState(0)
   const [recSeconds, setRecSeconds] = useState(0)
@@ -49,6 +41,12 @@ export function useAppState() {
 
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
 
+  // Model catalog, downloads, and the transcription-model selection are
+  // split into their own hook — see useModelManager.ts. It also re-gates
+  // `view` back to 'onboarding' if the last installed STT model gets
+  // deleted, and reassigns `sttModel` off a now-uninstalled pick.
+  const modelManager = useModelManager({ view, setView, loaded })
+
   // Initial load: models, notes, hardware, recommendation, and storage stats
   // all come from the backend in one shot. Until this resolves, `view`
   // stays 'loading' — App.tsx renders nothing but a spinner for that state.
@@ -57,14 +55,13 @@ export function useAppState() {
     Promise.all([ipc.listModels(), ipc.listNotes(), ipc.hardwareInfo(), ipc.recommendedModels(), ipc.storageStats()])
       .then(([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage]) => {
         if (cancelled) return
-        setModels(loadedModels)
+        modelManager.applyInitialLoad(loadedModels, loadedRecommendation)
         setNotes(loadedNotes)
         setHardware(loadedHardware)
-        setRecommendation(loadedRecommendation)
         setStorage(loadedStorage)
-        setSttModel(pickInitialSttModel(loadedModels, loadedRecommendation))
         const hasInstalledStt = loadedModels.some(m => m.kind === 'stt' && m.state === 'installed')
         setView(hasInstalledStt ? 'notes' : 'onboarding')
+        setLoaded(true)
       })
       .catch(err => {
         if (cancelled) return
@@ -72,10 +69,12 @@ export function useAppState() {
         // Nothing usable came back — fall through to the (empty) notes
         // view rather than stranding the app on the loading spinner.
         setView('notes')
+        setLoaded(true)
       })
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Local recording timer — Task 9 replaces this with the real `elapsed`
@@ -85,31 +84,6 @@ export function useAppState() {
     const t = setInterval(() => setRecSeconds(s => s + 1), 1000)
     return () => clearInterval(t)
   }, [view, paused])
-
-  useTauriEvent(
-    onDownloadProgress,
-    payload => {
-      setDownloads(prev => ({ ...prev, [payload.modelId]: { downloaded: payload.downloaded, total: payload.total } }))
-    },
-    [],
-  )
-
-  useTauriEvent(
-    onDownloadDone,
-    payload => {
-      setDownloads(prev => {
-        if (!(payload.modelId in prev)) return prev
-        const next = { ...prev }
-        delete next[payload.modelId]
-        return next
-      })
-      if (!payload.ok && !payload.cancelled) {
-        reportError(payload.error ?? `Download failed for ${payload.modelId}`)
-      }
-      ipc.listModels().then(setModels).catch(reportError)
-    },
-    [],
-  )
 
   const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
 
@@ -121,43 +95,16 @@ export function useAppState() {
   const mm = Math.floor(recSeconds / 60)
   const ss = recSeconds % 60
 
-  function downloadModel(id: string) {
-    const entry = models.find(m => m.id === id)
-    // Optimistic: mark it "downloading" immediately so the card reflects
-    // the click right away, ahead of the first (throttled) progress event.
-    setDownloads(prev => ({ ...prev, [id]: { downloaded: 0, total: entry?.sizeBytes ?? 0 } }))
-    ipc.downloadModel(id).catch(err => {
-      reportError(err)
-      setDownloads(prev => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
-    })
-  }
-
-  function cancelDownload(id: string) {
-    ipc.cancelDownload(id).catch(reportError)
-  }
-
-  function deleteModel(id: string) {
-    ipc
-      .deleteModel(id)
-      .then(() => ipc.listModels())
-      .then(setModels)
-      .catch(reportError)
-  }
-
   return {
     view,
-    models,
-    downloads,
+    models: modelManager.models,
+    downloads: modelManager.downloads,
     notes,
     hardware,
-    recommendation,
+    recommendation: modelManager.recommendation,
     storage,
-    lastError,
-    sttModel,
+    lastError: lastError ?? modelManager.lastError,
+    sttModel: modelManager.sttModel,
     sel,
     recSeconds,
     paused,
@@ -183,12 +130,12 @@ export function useAppState() {
     setNoteTab,
     setAskDraft,
     ask: () => setAsked(true),
-    setSttModel,
+    setSttModel: modelManager.setSttModel,
     toggleDel: () => setTDel(v => !v),
     toggleEnc: () => setTEnc(v => !v),
-    downloadModel,
-    cancelDownload,
-    deleteModel,
+    downloadModel: modelManager.downloadModel,
+    cancelDownload: modelManager.cancelDownload,
+    deleteModel: modelManager.deleteModel,
     completeOnboarding: () => setView('notes'),
   }
 }

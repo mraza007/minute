@@ -1,5 +1,12 @@
 import type { ActionItem } from '../types'
 
+// Dormant as of Stage 2 — real notes render the placeholder card in
+// NoteView.tsx ("Summaries arrive in a later update") instead of this
+// component, since summarization is Stage 3. NOT dead code: this is the
+// real AI notes panel and comes back into the render tree wired to real
+// summaries/actions once Stage 3 ships. Do not delete; it's still covered
+// by AiNotesPanel.test.tsx.
+
 interface AiNotesPanelProps {
   summarizing: boolean
   actions: ActionItem[]

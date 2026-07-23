@@ -1,8 +1,10 @@
-import type { CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { ModelStatus, StorageStats } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
 import { Toggle } from './Toggle'
+
+const REMOVE_CONFIRM_TIMEOUT_MS = 4000
 
 export interface SettingsViewProps {
   models: ModelStatus[]
@@ -64,6 +66,17 @@ interface ModelRowAction {
 
 function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload, deleteModel }: ModelRowAction) {
   const info = modelStatusToSttInfo(entry, '', downloads)
+
+  // Unstyled window.confirm() is off the table (per design conventions) —
+  // this is the minimal in-place substitute: first click arms a 4s
+  // confirmation window, second click (while armed) actually deletes.
+  // Scoped per-row (own state), so it can't bleed into a different model's
+  // button, and it auto-disarms if the user doesn't follow through.
+  const [confirming, setConfirming] = useState(false)
+  const confirmTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  useEffect(() => () => clearTimeout(confirmTimeout.current), [])
+
   if (info.state === 'notInstalled') {
     return (
       <button
@@ -97,11 +110,18 @@ function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload,
       className="icon-btn-danger"
       onClick={e => {
         e.stopPropagation()
+        if (!confirming) {
+          setConfirming(true)
+          confirmTimeout.current = setTimeout(() => setConfirming(false), REMOVE_CONFIRM_TIMEOUT_MS)
+          return
+        }
+        clearTimeout(confirmTimeout.current)
+        setConfirming(false)
         deleteModel(entry.id)
       }}
       style={dangerBtnStyle}
     >
-      Remove
+      {confirming ? 'Confirm removal?' : 'Remove'}
     </button>
   )
 }

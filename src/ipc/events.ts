@@ -14,6 +14,11 @@ import type {
   TranscriptSegmentEvent,
 } from './types'
 
+// Re-exported so consumers (useTauriEvent, and anything else typing an
+// unlisten callback) can import it from this module instead of reaching
+// past it to `@tauri-apps/api/event` directly.
+export type { UnlistenFn }
+
 export function onDownloadProgress(
   cb: (payload: ModelDownloadProgressEvent) => void,
 ): Promise<UnlistenFn> {

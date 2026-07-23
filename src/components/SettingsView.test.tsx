@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ModelStatus, StorageStats } from '../ipc/types'
 import { SettingsView } from './SettingsView'
 
@@ -63,6 +63,8 @@ const base = {
 }
 
 describe('SettingsView', () => {
+  afterEach(() => vi.useRealTimers())
+
   it('shows the privacy hero text', () => {
     render(<SettingsView {...base} />)
     expect(screen.getByText('Nothing leaves this machine.')).toBeInTheDocument()
@@ -113,11 +115,44 @@ describe('SettingsView', () => {
     expect(cancelDownload).toHaveBeenCalledWith('whisper-large-v3-turbo')
   })
 
-  it('shows a Remove button for an installed, not-in-use model and wires it to deleteModel', () => {
+  it('requires a second click within 4s to actually remove an installed model', () => {
     const deleteModel = vi.fn()
     render(<SettingsView {...base} sttModel="whisper-medium" models={[sttModel({ id: 'whisper-small', state: 'installed' })]} deleteModel={deleteModel} />)
+
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(deleteModel).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Confirm removal?' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm removal?' }))
     expect(deleteModel).toHaveBeenCalledWith('whisper-small')
+  })
+
+  it('reverts the Remove button back from "Confirm removal?" after 4s without a second click', () => {
+    vi.useFakeTimers()
+    const deleteModel = vi.fn()
+    render(<SettingsView {...base} sttModel="whisper-medium" models={[sttModel({ id: 'whisper-small', state: 'installed' })]} deleteModel={deleteModel} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(screen.getByRole('button', { name: 'Confirm removal?' })).toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(4000)
+    })
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm removal?' })).not.toBeInTheDocument()
+    expect(deleteModel).not.toHaveBeenCalled()
+  })
+
+  it('does not select the radio when confirming or completing a removal', () => {
+    const setSttModel = vi.fn()
+    const deleteModel = vi.fn()
+    render(<SettingsView {...base} setSttModel={setSttModel} sttModel="whisper-medium" models={[sttModel({ id: 'whisper-small', state: 'installed' })]} deleteModel={deleteModel} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm removal?' }))
+    expect(deleteModel).toHaveBeenCalledWith('whisper-small')
+    expect(setSttModel).not.toHaveBeenCalled()
   })
 
   it('renders all three real LLM entries with a coming-later note', () => {

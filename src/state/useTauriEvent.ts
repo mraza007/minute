@@ -1,5 +1,5 @@
 import { useEffect, useRef, type DependencyList } from 'react'
-import type { UnlistenFn } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '../ipc/events'
 
 /**
  * Subscribes to a Tauri event for the lifetime of the calling component.
