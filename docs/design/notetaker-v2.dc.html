@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e8e6e3;color:#1c1a18;font-family:'Instrument Sans',system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#1c1a18}a:hover{color:#d63822}
+@keyframes wf{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.15}}
+@keyframes spin{to{transform:rotate(360deg)}}
+input[type=checkbox],input[type=radio]{accent-color:#e04430}
+::selection{background:#ffd9d2}
+</style>
+</helmet>
+<div style="height:100vh;min-width:1180px;display:flex;flex-direction:column;font-size:13.5px;line-height:1.5;background:#f2f0ee">
+
+  <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 16px;background:#eceae7;border-bottom:1px solid rgba(0,0,0,.09);flex:none">
+    <div style="display:flex;gap:8px;margin-right:6px">
+      <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span>
+      <span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span>
+      <span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span>
+    </div>
+    <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">{{ appName }}</div>
+    <div style="display:flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;background:rgba(40,167,69,.1);border:1px solid rgba(40,167,69,.25);font-size:12px;font-weight:600;color:#1e7c34">
+      <span style="width:7px;height:7px;border-radius:50%;background:#28a745"></span>
+      Offline · On-device
+    </div>
+    <div style="flex:1"></div>
+    <sc-if value="{{ recording }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;background:#ffe6e1;color:#b3200c;font-weight:700;font-size:12.5px;font-variant-numeric:tabular-nums">
+        <span style="width:8px;height:8px;border-radius:50%;background:#e04430;animation:blink 1.2s step-end infinite"></span>
+        REC {{ recTime }}
+      </div>
+    </sc-if>
+    <sc-if value="{{ notRecording }}" hint-placeholder-val="{{ true }}">
+      <button onClick="{{ startRec }}" style="display:flex;align-items:center;gap:8px;padding:8px 18px;border:none;border-radius:999px;background:#e04430;color:#fff;font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;box-shadow:0 1px 3px rgba(224,68,48,.35)" style-hover="background:#c93520" style-active="background:#b32d1a">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" x2="12" y1="19" y2="22"></line></svg>
+        New recording
+      </button>
+    </sc-if>
+  </div>
+
+  <div style="flex:1;display:flex;min-height:0">
+
+    <div style="width:250px;flex:none;background:#eceae7;border-right:1px solid rgba(0,0,0,.09);display:flex;flex-direction:column;min-height:0">
+      <div style="padding:12px 12px 4px;position:relative">
+        <input placeholder="Search notes…" style="width:100%;box-sizing:border-box;padding:8px 40px 8px 12px;border:1px solid rgba(0,0,0,.12);border-radius:8px;background:#fff;font-family:inherit;font-size:13px;color:#1c1a18;outline:none;box-shadow:0 1px 2px rgba(0,0,0,.04)" style-focus="border-color:#e04430;box-shadow:0 0 0 3px rgba(224,68,48,.15)">
+        <span style="position:absolute;right:20px;top:50%;transform:translateY(-38%);padding:1px 6px;border:1px solid rgba(0,0,0,.12);border-radius:5px;background:#faf9f7;font-size:10.5px;font-weight:600;color:#9a938c">⌘K</span>
+      </div>
+      <div style="flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:1px">
+        <sc-for list="{{ notes }}" as="note" hint-placeholder-count="4">
+          <div>
+            <sc-if value="{{ note.group }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:14px 10px 5px;font-size:11px;font-weight:700;letter-spacing:.07em;color:#9a938c">{{ note.group }}</div>
+            </sc-if>
+            <div onClick="{{ note.onSelect }}" style="{{ note.style }}" style-hover="background:rgba(0,0,0,.05)">
+              <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ note.title }}</div>
+              <div style="font-size:11.5px;color:#8d867f;margin-top:1px">{{ note.meta }}</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="padding:10px 12px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:2px">
+        <button onClick="{{ goNotes }}" style="{{ navNotesStyle }}" style-hover="background:rgba(0,0,0,.06)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"></path><path d="M15 3v6h6"></path></svg>
+          All notes
+        </button>
+        <button onClick="{{ goSettings }}" style="{{ navSettingsStyle }}" style-hover="background:rgba(0,0,0,.06)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v3m0 16v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M1 12h3m16 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>
+          Settings
+        </button>
+        <div style="padding:8px 10px 2px;font-size:11px;color:#9a938c">14 notes · 3.2 GB local · nothing synced</div>
+      </div>
+    </div>
+
+    <sc-if value="{{ viewNotes }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;display:flex;min-height:0;background:#f7f6f4">
+      <div style="flex:1;display:flex;flex-direction:column;min-height:0;min-width:0">
+        <div style="padding:22px 32px 16px;border-bottom:1px solid rgba(0,0,0,.07);display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <h1 style="margin:0;font-weight:700;font-size:21px;letter-spacing:-.02em">{{ selTitle }}</h1>
+              <sc-if value="{{ notSummarizing }}" hint-placeholder-val="{{ true }}"><span style="padding:3px 10px;border-radius:999px;background:#e9f5ec;color:#1e7c34;font-size:11px;font-weight:600">Summarized</span></sc-if>
+              <sc-if value="{{ summarizing }}" hint-placeholder-val="{{ false }}"><span style="display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff4f1;color:#b3200c;font-size:11px;font-weight:600"><span style="width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(224,68,48,.3);border-top-color:#e04430;animation:spin .8s linear infinite"></span>Summarizing…</span></sc-if>
+            </div>
+            <div style="margin-top:4px;font-size:12.5px;color:#8d867f">{{ selMeta }}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;flex:none">
+          <div style="display:flex;background:#eceae7;border-radius:9px;padding:3px">
+            <button onClick="{{ goTabT }}" style="{{ segTStyle }}">Transcript</button>
+            <button onClick="{{ goTabM }}" style="{{ segMStyle }}">Markdown</button>
+          </div>
+          <div style="display:flex;gap:4px;flex:none">
+            <button title="Rename" style="width:32px;height:32px;border:none;border-radius:8px;background:transparent;color:#6d675f;cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:rgba(0,0,0,.06);color:#1c1a18"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg></button>
+            <button title="Export" style="width:32px;height:32px;border:none;border-radius:8px;background:transparent;color:#6d675f;cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:rgba(0,0,0,.06);color:#1c1a18"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" x2="12" y1="2" y2="15"></line></svg></button>
+            <button title="Delete" style="width:32px;height:32px;border:none;border-radius:8px;background:transparent;color:#6d675f;cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:#fde8e4;color:#b3200c"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg></button>
+          </div>
+          </div>
+        </div>
+        <sc-if value="{{ tabTranscript }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;overflow:auto;padding:24px 32px;display:flex;flex-direction:column;gap:18px;max-width:700px">
+          <div style="display:flex;gap:12px"><div style="width:30px;height:30px;border-radius:50%;background:#fde8e4;color:#b3200c;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none">TR</div><div style="flex:1;min-width:0"><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b style="color:#b3200c">Tom Reyes — Acme</b><span style="color:#b0a9a2">00:41</span></div><div style="font-size:14px;line-height:1.65;color:#33302c;text-wrap:pretty">Thanks for making time. Before we get into the roadmap, I want to flag that our security team has questions about where the meeting audio ends up.</div></div></div>
+          <div style="display:flex;gap:12px"><div style="width:30px;height:30px;border-radius:50%;background:#1c1a18;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none">ME</div><div style="flex:1;min-width:0"><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b>You</b><span style="color:#b0a9a2">01:02</span></div><div style="font-size:14px;line-height:1.65;color:#33302c;text-wrap:pretty">Short answer: nowhere. Everything you're hearing transcribed right now runs on this laptop — the model, the audio, the notes. There's no account and no server.</div></div></div>
+          <div style="border:1px solid rgba(224,68,48,.3);background:#fff4f1;border-radius:12px;padding:14px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04);display:flex;gap:12px"><div style="width:30px;height:30px;border-radius:50%;background:#fde8e4;color:#b3200c;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none">TR</div><div style="flex:1;min-width:0"><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b style="color:#b3200c">Tom Reyes — Acme</b><span style="color:#c4938a">01:34</span><span style="margin-left:auto;padding:2px 9px;border-radius:999px;background:#e04430;color:#fff;font-size:10.5px;font-weight:700;letter-spacing:.04em">HIGHLIGHT</span></div><div style="font-size:14px;line-height:1.65;color:#33302c;text-wrap:pretty">If that holds up in review, we can move the pilot from 20 seats to the full 200 by Q3. Send over the security documentation and we'll start procurement.</div></div></div>
+          <div style="display:flex;gap:12px"><div style="width:30px;height:30px;border-radius:50%;background:#eceae7;color:#6d675f;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none">PS</div><div style="flex:1;min-width:0"><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b>Priya Shah</b><span style="color:#b0a9a2">02:10</span></div><div style="font-size:14px;line-height:1.65;color:#33302c;text-wrap:pretty">One ask from our side — the pilot group wants the summaries in the Monday digest format. Can the export match that template?</div></div></div>
+          <div style="display:flex;gap:12px"><div style="width:30px;height:30px;border-radius:50%;background:#1c1a18;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none">ME</div><div style="flex:1;min-width:0"><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b>You</b><span style="color:#b0a9a2">02:26</span></div><div style="font-size:14px;line-height:1.65;color:#33302c;text-wrap:pretty">Yes — Markdown export is templated, I'll set one up and share it with the pilot group before Friday.</div></div></div>
+        </div>
+        <div style="padding:12px 32px 16px;flex:none">
+          <div style="display:flex;align-items:center;gap:12px;background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:12px;padding:10px 16px;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+            <button title="Back 15s" style="width:30px;height:30px;border:none;border-radius:50%;background:transparent;color:#6d675f;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none" style-hover="background:rgba(0,0,0,.06);color:#1c1a18"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg></button>
+            <button style="width:36px;height:36px;border:none;border-radius:50%;background:#1c1a18;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none" style-hover="background:#3a3733"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg></button>
+            <button title="Forward 15s" style="width:30px;height:30px;border:none;border-radius:50%;background:transparent;color:#6d675f;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none" style-hover="background:rgba(0,0,0,.06);color:#1c1a18"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+            <div style="flex:1;height:5px;border-radius:999px;background:#e8e5e1;position:relative"><div style="position:absolute;inset:0 62% 0 0;border-radius:999px;background:#1c1a18"></div><div style="position:absolute;left:38%;top:-4px;width:13px;height:13px;border-radius:50%;background:#fff;border:2.5px solid #e04430;box-shadow:0 1px 3px rgba(0,0,0,.2)"></div></div>
+            <div style="font-size:12px;font-variant-numeric:tabular-nums;color:#8d867f;flex:none">18:21 / 48:22</div>
+            <button style="padding:4px 10px;border:1px solid rgba(0,0,0,.12);border-radius:999px;background:#fff;font-family:inherit;font-size:11.5px;font-weight:700;color:#1c1a18;cursor:pointer;flex:none" style-hover="background:#f3f1ef">1.5×</button>
+          </div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ tabMd }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow:auto;padding:20px 32px 28px;min-height:0">
+          <div style="max-width:720px;background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:14px;box-shadow:0 1px 4px rgba(0,0,0,.05);overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid rgba(0,0,0,.07);background:#faf9f7">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6d675f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"></path><path d="M15 3v6h6"></path></svg>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:600;color:#33302c">client-call-acme.md</span>
+              <span style="font-size:11px;color:#9a938c">4.2 KB · saved locally</span>
+              <div style="flex:1"></div>
+              <button style="padding:5px 12px;border:1px solid rgba(0,0,0,.12);border-radius:7px;background:#fff;font-family:inherit;font-size:11.5px;font-weight:600;color:#1c1a18;cursor:pointer" style-hover="background:#f3f1ef">Copy</button>
+              <button style="padding:5px 12px;border:none;border-radius:7px;background:#1c1a18;color:#fff;font-family:inherit;font-size:11.5px;font-weight:600;cursor:pointer" style-hover="background:#e04430">Reveal in Finder</button>
+            </div>
+            <div style="padding:20px 24px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.8;color:#44403a;white-space:pre-wrap;overflow-wrap:break-word"><span style="color:#b3200c;font-weight:700"># Client call — Acme
+
+</span><span style="font-weight:700">**Date:**</span> May 21, 2026 · <span style="font-weight:700">**Duration:**</span> 48 min · <span style="font-weight:700">**Speakers:**</span> 4
+
+<span style="color:#b3200c;font-weight:700">## Summary</span>
+
+Acme is ready to expand the pilot from 20 to 200 seats in Q3, contingent
+on security review of the on-device architecture. Their pilot group also
+needs summary exports in their Monday digest format before Friday.
+
+<span style="color:#b3200c;font-weight:700">## Decisions
+
+</span><span style="color:#9a938c">-</span> Pilot expands to 200 seats in Q3 if security review passes.
+<span style="color:#9a938c">-</span> Exports will match Acme's Monday digest template.
+
+<span style="color:#b3200c;font-weight:700">## Action items
+
+</span><span style="color:#9a938c">- [x]</span> Send security documentation to Tom before procurement kickoff
+<span style="color:#9a938c">- [ ]</span> Set up Markdown export matching Acme Monday digest template
+<span style="color:#9a938c">- [ ]</span> Share export template with pilot group by Friday
+
+<span style="color:#b3200c;font-weight:700">## Transcript
+
+</span><span style="font-weight:700">**Tom Reyes — Acme**</span><span style="color:#9a938c"> (00:41)</span>
+Thanks for making time. Before we get into the roadmap, I want to flag
+that our security team has questions about where the meeting audio ends up.
+
+<span style="font-weight:700">**You**</span><span style="color:#9a938c"> (01:02)</span>
+Short answer: nowhere. Everything you're hearing transcribed right now runs
+on this laptop — the model, the audio, the notes. There's no account and
+no server.
+
+<span style="font-weight:700">**Tom Reyes — Acme**</span><span style="color:#9a938c"> (01:34)</span><span style="color:#b3200c"> ★ highlight</span>
+If that holds up in review, we can move the pilot from 20 seats to the
+full 200 by Q3. Send over the security documentation and we'll start
+procurement.
+
+<span style="font-weight:700">**Priya Shah**</span><span style="color:#9a938c"> (02:10)</span>
+One ask from our side — the pilot group wants the summaries in the Monday
+digest format. Can the export match that template?
+
+<span style="font-weight:700">**You**</span><span style="color:#9a938c"> (02:26)</span>
+Yes — Markdown export is templated, I'll set one up and share it with the
+pilot group before Friday.</div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+
+      <div style="width:330px;flex:none;border-left:1px solid rgba(0,0,0,.07);display:flex;flex-direction:column;min-height:0;background:#f2f0ee">
+        <div style="padding:16px 16px 12px;display:flex;align-items:baseline;gap:8px">
+          <div style="font-weight:700;font-size:14px">AI notes</div>
+          <div style="font-size:11px;color:#9a938c">generated locally · 4 s</div>
+        </div>
+        <div style="flex:1;overflow:auto;padding:0 16px 16px;display:flex;flex-direction:column;gap:12px">
+          <sc-if value="{{ summarizing }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid rgba(224,68,48,.3);border-radius:12px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04);font-size:12.5px;font-weight:600;color:#b3200c">
+              <span style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(224,68,48,.25);border-top-color:#e04430;animation:spin .8s linear infinite;flex:none"></span>
+              Summarizing on-device — Llama 3.2 8B
+            </div>
+          </sc-if>
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#b3200c;margin-bottom:6px">SUMMARY</div>
+            <div style="font-size:13px;line-height:1.6;color:#33302c;text-wrap:pretty">Acme is ready to expand the pilot from 20 to 200 seats in Q3, contingent on security review of the on-device architecture. Their pilot group also needs summary exports in their Monday digest format before Friday.</div>
+          </div>
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#b3200c;margin-bottom:8px">DECISIONS</div>
+            <div style="font-size:13px;line-height:1.55;color:#33302c;display:flex;gap:8px;margin-bottom:7px"><span style="width:5px;height:5px;border-radius:50%;background:#1c1a18;flex:none;margin-top:7px"></span>Pilot expands to 200 seats in Q3 if security review passes.</div>
+            <div style="font-size:13px;line-height:1.55;color:#33302c;display:flex;gap:8px"><span style="width:5px;height:5px;border-radius:50%;background:#1c1a18;flex:none;margin-top:7px"></span>Exports will match Acme's Monday digest template.</div>
+          </div>
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#b3200c;margin-bottom:8px">ACTION ITEMS</div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <sc-for list="{{ actions }}" as="act" hint-placeholder-count="3">
+                <label style="display:flex;gap:9px;align-items:flex-start;font-size:13px;line-height:1.5;cursor:pointer">
+                  <input type="checkbox" checked="{{ act.done }}" onChange="{{ act.onToggle }}" style="margin-top:3px">
+                  <span style="{{ act.textStyle }}">{{ act.text }}</span>
+                </label>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button style="flex:1;padding:8px 0;border:1px solid rgba(0,0,0,.12);border-radius:8px;background:#fff;font-family:inherit;font-size:12px;font-weight:600;color:#1c1a18;cursor:pointer" style-hover="background:#f3f1ef">Copy</button>
+            <button style="flex:1;padding:8px 0;border:1px solid rgba(0,0,0,.12);border-radius:8px;background:#fff;font-family:inherit;font-size:12px;font-weight:600;color:#1c1a18;cursor:pointer" style-hover="background:#f3f1ef">Export .md</button>
+            <button style="flex:1;padding:8px 0;border:1px solid rgba(0,0,0,.12);border-radius:8px;background:#fff;font-family:inherit;font-size:12px;font-weight:600;color:#1c1a18;cursor:pointer" style-hover="background:#f3f1ef">Regenerate</button>
+          </div>
+        </div>
+        <div style="border-top:1px solid rgba(0,0,0,.08);padding:14px 16px;flex:none">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#6d675f;margin-bottom:8px">ASK YOUR NOTES</div>
+          <sc-if value="{{ asked }}" hint-placeholder-val="{{ false }}">
+            <div style="background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:12px;padding:12px 14px;margin-bottom:10px;font-size:12.5px;line-height:1.6;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+              <div style="font-weight:700;margin-bottom:4px">“{{ askText }}”</div>
+              The pilot moves to 200 seats in Q3, pending Acme's security review — Tom Reyes confirmed at <b>01:34</b> in this call. Procurement starts once documentation is sent.
+              <div style="margin-top:8px;font-size:11px;color:#9a938c">Answered from 2 notes · on-device</div>
+            </div>
+          </sc-if>
+          <div style="display:flex;gap:8px">
+            <input value="{{ askDraft }}" onChange="{{ onAskChange }}" onKeyDown="{{ onAskKey }}" placeholder="e.g. what did we promise Acme?" style="flex:1;min-width:0;padding:9px 12px;border:1px solid rgba(0,0,0,.12);border-radius:999px;background:#fff;font-family:inherit;font-size:12.5px;color:#1c1a18;outline:none" style-focus="border-color:#e04430;box-shadow:0 0 0 3px rgba(224,68,48,.15)">
+            <button onClick="{{ onAsk }}" style="width:36px;height:36px;flex:none;border:none;border-radius:50%;background:#1c1a18;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:#e04430"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ viewRecording }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;min-height:0;background:#f7f6f4">
+      <div style="flex:1;display:flex;flex-direction:column;min-height:0;min-width:0">
+        <div style="padding:16px 32px;border-bottom:1px solid rgba(0,0,0,.07);display:flex;align-items:center;gap:16px">
+          <div style="display:flex;background:#eceae7;border-radius:9px;padding:3px">
+            <div style="padding:6px 14px;border-radius:7px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.1);font-size:12.5px;font-weight:600;display:flex;gap:7px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path></svg>Microphone</div>
+            <div style="padding:6px 14px;border-radius:7px;font-size:12.5px;font-weight:600;color:#6d675f;display:flex;gap:7px;align-items:center;cursor:pointer" style-hover="color:#1c1a18"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line></svg>System audio</div>
+          </div>
+          {{ waveform }}
+          <div style="font-size:12px;color:#9a938c;flex:none">Whisper-small · 62× realtime</div>
+        </div>
+        <div style="flex:1;overflow:auto;padding:24px 32px;display:flex;flex-direction:column;gap:18px;max-width:740px">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#9a938c">LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
+          <div><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b>Speaker 1</b><span style="color:#b0a9a2">13:58</span></div><div style="font-size:14.5px;line-height:1.65;color:#33302c;text-wrap:pretty">…so the headline for the board is that churn is down for the third straight month, and the Acme expansion covers the shortfall from the SMB tier.</div></div>
+          <div><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b>Speaker 2</b><span style="color:#b0a9a2">14:16</span></div><div style="font-size:14.5px;line-height:1.65;color:#33302c;text-wrap:pretty">Agreed. I'd put the security-review milestone on the timeline slide — it gates the 200-seat rollout, so the board should see it explicitly.</div></div>
+          <div><div style="display:flex;gap:9px;font-size:12px;margin-bottom:3px;align-items:baseline"><b>Speaker 1</b><span style="color:#b0a9a2">14:31</span></div><div style="font-size:14.5px;line-height:1.65;color:#33302c;text-wrap:pretty">Good call. Then the ask: two additional hires for the on-device inference team, starting</div></div>
+          <div style="display:flex;align-items:center;gap:8px;color:#b3200c;font-size:13px;font-weight:600"><span style="width:8px;height:16px;border-radius:3px;background:#e04430;display:inline-block;animation:blink 1s step-end infinite"></span>transcribing…</div>
+        </div>
+        <div style="padding:14px 32px 18px;display:flex;gap:10px;flex:none">
+          <button onClick="{{ stopRec }}" style="display:flex;align-items:center;gap:9px;padding:11px 22px;border:none;border-radius:999px;background:#e04430;color:#fff;font-family:inherit;font-weight:600;font-size:13.5px;cursor:pointer;box-shadow:0 1px 4px rgba(224,68,48,.35)" style-hover="background:#c93520"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect width="12" height="12" x="6" y="6" rx="2"></rect></svg>Stop &amp; summarize</button>
+          <button onClick="{{ togglePause }}" style="padding:11px 22px;border:1px solid rgba(0,0,0,.14);border-radius:999px;background:#fff;color:#1c1a18;font-family:inherit;font-weight:600;font-size:13.5px;cursor:pointer" style-hover="background:#f3f1ef">{{ pauseLabel }}</button>
+          <button style="padding:11px 22px;border:1px solid rgba(0,0,0,.14);border-radius:999px;background:#fff;color:#1c1a18;font-family:inherit;font-weight:600;font-size:13.5px;cursor:pointer" style-hover="background:#f3f1ef">Add marker</button>
+        </div>
+      </div>
+      <div style="width:330px;flex:none;border-left:1px solid rgba(0,0,0,.07);display:flex;flex-direction:column;min-height:0;background:#f2f0ee">
+        <div style="padding:16px 16px 12px;font-weight:700;font-size:14px">Live insights</div>
+        <div style="flex:1;overflow:auto;padding:0 16px 16px;display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#b3200c;margin-bottom:8px">ACTION ITEMS · SO FAR</div>
+            <div style="font-size:13px;line-height:1.55;color:#33302c;display:flex;gap:8px;margin-bottom:7px"><span style="width:5px;height:5px;border-radius:50%;background:#1c1a18;flex:none;margin-top:7px"></span>Add security-review milestone to the board timeline slide.</div>
+            <div style="font-size:13px;line-height:1.55;color:#33302c;display:flex;gap:8px"><span style="width:5px;height:5px;border-radius:50%;background:#1c1a18;flex:none;margin-top:7px"></span>Draft headcount ask: two hires, on-device inference team.</div>
+          </div>
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;color:#b3200c;margin-bottom:6px">KEY POINTS</div>
+            <div style="font-size:13px;line-height:1.6;color:#33302c;text-wrap:pretty">Churn down three consecutive months. Acme expansion offsets SMB shortfall. Security review gates the 200-seat rollout.</div>
+          </div>
+          <div style="border:1px dashed rgba(0,0,0,.15);border-radius:12px;padding:12px 14px;font-size:12px;line-height:1.55;color:#9a938c">Insights refresh every 60 s while recording. Model runs on the Neural Engine — battery impact ~4%/hr.</div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ viewSettings }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;overflow:auto;background:#f7f6f4">
+      <div style="max-width:760px;padding:28px 36px 40px;display:flex;flex-direction:column;gap:20px">
+        <h1 style="margin:0;font-weight:700;font-size:22px;letter-spacing:-.02em">Settings</h1>
+        <div style="background:#1c1a18;color:#fff;border-radius:16px;padding:24px 28px;box-shadow:0 2px 8px rgba(0,0,0,.15)">
+          <div style="font-weight:700;font-size:19px;letter-spacing:-.01em">Nothing leaves this machine.</div>
+          <div style="margin-top:6px;font-size:13.5px;line-height:1.6;color:rgba(255,255,255,.75);max-width:520px">No account. No cloud. No network permission. Transcription and summarization run entirely on your hardware — pull the Wi-Fi and everything still works.</div>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.04);overflow:hidden">
+          <div style="padding:16px 20px 4px;font-weight:700;font-size:14px">Transcription model</div>
+          <div style="padding:12px 20px 18px;display:flex;flex-direction:column;gap:8px">
+            <sc-for list="{{ sttModels }}" as="m" hint-placeholder-count="3">
+              <div onClick="{{ m.onSelect }}" style="{{ m.style }}" style-hover="background:#faf9f7">
+                <span style="{{ m.dotStyle }}"></span>
+                <span><b>{{ m.name }}</b> — {{ m.desc }}<br><span style="{{ m.subStyle }}">{{ m.sub }}</span></span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+          <div style="padding:16px 20px 4px;font-weight:700;font-size:14px">Summary model</div>
+          <div style="padding:12px 20px 18px">
+            <div style="border:1.5px solid #e04430;background:#fff6f4;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5"><b>Llama 3.2 8B (4-bit)</b> — 4.9 GB · summaries, action items &amp; ask-your-notes<br><span style="font-size:12px;color:#b3200c;font-weight:600">Installed · in use · avg. summary 4 s</span></div>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+          <div style="padding:16px 20px 4px;font-weight:700;font-size:14px">Storage</div>
+          <div style="padding:12px 20px 18px">
+            <div style="display:flex;height:12px;border-radius:999px;overflow:hidden;background:#eceae7;max-width:520px"><div style="width:38%;background:#1c1a18"></div><div style="width:24%;background:#e04430"></div><div style="width:11%;background:#b0a9a2"></div></div>
+            <div style="display:flex;gap:18px;margin-top:8px;font-size:12px;color:#8d867f;flex-wrap:wrap"><span><b style="color:#1c1a18">●</b> Models 6.4 GB</span><span><b style="color:#e04430">●</b> Audio 4.1 GB</span><span><b style="color:#b0a9a2">●</b> Notes 1.9 GB</span><span>Free 412 GB</span></div>
+            <div onClick="{{ tDel.onClick }}" style="display:flex;gap:10px;align-items:center;margin-top:16px;font-size:13px;cursor:pointer;user-select:none">
+              <span style="{{ tDel.track }}"><span style="{{ tDel.knob }}"></span></span>Delete original audio 30 days after transcription
+            </div>
+            <div onClick="{{ tEnc.onClick }}" style="display:flex;gap:10px;align-items:center;margin-top:10px;font-size:13px;cursor:pointer;user-select:none">
+              <span style="{{ tEnc.track }}"><span style="{{ tEnc.knob }}"></span></span>Encrypt note library with FileVault key
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;appName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Minute&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { view: 'notes', sel: 2, rec: 872, paused: false, asked: false, askDraft: '', sttModel: 'medium', tDel: true, tEnc: false, summarizing: false, noteTab: 'transcript',
+    acts: [
+      { text: 'Send security documentation to Tom before procurement kickoff', done: true },
+      { text: 'Set up Markdown export matching Acme Monday digest template', done: false },
+      { text: 'Share export template with pilot group by Friday', done: false }
+    ] };
+  componentDidMount() {
+    this._t = setInterval(() => {
+      if (this.state.view === 'recording' && !this.state.paused) this.setState(s => ({ rec: s.rec + 1 }));
+    }, 1000);
+  }
+  componentWillUnmount() { clearInterval(this._t); }
+  renderVals() {
+    const s = this.state;
+    const notesData = [
+      { title: 'Board prep sync', meta: '32 min · 2 speakers', group: 'Today' },
+      { title: '1:1 — Sarah', meta: '25 min' },
+      { title: 'Client call — Acme', meta: '48 min · 4 speakers', group: 'Yesterday' },
+      { title: 'Interview — SDK candidate', meta: '55 min' },
+      { title: 'All hands — June', meta: '61 min · 6 speakers', group: 'Last week' },
+      { title: 'Pricing workshop', meta: '90 min · 3 speakers' }
+    ];
+    const notes = notesData.map((n, i) => ({ ...n,
+      onSelect: () => this.setState({ sel: i }),
+      style: {
+        padding: '8px 10px', cursor: 'pointer', borderRadius: '8px',
+        background: i === s.sel ? '#fff' : 'transparent',
+        boxShadow: i === s.sel ? '0 1px 3px rgba(0,0,0,.08)' : 'none'
+      } }));
+    const actions = s.acts.map((a, i) => ({ text: a.text, done: a.done,
+      onToggle: () => this.setState(st => { const acts = st.acts.slice(); acts[i] = { ...acts[i], done: !acts[i].done }; return { acts }; }),
+      textStyle: a.done ? { textDecoration: 'line-through', color: '#9a938c' } : { color: '#33302c' } }));
+    const mm = Math.floor(s.rec / 60), ss = s.rec % 60;
+    const sttData = [
+      { id: 'small', name: 'Whisper small', desc: '466 MB · 62× realtime · good for meetings', sub: 'Recommended for this Mac', subOn: 'Installed · in use' },
+      { id: 'medium', name: 'Whisper medium', desc: '1.5 GB · 21× realtime · better accents & jargon', sub: 'Installed', subOn: 'Installed · in use' },
+      { id: 'large', name: 'Whisper large-v3', desc: '3.1 GB · 6× realtime · maximum accuracy', sub: 'Not downloaded · 3.1 GB', subOn: 'Installed · in use' }
+    ];
+    const sttModels = sttData.map(m => { const on = s.sttModel === m.id; return { name: m.name, desc: m.desc, sub: on ? m.subOn : m.sub,
+      onSelect: () => this.setState({ sttModel: m.id }),
+      style: { display: 'flex', gap: '12px', alignItems: 'flex-start', border: on ? '1.5px solid #e04430' : '1px solid rgba(0,0,0,.1)', background: on ? '#fff6f4' : '#fff', borderRadius: '10px', padding: on ? '11.5px 13.5px' : '12px 14px', cursor: 'pointer', fontSize: '13px', lineHeight: 1.5, transition: 'border-color .15s, background .15s' },
+      dotStyle: { width: '16px', height: '16px', flex: 'none', marginTop: '2px', borderRadius: '50%', boxSizing: 'border-box', background: '#fff', border: on ? '5px solid #e04430' : '1.5px solid #b0a9a2', transition: 'border .15s' },
+      subStyle: { fontSize: '12px', color: on ? '#b3200c' : '#9a938c', fontWeight: on ? 600 : 400 } }; });
+    const mkToggle = key => { const on = s[key]; return {
+      onClick: () => this.setState(st => ({ [key]: !st[key] })),
+      track: { width: '36px', height: '22px', borderRadius: '999px', background: on ? '#e04430' : '#d8d4cf', position: 'relative', flex: 'none', display: 'inline-block', transition: 'background .18s' },
+      knob: { position: 'absolute', top: '2px', left: on ? '16px' : '2px', width: '18px', height: '18px', borderRadius: '50%', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.25)', transition: 'left .18s' } }; };
+    const navBase = { display: 'flex', alignItems: 'center', gap: '9px', width: '100%', padding: '8px 10px', border: 'none', borderRadius: '8px', background: 'transparent', fontFamily: 'inherit', fontSize: '13px', fontWeight: 600, color: '#1c1a18', cursor: 'pointer', textAlign: 'left' };
+    if (!this._wave) this._wave = React.createElement('div', { style: { display: 'flex', gap: '3px', alignItems: 'center', height: '32px', flex: 1, minWidth: '120px', overflow: 'hidden' } },
+      Array.from({ length: 56 }, (_, i) => React.createElement('span', { key: i, style: { width: '3px', height: '24px', flex: 'none', borderRadius: '2px', background: '#e04430', animation: 'wf ' + (0.7 + (i % 5) * 0.14).toFixed(2) + 's ease-in-out ' + (i * 0.05).toFixed(2) + 's infinite' } })));
+    return {
+      appName: this.props.appName ?? 'Minute',
+      viewNotes: s.view === 'notes', viewRecording: s.view === 'recording', viewSettings: s.view === 'settings',
+      recording: s.view === 'recording', notRecording: s.view !== 'recording',
+      recTime: String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0'),
+      navNotesStyle: { ...navBase, background: s.view === 'notes' ? 'rgba(0,0,0,.07)' : 'transparent' },
+      navSettingsStyle: { ...navBase, background: s.view === 'settings' ? 'rgba(0,0,0,.07)' : 'transparent' },
+      goNotes: () => this.setState({ view: 'notes' }),
+      goSettings: () => this.setState({ view: 'settings' }),
+      startRec: () => this.setState({ view: 'recording', rec: 872 }),
+      stopRec: () => { this.setState({ view: 'notes', sel: 0, summarizing: true }); clearTimeout(this._sum); this._sum = setTimeout(() => this.setState({ summarizing: false }), 3200); },
+      togglePause: () => this.setState(st => ({ paused: !st.paused })),
+      pauseLabel: s.paused ? 'Resume' : 'Pause',
+      notes, actions,
+      selTitle: notesData[s.sel].title,
+      selMeta: notesData[s.sel].meta + ' · May 21, 2026 · stored locally',
+      asked: s.asked, askText: s.askDraft || 'What did we promise Acme?', askDraft: s.askDraft,
+      onAskChange: e => this.setState({ askDraft: e.target.value }),
+      onAskKey: e => { if (e.key === 'Enter') this.setState({ asked: true }); },
+      onAsk: () => this.setState({ asked: true }),
+      waveform: this._wave,
+      sttModels, tDel: mkToggle('tDel'), tEnc: mkToggle('tEnc'),
+      tabTranscript: s.noteTab === 'transcript', tabMd: s.noteTab === 'md',
+      goTabT: () => this.setState({ noteTab: 'transcript' }),
+      goTabM: () => this.setState({ noteTab: 'md' }),
+      segTStyle: { padding: '5px 14px', border: 'none', borderRadius: '7px', fontFamily: 'inherit', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer', background: s.noteTab === 'transcript' ? '#fff' : 'transparent', color: s.noteTab === 'transcript' ? '#1c1a18' : '#6d675f', boxShadow: s.noteTab === 'transcript' ? '0 1px 3px rgba(0,0,0,.1)' : 'none' },
+      segMStyle: { padding: '5px 14px', border: 'none', borderRadius: '7px', fontFamily: 'inherit', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer', background: s.noteTab === 'md' ? '#fff' : 'transparent', color: s.noteTab === 'md' ? '#1c1a18' : '#6d675f', boxShadow: s.noteTab === 'md' ? '0 1px 3px rgba(0,0,0,.1)' : 'none' },
+      summarizing: s.summarizing, notSummarizing: !s.summarizing
+    };
+  }
+}
+</script>
+</body>
+</html>
