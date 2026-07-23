@@ -18,8 +18,18 @@ pub type Result<T> = std::result::Result<T, MinuteError>;
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn compiles() {
-        assert!(true);
+    fn other_variant_displays_its_message() {
+        let err = MinuteError::Other("boom".to_string());
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn io_error_converts_via_from() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let err: MinuteError = io_err.into();
+        assert!(matches!(err, MinuteError::Io(_)));
     }
 }
