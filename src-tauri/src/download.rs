@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 
+use crate::audio::{self, SharedRecorderState};
 use crate::catalog::{self, CatalogEntry};
 use crate::error::{MinuteError, Result};
 
@@ -477,6 +478,22 @@ fn remove_file_tolerant(path: &Path) -> Result<()> {
     }
 }
 
+/// Whether `delete_model` should refuse to run, and why — an active
+/// download for the model being deleted takes priority over an active
+/// recording (both being true is still just "cancel the download first";
+/// that's the more specific, actionable message). Pure so the guard
+/// combination is unit-testable without a running Tauri app or real audio
+/// hardware.
+fn delete_model_blocked(downloading: bool, recording: bool) -> Option<&'static str> {
+    if downloading {
+        return Some("model is downloading — cancel first");
+    }
+    if recording {
+        return Some("cannot remove models while recording");
+    }
+    None
+}
+
 /// Deletes an installed model's file and any stray `.part` left from an
 /// interrupted download. Missing files are tolerated, not an error —
 /// deleting an already-absent model is a no-op success.
@@ -485,14 +502,21 @@ fn remove_file_tolerant(path: &Path) -> Result<()> {
 /// unlink racing the streaming loop's open file handle would either fail
 /// underneath it or, worse, silently leave a `.part` renamed out from under
 /// a download that's still writing to it. The frontend must cancel first.
+///
+/// Also refuses while *any* recording is active (conservative — not just
+/// the model currently in use) — the live `SttWorker` holds a loaded
+/// `WhisperContext` from that model's file on disk for the duration of the
+/// recording, so removing it out from under a running recording is unsafe
+/// regardless of which model id the frontend thinks it's deleting.
 #[tauri::command]
 pub fn delete_model(
     app: AppHandle,
     registry: State<'_, DownloadRegistry>,
+    recorder: State<'_, SharedRecorderState>,
     id: String,
 ) -> std::result::Result<(), String> {
-    if registry_is_active(&registry, &id) {
-        return Err("model is downloading — cancel first".to_string());
+    if let Some(msg) = delete_model_blocked(registry_is_active(&registry, &id), audio::is_recording_active(&recorder)) {
+        return Err(msg.to_string());
     }
 
     let models_root = app
@@ -724,6 +748,37 @@ mod tests {
 
         registry_finish(&registry, "whisper-small");
         assert!(!registry_is_active(&registry, "whisper-small"));
+    }
+
+    // --- delete_model guard combination --------------------------------------
+
+    #[test]
+    fn delete_model_blocked_allows_when_neither_downloading_nor_recording() {
+        assert_eq!(delete_model_blocked(false, false), None);
+    }
+
+    #[test]
+    fn delete_model_blocked_by_active_download() {
+        assert_eq!(
+            delete_model_blocked(true, false),
+            Some("model is downloading — cancel first")
+        );
+    }
+
+    #[test]
+    fn delete_model_blocked_by_active_recording() {
+        assert_eq!(
+            delete_model_blocked(false, true),
+            Some("cannot remove models while recording")
+        );
+    }
+
+    #[test]
+    fn delete_model_blocked_prioritizes_the_download_message_when_both_are_true() {
+        assert_eq!(
+            delete_model_blocked(true, true),
+            Some("model is downloading — cancel first")
+        );
     }
 
     // --- resume-restart decision ------------------------------------------------

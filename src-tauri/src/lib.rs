@@ -117,9 +117,37 @@ fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
   store::storage_stats(&root).map_err(|e| e.to_string())
 }
 
+/// Best-effort recording finalize on app close/exit. If a recording is
+/// still active — the user quit (⌘Q / red-button close) instead of
+/// clicking "Stop & transcribe" — this runs the exact same stop path
+/// `stop_recording` uses directly against the managed state (stop the
+/// recorder, finalizing `audio.wav`; join the `SttWorker` thread, flushing
+/// its tail window; finalize the note) so the note never gets left behind
+/// on disk permanently stuck at status `"recording"`.
+///
+/// Deliberately synchronous and simple: `stop_recording` itself is a plain
+/// (non-async) command, so calling it here just blocks the event-loop
+/// thread for as long as the stop actually takes — normally a second or
+/// two for the tail-window flush, matching `stop_recording`'s own docs.
+/// Both `WindowEvent::CloseRequested` and `RunEvent::ExitRequested` call
+/// this below; it's safe to call from both (and safe to call when nothing
+/// is recording) because `stop_recording`'s first step atomically takes the
+/// single active-recording slot out of `RecorderState` — a second call (or
+/// a call with nothing active) just sees `None` and returns its ordinary
+/// "no active recording" error, which is swallowed here without logging.
+fn finalize_active_recording_on_exit(app: &AppHandle) {
+  let store = app.state::<SharedStore>();
+  let recorder = app.state::<audio::SharedRecorderState>();
+  match audio::stop_recording(app.clone(), store, recorder) {
+    Ok(meta) => log::info!("finalized in-progress recording {} on app close", meta.id),
+    Err(e) if e == "no active recording" => {}
+    Err(e) => log::warn!("failed to finalize in-progress recording on app close: {e}"),
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
+  let app = tauri::Builder::default()
     .invoke_handler(tauri::generate_handler![
       hardware_info,
       list_models,
@@ -173,6 +201,15 @@ pub fn run() {
 
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application");
+
+  app.run(|app_handle, event| match event {
+    tauri::RunEvent::WindowEvent {
+      event: tauri::WindowEvent::CloseRequested { .. },
+      ..
+    } => finalize_active_recording_on_exit(app_handle),
+    tauri::RunEvent::ExitRequested { .. } => finalize_active_recording_on_exit(app_handle),
+    _ => {}
+  });
 }

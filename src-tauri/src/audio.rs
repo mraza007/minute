@@ -632,6 +632,14 @@ fn lock_recorder_state(state: &SharedRecorderState) -> MutexGuard<'_, RecorderSt
     state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Whether a recording is currently active. Used by `download::delete_model`
+/// to refuse removing any model mid-recording (the live `SttWorker` holds a
+/// loaded model file for the duration), and by the app-close/exit handler
+/// in `lib.rs` to decide whether there's a recording to finalize.
+pub fn is_recording_active(state: &SharedRecorderState) -> bool {
+    lock_recorder_state(state).active.is_some()
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecordingStateEvent {
@@ -918,6 +926,20 @@ pub fn stop_recording(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- is_recording_active -------------------------------------------
+
+    #[test]
+    fn is_recording_active_false_on_a_freshly_opened_state() {
+        // A real `ActiveRecording` needs a live cpal stream (hardware),
+        // which isn't constructible in a unit test — this pins the other
+        // half of the contract: a state nothing has ever recorded into
+        // reports inactive, which is exactly what `delete_model`/the
+        // app-close handler see between recordings (the far more common
+        // case for both).
+        let state = open_shared();
+        assert!(!is_recording_active(&state));
+    }
 
     // --- downmix_to_mono -----------------------------------------------
 
