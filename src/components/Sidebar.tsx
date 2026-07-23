@@ -87,6 +87,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }:
             <button
               onClick={() => onSelect(i)}
               className={i === sel ? undefined : 'hov-dark'}
+              aria-current={i === sel ? 'true' : undefined}
               style={{
                 display: 'block',
                 width: '100%',
@@ -114,6 +115,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }:
         <button
           onClick={onGoNotes}
           className="hov-dark6"
+          aria-current={view === 'notes' ? 'page' : undefined}
           style={{ ...navBase, background: view === 'notes' ? 'rgba(0,0,0,.07)' : 'transparent' }}
         >
           <svg
@@ -135,6 +137,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }:
         <button
           onClick={onGoSettings}
           className="hov-dark6"
+          aria-current={view === 'settings' ? 'page' : undefined}
           style={{ ...navBase, background: view === 'settings' ? 'rgba(0,0,0,.07)' : 'transparent' }}
         >
           <svg

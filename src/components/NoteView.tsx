@@ -64,8 +64,10 @@ export function NoteView({ state }: NoteViewProps) {
             <div style={{ marginTop: 4, fontSize: 12.5, color: '#8d867f' }}>{note.meta} · May 21, 2026 · stored locally</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 'none' }}>
-            <div style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
+            <div role="tablist" aria-label="Note content" style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
               <button
+                role="tab"
+                aria-selected={state.noteTab === 'transcript'}
                 onClick={() => state.setNoteTab('transcript')}
                 className={state.noteTab === 'transcript' ? undefined : 'seg-off'}
                 style={{
@@ -84,6 +86,8 @@ export function NoteView({ state }: NoteViewProps) {
                 Transcript
               </button>
               <button
+                role="tab"
+                aria-selected={state.noteTab === 'md'}
                 onClick={() => state.setNoteTab('md')}
                 className={state.noteTab === 'md' ? undefined : 'seg-off'}
                 style={{

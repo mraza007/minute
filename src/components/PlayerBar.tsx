@@ -37,6 +37,8 @@ export function PlayerBar() {
         </button>
         <button
           className="btn-dark"
+          aria-label="Play"
+          title="Play"
           style={{
             width: 36,
             height: 36,

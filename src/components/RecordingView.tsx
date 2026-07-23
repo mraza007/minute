@@ -12,7 +12,7 @@ export function RecordingView({ paused, togglePause, stopRec }: RecordingViewPro
     <div style={{ flex: 1, display: 'flex', minHeight: 0, background: '#f7f6f4' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
         <div style={{ padding: '16px 32px', borderBottom: '1px solid rgba(0,0,0,.07)', display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
+          <div role="group" aria-label="Audio source" style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
             <div
               style={{
                 padding: '6px 14px',
@@ -34,6 +34,7 @@ export function RecordingView({ paused, togglePause, stopRec }: RecordingViewPro
             </div>
             <div
               className="seg-off"
+              aria-disabled="true"
               style={{ padding: '6px 14px', borderRadius: 7, fontSize: 12.5, fontWeight: 600, color: '#6d675f', display: 'flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">

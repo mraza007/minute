@@ -56,15 +56,21 @@ describe('NoteView', () => {
   it('calls setNoteTab with md when Markdown is clicked', () => {
     const setNoteTab = vi.fn()
     render(<NoteView state={makeState({ setNoteTab })} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Markdown' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Markdown' }))
     expect(setNoteTab).toHaveBeenCalledWith('md')
   })
 
   it('calls setNoteTab with transcript when Transcript is clicked', () => {
     const setNoteTab = vi.fn()
     render(<NoteView state={makeState({ setNoteTab })} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Transcript' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Transcript' }))
     expect(setNoteTab).toHaveBeenCalledWith('transcript')
+  })
+
+  it('marks the active tab with aria-selected', () => {
+    render(<NoteView state={makeState({ noteTab: 'transcript' })} />)
+    expect(screen.getByRole('tab', { name: 'Transcript' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Markdown' })).toHaveAttribute('aria-selected', 'false')
   })
 
   it('shows all demo transcript speakers, one HIGHLIGHT chip, and the player time', () => {

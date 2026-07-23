@@ -39,6 +39,13 @@ describe('Sidebar', () => {
     expect(row).toHaveStyle({ background: '#fff' })
   })
 
+  it('marks the selected note row and current nav item with aria-current', () => {
+    render(<Sidebar {...base} sel={2} view="notes" />)
+    expect(screen.getByRole('button', { name: /client call — acme/i })).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByRole('button', { name: /all notes/i })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: /settings/i })).not.toHaveAttribute('aria-current')
+  })
+
   it('calls onGoNotes when "All notes" is clicked', () => {
     const onGoNotes = vi.fn()
     render(<Sidebar {...base} onGoNotes={onGoNotes} />)
