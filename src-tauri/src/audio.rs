@@ -8,16 +8,29 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample as _;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
 use crate::store::{lock_store, NoteMeta, SharedStore};
+use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
+
+/// Capacity of the bounded channel forwarding downmixed/resampled audio
+/// chunks from the writer thread to the `SttWorker` — see
+/// `run_writer_thread`'s docs for why this is bounded (unlike the cpal
+/// callback -> writer thread channel, which stays unbounded).
+const STT_CHANNEL_CAPACITY: usize = 64;
+
+/// Log a warning every this many consecutive dropped STT chunks, rather
+/// than once per drop (which could spam the log heavily during a sustained
+/// slow patch) or only once ever (which would hide an ongoing problem).
+const STT_DROP_LOG_INTERVAL: u64 = 50;
 
 /// Target sample rate every note's `audio.wav` (and the STT sample stream)
 /// is normalized to, regardless of the input device's native rate.
@@ -333,9 +346,21 @@ where
 
 /// Drains `chunk_rx`, appending each chunk to `writer` and forwarding the
 /// *same* `Arc` (a cheap refcount bump, not a data copy) to `stt_tx` for
-/// Task 6's `SttWorker`. Runs on a dedicated OS thread spawned from
+/// the `SttWorker`. Runs on a dedicated OS thread spawned from
 /// `Recorder::start`, so this — not the realtime cpal callback — is where
 /// WAV file I/O actually happens.
+///
+/// `stt_tx` is bounded (`STT_CHANNEL_CAPACITY`) and fed via `try_send`
+/// rather than `send`: a slow or stalled `SttWorker` (e.g. still loading
+/// the model, or a burst of inference on a slower machine) must never make
+/// recording/WAV-writing block on it — the recording is the thing that
+/// must never stall. When the channel is full, the chunk is dropped
+/// (the transcript gets a small gap; the WAV file itself is unaffected,
+/// since `writer.append` above already ran) and a running drop counter is
+/// logged every `STT_DROP_LOG_INTERVAL` drops rather than on every single
+/// one. A `Disconnected` error (no `SttWorker` running at all — e.g. the
+/// model wasn't installed, so `start_recording` never spawned one) is
+/// silently ignored, same as the old unconditional `send`'s failure case.
 ///
 /// Returns once `chunk_rx`'s sender (owned by the audio callback) is
 /// dropped and every already-queued chunk has been drained, at which point
@@ -346,21 +371,28 @@ where
 fn run_writer_thread(
     mut writer: WavWriter,
     chunk_rx: Receiver<Arc<Vec<f32>>>,
-    // TODO(task6): unbounded for now, matching the pre-existing contract
-    // that a slow/absent STT consumer never blocks recording. Once
-    // `SttWorker` is wired and actually drains this, switch to a bounded
-    // `sync_channel` and use `try_send` here with drop-count logging on
-    // `Full` instead of an unconditional (and here, silently-swallowed)
-    // `send`.
-    stt_tx: Sender<Arc<Vec<f32>>>,
+    stt_tx: SyncSender<Arc<Vec<f32>>>,
     shared: Arc<SharedState>,
 ) -> Result<u64> {
+    let mut dropped: u64 = 0;
     while let Ok(chunk) = chunk_rx.recv() {
         if let Err(e) = writer.append(&chunk) {
             log::warn!("failed to append recorded samples to wav: {e}");
             *lock(&shared.last_error) = Some(e.to_string());
         }
-        let _ = stt_tx.send(chunk.clone());
+        match stt_tx.try_send(chunk.clone()) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                dropped += 1;
+                if dropped % STT_DROP_LOG_INTERVAL == 0 {
+                    log::warn!(
+                        "stt channel full — dropped {dropped} audio chunks so far (transcript \
+                         will have gaps; recording/wav continue unaffected)"
+                    );
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
     }
     writer.finalize()
 }
@@ -386,9 +418,10 @@ impl Recorder {
     /// 16-bit PCM, resampled from whatever the device provides) via a
     /// dedicated writer thread — see `run_writer_thread`. Each
     /// downmixed+resampled chunk is also forwarded (as a shared `Arc`, no
-    /// extra copy) onto `sample_tx` for Task 6's live transcription
-    /// worker.
-    pub fn start(note_dir: PathBuf, sample_tx: Sender<Arc<Vec<f32>>>) -> Result<RecorderHandle> {
+    /// extra copy) onto `sample_tx` for the live transcription worker (see
+    /// `run_writer_thread`'s docs for why this hand-off is bounded and
+    /// drop-on-full).
+    pub fn start(note_dir: PathBuf, sample_tx: SyncSender<Arc<Vec<f32>>>) -> Result<RecorderHandle> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -520,10 +553,12 @@ impl RecorderHandle {
 struct ActiveRecording {
     note_id: String,
     handle: RecorderHandle,
-    /// Held so `sample_tx.send` in the writer thread never fails; drained
-    /// by Task 6's `SttWorker` (not yet wired). Never read here.
-    #[allow(dead_code)]
-    sample_rx: Receiver<Arc<Vec<f32>>>,
+    /// The live-transcription worker thread, if one was spawned (it isn't
+    /// when the configured STT model isn't installed — see
+    /// `start_recording`). Joined in `stop_recording`, *before*
+    /// `finalize_note`, so the transcript is complete by the time the note
+    /// is marked `transcribed`.
+    stt_worker: Option<std::thread::JoinHandle<()>>,
     /// The 1s `recording-state` ticker spawned in `start_recording`,
     /// aborted in `stop_recording`.
     tick_handle: tokio::task::JoinHandle<()>,
@@ -571,9 +606,12 @@ fn emit_recording_state(app: &AppHandle, note_id: &str, state: &'static str, ela
 
 /// Starts a new recording: creates a note via the store (title "New
 /// recording", hardcoded model id until Task 8 wires real settings),
-/// starts the `Recorder` writing into that note's `audio.wav`, and spawns
-/// the 1s ticker that keeps emitting `recording-state` while active.
-/// Returns the new note's id.
+/// starts the `Recorder` writing into that note's `audio.wav`, spawns the
+/// live-transcription `SttWorker` (if the configured model is installed —
+/// recording still proceeds without one otherwise, just without a live
+/// transcript; see the `stt-status` error emitted below), and spawns the 1s
+/// ticker that keeps emitting `recording-state` while active. Returns the
+/// new note's id.
 #[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
@@ -592,7 +630,8 @@ pub async fn start_recording(
         .map_err(|e| e.to_string())?;
     let note_dir = lock_store(&store).note_dir(&meta.id);
 
-    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+    let (sample_tx, sample_rx) =
+        std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
     let handle = match Recorder::start(note_dir.clone(), sample_tx) {
         Ok(handle) => handle,
         Err(e) => {
@@ -614,6 +653,9 @@ pub async fn start_recording(
     };
 
     let note_id = meta.id.clone();
+
+    let stt_worker = spawn_stt_worker_if_model_installed(&app, &store, &note_id, model_id, sample_rx);
+
     let tick_app = app.clone();
     let tick_note_id = note_id.clone();
     let tick_shared = handle.shared.clone();
@@ -635,12 +677,73 @@ pub async fn start_recording(
     lock_recorder_state(&recorder).active = Some(ActiveRecording {
         note_id: note_id.clone(),
         handle,
-        sample_rx,
+        stt_worker,
         tick_handle,
     });
 
     emit_recording_state(&app, &note_id, "recording", 0.0);
     Ok(note_id)
+}
+
+/// Resolves `model_id`'s installed path from the catalog and, if it's
+/// actually installed on disk, spawns an `SttWorker` consuming `sample_rx`.
+/// If the model isn't in the catalog at all, or isn't installed, no worker
+/// is spawned — the recording still proceeds (its `sample_rx` end is just
+/// dropped, so the writer thread's `try_send` calls harmlessly start
+/// returning `Disconnected`) and an `stt-status` error event is emitted so
+/// the frontend can show "no live transcript" rather than silently having
+/// none.
+fn spawn_stt_worker_if_model_installed(
+    app: &AppHandle,
+    store: &State<'_, SharedStore>,
+    note_id: &str,
+    model_id: &str,
+    sample_rx: Receiver<Arc<Vec<f32>>>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let models_root = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::warn!("failed to resolve app data dir for stt worker: {e}");
+            emit_stt_status_error(app, note_id, "failed to resolve app data directory");
+            return None;
+        }
+    };
+
+    let catalog = match catalog::load_catalog() {
+        Ok(catalog) => catalog,
+        Err(e) => {
+            log::warn!("failed to load model catalog for stt worker: {e}");
+            emit_stt_status_error(app, note_id, "failed to load model catalog");
+            return None;
+        }
+    };
+
+    let entry = catalog.into_iter().find(|e| e.id == model_id);
+    let installed = entry
+        .as_ref()
+        .map(|e| catalog::install_state(e, &models_root) == InstallState::Installed)
+        .unwrap_or(false);
+
+    let Some(entry) = entry.filter(|_| installed) else {
+        emit_stt_status_error(app, note_id, "model not installed");
+        return None;
+    };
+
+    let model_path = catalog::installed_path(&entry, &models_root);
+    let worker_ctx = WorkerCtx {
+        note_id: note_id.to_string(),
+        store: store.inner().clone(),
+        emit: Box::new(stt::tauri_emit(app.clone())),
+    };
+    Some(stt::SttWorker::spawn(model_path, sample_rx, worker_ctx))
+}
+
+fn emit_stt_status_error(app: &AppHandle, note_id: &str, error: &str) {
+    stt::tauri_emit(app.clone())(SttEvent::SttStatus(SttStatusPayload {
+        note_id: note_id.to_string(),
+        state: SttStatusState::Error,
+        error: Some(error.to_string()),
+    }));
 }
 
 /// Pauses the active recording. Errors if none is active.
@@ -682,10 +785,12 @@ pub fn resume_recording(
 }
 
 /// Stops the active recording: aborts the ticker, stops the `Recorder`
-/// (finalizing the WAV file), finalizes the note in the store (status
-/// `transcribed`, speakers 1 — Task 6 revisits status; diarization is out
-/// of scope for Stage 2), and emits a final `stopped` `recording-state`.
-/// Errors if none is active.
+/// (finalizing the WAV file), joins the `SttWorker` thread (if one was
+/// spawned) so it flushes its final partial window and finishes persisting
+/// segments *before* the note is finalized, finalizes the note in the store
+/// (status `transcribed`, speakers 1 — diarization is out of scope for
+/// Stage 2), and emits a final `stopped` `recording-state`. Errors if none
+/// is active.
 ///
 /// Failure handling: once `active` is taken out of `RecorderState`, there
 /// is no way for a later call to retry stopping this specific recording —
@@ -732,6 +837,18 @@ pub fn stop_recording(
             fallback_elapsed_secs
         }
     };
+
+    // `Recorder::stop` (above) already dropped the cpal stream and joined
+    // the writer thread, which drops the writer thread's `stt_tx` — the
+    // STT worker's `sample_rx.recv()` loop sees the channel close, flushes
+    // its final partial window, and returns. Joining here blocks until
+    // that flush (and its `append_segment` calls) has actually happened,
+    // so the transcript on disk is complete before `finalize_note` runs.
+    if let Some(worker) = active.stt_worker {
+        if let Err(e) = worker.join() {
+            log::warn!("stt worker thread panicked for note {note_id}: {e:?}");
+        }
+    }
 
     let meta = lock_store(&store)
         .finalize_note(&note_id, duration_sec, 1)
@@ -949,7 +1066,7 @@ mod tests {
         let writer = WavWriter::create(&path).unwrap();
 
         let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
-        let (stt_tx, stt_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
 
         let chunk_a = Arc::new(vec![0.1f32, 0.2, 0.3]);
         let chunk_b = Arc::new(vec![-0.4f32, 0.5]);
@@ -989,7 +1106,7 @@ mod tests {
         let writer = WavWriter::create(&path).unwrap();
 
         let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
-        let (stt_tx, _stt_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, _stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
         drop(chunk_tx);
 
         let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
@@ -1001,17 +1118,17 @@ mod tests {
 
     #[test]
     fn writer_thread_survives_a_dropped_stt_receiver() {
-        // If nothing is draining the STT side (matches today's reality —
-        // Task 6 hasn't wired a consumer yet), the writer thread must keep
-        // writing to the WAV file regardless; `send`ing into a channel
-        // with no receiver just fails silently rather than panicking or
-        // blocking.
+        // If no `SttWorker` is draining the STT side (e.g. the model isn't
+        // installed — see `spawn_stt_worker_if_model_installed`), the
+        // writer thread must keep writing to the WAV file regardless;
+        // `try_send`ing into a channel with no receiver just returns
+        // `Disconnected` rather than panicking or blocking.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audio.wav");
         let writer = WavWriter::create(&path).unwrap();
 
         let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
-        let (stt_tx, stt_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
         drop(stt_rx);
 
         chunk_tx.send(Arc::new(vec![0.25f32, -0.25])).unwrap();
@@ -1019,6 +1136,32 @@ mod tests {
 
         let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
         assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn writer_thread_drops_chunks_and_logs_when_stt_channel_is_full() {
+        // Capacity-1 channel with nothing draining it: the first chunk
+        // fills it, every subsequent chunk must be dropped (not block, not
+        // error out `run_writer_thread` itself) while the WAV file still
+        // receives every single one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(1);
+
+        for _ in 0..5 {
+            chunk_tx.send(Arc::new(vec![0.1f32])).unwrap();
+        }
+        drop(chunk_tx);
+
+        let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
+        // Every chunk still made it into the WAV file...
+        assert_eq!(total, 5);
+        // ...but only the one that fit in the bounded channel's capacity
+        // made it to the STT side; the rest were dropped, not queued.
+        assert_eq!(stt_rx.try_iter().count(), 1);
     }
 
     // --- ElapsedTracker -------------------------------------------------------

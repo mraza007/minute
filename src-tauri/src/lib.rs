@@ -1,13 +1,6 @@
 mod catalog;
-// write_transcript/append_segment aren't called yet — Task 6 (stt.rs) drives
-// segment appends during transcription. Keep the module-level allow until
-// that caller lands, matching stt below. audio.rs (Task 5) now drives note
-// creation/finalization during recording, so store's remaining methods are
-// all reachable.
-#[allow(dead_code)]
 mod store;
 mod audio;
-#[allow(dead_code)]
 mod stt;
 mod download;
 mod error;
