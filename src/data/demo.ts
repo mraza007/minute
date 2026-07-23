@@ -1,0 +1,142 @@
+import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
+
+export const demoNotes: NoteListItem[] = [
+  { title: 'Board prep sync', meta: '32 min · 2 speakers', group: 'Today' },
+  { title: '1:1 — Sarah', meta: '25 min' },
+  { title: 'Client call — Acme', meta: '48 min · 4 speakers', group: 'Yesterday' },
+  { title: 'Interview — SDK candidate', meta: '55 min' },
+  { title: 'All hands — June', meta: '61 min · 6 speakers', group: 'Last week' },
+  { title: 'Pricing workshop', meta: '90 min · 3 speakers' },
+]
+
+export const initialActions: ActionItem[] = [
+  { text: 'Send security documentation to Tom before procurement kickoff', done: true },
+  { text: 'Set up Markdown export matching Acme Monday digest template', done: false },
+  { text: 'Share export template with pilot group by Friday', done: false },
+]
+
+export const demoTranscript: TranscriptSegment[] = [
+  {
+    initials: 'TR',
+    speaker: 'Tom Reyes — Acme',
+    time: '00:41',
+    text: 'Thanks for making time. Before we get into the roadmap, I want to flag that our security team has questions about where the meeting audio ends up.',
+  },
+  {
+    initials: 'ME',
+    speaker: 'You',
+    time: '01:02',
+    isMe: true,
+    text: "Short answer: nowhere. Everything you're hearing transcribed right now runs on this laptop — the model, the audio, the notes. There's no account and no server.",
+  },
+  {
+    initials: 'TR',
+    speaker: 'Tom Reyes — Acme',
+    time: '01:34',
+    highlight: true,
+    text: "If that holds up in review, we can move the pilot from 20 seats to the full 200 by Q3. Send over the security documentation and we'll start procurement.",
+  },
+  {
+    initials: 'PS',
+    speaker: 'Priya Shah',
+    time: '02:10',
+    text: 'One ask from our side — the pilot group wants the summaries in the Monday digest format. Can the export match that template?',
+  },
+  {
+    initials: 'ME',
+    speaker: 'You',
+    time: '02:26',
+    isMe: true,
+    text: "Yes — Markdown export is templated, I'll set one up and share it with the pilot group before Friday.",
+  },
+]
+
+export const liveTranscript: TranscriptSegment[] = [
+  {
+    initials: 'S1',
+    speaker: 'Speaker 1',
+    time: '13:58',
+    text: '…so the headline for the board is that churn is down for the third straight month, and the Acme expansion covers the shortfall from the SMB tier.',
+  },
+  {
+    initials: 'S2',
+    speaker: 'Speaker 2',
+    time: '14:16',
+    text: "Agreed. I'd put the security-review milestone on the timeline slide — it gates the 200-seat rollout, so the board should see it explicitly.",
+  },
+  {
+    initials: 'S1',
+    speaker: 'Speaker 1',
+    time: '14:31',
+    text: 'Good call. Then the ask: two additional hires for the on-device inference team, starting',
+  },
+]
+
+export const sttModels: SttModelInfo[] = [
+  {
+    id: 'small',
+    name: 'Whisper small',
+    desc: '466 MB · 62× realtime · good for meetings',
+    sub: 'Recommended for this Mac',
+    subOn: 'Installed · in use',
+  },
+  {
+    id: 'medium',
+    name: 'Whisper medium',
+    desc: '1.5 GB · 21× realtime · better accents & jargon',
+    sub: 'Installed',
+    subOn: 'Installed · in use',
+  },
+  {
+    id: 'large',
+    name: 'Whisper large-v3',
+    desc: '3.1 GB · 6× realtime · maximum accuracy',
+    sub: 'Not downloaded · 3.1 GB',
+    subOn: 'Installed · in use',
+  },
+]
+
+export const demoMarkdown = `# Client call — Acme
+
+**Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 4
+
+## Summary
+
+Acme is ready to expand the pilot from 20 to 200 seats in Q3, contingent
+on security review of the on-device architecture. Their pilot group also
+needs summary exports in their Monday digest format before Friday.
+
+## Decisions
+
+- Pilot expands to 200 seats in Q3 if security review passes.
+- Exports will match Acme's Monday digest template.
+
+## Action items
+
+- [x] Send security documentation to Tom before procurement kickoff
+- [ ] Set up Markdown export matching Acme Monday digest template
+- [ ] Share export template with pilot group by Friday
+
+## Transcript
+
+**Tom Reyes — Acme** (00:41)
+Thanks for making time. Before we get into the roadmap, I want to flag
+that our security team has questions about where the meeting audio ends up.
+
+**You** (01:02)
+Short answer: nowhere. Everything you're hearing transcribed right now runs
+on this laptop — the model, the audio, the notes. There's no account and
+no server.
+
+**Tom Reyes — Acme** (01:34) ★ highlight
+If that holds up in review, we can move the pilot from 20 seats to the
+full 200 by Q3. Send over the security documentation and we'll start
+procurement.
+
+**Priya Shah** (02:10)
+One ask from our side — the pilot group wants the summaries in the Monday
+digest format. Can the export match that template?
+
+**You** (02:26)
+Yes — Markdown export is templated, I'll set one up and share it with the
+pilot group before Friday.`
