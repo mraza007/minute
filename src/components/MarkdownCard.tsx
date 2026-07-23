@@ -5,6 +5,16 @@ interface MarkdownCardProps {
   filename: string
   subtitle: string
   markdown: string
+  /** Reveal-in-Finder click handler — the caller owns the actual `revealNote` IPC call. */
+  onReveal: () => void
+  /**
+   * Called when `navigator.clipboard.writeText` rejects (e.g. no clipboard
+   * permission) so the caller can surface it (typically into the app's
+   * `lastError` banner). Optional — a caller that doesn't care about copy
+   * failures can omit it; the rejection is still caught either way, so it
+   * never becomes an unhandled promise rejection.
+   */
+  onCopyError?: (err: unknown) => void
 }
 
 function MarkdownBody({ markdown }: { markdown: string }) {
@@ -30,7 +40,11 @@ function MarkdownBody({ markdown }: { markdown: string }) {
   return <>{nodes}</>
 }
 
-export function MarkdownCard({ filename, subtitle, markdown }: MarkdownCardProps) {
+export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyError }: MarkdownCardProps) {
+  function handleCopy() {
+    navigator.clipboard.writeText(markdown).catch(err => onCopyError?.(err))
+  }
+
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px 28px', minHeight: 0 }}>
       <div
@@ -63,6 +77,7 @@ export function MarkdownCard({ filename, subtitle, markdown }: MarkdownCardProps
           <span style={{ fontSize: 11, color: '#9a938c' }}>{subtitle}</span>
           <div style={{ flex: 1 }} />
           <button
+            onClick={handleCopy}
             className="btn-light"
             style={{
               padding: '5px 12px',
@@ -79,6 +94,7 @@ export function MarkdownCard({ filename, subtitle, markdown }: MarkdownCardProps
             Copy
           </button>
           <button
+            onClick={onReveal}
             className="btn-dark-accent"
             style={{
               padding: '5px 12px',

@@ -1,4 +1,11 @@
-export function PlayerBar() {
+import { formatMmSs } from '../state/adapters'
+
+interface PlayerBarProps {
+  /** The note's real recorded duration — playback itself is Stage 4, so elapsed stays a static 00:00 and progress stays 0% (an honest empty state rather than a fabricated position). */
+  durationSec: number
+}
+
+export function PlayerBar({ durationSec }: PlayerBarProps) {
   return (
     <div style={{ padding: '12px 32px 16px', flex: 'none' }}>
       <div
@@ -80,11 +87,11 @@ export function PlayerBar() {
           </svg>
         </button>
         <div style={{ flex: 1, height: 5, borderRadius: 999, background: '#e8e5e1', position: 'relative' }}>
-          <div style={{ position: 'absolute', inset: '0 62% 0 0', borderRadius: 999, background: '#1c1a18' }} />
+          <div style={{ position: 'absolute', inset: '0 100% 0 0', borderRadius: 999, background: '#1c1a18' }} />
           <div
             style={{
               position: 'absolute',
-              left: '38%',
+              left: '0%',
               top: -4,
               width: 13,
               height: 13,
@@ -95,7 +102,9 @@ export function PlayerBar() {
             }}
           />
         </div>
-        <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: '#8d867f', flex: 'none' }}>18:21 / 48:22</div>
+        <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: '#8d867f', flex: 'none' }}>
+          00:00 / {formatMmSs(durationSec)}
+        </div>
         <button
           className="btn-light"
           style={{

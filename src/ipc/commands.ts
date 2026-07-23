@@ -53,6 +53,9 @@ export const deleteNote = (id: string): Promise<void> => invokeCmd('delete_note'
 
 export const storageStats = (): Promise<StorageStats> => invokeCmd('storage_stats')
 
+/** Reveals a note in Finder (its audio.wav if present, else the note's folder). */
+export const revealNote = (id: string): Promise<void> => invokeCmd('reveal_note', { id })
+
 /** Starts a new recording using the given STT model id; resolves with the new note's id. */
 export const startRecording = (modelId: string): Promise<string> =>
   invokeCmd('start_recording', { modelId })

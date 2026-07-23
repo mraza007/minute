@@ -91,6 +91,23 @@ fn delete_note(state: State<SharedStore>, id: String) -> Result<(), String> {
   lock_store(&state).delete_note(&id).map_err(|e| e.to_string())
 }
 
+/// Reveals a note in Finder: its `audio.wav` if present, else the note's
+/// directory itself (see `store::reveal_target`) — via `open -R`, same as
+/// clicking "Reveal in Finder" on a file. Tolerant of the note directory (or
+/// its audio) being missing in the sense that it doesn't special-case that
+/// beforehand — `open -R` itself is left to fail on a nonexistent path, and
+/// that failure is surfaced as the command's `Err` like any other.
+#[tauri::command]
+fn reveal_note(state: State<SharedStore>, id: String) -> Result<(), String> {
+  let target = lock_store(&state).reveal_target(&id);
+  std::process::Command::new("open")
+    .arg("-R")
+    .arg(&target)
+    .status()
+    .map_err(|e| format!("failed to reveal {target:?}: {e}"))?;
+  Ok(())
+}
+
 #[tauri::command]
 fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
   // Clone the root path out from under a brief lock, then run the
@@ -112,6 +129,7 @@ pub fn run() {
       rename_note,
       delete_note,
       storage_stats,
+      reveal_note,
       download::download_model,
       download::cancel_download,
       download::delete_model,

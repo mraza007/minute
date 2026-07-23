@@ -6,9 +6,11 @@ import type {
   Hardware,
   ModelStatus,
   NoteMeta,
+  NoteWithTranscript,
   RecordingStateEvent,
   Recommendation,
   StorageStats,
+  StoredSegment,
   SttStatusEvent,
   TranscriptSegmentEvent,
 } from '../ipc/types'
@@ -70,16 +72,25 @@ interface SetupOpts {
   onCmd?: (cmd: string, args: unknown) => void
   /** Overrides what `list_models` returns after the initial load (e.g. for a post-delete refetch). */
   listModelsAfter?: () => ModelStatus[]
+  /** Overrides what `list_notes` returns after the initial load (e.g. for a post-rename/delete refetch). */
+  listNotesAfter?: () => NoteMeta[]
   /** What `start_recording` resolves with — defaults to a fixed id. */
   startRecordingId?: string
   /** Controls `stop_recording`'s outcome: resolves with `result` (defaults to `notes[0]`), or rejects with `reject`. */
   stopRecording?: { result?: NoteMeta; reject?: string }
+  /** Controls `list_notes`/`storage_stats` after a successful `stop_recording`, independent of `stopRecording.reject`. */
+  postStopRefreshRejects?: boolean
+  /** `get_note(id)`'s response — defaults to `{ meta: notes.find(id) ?? notes[0], transcript: { segments: [] } }`. */
+  getNote?: (id: string) => NoteWithTranscript | Promise<NoteWithTranscript>
+  /** `rename_note(id, title)`'s response — defaults to the matching note with `title` merged in. */
+  renameNoteResult?: (id: string, title: string) => NoteMeta
 }
 
 function setupIPC(opts: SetupOpts = {}) {
   const models = opts.models ?? [sttModelFixture({ state: 'installed' }), llmModelFixture()]
   const notes = opts.notes ?? [noteFixture()]
   let listModelsCalls = 0
+  let listNotesCalls = 0
   mockIPC(
     (cmd, args) => {
       opts.onCmd?.(cmd, args)
@@ -90,6 +101,11 @@ function setupIPC(opts: SetupOpts = {}) {
           if (listModelsCalls > 1 && opts.listModelsAfter) return opts.listModelsAfter()
           return models
         case 'list_notes':
+          listNotesCalls += 1
+          if (listNotesCalls > 1) {
+            if (opts.postStopRefreshRejects) throw new Error('list_notes unavailable')
+            if (opts.listNotesAfter) return opts.listNotesAfter()
+          }
           return notes
         case 'hardware_info':
           return hardware
@@ -105,6 +121,21 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'stop_recording':
           if (opts.stopRecording?.reject) throw opts.stopRecording.reject
           return opts.stopRecording?.result ?? notes[0]
+        case 'get_note': {
+          const { id } = args as { id: string }
+          if (opts.getNote) return opts.getNote(id)
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return { meta: match, transcript: { segments: [] } } satisfies NoteWithTranscript
+        }
+        case 'rename_note': {
+          const { id, title } = args as { id: string; title: string }
+          if (opts.renameNoteResult) return opts.renameNoteResult(id, title)
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return { ...match, title }
+        }
+        case 'delete_note':
+        case 'reveal_note':
+          return null
         default:
           return null
       }
@@ -422,6 +453,245 @@ describe('useAppState', () => {
       await waitFor(() => expect(result.current.lastError).toContain('wav writer thread panicked'))
       expect(result.current.stopping).toBe(false)
       expect(result.current.view).toBe('recording')
+    })
+
+    it('stopRec: when stop_recording succeeds but the post-stop list_notes/storage_stats refresh rejects, still clears sttStatus and navigates to notes (stale list) instead of getting stuck on the recording view', async () => {
+      const newNote = noteFixture({ id: noteId, title: 'New recording' })
+      const result = await loadedAndRecording({
+        notes: [newNote],
+        stopRecording: { result: newNote },
+        postStopRefreshRejects: true,
+      })
+
+      await act(async () => {
+        await emit('stt-status', sttStatus({ state: 'finalizing' }))
+      })
+      expect(result.current.sttStatus).toBe('finalizing')
+
+      act(() => result.current.stopRec())
+      expect(result.current.stopping).toBe(true)
+
+      await waitFor(() => expect(result.current.view).toBe('notes'))
+      expect(result.current.stopping).toBe(false)
+      expect(result.current.lastError).toContain('list_notes unavailable')
+      // The refresh never landed — `notes` stays whatever it was before
+      // (stale, but present) rather than being wiped out.
+      expect(result.current.notes).toEqual([newNote])
+      expect(result.current.sttStatus).toBe('idle')
+      expect(result.current.sttError).toBeNull()
+      expect(result.current.sttStatusNoteId).toBeNull()
+    })
+  })
+
+  describe('note detail (real transcript loading)', () => {
+    const noteA = noteFixture({ id: 'note-a', title: 'Note A' })
+    const noteB = noteFixture({ id: 'note-b', title: 'Note B' })
+    const segmentsA: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 1, text: 'hello from A' }]
+    const segmentsB: StoredSegment[] = [{ speaker: 'Speaker 1', start: 5, end: 6, text: 'hello from B' }]
+
+    function getNoteFixture(id: string): NoteWithTranscript {
+      if (id === 'note-a') return { meta: noteA, transcript: { segments: segmentsA } }
+      if (id === 'note-b') return { meta: noteB, transcript: { segments: segmentsB } }
+      throw new Error(`unexpected id ${id}`)
+    }
+
+    it('fetches get_note for the initially selected note and exposes selectedMeta/selectedTranscript', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA, noteB], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+
+      const result = await loaded()
+
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+      expect(result.current.selectedTranscript).toEqual(segmentsA)
+      expect(calls.some(c => c.cmd === 'get_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
+    })
+
+    it('sets transcriptLoading true while the fetch is in flight, then false once it resolves', async () => {
+      let resolveGetNote: (v: NoteWithTranscript) => void = () => {}
+      const pending = new Promise<NoteWithTranscript>(resolve => {
+        resolveGetNote = resolve
+      })
+      setupIPC({ notes: [noteA], getNote: () => pending })
+
+      const result = await loaded()
+      expect(result.current.transcriptLoading).toBe(true)
+
+      await act(async () => {
+        resolveGetNote(getNoteFixture('note-a'))
+        await pending
+      })
+      await waitFor(() => expect(result.current.transcriptLoading).toBe(false))
+      expect(result.current.selectedTranscript).toEqual(segmentsA)
+    })
+
+    it('fetches a fresh transcript when a different note is selected', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA, noteB], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+
+      act(() => result.current.selectNote(1))
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
+      expect(result.current.selectedTranscript).toEqual(segmentsB)
+      expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2)
+    })
+
+    it('reuses the cache instead of refetching when switching back to an already-loaded note', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA, noteB], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+
+      act(() => result.current.selectNote(1))
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
+
+      act(() => result.current.selectNote(0))
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+
+      expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2)
+    })
+
+    it('reports lastError when get_note rejects', async () => {
+      setupIPC({
+        notes: [noteA],
+        getNote: () => {
+          throw new Error('disk read failed')
+        },
+      })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.lastError).toContain('disk read failed'))
+      expect(result.current.transcriptLoading).toBe(false)
+    })
+
+    describe('renameNote', () => {
+      it('invokes rename_note, refreshes notes, and force-reloads the transcript for the (still-selected) renamed note', async () => {
+        // `currentTitle` simulates the backend's on-disk state so that
+        // `get_note`'s post-rename refetch (and the `list_notes` refresh)
+        // actually reflect the rename, the same way real disk-backed
+        // `get_note`/`list_notes` calls would after a real `rename_note`.
+        let currentTitle = noteA.title
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        setupIPC({
+          notes: [noteA],
+          getNote: () => ({ meta: { ...noteA, title: currentTitle }, transcript: { segments: segmentsA } }),
+          renameNoteResult: (_id, title) => {
+            currentTitle = title
+            return { ...noteA, title }
+          },
+          listNotesAfter: () => [{ ...noteA, title: currentTitle }],
+          onCmd: (cmd, args) => calls.push({ cmd, args }),
+        })
+
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedMeta?.title).toBe('Note A'))
+
+        act(() => result.current.renameNote('note-a', 'Renamed A'))
+
+        expect(calls.some(c => c.cmd === 'rename_note' && (c.args as { id: string; title: string }).id === 'note-a')).toBe(true)
+        await waitFor(() => expect(result.current.notes).toEqual([{ ...noteA, title: 'Renamed A' }]))
+        await waitFor(() => expect(result.current.selectedMeta?.title).toBe('Renamed A'))
+      })
+
+      it('reports lastError when rename_note rejects', async () => {
+        setupIPC({
+          notes: [noteA],
+          getNote: getNoteFixture,
+          onCmd: cmd => {
+            if (cmd === 'rename_note') throw 'note not found'
+          },
+        })
+        const result = await loaded()
+        act(() => result.current.renameNote('note-a', 'New title'))
+        await waitFor(() => expect(result.current.lastError).toContain('note not found'))
+      })
+    })
+
+    describe('deleteNote', () => {
+      it('invokes delete_note, refreshes notes, and keeps the same index (selecting the next note)', async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteB],
+          onCmd: (cmd, args) => calls.push({ cmd, args }),
+        })
+
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+
+        act(() => result.current.deleteNote('note-a'))
+
+        expect(calls.some(c => c.cmd === 'delete_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
+        await waitFor(() => expect(result.current.notes).toEqual([noteB]))
+        expect(result.current.sel).toBe(0)
+      })
+
+      it('clamps the selection index when the deleted note was last in the list', async () => {
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteA],
+        })
+        const result = await loaded()
+        act(() => result.current.selectNote(1))
+        await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
+
+        act(() => result.current.deleteNote('note-b'))
+        await waitFor(() => expect(result.current.notes).toEqual([noteA]))
+        expect(result.current.sel).toBe(0)
+      })
+
+      it('clamps to 0 when deleting the last remaining note (empty library)', async () => {
+        setupIPC({
+          notes: [noteA],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [],
+        })
+        const result = await loaded()
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.notes).toEqual([]))
+        expect(result.current.sel).toBe(0)
+      })
+
+      it('reports lastError when delete_note rejects', async () => {
+        setupIPC({
+          notes: [noteA],
+          getNote: getNoteFixture,
+          onCmd: cmd => {
+            if (cmd === 'delete_note') throw 'note not found'
+          },
+        })
+        const result = await loaded()
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.lastError).toContain('note not found'))
+      })
+    })
+
+    describe('revealNote', () => {
+      it('invokes reveal_note with the given id', async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+        const result = await loaded()
+
+        act(() => result.current.revealNote('note-a'))
+
+        expect(calls.some(c => c.cmd === 'reveal_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
+      })
+
+      it('reports lastError when reveal_note rejects', async () => {
+        setupIPC({
+          notes: [noteA],
+          getNote: getNoteFixture,
+          onCmd: cmd => {
+            if (cmd === 'reveal_note') throw 'no such file'
+          },
+        })
+        const result = await loaded()
+        act(() => result.current.revealNote('note-a'))
+        await waitFor(() => expect(result.current.lastError).toContain('no such file'))
+      })
     })
   })
 

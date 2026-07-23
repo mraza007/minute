@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ModelStatus, NoteMeta, Recommendation, TranscriptSegmentEvent } from '../ipc/types'
+import type { ModelStatus, NoteMeta, Recommendation, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
 import {
   formatBytes,
   formatMmSs,
@@ -9,6 +9,8 @@ import {
   noteMetaToListItem,
   notesToSidebarItems,
   pickInitialSttModel,
+  speakerInitials,
+  storedSegmentsToDisplay,
 } from './adapters'
 
 function meta(overrides: Partial<NoteMeta> = {}): NoteMeta {
@@ -105,6 +107,69 @@ describe('formatBytes', () => {
     expect(formatBytes(2_500_000_000)).toBe('2.5 GB')
     expect(formatBytes(1_000_000_000)).toBe('1 GB')
     expect(formatBytes(5_335_291_936)).toBe('5.3 GB')
+  })
+
+  it('formats sub-KB sizes as whole bytes', () => {
+    expect(formatBytes(0)).toBe('0 B')
+    expect(formatBytes(80)).toBe('80 B')
+    expect(formatBytes(999)).toBe('999 B')
+  })
+
+  it('formats sub-MB sizes as KB with one decimal, trimmed when whole', () => {
+    expect(formatBytes(1_000)).toBe('1 KB')
+    expect(formatBytes(4_200)).toBe('4.2 KB')
+    expect(formatBytes(999_000)).toBe('999 KB')
+  })
+})
+
+describe('speakerInitials', () => {
+  it('derives initials from a "Speaker N" placeholder label', () => {
+    expect(speakerInitials('Speaker 1')).toBe('S1')
+    expect(speakerInitials('Speaker 12')).toBe('S12')
+  })
+
+  it('derives initials from a two-word human name', () => {
+    expect(speakerInitials('Priya Shah')).toBe('PS')
+  })
+
+  it('derives initials from a single-word label by taking its first two letters', () => {
+    expect(speakerInitials('Unknown')).toBe('UN')
+  })
+
+  it('falls back to "?" for an empty/blank label', () => {
+    expect(speakerInitials('')).toBe('?')
+    expect(speakerInitials('   ')).toBe('?')
+  })
+})
+
+describe('storedSegmentsToDisplay', () => {
+  it('maps speaker/text through and derives initials + mm:ss time from start', () => {
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 3.2, text: 'Hello there.' },
+      { speaker: 'Speaker 1', start: 41, end: 45, text: 'Second segment.' },
+    ]
+    expect(storedSegmentsToDisplay(segments)).toEqual([
+      { initials: 'S1', speaker: 'Speaker 1', time: '00:00', text: 'Hello there.' },
+      { initials: 'S1', speaker: 'Speaker 1', time: '00:41', text: 'Second segment.' },
+    ])
+  })
+
+  it('never sets isMe or highlight — real segments render neutral', () => {
+    const [display] = storedSegmentsToDisplay([{ speaker: 'Speaker 1', start: 0, end: 1, text: 'Hi' }])
+    expect(display.isMe).toBeUndefined()
+    expect(display.highlight).toBeUndefined()
+  })
+
+  it('does not merge consecutive same-speaker segments — each stored segment renders as its own row', () => {
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 1, text: 'First.' },
+      { speaker: 'Speaker 1', start: 1, end: 2, text: 'Second.' },
+    ]
+    expect(storedSegmentsToDisplay(segments)).toHaveLength(2)
+  })
+
+  it('returns an empty array for an empty transcript', () => {
+    expect(storedSegmentsToDisplay([])).toEqual([])
   })
 })
 

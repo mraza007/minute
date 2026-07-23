@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import type { NoteMeta } from '../ipc/types'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, vi } from 'vitest'
+import type { NoteMeta, StoredSegment } from '../ipc/types'
 import type { AppState } from '../state/useAppState'
 import { NoteView } from './NoteView'
 
@@ -17,18 +18,21 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
 }
 
 function makeState(overrides: Partial<AppState> = {}): AppState {
+  const notes = overrides.notes ?? [noteFixture()]
+  const sel = overrides.sel ?? 0
+  const selectedMetaDefault = notes[sel] ?? notes[0] ?? null
   return {
     view: 'notes',
     models: [],
     downloads: {},
-    notes: [noteFixture()],
+    notes,
     hardware: null,
     recommendation: null,
     storage: null,
     lastError: null,
     sttModel: '',
     sttModelDisplayName: '',
-    sel: 0,
+    sel,
     recElapsed: 0,
     paused: false,
     stopping: false,
@@ -36,6 +40,9 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
     sttError: null,
     sttStatusNoteId: null,
     liveSegments: [],
+    selectedTranscript: [],
+    selectedMeta: selectedMetaDefault,
+    transcriptLoading: false,
     asked: false,
     askDraft: '',
     tDel: true,
@@ -61,6 +68,10 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
     cancelDownload: vi.fn(),
     deleteModel: vi.fn(),
     completeOnboarding: vi.fn(),
+    renameNote: vi.fn(),
+    deleteNote: vi.fn(),
+    revealNote: vi.fn(),
+    reportError: vi.fn(),
     ...overrides,
   }
 }
@@ -107,7 +118,7 @@ describe('NoteView', () => {
     expect(screen.getByRole('tab', { name: 'Markdown' })).toHaveAttribute('aria-selected', 'false')
   })
 
-  it('renders the transcript tab with an (empty for now) TranscriptList and the player bar', () => {
+  it('renders the transcript tab with the TranscriptList and the player bar', () => {
     render(<NoteView state={makeState({ noteTab: 'transcript' })} />)
     expect(screen.getByTitle('Play')).toBeInTheDocument()
   })
@@ -170,6 +181,167 @@ describe('NoteView', () => {
       ]
       render(<NoteView state={makeState({ notes, sel: 0, sttStatusNoteId: 'note-2', sttStatus: 'finalizing' })} />)
       expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('real transcript rendering', () => {
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 3, text: 'Thanks for making time.' },
+      { speaker: 'Speaker 1', start: 41, end: 44, text: 'Second segment.' },
+    ]
+
+    it('renders stored segments (adapted via storedSegmentsToDisplay) when selectedMeta matches the selected note', () => {
+      const note = noteFixture()
+      render(<NoteView state={makeState({ notes: [note], selectedMeta: note, selectedTranscript: segments })} />)
+      expect(screen.getByText('Thanks for making time.')).toBeInTheDocument()
+      expect(screen.getByText('Second segment.')).toBeInTheDocument()
+      expect(screen.getByText('00:41')).toBeInTheDocument()
+      expect(screen.getAllByText('S1').length).toBeGreaterThan(0)
+    })
+
+    it('does not render stale segments from a different note while the current note is still loading', () => {
+      const note = noteFixture({ id: 'note-1' })
+      const staleNote = noteFixture({ id: 'note-0' })
+      render(
+        <NoteView
+          state={makeState({
+            notes: [note],
+            selectedMeta: staleNote,
+            selectedTranscript: segments,
+            transcriptLoading: true,
+          })}
+        />,
+      )
+      expect(screen.queryByText('Thanks for making time.')).not.toBeInTheDocument()
+    })
+
+    it('shows a loading indicator while the transcript for the selected note is still in flight', () => {
+      const note = noteFixture({ id: 'note-1' })
+      render(<NoteView state={makeState({ notes: [note], selectedMeta: null, transcriptLoading: true })} />)
+      expect(screen.getByText(/loading transcript/i)).toBeInTheDocument()
+    })
+  })
+
+  describe('markdown tab', () => {
+    it('renders markdown generated from meta + the real transcript, with a real byte-size subtitle', () => {
+      const note = noteFixture()
+      const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 41, end: 44, text: 'Thanks for making time.' }]
+      render(<NoteView state={makeState({ notes: [note], selectedMeta: note, selectedTranscript: segments, noteTab: 'md' })} />)
+
+      expect(screen.getByText(/# Client call — Acme/)).toBeInTheDocument()
+      expect(screen.getByText(/Thanks for making time\./)).toBeInTheDocument()
+      expect(screen.getByText(/saved locally/)).toBeInTheDocument()
+    })
+
+    it('shows the "No speech detected." placeholder when the transcript is empty', () => {
+      const note = noteFixture()
+      render(<NoteView state={makeState({ notes: [note], selectedMeta: note, selectedTranscript: [], noteTab: 'md' })} />)
+      expect(screen.getByText(/No speech detected\./)).toBeInTheDocument()
+    })
+
+    it('clicking Reveal in Finder calls state.revealNote with the note id', () => {
+      const revealNote = vi.fn()
+      const note = noteFixture()
+      render(<NoteView state={makeState({ notes: [note], selectedMeta: note, noteTab: 'md', revealNote })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal in Finder' }))
+      expect(revealNote).toHaveBeenCalledWith(note.id)
+    })
+  })
+
+  describe('rename', () => {
+    it('clicking the pencil button reveals an input pre-filled with the current title', () => {
+      render(<NoteView state={makeState()} />)
+      fireEvent.click(screen.getByTitle('Rename'))
+      expect(screen.getByRole('textbox')).toHaveValue('Client call — Acme')
+      expect(screen.queryByRole('heading', { name: 'Client call — Acme' })).not.toBeInTheDocument()
+    })
+
+    it('pressing Enter commits the new title via state.renameNote and exits edit mode', () => {
+      const renameNote = vi.fn()
+      const note = noteFixture()
+      render(<NoteView state={makeState({ notes: [note], renameNote })} />)
+
+      fireEvent.click(screen.getByTitle('Rename'))
+      const input = screen.getByRole('textbox')
+      fireEvent.change(input, { target: { value: 'New title' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(renameNote).toHaveBeenCalledWith(note.id, 'New title')
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    })
+
+    it('pressing Escape reverts the draft and does not call state.renameNote', () => {
+      const renameNote = vi.fn()
+      render(<NoteView state={makeState({ renameNote })} />)
+
+      fireEvent.click(screen.getByTitle('Rename'))
+      const input = screen.getByRole('textbox')
+      fireEvent.change(input, { target: { value: 'Changed but abandoned' } })
+      fireEvent.keyDown(input, { key: 'Escape' })
+
+      expect(renameNote).not.toHaveBeenCalled()
+      expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    })
+
+    it('does not call state.renameNote when the title is unchanged', () => {
+      const renameNote = vi.fn()
+      render(<NoteView state={makeState({ renameNote })} />)
+
+      fireEvent.click(screen.getByTitle('Rename'))
+      fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+
+      expect(renameNote).not.toHaveBeenCalled()
+    })
+
+    it('committing on blur also calls state.renameNote', () => {
+      const renameNote = vi.fn()
+      const note = noteFixture()
+      render(<NoteView state={makeState({ notes: [note], renameNote })} />)
+
+      fireEvent.click(screen.getByTitle('Rename'))
+      const input = screen.getByRole('textbox')
+      fireEvent.change(input, { target: { value: 'Blurred title' } })
+      fireEvent.blur(input)
+
+      expect(renameNote).toHaveBeenCalledWith(note.id, 'Blurred title')
+    })
+  })
+
+  describe('delete', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('first click arms a confirmation without deleting; second click deletes', () => {
+      const deleteNote = vi.fn()
+      const note = noteFixture()
+      render(<NoteView state={makeState({ notes: [note], deleteNote })} />)
+
+      fireEvent.click(screen.getByTitle('Delete'))
+      expect(deleteNote).not.toHaveBeenCalled()
+      expect(screen.getByTitle('Confirm delete?')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByTitle('Confirm delete?'))
+      expect(deleteNote).toHaveBeenCalledWith(note.id)
+    })
+
+    it('disarms the confirmation after the timeout elapses without a second click', () => {
+      const deleteNote = vi.fn()
+      render(<NoteView state={makeState({ deleteNote })} />)
+
+      fireEvent.click(screen.getByTitle('Delete'))
+      expect(screen.getByTitle('Confirm delete?')).toBeInTheDocument()
+
+      act(() => {
+        vi.advanceTimersByTime(4000)
+      })
+
+      expect(screen.getByTitle('Delete')).toBeInTheDocument()
+      expect(deleteNote).not.toHaveBeenCalled()
     })
   })
 })

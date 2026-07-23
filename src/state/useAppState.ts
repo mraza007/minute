@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
-import type { Hardware, NoteMeta, StorageStats, TranscriptSegmentEvent } from '../ipc/types'
+import type { Hardware, NoteMeta, NoteWithTranscript, StorageStats, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { useModelManager } from './useModelManager'
@@ -57,13 +57,111 @@ export function useAppState() {
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  function reportError(err: unknown) {
+  // Stable identity (only refs/setState in its closure) — required so that
+  // startRec/togglePause/stopRec below, which all list it as a dependency,
+  // can themselves have stable identities across renders (see their
+  // `useCallback`s' docs for why that matters to RecordingView's memo).
+  const reportError = useCallback((err: unknown) => {
     clearTimeout(errorTimeout.current)
     setLastErrorState(messageOf(err))
     errorTimeout.current = setTimeout(() => setLastErrorState(null), LAST_ERROR_TIMEOUT_MS)
-  }
+  }, [])
 
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
+
+  // --- Note detail: real transcript loading for the selected note --------
+  //
+  // `selectedMeta`/`selectedTranscript` back NoteView's Transcript/Markdown
+  // tabs once a note is actually selected — fetched via `get_note` (the
+  // notes list itself only carries `NoteMeta`, no segments). Cached per id
+  // in `transcriptCache` so re-selecting an already-viewed note is instant
+  // and doesn't re-hit the backend; `renameNote`/`deleteNote` below
+  // invalidate a note's cache entry since its on-disk content just changed
+  // out from under whatever's cached.
+  const [selectedTranscript, setSelectedTranscript] = useState<StoredSegment[]>([])
+  const [selectedMeta, setSelectedMeta] = useState<NoteMeta | null>(null)
+  const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const transcriptCache = useRef(new Map<string, NoteWithTranscript>())
+  // Bumped on every `loadNoteTranscript` call and captured per in-flight
+  // request — guards against an out-of-order resolution (e.g. quickly
+  // selecting note A then B) clobbering newer state with a stale response.
+  const transcriptRequestId = useRef(0)
+
+  function loadNoteTranscript(id: string, opts: { force?: boolean } = {}) {
+    if (!opts.force) {
+      const cached = transcriptCache.current.get(id)
+      if (cached) {
+        setSelectedMeta(cached.meta)
+        setSelectedTranscript(cached.transcript.segments)
+        setTranscriptLoading(false)
+        return
+      }
+    }
+    const requestId = ++transcriptRequestId.current
+    setTranscriptLoading(true)
+    ipc
+      .getNote(id)
+      .then(data => {
+        transcriptCache.current.set(id, data)
+        if (transcriptRequestId.current !== requestId) return
+        setSelectedMeta(data.meta)
+        setSelectedTranscript(data.transcript.segments)
+      })
+      .catch(err => {
+        if (transcriptRequestId.current !== requestId) return
+        reportError(err)
+      })
+      .finally(() => {
+        if (transcriptRequestId.current === requestId) setTranscriptLoading(false)
+      })
+  }
+
+  const selectedNoteId = notes[sel]?.id ?? null
+
+  useEffect(() => {
+    if (!selectedNoteId) {
+      setSelectedMeta(null)
+      setSelectedTranscript([])
+      return
+    }
+    loadNoteTranscript(selectedNoteId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNoteId])
+
+  /** Header pencil → inline-edit commit: renames on disk, refreshes the notes list, and (if still selected) reloads this note's transcript with its fresh title. */
+  function renameNote(id: string, title: string) {
+    ipc
+      .renameNote(id, title)
+      .then(() => {
+        transcriptCache.current.delete(id)
+        return ipc.listNotes()
+      })
+      .then(freshNotes => {
+        setNotes(freshNotes)
+        if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
+      })
+      .catch(reportError)
+  }
+
+  /** Header trash (after 4s-arm confirm) → deletes on disk, refreshes the notes list, and clamps the selection onto whatever note now sits at the same index (i.e. "the next note"). */
+  function deleteNote(id: string) {
+    ipc
+      .deleteNote(id)
+      .then(() => {
+        transcriptCache.current.delete(id)
+        return ipc.listNotes()
+      })
+      .then(freshNotes => {
+        setNotes(freshNotes)
+        setSel(prevSel => Math.min(prevSel, Math.max(freshNotes.length - 1, 0)))
+      })
+      .catch(reportError)
+  }
+
+  /** Markdown card "Reveal in Finder" → reveals the note's audio.wav (or its folder) in Finder. */
+  function revealNote(id: string) {
+    ipc.revealNote(id).catch(reportError)
+  }
 
   // Model catalog, downloads, and the transcription-model selection are
   // split into their own hook — see useModelManager.ts. It also re-gates
@@ -151,8 +249,13 @@ export function useAppState() {
     [modelManager.models, modelManager.sttModel],
   )
 
-  /** Starts a new recording with the currently selected STT model. */
-  function startRec() {
+  /**
+   * Starts a new recording with the currently selected STT model.
+   * `useCallback` (deps: `modelManager.sttModel`, `reportError`) so this
+   * has a stable identity across renders that don't actually change either
+   * — see `togglePause`/`stopRec`'s docs for why that matters.
+   */
+  const startRec = useCallback(() => {
     ipc
       .startRecording(modelManager.sttModel)
       .then(noteId => {
@@ -166,7 +269,7 @@ export function useAppState() {
         setView('recording')
       })
       .catch(reportError)
-  }
+  }, [modelManager.sttModel, reportError])
 
   /**
    * Flips `paused` optimistically, then asks the backend to actually
@@ -178,8 +281,15 @@ export function useAppState() {
    * are ignored outright via `pauseInFlight` — without this, a rapid
    * double-call would fire pause_recording *and* resume_recording back to
    * back with no ordering guarantee between their responses.
+   *
+   * `useCallback` (deps: `paused`, `reportError`) — RecordingView is
+   * `React.memo`'d and receives this directly as a prop; without a stable
+   * identity across renders that don't change `paused` itself, a plain
+   * function literal here would be recreated on every `useAppState` render
+   * (e.g. the 1Hz `recording-state` tick touching unrelated state) and
+   * defeat that memo every time.
    */
-  function togglePause() {
+  const togglePause = useCallback(() => {
     if (pauseInFlight.current) return
     pauseInFlight.current = true
     const nextPaused = !paused
@@ -188,7 +298,7 @@ export function useAppState() {
     action.catch(reportError).finally(() => {
       pauseInFlight.current = false
     })
-  }
+  }, [paused, reportError])
 
   /**
    * Stops the active recording: sets `stopping` (RecordingView disables its
@@ -202,31 +312,54 @@ export function useAppState() {
    * for this note will ever arrive; resetting here is what actually clears
    * a "Finalizing transcript…" pill NoteView would otherwise show forever
    * (nothing else ever moves `sttStatus` off `'finalizing'`).
+   *
+   * The `listNotes`/`storageStats` refresh is handled as its own inner
+   * `.catch` + `.finally` — separate from `stop_recording`'s own outer
+   * `.catch` below — precisely so that if `stop_recording` itself
+   * *succeeds* but this follow-up refresh rejects (backend hiccup reading
+   * the list back), the view still finishes leaving 'recording': `notes`/
+   * `storage` stay whatever they were before (stale, but present — no
+   * point discarding a known-good list for a failed refetch), the error is
+   * still reported, and every recording-lifecycle field still gets reset.
+   * Without this split, that refresh's rejection would fall through to the
+   * *outer* `.catch` (which only handles `stop_recording` itself failing)
+   * and leave the view stuck on 'recording' forever despite the recording
+   * having actually stopped successfully on the backend.
+   *
+   * `useCallback` (deps: `reportError` only — everything else referenced
+   * is either a stable setter or read fresh off the async results, not off
+   * render-time state) for the same stable-identity-for-RecordingView's-
+   * memo reason as `togglePause`.
    */
-  function stopRec() {
+  const stopRec = useCallback(() => {
     setStopping(true)
     ipc
       .stopRecording()
-      .then(newNote =>
-        Promise.all([ipc.listNotes(), ipc.storageStats()]).then(([freshNotes, freshStorage]) => {
-          setNotes(freshNotes)
-          setStorage(freshStorage)
-          const idx = freshNotes.findIndex(n => n.id === newNote.id)
-          setSel(idx >= 0 ? idx : 0)
-          setView('notes')
-          setActiveNoteId(null)
-          setLiveSegmentsRaw([])
-          setSttStatus('idle')
-          setSttError(null)
-          setSttStatusNoteId(null)
-          setStopping(false)
-        }),
-      )
+      .then(newNote => {
+        Promise.all([ipc.listNotes(), ipc.storageStats()])
+          .then(([freshNotes, freshStorage]) => {
+            setNotes(freshNotes)
+            setStorage(freshStorage)
+            transcriptCache.current.delete(newNote.id)
+            const idx = freshNotes.findIndex(n => n.id === newNote.id)
+            setSel(idx >= 0 ? idx : 0)
+          })
+          .catch(reportError)
+          .finally(() => {
+            setView('notes')
+            setActiveNoteId(null)
+            setLiveSegmentsRaw([])
+            setSttStatus('idle')
+            setSttError(null)
+            setSttStatusNoteId(null)
+            setStopping(false)
+          })
+      })
       .catch(err => {
         setStopping(false)
         reportError(err)
       })
-  }
+  }, [reportError])
 
   return {
     view,
@@ -247,6 +380,9 @@ export function useAppState() {
     sttError,
     sttStatusNoteId,
     liveSegments,
+    selectedTranscript,
+    selectedMeta,
+    transcriptLoading,
     asked,
     askDraft,
     tDel,
@@ -272,6 +408,10 @@ export function useAppState() {
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,
     completeOnboarding: () => setView('notes'),
+    renameNote,
+    deleteNote,
+    revealNote,
+    reportError,
   }
 }
 

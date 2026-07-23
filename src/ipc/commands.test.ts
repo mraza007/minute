@@ -213,6 +213,15 @@ describe('ipc/commands', () => {
     expect(result).toEqual(meta)
   })
 
+  it('revealNote invokes reveal_note with { id }', async () => {
+    const calls = captureIPC()
+
+    await commands.revealNote('20260722-120000')
+
+    expect(calls[0].cmd).toBe('reveal_note')
+    expect(calls[0].args).toEqual({ id: '20260722-120000' })
+  })
+
   it('normalizes a raw string rejection into an Error instance', async () => {
     mockIPC(() => {
       throw 'no active recording'

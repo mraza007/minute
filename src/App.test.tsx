@@ -3,7 +3,7 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import App from './App'
-import type { Hardware, ModelStatus, NoteMeta, Recommendation, StorageStats } from './ipc/types'
+import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, StorageStats } from './ipc/types'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -66,7 +66,7 @@ function setupIPC(opts: SetupOpts = {}) {
   const models = opts.models ?? [sttModel({ state: 'installed' }), llmModel()]
   const notes = opts.notes ?? [noteFixture()]
   mockIPC(
-    cmd => {
+    (cmd, args) => {
       switch (cmd) {
         case 'list_models':
           return models
@@ -83,6 +83,19 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'stop_recording':
           if (opts.stopRecordingReject) throw opts.stopRecordingReject
           return opts.stopRecordingResult ?? notes[0] ?? noteFixture()
+        case 'get_note': {
+          const { id } = args as { id: string }
+          const match = notes.find(n => n.id === id) ?? notes[0] ?? noteFixture()
+          return { meta: match, transcript: { segments: [] } } satisfies NoteWithTranscript
+        }
+        case 'rename_note': {
+          const { id, title } = args as { id: string; title: string }
+          const match = notes.find(n => n.id === id) ?? notes[0] ?? noteFixture()
+          return { ...match, title }
+        }
+        case 'delete_note':
+        case 'reveal_note':
+          return null
         default:
           return null
       }

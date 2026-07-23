@@ -4,8 +4,8 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, TranscriptSegmentEvent } from '../ipc/types'
-import type { NoteListItem } from '../types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
+import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
 export interface DownloadProgressState {
@@ -76,15 +76,30 @@ export function notesToSidebarItems(notes: NoteMeta[], now: Date): NoteListItem[
   })
 }
 
-/** `n` bytes as a short human label — "466 MB" under 1 GB, "2.5 GB" at or above (decimal/SI, matching macOS Finder). */
+/**
+ * `n` bytes as a short human label (decimal/SI, matching macOS Finder):
+ * whole bytes under 1 KB, one-decimal KB under 1 MB (trimmed when whole),
+ * rounded MB under 1 GB, one-decimal GB at or above (trimmed when whole).
+ * The KB/B tiers exist for small values like a markdown export's byte size
+ * (MarkdownCard's subtitle) — the MB/GB tiers are what model/storage sizes
+ * actually exercise.
+ */
 export function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) {
     const gb = Math.round((bytes / 1_000_000_000) * 10) / 10
     const label = Number.isInteger(gb) ? gb.toFixed(0) : gb.toFixed(1)
     return `${label} GB`
   }
-  const mb = Math.round(bytes / 1_000_000)
-  return `${mb} MB`
+  if (bytes >= 1_000_000) {
+    const mb = Math.round(bytes / 1_000_000)
+    return `${mb} MB`
+  }
+  if (bytes >= 1_000) {
+    const kb = Math.round((bytes / 1_000) * 10) / 10
+    const label = Number.isInteger(kb) ? kb.toFixed(0) : kb.toFixed(1)
+    return `${label} KB`
+  }
+  return `${bytes} B`
 }
 
 /**
@@ -204,4 +219,43 @@ export function groupLiveSegments(segments: TranscriptSegmentEvent[]): LiveTrans
     }
     return [...groups, { speaker: seg.speaker, start: seg.start, end: seg.end, text: seg.text }]
   }, [])
+}
+
+/**
+ * A short (1-3 char) avatar label derived from a speaker name — `"Speaker
+ * 1"` -> `"S1"`, `"Speaker 12"` -> `"S12"` (Stage 2's stt worker only ever
+ * emits placeholder labels of this exact shape), and generically `"Priya
+ * Shah"` -> `"PS"` / `"Unknown"` -> `"UN"` so this also degrades sensibly
+ * once real speaker names show up post-diarization. `""`/whitespace-only
+ * falls back to `"?"` rather than an empty avatar.
+ */
+export function speakerInitials(speaker: string): string {
+  const words = speaker.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return '?'
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
+  const [first, second] = words
+  if (/^\d+$/.test(second)) {
+    return `${first[0]}${second}`.toUpperCase()
+  }
+  return `${first[0]}${second[0]}`.toUpperCase()
+}
+
+/**
+ * Maps a note's stored transcript segments (as persisted by the backend,
+ * `{ speaker: "Speaker 1", start, end, text }`) to `TranscriptList`'s
+ * display shape. Unlike `groupLiveSegments`, consecutive same-speaker
+ * segments are *not* merged — each is its own whisper-emitted segment with
+ * its own timestamp, and rendering them as-is preserves that. `isMe` and
+ * `highlight` are always left unset: those are Stage 1 demo-fixture
+ * concepts (a "me" speaker, an ai-flagged highlight) with no equivalent
+ * yet for real, stored notes — every real segment renders with the neutral
+ * avatar/no-highlight styling `TranscriptList` already falls back to.
+ */
+export function storedSegmentsToDisplay(segments: StoredSegment[]): TranscriptSegment[] {
+  return segments.map(seg => ({
+    initials: speakerInitials(seg.speaker),
+    speaker: seg.speaker,
+    time: formatMmSs(seg.start),
+    text: seg.text,
+  }))
 }

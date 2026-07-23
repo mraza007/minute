@@ -147,6 +147,12 @@ impl Store {
         self.notes_root().join(id)
     }
 
+    /// The path `reveal_note` should hand to Finder for a given note id —
+    /// see the free [`reveal_target`] function this delegates to.
+    pub fn reveal_target(&self, id: &str) -> PathBuf {
+        reveal_target(&self.note_dir(id))
+    }
+
     fn meta_path(&self, id: &str) -> PathBuf {
         self.note_dir(id).join(META_FILE)
     }
@@ -367,6 +373,20 @@ impl Store {
         Ok(())
     }
 
+}
+
+/// The path `reveal_note` should hand to Finder for a given note directory:
+/// the note's `audio.wav` if it exists, else the note directory itself (e.g.
+/// a note whose audio was never captured, or has since been removed). Pure
+/// — no process spawn, no existence requirement on `note_dir` itself — so
+/// the selection rule is unit-testable without touching `open`.
+pub fn reveal_target(note_dir: &Path) -> PathBuf {
+    let audio = note_dir.join(AUDIO_FILE);
+    if audio.exists() {
+        audio
+    } else {
+        note_dir.to_path_buf()
+    }
 }
 
 /// Recursively sums file sizes under `path`. Missing paths count as 0.
@@ -763,6 +783,43 @@ mod tests {
         assert!(stats.notes_bytes > 0);
         assert!(stats.notes_bytes < audio_bytes.len() as u64);
         assert_eq!(stats.models_bytes, model_bytes.len() as u64);
+    }
+
+    #[test]
+    fn reveal_target_returns_audio_wav_when_present() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Has audio", "whisper-small", now).unwrap();
+        fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), b"fake wav bytes").unwrap();
+
+        let target = store.reveal_target(&meta.id);
+
+        assert_eq!(target, store.note_dir(&meta.id).join(AUDIO_FILE));
+    }
+
+    #[test]
+    fn reveal_target_falls_back_to_note_dir_when_audio_missing() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("No audio yet", "whisper-small", now).unwrap();
+
+        let target = store.reveal_target(&meta.id);
+
+        assert_eq!(target, store.note_dir(&meta.id));
+    }
+
+    #[test]
+    fn reveal_target_on_nonexistent_note_dir_falls_back_to_it_anyway() {
+        // Pure path selection doesn't require the note dir to exist — a
+        // deleted-out-from-under-us note just falls back to a path that
+        // itself won't exist either; the caller (the `reveal_note` Tauri
+        // command) is what surfaces that as an error from `open -R`.
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("never-existed");
+
+        assert_eq!(reveal_target(&missing), missing);
     }
 
     #[test]
