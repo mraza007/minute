@@ -38,13 +38,17 @@ export function useAppState() {
   const [stopping, setStopping] = useState(false)
   const [sttStatus, setSttStatus] = useState<SttStatus>('idle')
   const [sttError, setSttError] = useState<string | null>(null)
-  // The note id the most recent onSttStatus event was actually about.
-  // Unlike `activeNoteId`, `stopRec` deliberately leaves this (and
-  // `sttStatus`/`sttError`) alone — NoteView matches it against the
-  // selected note's id to show a "Finalizing transcript…" pill for the
-  // stretch (if any) between a note being marked stopped and its
-  // transcript actually finishing.
+  // The note id the most recent onSttStatus event was actually about —
+  // NoteView matches it against the selected note's id to show a
+  // "Finalizing transcript…" pill for the stretch (if any) between a note
+  // being marked stopped and its transcript actually finishing. `stopRec`
+  // clears this (and `sttStatus`/`sttError`) once `stop_recording` itself
+  // resolves — see its docs for why that's the correct, safe moment.
   const [sttStatusNoteId, setSttStatusNoteId] = useState<string | null>(null)
+  // Guards `togglePause` against re-entrant double-calls (e.g. a fast
+  // double-click) firing a second pause/resume IPC call before the first
+  // one has resolved — see `togglePause`'s docs.
+  const pauseInFlight = useRef(false)
 
   // TODO: not yet persisted — settings.json is a backend task (see the
   // design doc's storage shapes); local-only until then.
@@ -169,22 +173,35 @@ export function useAppState() {
    * pause/resume. The next `recording-state` tick (at most ~1s away, or
    * immediate — `pause_recording`/`resume_recording` themselves emit one
    * synchronously) reconciles it either way, so a failed call just needs to
-   * be reported, not manually rolled back.
+   * be reported, not manually rolled back. Re-entrant calls (a fast
+   * double-click) while the previous pause/resume call is still in flight
+   * are ignored outright via `pauseInFlight` — without this, a rapid
+   * double-call would fire pause_recording *and* resume_recording back to
+   * back with no ordering guarantee between their responses.
    */
   function togglePause() {
+    if (pauseInFlight.current) return
+    pauseInFlight.current = true
     const nextPaused = !paused
     setPaused(nextPaused)
     const action = nextPaused ? ipc.pauseRecording() : ipc.resumeRecording()
-    action.catch(reportError)
+    action.catch(reportError).finally(() => {
+      pauseInFlight.current = false
+    })
   }
 
   /**
    * Stops the active recording: sets `stopping` (RecordingView disables its
    * controls off this) until the backend finishes finalizing, then
    * refreshes the note list + storage stats, selects the newly finalized
-   * note, and returns to the notes view. Only `activeNoteId` and the live
-   * segment buffer are cleared — `sttStatus`/`sttError`/`sttStatusNoteId`
-   * are deliberately left as-is; see their declarations above for why.
+   * note, and returns to the notes view. `sttStatus`/`sttError`/
+   * `sttStatusNoteId` are reset to idle *after* `stop_recording` resolves
+   * (not before, and not left alone) — safe because the backend's
+   * `stop_recording` command joins the stt worker thread before returning,
+   * so the transcript is already complete and no further stt-status event
+   * for this note will ever arrive; resetting here is what actually clears
+   * a "Finalizing transcript…" pill NoteView would otherwise show forever
+   * (nothing else ever moves `sttStatus` off `'finalizing'`).
    */
   function stopRec() {
     setStopping(true)
@@ -199,6 +216,9 @@ export function useAppState() {
           setView('notes')
           setActiveNoteId(null)
           setLiveSegmentsRaw([])
+          setSttStatus('idle')
+          setSttError(null)
+          setSttStatusNoteId(null)
           setStopping(false)
         }),
       )

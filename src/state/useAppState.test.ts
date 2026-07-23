@@ -338,6 +338,23 @@ describe('useAppState', () => {
       await waitFor(() => expect(calls.some(c => c.cmd === 'resume_recording')).toBe(true))
     })
 
+    it('togglePause ignores a re-entrant call while the previous pause/resume IPC call is still in flight', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const result = await loadedAndRecording({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+
+      // Two calls back to back, synchronously — the second must be a no-op
+      // while the first's promise hasn't resolved yet (it hasn't: nothing
+      // async has happened between the two calls).
+      act(() => {
+        result.current.togglePause()
+        result.current.togglePause()
+      })
+
+      expect(result.current.paused).toBe(true)
+      await waitFor(() => expect(calls.some(c => c.cmd === 'pause_recording')).toBe(true))
+      expect(calls.filter(c => c.cmd === 'pause_recording' || c.cmd === 'resume_recording')).toHaveLength(1)
+    })
+
     it('togglePause reconciles from the next recording-state event regardless of the optimistic flip', async () => {
       const result = await loadedAndRecording()
 

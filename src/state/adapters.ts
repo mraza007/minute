@@ -189,6 +189,12 @@ export interface LiveTranscriptGroup {
  * rather than re-merging into a non-adjacent earlier group. Pure and
  * side-effect free: callers own updating a note's live segment buffer and
  * re-derive this on every append.
+ *
+ * Recomputes the full grouping from scratch on every call (O(n) in the
+ * number of segments so far) rather than incrementally updating a previous
+ * result — deliberately not worth the extra bookkeeping at whisper's
+ * cadence (roughly one segment every several seconds of audio, not one per
+ * word), so a whole-recording list stays small enough for this to be free.
  */
 export function groupLiveSegments(segments: TranscriptSegmentEvent[]): LiveTranscriptGroup[] {
   return segments.reduce<LiveTranscriptGroup[]>((groups, seg) => {

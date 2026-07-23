@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { LiveTranscriptGroup } from '../state/adapters'
 import { formatMmSs } from '../state/adapters'
 import type { SttStatus } from '../types'
@@ -43,7 +44,11 @@ function SttErrorRow({ sttError }: { sttError: string | null }) {
   )
 }
 
-function LiveTranscriptBody({
+// Memoized (same precedent as Waveform) so a parent re-render that doesn't
+// actually change these props — e.g. the 1Hz `recording-state` tick, which
+// only touches `recElapsed` up in TitleBar, not anything passed here —
+// doesn't force the whole segment list to re-render every second.
+const LiveTranscriptBody = memo(function LiveTranscriptBody({
   liveSegments,
   sttStatus,
   sttError,
@@ -78,9 +83,9 @@ function LiveTranscriptBody({
       {sttStatus === 'error' ? <SttErrorRow sttError={sttError} /> : <TranscribingIndicator />}
     </>
   )
-}
+})
 
-export function RecordingView({
+export const RecordingView = memo(function RecordingView({
   liveSegments,
   paused,
   togglePause,
@@ -205,4 +210,4 @@ export function RecordingView({
       </div>
     </div>
   )
-}
+})

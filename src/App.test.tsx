@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { emit } from '@tauri-apps/api/event'
 import { mockIPC } from '@tauri-apps/api/mocks'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import App from './App'
 import type { Hardware, ModelStatus, NoteMeta, Recommendation, StorageStats } from './ipc/types'
@@ -53,7 +54,15 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
   }
 }
 
-function setupIPC(opts: { models?: ModelStatus[]; notes?: NoteMeta[] } = {}) {
+interface SetupOpts {
+  models?: ModelStatus[]
+  notes?: NoteMeta[]
+  startRecordingId?: string
+  stopRecordingResult?: NoteMeta
+  stopRecordingReject?: string
+}
+
+function setupIPC(opts: SetupOpts = {}) {
   const models = opts.models ?? [sttModel({ state: 'installed' }), llmModel()]
   const notes = opts.notes ?? [noteFixture()]
   mockIPC(
@@ -70,9 +79,10 @@ function setupIPC(opts: { models?: ModelStatus[]; notes?: NoteMeta[] } = {}) {
         case 'storage_stats':
           return storage
         case 'start_recording':
-          return '20260722-130000'
+          return opts.startRecordingId ?? '20260722-130000'
         case 'stop_recording':
-          return notes[0] ?? noteFixture()
+          if (opts.stopRecordingReject) throw opts.stopRecordingReject
+          return opts.stopRecordingResult ?? notes[0] ?? noteFixture()
         default:
           return null
       }
@@ -138,5 +148,47 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     expect(screen.getAllByText(/no notes yet/i).length).toBeGreaterThan(0)
+  })
+
+  it('clears the "Finalizing transcript…" pill once stop resolves, showing the Transcribed pill instead', async () => {
+    // Deliberately not titled "New recording" — that text collides with
+    // the title bar's own "New recording" button, which would make the
+    // `/new recording/i` role query below ambiguous.
+    const finishedNote = noteFixture({ id: '20260722-130000', title: 'Finished smoke test note', status: 'transcribed' })
+    setupIPC({
+      notes: [finishedNote],
+      startRecordingId: '20260722-130000',
+      stopRecordingResult: finishedNote,
+    })
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
+
+    // The backend's tail-window flush is still in flight when the user
+    // hits stop — the pill should reflect that while stopRecording()'s
+    // promise hasn't resolved yet.
+    await act(async () => {
+      await emit('stt-status', { noteId: '20260722-130000', state: 'finalizing', error: null })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Finished smoke test note' })).toBeInTheDocument())
+    expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
+    expect(screen.getByText('Transcribed')).toBeInTheDocument()
+  })
+
+  it('shows an error banner when stopping a recording fails, and not otherwise', async () => {
+    setupIPC({ stopRecordingReject: 'wav writer thread panicked' })
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('wav writer thread panicked'))
   })
 })

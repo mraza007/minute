@@ -1,4 +1,5 @@
 import { useAppState } from './state/useAppState'
+import { ErrorBanner } from './components/ErrorBanner'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { NoteView } from './components/NoteView'
@@ -19,61 +20,67 @@ export default function App() {
 
   if (s.view === 'onboarding') {
     return (
-      <OnboardingView
-        models={s.models}
-        recommendation={s.recommendation}
-        downloads={s.downloads}
-        onDownload={s.downloadModel}
-        onCancel={s.cancelDownload}
-        onStart={s.completeOnboarding}
-      />
+      <>
+        <OnboardingView
+          models={s.models}
+          recommendation={s.recommendation}
+          downloads={s.downloads}
+          onDownload={s.downloadModel}
+          onCancel={s.cancelDownload}
+          onStart={s.completeOnboarding}
+        />
+        <ErrorBanner message={s.lastError} />
+      </>
     )
   }
 
   return (
-    <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13.5, lineHeight: 1.5, background: '#f2f0ee' }}>
-      <TitleBar recording={s.view === 'recording'} recTime={s.recTime} onStartRec={s.startRec} />
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        <Sidebar
-          notes={s.sidebarNotes}
-          sel={s.sel}
-          onSelect={s.selectNote}
-          view={s.view}
-          onGoNotes={s.goNotes}
-          onGoSettings={s.goSettings}
-          statsLine={s.statsLine}
-        />
-        {s.view === 'notes' && <NoteView state={s} />}
-        {s.view === 'recording' && (
-          <RecordingView
-            liveSegments={s.liveSegments}
-            paused={s.paused}
-            togglePause={s.togglePause}
-            stopRec={s.stopRec}
-            stopping={s.stopping}
-            sttStatus={s.sttStatus}
-            sttError={s.sttError}
-            modelName={s.sttModelDisplayName}
+    <>
+      <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13.5, lineHeight: 1.5, background: '#f2f0ee' }}>
+        <TitleBar recording={s.view === 'recording'} recTime={s.recTime} onStartRec={s.startRec} />
+        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+          <Sidebar
+            notes={s.sidebarNotes}
+            sel={s.sel}
+            onSelect={s.selectNote}
+            view={s.view}
+            onGoNotes={s.goNotes}
+            onGoSettings={s.goSettings}
+            statsLine={s.statsLine}
           />
-        )}
-        {s.view === 'settings' && (
-          <SettingsView
-            models={s.models}
-            downloads={s.downloads}
-            sttModel={s.sttModel}
-            setSttModel={s.setSttModel}
-            downloadModel={s.downloadModel}
-            cancelDownload={s.cancelDownload}
-            deleteModel={s.deleteModel}
-            storage={s.storage}
-            noteCount={s.notes.length}
-            tDel={s.tDel}
-            toggleDel={s.toggleDel}
-            tEnc={s.tEnc}
-            toggleEnc={s.toggleEnc}
-          />
-        )}
+          {s.view === 'notes' && <NoteView state={s} />}
+          {s.view === 'recording' && (
+            <RecordingView
+              liveSegments={s.liveSegments}
+              paused={s.paused}
+              togglePause={s.togglePause}
+              stopRec={s.stopRec}
+              stopping={s.stopping}
+              sttStatus={s.sttStatus}
+              sttError={s.sttError}
+              modelName={s.sttModelDisplayName}
+            />
+          )}
+          {s.view === 'settings' && (
+            <SettingsView
+              models={s.models}
+              downloads={s.downloads}
+              sttModel={s.sttModel}
+              setSttModel={s.setSttModel}
+              downloadModel={s.downloadModel}
+              cancelDownload={s.cancelDownload}
+              deleteModel={s.deleteModel}
+              storage={s.storage}
+              noteCount={s.notes.length}
+              tDel={s.tDel}
+              toggleDel={s.toggleDel}
+              tEnc={s.tEnc}
+              toggleEnc={s.toggleEnc}
+            />
+          )}
+        </div>
       </div>
-    </div>
+      <ErrorBanner message={s.lastError} />
+    </>
   )
 }
