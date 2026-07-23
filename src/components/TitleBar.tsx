@@ -1,10 +1,10 @@
-interface Props {
+interface TitleBarProps {
   recording: boolean
   recTime: string
   onStartRec: () => void
 }
 
-export function TitleBar({ recording, recTime, onStartRec }: Props) {
+export function TitleBar({ recording, recTime, onStartRec }: TitleBarProps) {
   return (
     <div
       data-tauri-drag-region=""
@@ -19,8 +19,9 @@ export function TitleBar({ recording, recTime, onStartRec }: Props) {
         flex: 'none',
       }}
     >
-      <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em' }}>Minute</div>
+      <div data-tauri-drag-region="" style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em' }}>Minute</div>
       <div
+        data-tauri-drag-region=""
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -37,9 +38,10 @@ export function TitleBar({ recording, recTime, onStartRec }: Props) {
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#28a745' }} />
         Offline · On-device
       </div>
-      <div style={{ flex: 1 }} />
+      <div data-tauri-drag-region="" style={{ flex: 1 }} />
       {recording && (
         <div
+          data-tauri-drag-region=""
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -93,6 +95,7 @@ export function TitleBar({ recording, recTime, onStartRec }: Props) {
             stroke="currentColor"
             strokeWidth="2.2"
             strokeLinecap="round"
+            aria-hidden="true"
           >
             <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
             <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
