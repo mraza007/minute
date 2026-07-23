@@ -27,6 +27,7 @@ describe('ipc/commands', () => {
 
     expect(calls).toHaveLength(1)
     expect(calls[0].cmd).toBe('hardware_info')
+    expect(calls[0].args).toEqual({})
     expect(result).toEqual(hw)
   })
 
@@ -61,6 +62,7 @@ describe('ipc/commands', () => {
     const result = await commands.recommendedModels()
 
     expect(calls[0].cmd).toBe('recommended_models')
+    expect(calls[0].args).toEqual({})
     expect(result).toEqual(rec)
   })
 
@@ -160,6 +162,7 @@ describe('ipc/commands', () => {
     const result = await commands.storageStats()
 
     expect(calls[0].cmd).toBe('storage_stats')
+    expect(calls[0].args).toEqual({})
     expect(result).toEqual(stats)
   })
 
@@ -169,6 +172,7 @@ describe('ipc/commands', () => {
     const result = await commands.startRecording()
 
     expect(calls[0].cmd).toBe('start_recording')
+    expect(calls[0].args).toEqual({})
     expect(result).toBe('20260722-130000')
   })
 
@@ -205,6 +209,16 @@ describe('ipc/commands', () => {
     const result = await commands.stopRecording()
 
     expect(calls[0].cmd).toBe('stop_recording')
+    expect(calls[0].args).toEqual({})
     expect(result).toEqual(meta)
+  })
+
+  it('normalizes a raw string rejection into an Error instance', async () => {
+    mockIPC(() => {
+      throw 'no active recording'
+    })
+
+    await expect(commands.pauseRecording()).rejects.toThrow(Error)
+    await expect(commands.pauseRecording()).rejects.toThrow('no active recording')
   })
 })
