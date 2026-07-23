@@ -269,8 +269,20 @@ impl Store {
     /// back to a permanent `fs::remove_dir_all` so the operation still
     /// succeeds rather than leaving a note the UI can no longer act on.
     pub fn delete_note(&self, id: &str) -> Result<()> {
+        self.delete_note_impl(id, |dir| trash::delete(dir).map_err(|e| e.to_string()))
+    }
+
+    /// Implementation seam behind `delete_note`: `trash_fn` performs the
+    /// actual trash call. Injected so tests can force the permanent-delete
+    /// fallback path deterministically, without depending on a real OS
+    /// trash being available in CI/sandboxed environments.
+    fn delete_note_impl(
+        &self,
+        id: &str,
+        trash_fn: impl Fn(&Path) -> std::result::Result<(), String>,
+    ) -> Result<()> {
         let dir = self.note_dir(id);
-        if let Err(trash_err) = trash::delete(&dir) {
+        if let Err(trash_err) = trash_fn(&dir) {
             log::warn!(
                 "trash::delete failed for note {id} ({trash_err}); falling back to permanent delete"
             );
@@ -478,6 +490,12 @@ mod tests {
 
         assert!(store.transcript_path(&meta.id).exists());
         assert!(!store.transcript_tmp_path(&meta.id).exists());
+
+        // Not just "a file exists" — what's on disk must actually
+        // deserialize back to the exact segments that were written.
+        let raw = fs::read_to_string(store.transcript_path(&meta.id)).unwrap();
+        let read_back: Transcript = serde_json::from_str(&raw).unwrap();
+        assert_eq!(read_back, transcript);
     }
 
     #[test]
@@ -545,12 +563,20 @@ mod tests {
         let audio_bytes = vec![0u8; 4096];
         fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), &audio_bytes).unwrap();
 
+        // models_bytes must walk recursively — pin a file nested in a
+        // subdirectory (root/models/whisper/fake.bin), not just top-level.
+        let model_bytes = vec![0u8; 2048];
+        let model_dir = dir.path().join("models").join("whisper");
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("fake.bin"), &model_bytes).unwrap();
+
         let stats = store.storage_stats().unwrap();
         assert_eq!(stats.audio_bytes, audio_bytes.len() as u64);
         // meta.json itself (non-zero) should be counted in notes_bytes, and
         // must not include the audio bytes.
         assert!(stats.notes_bytes > 0);
         assert!(stats.notes_bytes < audio_bytes.len() as u64);
+        assert_eq!(stats.models_bytes, model_bytes.len() as u64);
     }
 
     #[test]
@@ -565,5 +591,27 @@ mod tests {
         let notes = store.list_notes().unwrap();
         assert!(notes.iter().all(|n| n.id != meta.id));
         assert!(!store.note_dir(&meta.id).exists());
+    }
+
+    #[test]
+    fn delete_note_falls_back_to_permanent_delete_when_trash_errors() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store
+            .create_note("Trash unavailable", "whisper-small", now)
+            .unwrap();
+
+        // Force the trash call to always fail, exercising the fallback path
+        // deterministically instead of depending on a real OS trash.
+        store
+            .delete_note_impl(&meta.id, |_dir| {
+                Err("simulated trash failure".to_string())
+            })
+            .unwrap();
+
+        assert!(!store.note_dir(&meta.id).exists());
+        let notes = store.list_notes().unwrap();
+        assert!(notes.iter().all(|n| n.id != meta.id));
     }
 }
