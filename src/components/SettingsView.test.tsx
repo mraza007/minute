@@ -19,21 +19,29 @@ describe('SettingsView', () => {
   it('calls setSttModel with the clicked model id', () => {
     const setSttModel = vi.fn()
     render(<SettingsView {...base} setSttModel={setSttModel} />)
-    fireEvent.click(screen.getByRole('button', { name: /whisper small/i }))
+    fireEvent.click(screen.getByRole('radio', { name: /whisper small/i }))
     expect(setSttModel).toHaveBeenCalledWith('small')
 
-    fireEvent.click(screen.getByRole('button', { name: /whisper large-v3/i }))
+    fireEvent.click(screen.getByRole('radio', { name: /whisper large-v3/i }))
     expect(setSttModel).toHaveBeenCalledWith('large')
   })
 
   it('shows the "in use" sub text for the selected model and the plain sub text for others', () => {
     render(<SettingsView {...base} sttModel="medium" />)
-    const selected = screen.getByRole('button', { name: /whisper medium/i })
+    const selected = screen.getByRole('radio', { name: /whisper medium/i })
     expect(selected).toHaveTextContent('Installed · in use')
+    expect(selected).toHaveAttribute('aria-checked', 'true')
 
-    const unselected = screen.getByRole('button', { name: /whisper small/i })
+    const unselected = screen.getByRole('radio', { name: /whisper small/i })
     expect(unselected).toHaveTextContent('Recommended for this Mac')
     expect(unselected).not.toHaveTextContent('Installed · in use')
+    expect(unselected).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('groups the transcription models under a radiogroup', () => {
+    render(<SettingsView {...base} />)
+    expect(screen.getByRole('radiogroup', { name: /transcription model/i })).toBeInTheDocument()
+    expect(screen.getAllByRole('radio')).toHaveLength(3)
   })
 
   it('renders the Qwen summary model card copy', () => {

@@ -40,12 +40,18 @@ export function SettingsView({ sttModel, setSttModel, tDel, toggleDel, tEnc, tog
 
         <div style={cardStyle}>
           <div style={cardHeaderStyle}>Transcription model</div>
-          <div style={{ padding: '12px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div
+            role="radiogroup"
+            aria-label="Transcription model"
+            style={{ padding: '12px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
+          >
             {sttModels.map(m => {
               const selected = sttModel === m.id
               return (
                 <button
                   key={m.id}
+                  role="radio"
+                  aria-checked={selected}
                   onClick={() => setSttModel(m.id)}
                   className="model-card"
                   style={{

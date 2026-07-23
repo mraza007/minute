@@ -38,6 +38,7 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
         }}
       >
         <span
+          data-testid="toggle-knob"
           style={{
             position: 'absolute',
             top: 2,
