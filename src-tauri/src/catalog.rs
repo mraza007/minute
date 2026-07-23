@@ -19,24 +19,22 @@ pub enum ModelKind {
 
 /// One downloadable model, as described in `catalog.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
     pub id: String,
     pub kind: ModelKind,
-    #[serde(rename = "displayName")]
     pub display_name: String,
     pub desc: String,
     pub url: String,
     pub sha256: String,
-    #[serde(rename = "sizeBytes")]
     pub size_bytes: u64,
-    #[serde(rename = "minRamGb")]
     pub min_ram_gb: u64,
-    #[serde(rename = "requiresAppleSilicon")]
     pub requires_apple_silicon: bool,
 }
 
 /// Detected machine capabilities used to pick a sensible default model pair.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Hardware {
     pub total_ram_gb: u64,
     pub apple_silicon: bool,
@@ -96,7 +94,16 @@ pub fn detect_hardware() -> Hardware {
 /// each catalog entry's `min_ram_gb` / `requires_apple_silicon` — an Intel
 /// Mac that lands in the top tier gets downgraded off any Apple-Silicon-only
 /// pick.
-pub fn recommend(hw: &Hardware) -> Recommendation {
+///
+/// Takes the catalog as a parameter (rather than loading it itself) so it's
+/// testable without touching the filesystem, and so a missing/typo'd/absent
+/// catalog id is handled the same way as a genuine hardware constraint
+/// mismatch: `fits` treats "id not found in catalog" as "does not fit" and
+/// falls through to the hardcoded fallback pick, which is always a valid,
+/// low-tier id independent of catalog contents. That makes `recommend`
+/// total and safe even against an empty catalog slice (e.g. if the caller's
+/// `load_catalog()` failed) — it still returns a well-formed `Recommendation`.
+pub fn recommend(catalog: &[CatalogEntry], hw: &Hardware) -> Recommendation {
     let (stt_tier, llm_tier) = if hw.total_ram_gb < 16 {
         ("whisper-small", "qwen3.5-4b")
     } else if hw.total_ram_gb < 32 {
@@ -105,7 +112,6 @@ pub fn recommend(hw: &Hardware) -> Recommendation {
         ("whisper-large-v3-turbo", "qwen3.5-9b")
     };
 
-    let catalog = load_catalog().unwrap_or_default();
     let fits = |id: &str| -> bool {
         catalog
             .iter()
@@ -113,7 +119,7 @@ pub fn recommend(hw: &Hardware) -> Recommendation {
             .map(|e| {
                 hw.total_ram_gb >= e.min_ram_gb && (!e.requires_apple_silicon || hw.apple_silicon)
             })
-            .unwrap_or(true)
+            .unwrap_or(false)
     };
 
     let stt = if fits(stt_tier) {
@@ -222,6 +228,10 @@ mod tests {
         }
     }
 
+    fn catalog() -> Vec<CatalogEntry> {
+        load_catalog().unwrap()
+    }
+
     #[test]
     fn recommend_low_ram_picks_small_and_qwen4b() {
         let hw = Hardware {
@@ -229,7 +239,7 @@ mod tests {
             apple_silicon: true,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-small");
         assert_eq!(rec.llm, "qwen3.5-4b");
     }
@@ -241,7 +251,7 @@ mod tests {
             apple_silicon: true,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium");
         assert_eq!(rec.llm, "gemma-4-e4b");
     }
@@ -253,7 +263,7 @@ mod tests {
             apple_silicon: true,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium");
         assert_eq!(rec.llm, "gemma-4-e4b");
     }
@@ -265,7 +275,7 @@ mod tests {
             apple_silicon: true,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-large-v3-turbo");
         assert_eq!(rec.llm, "qwen3.5-9b");
     }
@@ -277,7 +287,7 @@ mod tests {
             apple_silicon: false,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium");
         assert_eq!(rec.llm, "qwen3.5-9b");
     }
@@ -289,7 +299,7 @@ mod tests {
             apple_silicon: true,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-small");
         assert_eq!(rec.llm, "qwen3.5-4b");
     }
@@ -301,24 +311,48 @@ mod tests {
             apple_silicon: true,
             cores: 8,
         };
-        let rec = recommend(&hw);
+        let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium");
         assert_eq!(rec.llm, "gemma-4-e4b");
     }
 
+    #[test]
+    fn recommend_falls_back_safely_when_tier_id_missing_from_catalog() {
+        // A catalog missing the top-tier STT id (typo, removed entry, etc.)
+        // must not "fit" by default — it should fall through to the
+        // hardcoded fallback pick instead of blindly recommending an id
+        // that isn't actually described anywhere.
+        let hw = Hardware {
+            total_ram_gb: 32,
+            apple_silicon: true,
+            cores: 8,
+        };
+        let partial: Vec<CatalogEntry> = catalog()
+            .into_iter()
+            .filter(|e| e.id != "whisper-large-v3-turbo")
+            .collect();
+        let rec = recommend(&partial, &hw);
+        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.llm, "qwen3.5-9b");
+    }
+
+    #[test]
+    fn recommend_with_empty_catalog_falls_back_to_defaults() {
+        let hw = Hardware {
+            total_ram_gb: 32,
+            apple_silicon: true,
+            cores: 8,
+        };
+        let rec = recommend(&[], &hw);
+        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.llm, "qwen3.5-4b");
+    }
+
     fn sample_entry() -> CatalogEntry {
-        CatalogEntry {
-            id: "whisper-small".into(),
-            kind: ModelKind::Stt,
-            display_name: "Whisper small".into(),
-            desc: "desc".into(),
-            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
-                .into(),
-            sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b".into(),
-            size_bytes: 487_601_967,
-            min_ram_gb: 0,
-            requires_apple_silicon: false,
-        }
+        catalog()
+            .into_iter()
+            .find(|e| e.id == "whisper-small")
+            .expect("catalog.json must contain whisper-small")
     }
 
     #[test]
