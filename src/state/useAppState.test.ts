@@ -68,4 +68,15 @@ describe('useAppState', () => {
     const { result } = renderHook(() => useAppState())
     expect(result.current.recTime).toBe('14:32')
   })
+
+  it('starting a new recording after pausing a previous one is not stuck paused', () => {
+    const { result } = renderHook(() => useAppState())
+    act(() => result.current.startRec())
+    act(() => result.current.togglePause())
+    act(() => result.current.stopRec())
+    act(() => result.current.startRec())
+    expect(result.current.paused).toBe(false)
+    act(() => vi.advanceTimersByTime(2000))
+    expect(result.current.recSeconds).toBe(874)
+  })
 })
