@@ -81,4 +81,18 @@ describe('MarkdownCard', () => {
       expect(() => fireEvent.click(screen.getByRole('button', { name: 'Copy' }))).not.toThrow()
     })
   })
+
+  describe('Copy button when navigator.clipboard is unavailable (Tauri webview / jsdom)', () => {
+    beforeEach(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    })
+
+    it('calls onCopyError with a clear error instead of throwing', () => {
+      const onCopyError = vi.fn()
+      render(<MarkdownCard {...base} onCopyError={onCopyError} />)
+
+      expect(() => fireEvent.click(screen.getByRole('button', { name: 'Copy' }))).not.toThrow()
+      expect(onCopyError).toHaveBeenCalledWith(new Error('Clipboard unavailable'))
+    })
+  })
 })

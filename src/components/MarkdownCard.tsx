@@ -42,6 +42,10 @@ function MarkdownBody({ markdown }: { markdown: string }) {
 
 export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyError }: MarkdownCardProps) {
   function handleCopy() {
+    if (!navigator.clipboard) {
+      onCopyError?.(new Error('Clipboard unavailable'))
+      return
+    }
     navigator.clipboard.writeText(markdown).catch(err => onCopyError?.(err))
   }
 
