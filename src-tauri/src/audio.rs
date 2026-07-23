@@ -1346,6 +1346,24 @@ mod tests {
     /// cargo test --manifest-path src-tauri/Cargo.toml \
     ///     real_recording_end_to_end -- --ignored --nocapture
     /// ```
+    /// Removes `note_dir` when dropped — including during unwinding from a
+    /// failed `assert!`/`.expect()`, unlike plain cleanup code placed after
+    /// the assertions, which a panic would skip entirely. Used by
+    /// `real_recording_end_to_end` so that test — run manually, against
+    /// the *real* app-data dir — never leaves a stray "Smoke test
+    /// recording" note behind in the real app's library, pass or fail.
+    struct NoteDirCleanupGuard(PathBuf);
+
+    impl Drop for NoteDirCleanupGuard {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(&self.0) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("smoke test cleanup: failed to remove {:?}: {e}", self.0);
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn real_recording_end_to_end() {
@@ -1370,6 +1388,10 @@ mod tests {
             .expect("failed to create note");
         let note_dir = lock_store(&store).note_dir(&meta.id);
         eprintln!("recording into {note_dir:?}");
+        // Bound to `_cleanup` (not `_`) so it lives to the end of the
+        // function scope and only drops (removing `note_dir`) on the way
+        // out — whether that's normal return or an unwinding panic.
+        let _cleanup = NoteDirCleanupGuard(note_dir.clone());
 
         // Real speech through the speakers for the mic to (hopefully) pick
         // up — non-fatal if `say` itself isn't available; the test still
@@ -1408,14 +1430,39 @@ mod tests {
         eprintln!("final note status: {:?}", final_meta.status);
         let events = events.lock().unwrap();
         eprintln!("captured {} stt events: {:?}", events.len(), *events);
+        drop(events);
 
-        assert!(note_dir.exists(), "note directory should exist");
+        // Only assert what this smoke test actually proves the pipeline
+        // did, not exact transcribed wording — whisper's output on the
+        // same `say` audio can vary run to run.
+        assert_eq!(
+            final_meta.status,
+            crate::store::NoteStatus::Transcribed,
+            "note should be finalized as transcribed"
+        );
+
         assert!(wav_path.exists(), "audio.wav should exist");
         let wav_len = std::fs::metadata(&wav_path).map(|m| m.len()).unwrap_or(0);
         eprintln!("audio.wav size: {wav_len} bytes");
-        assert!(wav_len > 44, "audio.wav should contain more than just a WAV header");
+        // ~10s of 16kHz/16-bit mono PCM is ~320_000 bytes; assert well
+        // above the floor a near-empty/corrupt capture would produce
+        // rather than pinning an exact byte count.
+        assert!(
+            wav_len > 200_000,
+            "audio.wav should hold roughly 10s of 16kHz/16-bit mono audio, got {wav_len} bytes"
+        );
 
         let (_meta, transcript) = lock_store(&store).get_note(&meta.id).unwrap();
         eprintln!("transcript.json segments: {:?}", transcript.segments);
+        assert!(
+            !transcript.segments.is_empty(),
+            "expected at least one transcribed segment"
+        );
+        let total_text_len: usize = transcript.segments.iter().map(|s| s.text.len()).sum();
+        assert!(
+            total_text_len > 10,
+            "expected non-trivial transcribed text (>10 chars), got {total_text_len}: {:?}",
+            transcript.segments
+        );
     }
 }
