@@ -11,10 +11,8 @@ mod audio;
 mod stt;
 mod error;
 
-use std::sync::{Arc, Mutex};
-
 use catalog::{Hardware, ModelStatus, Recommendation};
-use store::{lock_store, NoteMeta, SharedStore, Store, StorageStats, Transcript};
+use store::{lock_store, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
@@ -119,12 +117,12 @@ pub fn run() {
         .path()
         .app_data_dir()
         .expect("failed to resolve app data dir");
-      let store = Store::new(app_data_dir).expect("failed to initialize note store");
       // A single shared handle: Tauri commands and the recording/
       // transcription worker threads (Task 5/6) all clone this same
       // `SharedStore` rather than each opening their own `Store` — see the
-      // concurrency contract on `store::Store`.
-      let shared_store: SharedStore = Arc::new(Mutex::new(store));
+      // concurrency contract on `store::Store`. `open_shared` is the only
+      // way to obtain one; `Store::new` itself is private to `store.rs`.
+      let shared_store: SharedStore = store::open_shared(app_data_dir);
       app.manage(shared_store);
 
       Ok(())

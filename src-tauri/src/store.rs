@@ -106,14 +106,26 @@ pub fn lock_store(store: &SharedStore) -> MutexGuard<'_, Store> {
     store.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Opens (creating if needed) a store rooted at `root` and hands it back
+/// already wrapped as a [`SharedStore`] — the only way to obtain a `Store`
+/// from outside this module. `Store::new` itself is private, so there is
+/// no way for another module (audio.rs's recording thread, stt.rs's
+/// transcription worker, ...) to construct a second, unsynchronized
+/// `Store` over the same root; every caller is structurally forced through
+/// this one shared handle. See the concurrency contract on [`Store`].
+pub(crate) fn open_shared(root: PathBuf) -> SharedStore {
+    let store = Store::new(root).expect("failed to initialize note store");
+    Arc::new(Mutex::new(store))
+}
+
 impl Store {
     /// Opens (creating if needed) a store rooted at `root`. Ensures
     /// `root/notes/` exists.
     ///
-    /// Crate-private: callers should go through a single [`SharedStore`]
-    /// (constructed once in `lib.rs`'s setup) rather than opening their own
-    /// `Store` over the same root — see the concurrency contract above.
-    pub(crate) fn new(root: PathBuf) -> Result<Store> {
+    /// Private: the only supported way to obtain a `Store` outside this
+    /// module is [`open_shared`], which immediately wraps it in a
+    /// [`SharedStore`] — see the concurrency contract above.
+    fn new(root: PathBuf) -> Result<Store> {
         let notes_dir = root.join("notes");
         fs::create_dir_all(&notes_dir)?;
         Ok(Store { root })
@@ -382,17 +394,34 @@ fn dir_size(path: &Path) -> Result<u64> {
 /// `audio.wav`'s share of that total. A single `fs::read_dir` walk stats
 /// every entry once — earlier code stat'd `audio.wav` a second time via a
 /// dedicated `fs::metadata` call on top of the walk `dir_size` already did
-/// internally. Errors reading an individual entry's metadata are logged
-/// and treated as 0 bytes (not fatal to the whole stats panel) unless the
-/// entry is simply missing, which is normal (e.g. no audio recorded yet).
+/// internally.
+///
+/// `storage_stats` runs this lock-free (see its docs), so it can race a
+/// concurrent `delete_note` on the very directory it's about to walk. Every
+/// "this vanished out from under us" case — the note directory itself, the
+/// directory-listing iterator, or a single entry's metadata — is treated as
+/// 0 bytes rather than failing the whole stats command; only genuinely
+/// unexpected errors are logged and also degrade to 0 for that entry.
 fn note_dir_stats(note_dir: &Path) -> Result<(u64, u64)> {
+    let is_not_found = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+
+    let entries = match fs::read_dir(note_dir) {
+        Ok(entries) => entries,
+        Err(e) if is_not_found(&e) => return Ok((0, 0)),
+        Err(e) => return Err(e.into()),
+    };
+
     let mut total = 0u64;
     let mut audio = 0u64;
-    for entry in fs::read_dir(note_dir)? {
-        let entry = entry?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) if is_not_found(&e) => continue,
+            Err(e) => return Err(e.into()),
+        };
         let len = match entry.metadata() {
             Ok(meta) => meta.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) if is_not_found(&e) => 0,
             Err(e) => {
                 log::warn!("skipping {:?} in storage stats: {e}", entry.path());
                 0
@@ -734,6 +763,18 @@ mod tests {
         assert!(stats.notes_bytes > 0);
         assert!(stats.notes_bytes < audio_bytes.len() as u64);
         assert_eq!(stats.models_bytes, model_bytes.len() as u64);
+    }
+
+    #[test]
+    fn note_dir_stats_on_vanished_dir_returns_zero() {
+        // storage_stats runs lock-free and can race a concurrent
+        // delete_note between listing notes/ and walking a given note's
+        // directory — a directory that's gone by the time we get to it
+        // must count as 0 bytes, not fail the whole stats command.
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("20260723-000000-never-existed");
+
+        assert_eq!(note_dir_stats(&missing).unwrap(), (0, 0));
     }
 
     #[test]
