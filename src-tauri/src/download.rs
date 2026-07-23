@@ -318,7 +318,7 @@ pub async fn execute_download(
 
     while let Some(chunk) = stream.next().await {
         if cancel_flag.load(Ordering::SeqCst) {
-            return Err(MinuteError::Other("cancelled".to_string()));
+            return Err(MinuteError::Cancelled);
         }
         let chunk = chunk.map_err(|e| MinuteError::Other(format!("stream error: {e}")))?;
         file.write_all(&chunk).await?;
@@ -441,14 +441,17 @@ pub async fn download_model(
     })
     .await;
 
-    // Read before `_cleanup` drops (though drop order doesn't actually
-    // matter here — this flag lives independently of the registry map
-    // entry the guard removes).
-    let cancelled = cancel_flag.load(Ordering::SeqCst);
-
+    // `cancelled` is derived from the error variant itself, not a
+    // post-hoc read of the shared flag: a late `cancel_download` call
+    // arriving after `execute_download` has already returned a genuine
+    // (non-cancellation) failure would otherwise race that flag read and
+    // mislabel a real failure as a cancellation.
     match result {
         Ok(()) => emit_done(&app, &id, true, false, None),
-        Err(e) => emit_done(&app, &id, false, cancelled, Some(e.to_string())),
+        Err(MinuteError::Cancelled) => {
+            emit_done(&app, &id, false, true, Some(MinuteError::Cancelled.to_string()))
+        }
+        Err(e) => emit_done(&app, &id, false, false, Some(e.to_string())),
     }
 
     Ok(())
