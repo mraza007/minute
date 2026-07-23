@@ -78,28 +78,35 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }:
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 1 }}>
         {notes.map((note, i) => (
-          <div key={note.title}>
+          <div key={i}>
             {note.group && (
               <div style={{ padding: '14px 10px 5px', fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c' }}>
                 {note.group}
               </div>
             )}
-            <div
+            <button
               onClick={() => onSelect(i)}
               className={i === sel ? undefined : 'hov-dark'}
               style={{
+                display: 'block',
+                width: '100%',
+                boxSizing: 'border-box',
                 padding: '8px 10px',
+                border: 'none',
                 cursor: 'pointer',
                 borderRadius: 8,
                 background: i === sel ? '#fff' : 'transparent',
                 boxShadow: i === sel ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+                color: 'inherit',
               }}
             >
-              <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ display: 'block', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {note.title}
-              </div>
-              <div style={{ fontSize: 11.5, color: '#8d867f', marginTop: 1 }}>{note.meta}</div>
-            </div>
+              </span>
+              <span style={{ display: 'block', fontSize: 11.5, color: '#8d867f', marginTop: 1 }}>{note.meta}</span>
+            </button>
           </div>
         ))}
       </div>

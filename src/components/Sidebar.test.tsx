@@ -29,13 +29,13 @@ describe('Sidebar', () => {
   it('calls onSelect with the clicked note index', () => {
     const onSelect = vi.fn()
     render(<Sidebar {...base} onSelect={onSelect} />)
-    fireEvent.click(screen.getByText('Pricing workshop'))
+    fireEvent.click(screen.getByRole('button', { name: /pricing workshop/i }))
     expect(onSelect).toHaveBeenCalledWith(5)
   })
 
   it('gives the selected row a white background', () => {
     render(<Sidebar {...base} sel={2} />)
-    const row = screen.getByText('Client call — Acme').parentElement
+    const row = screen.getByRole('button', { name: /client call — acme/i })
     expect(row).toHaveStyle({ background: '#fff' })
   })
 
