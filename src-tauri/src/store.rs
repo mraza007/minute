@@ -2,9 +2,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
 
@@ -73,17 +74,56 @@ const AUDIO_FILE: &str = "audio.wav";
 ///       transcript.json
 ///       audio.wav      (written by audio.rs)
 /// ```
+///
+/// # Concurrency contract
+///
+/// A given app-data root must only ever be opened by **one** `Store`
+/// instance for the lifetime of the app, shared behind a single
+/// [`SharedStore`] handle. `create_note`'s collision check (does
+/// `notes/<id>/` already exist?) and `append_segment`'s read-modify-write
+/// are only atomic when every caller — Tauri commands, the recording
+/// thread (Task 5), and the transcription worker thread (Task 6) — goes
+/// through that one shared mutex. Constructing a second `Store` over the
+/// same root from another thread reintroduces the races those methods are
+/// meant to prevent.
 pub struct Store {
     root: PathBuf,
+}
+
+/// Shared handle to a [`Store`] — an `Arc<Mutex<Store>>`. Tauri commands
+/// and the (future) recorder/transcription worker threads all hold clones
+/// of the same `SharedStore` rather than each owning their own `Store`, so
+/// mutating operations stay serialized through one mutex. See the
+/// concurrency contract on [`Store`].
+pub type SharedStore = Arc<Mutex<Store>>;
+
+/// Locks a [`SharedStore`], recovering from lock poisoning instead of
+/// propagating it. If one operation panics while holding the lock, every
+/// later command must still be able to acquire it — a poisoned store
+/// should degrade to "maybe-inconsistent state" rather than bricking the
+/// whole app for the rest of the session.
+pub fn lock_store(store: &SharedStore) -> MutexGuard<'_, Store> {
+    store.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Store {
     /// Opens (creating if needed) a store rooted at `root`. Ensures
     /// `root/notes/` exists.
-    pub fn new(root: PathBuf) -> Result<Store> {
+    ///
+    /// Crate-private: callers should go through a single [`SharedStore`]
+    /// (constructed once in `lib.rs`'s setup) rather than opening their own
+    /// `Store` over the same root — see the concurrency contract above.
+    pub(crate) fn new(root: PathBuf) -> Result<Store> {
         let notes_dir = root.join("notes");
         fs::create_dir_all(&notes_dir)?;
         Ok(Store { root })
+    }
+
+    /// The app-data root this store is opened on — e.g. so a caller can
+    /// clone it out from under a short-held lock before doing slow,
+    /// lock-free disk I/O (see the free [`storage_stats`] function).
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     fn notes_root(&self) -> PathBuf {
@@ -136,12 +176,19 @@ impl Store {
     /// Creates a new note with an injected timestamp (for testability).
     /// The id is derived from `now` (UTC, `YYYYMMDD-HHMMSS`); on collision
     /// with an existing note directory, `-2`, `-3`, ... is appended.
+    ///
+    /// `now` is normalized to UTC before use — callers may inject an
+    /// `OffsetDateTime` in any offset (e.g. a local-time clock), and this
+    /// guarantees the id and `createdAt` are always derived from the same
+    /// UTC instant rather than producing mixed-offset metadata depending on
+    /// what the caller happened to pass.
     pub fn create_note(
         &self,
         title: &str,
         model: &str,
         now: OffsetDateTime,
     ) -> Result<NoteMeta> {
+        let now = now.to_offset(UtcOffset::UTC);
         let base_id = Self::format_id(now);
         let mut id = base_id.clone();
         let mut suffix = 2;
@@ -244,8 +291,25 @@ impl Store {
             }
         }
 
-        metas.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        metas.sort_by(|a, b| Self::created_at_cmp(&b.created_at, &a.created_at));
         Ok(metas)
+    }
+
+    /// Compares two `createdAt` RFC3339 strings chronologically (parses
+    /// both, falls back to a plain string compare if either fails to
+    /// parse). Plain lexicographic string comparison breaks for RFC3339
+    /// timestamps whose fractional seconds are omitted at exactly 0 ns:
+    /// `"...T10:15:30Z"` sorts *after* `"...T10:15:30.5Z"` as a string
+    /// (`'.'` < `'Z'` in ASCII) even though the `.5` instant is later.
+    fn created_at_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        match (
+            OffsetDateTime::parse(a, rfc3339),
+            OffsetDateTime::parse(b, rfc3339),
+        ) {
+            (Ok(a_dt), Ok(b_dt)) => a_dt.cmp(&b_dt),
+            _ => a.cmp(b),
+        }
     }
 
     /// Fetches a note's metadata and transcript (transcript is empty if not
@@ -291,57 +355,92 @@ impl Store {
         Ok(())
     }
 
-    /// Recursively sums file sizes under `path`. Missing paths count as 0.
-    fn dir_size(path: &Path) -> Result<u64> {
-        if !path.exists() {
-            return Ok(0);
+}
+
+/// Recursively sums file sizes under `path`. Missing paths count as 0.
+///
+/// Free function (not a `Store` method) — used by [`storage_stats`], which
+/// deliberately doesn't take `&self`/a lock; see that function's docs.
+fn dir_size(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
         }
-        let mut total = 0u64;
-        for entry in fs::read_dir(path)? {
+    }
+    Ok(total)
+}
+
+/// One pass over a single note's (flat) directory: total bytes on disk and
+/// `audio.wav`'s share of that total. A single `fs::read_dir` walk stats
+/// every entry once — earlier code stat'd `audio.wav` a second time via a
+/// dedicated `fs::metadata` call on top of the walk `dir_size` already did
+/// internally. Errors reading an individual entry's metadata are logged
+/// and treated as 0 bytes (not fatal to the whole stats panel) unless the
+/// entry is simply missing, which is normal (e.g. no audio recorded yet).
+fn note_dir_stats(note_dir: &Path) -> Result<(u64, u64)> {
+    let mut total = 0u64;
+    let mut audio = 0u64;
+    for entry in fs::read_dir(note_dir)? {
+        let entry = entry?;
+        let len = match entry.metadata() {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => {
+                log::warn!("skipping {:?} in storage stats: {e}", entry.path());
+                0
+            }
+        };
+        total += len;
+        if entry.file_name() == AUDIO_FILE {
+            audio = len;
+        }
+    }
+    Ok((total, audio))
+}
+
+/// Storage breakdown: `models_bytes` = everything under `root/models`;
+/// `audio_bytes` = sum of every note's `audio.wav`; `notes_bytes` =
+/// everything else under `root/notes` (meta/transcript json, excluding
+/// audio).
+///
+/// A free function taking `root` directly (rather than a `Store` method
+/// requiring `&self`) so callers can run this recursive disk walk without
+/// holding the store's mutex: clone `root` out from under a brief
+/// [`lock_store`] call, drop the lock, then call this. Keeps the mutex
+/// uncontended for the (potentially large) filesystem walk instead of
+/// blocking every other command — including the recording/transcription
+/// worker threads — for its duration.
+pub fn storage_stats(root: &Path) -> Result<StorageStats> {
+    let models_bytes = dir_size(&root.join("models"))?;
+
+    let mut audio_bytes = 0u64;
+    let mut notes_bytes = 0u64;
+    let notes_root = root.join("notes");
+    if notes_root.exists() {
+        for entry in fs::read_dir(&notes_root)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                total += Self::dir_size(&entry.path())?;
-            } else {
-                total += entry.metadata()?.len();
+            if !entry.file_type()?.is_dir() {
+                continue;
             }
+            let (total, audio) = note_dir_stats(&entry.path())?;
+            audio_bytes += audio;
+            notes_bytes += total.saturating_sub(audio);
         }
-        Ok(total)
     }
 
-    /// Storage breakdown: `models_bytes` = everything under `root/models`;
-    /// `audio_bytes` = sum of every note's `audio.wav`; `notes_bytes` =
-    /// everything else under `root/notes` (meta/transcript json, excluding
-    /// audio).
-    pub fn storage_stats(&self) -> Result<StorageStats> {
-        let models_bytes = Self::dir_size(&self.root.join("models"))?;
-
-        let mut audio_bytes = 0u64;
-        let mut notes_bytes = 0u64;
-        let notes_root = self.notes_root();
-        if notes_root.exists() {
-            for entry in fs::read_dir(&notes_root)? {
-                let entry = entry?;
-                if !entry.file_type()?.is_dir() {
-                    continue;
-                }
-                let note_dir = entry.path();
-                let audio_path = note_dir.join(AUDIO_FILE);
-                let audio_len = match fs::metadata(&audio_path) {
-                    Ok(meta) => meta.len(),
-                    Err(_) => 0,
-                };
-                audio_bytes += audio_len;
-                notes_bytes += Self::dir_size(&note_dir)?.saturating_sub(audio_len);
-            }
-        }
-
-        Ok(StorageStats {
-            models_bytes,
-            audio_bytes,
-            notes_bytes,
-        })
-    }
+    Ok(StorageStats {
+        models_bytes,
+        audio_bytes,
+        notes_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -388,6 +487,27 @@ mod tests {
         assert!(date_part.chars().all(|c| c.is_ascii_digit()));
         assert_eq!(time_part.len(), 6);
         assert!(time_part.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn create_note_normalizes_non_utc_offset_to_utc() {
+        // 10:15:30 in UTC+05:00 is 05:15:30 UTC — the id/createdAt must be
+        // derived from the normalized UTC instant, not the raw local
+        // fields, regardless of what offset the caller happens to pass.
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        // Wall clock reads 10:15:30 with a +05:00 offset — i.e. 05:15:30 UTC.
+        let local = datetime!(2026-07-23 10:15:30 +5);
+
+        let meta = store.create_note("Standup", "whisper-small", local).unwrap();
+
+        assert_eq!(meta.id, "20260723-051530");
+        assert!(
+            meta.created_at.ends_with('Z') || meta.created_at.ends_with("+00:00"),
+            "createdAt should be normalized to UTC, got {:?}",
+            meta.created_at
+        );
+        assert!(meta.created_at.starts_with("2026-07-23T05:15:30"));
     }
 
     #[test]
@@ -517,6 +637,43 @@ mod tests {
     }
 
     #[test]
+    fn list_notes_sorts_correctly_across_omitted_vs_present_fractional_seconds() {
+        // Two notes land in the same wall-clock second: one exactly on the
+        // second (RFC3339 omits the fraction entirely), one half a second
+        // later within that same second (RFC3339 prints ".5"). Plain
+        // lexicographic string comparison gets this backwards: "...:30Z" >
+        // "...:30.5Z" as strings (because '.' < 'Z' in ASCII), even though
+        // the .5 instant is chronologically later.
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+
+        let on_the_second = datetime!(2026-07-23 10:15:30 UTC);
+        let half_second_later = datetime!(2026-07-23 10:15:30.5 UTC);
+
+        let earlier = store
+            .create_note("On the second", "whisper-small", on_the_second)
+            .unwrap();
+        let later = store
+            .create_note("Half second later", "whisper-small", half_second_later)
+            .unwrap();
+
+        // Sanity-check that this test actually exercises the pitfall: a
+        // naive string compare must disagree with chronological order.
+        assert!(
+            later.created_at < earlier.created_at,
+            "expected the fraction-bearing timestamp to sort lexicographically \
+             smaller despite being chronologically later (got {:?} vs {:?})",
+            later.created_at,
+            earlier.created_at
+        );
+
+        let notes = store.list_notes().unwrap();
+        let ids: Vec<&str> = notes.iter().map(|n| n.id.as_str()).collect();
+        // Descending (most recent first): the .5s note must come first.
+        assert_eq!(ids, vec![later.id.as_str(), earlier.id.as_str()]);
+    }
+
+    #[test]
     fn list_notes_skips_corrupt_meta_json() {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
@@ -570,7 +727,7 @@ mod tests {
         fs::create_dir_all(&model_dir).unwrap();
         fs::write(model_dir.join("fake.bin"), &model_bytes).unwrap();
 
-        let stats = store.storage_stats().unwrap();
+        let stats = storage_stats(dir.path()).unwrap();
         assert_eq!(stats.audio_bytes, audio_bytes.len() as u64);
         // meta.json itself (non-zero) should be counted in notes_bytes, and
         // must not include the audio bytes.

@@ -11,10 +11,10 @@ mod audio;
 mod stt;
 mod error;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use catalog::{Hardware, ModelStatus, Recommendation};
-use store::{NoteMeta, Store, StorageStats, Transcript};
+use store::{lock_store, NoteMeta, SharedStore, Store, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
@@ -50,8 +50,6 @@ fn recommended_models(_app: AppHandle) -> Result<Recommendation, String> {
   Ok(catalog::recommend(&catalog, &hw))
 }
 
-struct StoreState(Mutex<Store>);
-
 /// JSON-friendly wrapper for the `get_note` command — `Store::get_note`
 /// returns a `(NoteMeta, Transcript)` tuple internally, but a tuple
 /// serializes as a bare JSON array, so the command boundary shapes it into
@@ -64,39 +62,35 @@ struct NoteWithTranscript {
 }
 
 #[tauri::command]
-fn list_notes(state: State<StoreState>) -> Result<Vec<NoteMeta>, String> {
-  state.0.lock().unwrap().list_notes().map_err(|e| e.to_string())
+fn list_notes(state: State<SharedStore>) -> Result<Vec<NoteMeta>, String> {
+  lock_store(&state).list_notes().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn get_note(state: State<StoreState>, id: String) -> Result<NoteWithTranscript, String> {
-  let (meta, transcript) = state
-    .0
-    .lock()
-    .unwrap()
-    .get_note(&id)
-    .map_err(|e| e.to_string())?;
+fn get_note(state: State<SharedStore>, id: String) -> Result<NoteWithTranscript, String> {
+  let (meta, transcript) = lock_store(&state).get_note(&id).map_err(|e| e.to_string())?;
   Ok(NoteWithTranscript { meta, transcript })
 }
 
 #[tauri::command]
-fn rename_note(state: State<StoreState>, id: String, title: String) -> Result<NoteMeta, String> {
-  state
-    .0
-    .lock()
-    .unwrap()
+fn rename_note(state: State<SharedStore>, id: String, title: String) -> Result<NoteMeta, String> {
+  lock_store(&state)
     .rename_note(&id, &title)
     .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_note(state: State<StoreState>, id: String) -> Result<(), String> {
-  state.0.lock().unwrap().delete_note(&id).map_err(|e| e.to_string())
+fn delete_note(state: State<SharedStore>, id: String) -> Result<(), String> {
+  lock_store(&state).delete_note(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn storage_stats(state: State<StoreState>) -> Result<StorageStats, String> {
-  state.0.lock().unwrap().storage_stats().map_err(|e| e.to_string())
+fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
+  // Clone the root path out from under a brief lock, then run the
+  // (potentially slow, recursive) disk walk lock-free — see the docs on
+  // `store::storage_stats`.
+  let root = lock_store(&state).root().to_path_buf();
+  store::storage_stats(&root).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -126,7 +120,12 @@ pub fn run() {
         .app_data_dir()
         .expect("failed to resolve app data dir");
       let store = Store::new(app_data_dir).expect("failed to initialize note store");
-      app.manage(StoreState(Mutex::new(store)));
+      // A single shared handle: Tauri commands and the recording/
+      // transcription worker threads (Task 5/6) all clone this same
+      // `SharedStore` rather than each opening their own `Store` — see the
+      // concurrency contract on `store::Store`.
+      let shared_store: SharedStore = Arc::new(Mutex::new(store));
+      app.manage(shared_store);
 
       Ok(())
     })
