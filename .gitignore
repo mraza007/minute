@@ -25,6 +25,7 @@ dist-ssr
 
 # Tauri build output
 src-tauri/target
+/target
 
 # Local planning docs (never committed)
 docs/plans/

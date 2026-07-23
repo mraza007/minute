@@ -7,7 +7,8 @@ Minute is a fully offline meeting notetaker. It records audio, transcribes it on
 ```bash
 npm install
 npm run tauri dev
-npm test
+npm test          # frontend tests (vitest)
+npm run test:rust # Rust backend tests (cargo test)
 ```
 
 ## Known debt
