@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::AsyncWriteExt;
 
 use crate::catalog::{self, CatalogEntry};
 use crate::error::{MinuteError, Result};
@@ -221,6 +222,18 @@ pub fn registry_is_active(registry: &DownloadRegistry, id: &str) -> bool {
     lock_registry(registry).contains_key(id)
 }
 
+/// Whether a resumed download must restart from scratch instead of
+/// appending: true only when we asked the server to resume
+/// (`requested_range`) but it didn't honor that — answering with a full
+/// `200` instead of a partial `206` means the body about to stream down is
+/// the *whole* file, not just the tail, so continuing to append it onto
+/// existing part bytes (and continuing their hash) would silently corrupt
+/// both. Pure function so this decision is unit-testable independent of a
+/// real HTTP response.
+fn should_restart(requested_range: bool, status: reqwest::StatusCode) -> bool {
+    requested_range && status != reqwest::StatusCode::PARTIAL_CONTENT
+}
+
 /// Downloads one catalog entry's model file into `models_root`, resuming
 /// from an existing `.part` file if present, verifying its sha256 on
 /// completion, and reporting progress via `on_progress(downloaded, total)`.
@@ -231,6 +244,14 @@ pub fn registry_is_active(registry: &DownloadRegistry, id: &str) -> bool {
 /// Checks `cancel_flag` before writing each chunk; on cancellation, returns
 /// `Err` (message `"cancelled"`) and leaves the `.part` file exactly as far
 /// as it got, so a later call resumes from there.
+///
+/// Async-IO note: `resume_from_part` re-hashes a `.part` file synchronously
+/// (it's a small, already-unit-tested, self-contained sync function) — run
+/// once via `tokio::task::spawn_blocking` here so that blocking read loop
+/// doesn't stall the async executor thread. The per-chunk writes inside the
+/// streaming loop below use `tokio::fs`/`AsyncWriteExt` directly instead
+/// (simpler than buffering + a `spawn_blocking` flush per chunk, and avoids
+/// spawning a blocking task on every single network chunk).
 pub async fn execute_download(
     entry: &CatalogEntry,
     models_root: &Path,
@@ -244,7 +265,10 @@ pub async fn execute_download(
         fs::create_dir_all(parent)?;
     }
 
-    let resume = resume_from_part(&part)?;
+    let part_for_resume = part.clone();
+    let resume = tokio::task::spawn_blocking(move || resume_from_part(&part_for_resume))
+        .await
+        .map_err(|e| MinuteError::Other(format!("resume task panicked: {e}")))??;
 
     let client = reqwest::Client::new();
     let mut request = client.get(&entry.url);
@@ -268,13 +292,7 @@ pub async fn execute_download(
         )));
     }
 
-    // If we asked the server to resume (sent a Range header) but it
-    // answered with a full 200 instead of a partial 206, it doesn't
-    // support resuming this URL — the body about to stream down is the
-    // *whole* file, not just the tail, so appending it onto the existing
-    // part bytes (and continuing their hash) would silently corrupt both.
-    // Restart from scratch instead.
-    let restart = requested_range && response.status() != reqwest::StatusCode::PARTIAL_CONTENT;
+    let restart = should_restart(requested_range, response.status());
 
     let (mut hasher, mut downloaded) = if restart {
         (Sha256::new(), 0u64)
@@ -287,12 +305,13 @@ pub async fn execute_download(
         None => entry.size_bytes,
     };
 
-    let mut file = fs::OpenOptions::new()
+    let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .append(!restart)
         .truncate(restart)
-        .open(&part)?;
+        .open(&part)
+        .await?;
 
     let mut throttle = ProgressThrottle::new(Duration::from_millis(250));
     let mut stream = response.bytes_stream();
@@ -302,7 +321,7 @@ pub async fn execute_download(
             return Err(MinuteError::Other("cancelled".to_string()));
         }
         let chunk = chunk.map_err(|e| MinuteError::Other(format!("stream error: {e}")))?;
-        file.write_all(&chunk)?;
+        file.write_all(&chunk).await?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
 
@@ -311,7 +330,7 @@ pub async fn execute_download(
         }
     }
 
-    file.flush()?;
+    file.flush().await?;
     drop(file);
 
     let digest = to_hex(&hasher.finalize());
@@ -328,34 +347,58 @@ struct DownloadProgressEvent {
     total: u64,
 }
 
+/// `cancelled` is a separate structured field (not something the frontend
+/// has to derive by string-matching `error == "cancelled"`) — it's set
+/// from the actual cancellation flag's state, independent of whatever text
+/// ended up in `error`.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadDoneEvent {
     model_id: String,
     ok: bool,
+    cancelled: bool,
     error: Option<String>,
 }
 
 fn emit_progress(app: &AppHandle, model_id: &str, downloaded: u64, total: u64) {
-    let _ = app.emit(
-        "model-download-progress",
-        DownloadProgressEvent {
-            model_id: model_id.to_string(),
-            downloaded,
-            total,
-        },
-    );
+    let event = DownloadProgressEvent {
+        model_id: model_id.to_string(),
+        downloaded,
+        total,
+    };
+    if let Err(e) = app.emit("model-download-progress", event) {
+        log::warn!("failed to emit model-download-progress for {model_id}: {e}");
+    }
 }
 
-fn emit_done(app: &AppHandle, model_id: &str, ok: bool, error: Option<String>) {
-    let _ = app.emit(
-        "model-download-done",
-        DownloadDoneEvent {
-            model_id: model_id.to_string(),
-            ok,
-            error,
-        },
-    );
+fn emit_done(app: &AppHandle, model_id: &str, ok: bool, cancelled: bool, error: Option<String>) {
+    let event = DownloadDoneEvent {
+        model_id: model_id.to_string(),
+        ok,
+        cancelled,
+        error,
+    };
+    if let Err(e) = app.emit("model-download-done", event) {
+        log::warn!("failed to emit model-download-done for {model_id}: {e}");
+    }
+}
+
+/// Ensures the registry entry for `id` is removed when this guard drops —
+/// created right after a successful `registry_start`, so `id` is freed up
+/// for a future download no matter how the rest of `download_model` exits:
+/// normal completion, an early `?` return, or even a panic unwinding
+/// through the `.await`. Holds an owned (cheap, `Arc`-backed) clone of the
+/// registry rather than a borrow so it's unaffected by lifetimes across
+/// await points.
+struct RegistryGuard {
+    registry: DownloadRegistry,
+    id: String,
+}
+
+impl Drop for RegistryGuard {
+    fn drop(&mut self) {
+        registry_finish(&self.registry, &self.id);
+    }
 }
 
 /// Downloads (or resumes) a catalog entry's model file, emitting
@@ -386,6 +429,10 @@ pub async fn download_model(
         .ok_or_else(|| format!("unknown model id: {id}"))?;
 
     let cancel_flag = registry_start(&registry, &id).map_err(|e| e.to_string())?;
+    let _cleanup = RegistryGuard {
+        registry: registry.clone(),
+        id: id.clone(),
+    };
 
     let app_for_progress = app.clone();
     let id_for_progress = id.clone();
@@ -394,11 +441,14 @@ pub async fn download_model(
     })
     .await;
 
-    registry_finish(&registry, &id);
+    // Read before `_cleanup` drops (though drop order doesn't actually
+    // matter here — this flag lives independently of the registry map
+    // entry the guard removes).
+    let cancelled = cancel_flag.load(Ordering::SeqCst);
 
     match result {
-        Ok(()) => emit_done(&app, &id, true, None),
-        Err(e) => emit_done(&app, &id, false, Some(e.to_string())),
+        Ok(()) => emit_done(&app, &id, true, false, None),
+        Err(e) => emit_done(&app, &id, false, cancelled, Some(e.to_string())),
     }
 
     Ok(())
@@ -406,7 +456,8 @@ pub async fn download_model(
 
 /// Sets the cancellation flag for `id`'s in-flight download. The download
 /// loop notices at its next chunk boundary, keeps the `.part` file as-is,
-/// and reports `model-download-done { ok: false, error: "cancelled" }`.
+/// and reports `model-download-done { ok: false, cancelled: true, error:
+/// Some("cancelled") }`.
 #[tauri::command]
 pub fn cancel_download(
     registry: State<'_, DownloadRegistry>,
@@ -426,8 +477,21 @@ fn remove_file_tolerant(path: &Path) -> Result<()> {
 /// Deletes an installed model's file and any stray `.part` left from an
 /// interrupted download. Missing files are tolerated, not an error —
 /// deleting an already-absent model is a no-op success.
+///
+/// Refuses while a download for `id` is active (per the registry) — an
+/// unlink racing the streaming loop's open file handle would either fail
+/// underneath it or, worse, silently leave a `.part` renamed out from under
+/// a download that's still writing to it. The frontend must cancel first.
 #[tauri::command]
-pub fn delete_model(app: AppHandle, id: String) -> std::result::Result<(), String> {
+pub fn delete_model(
+    app: AppHandle,
+    registry: State<'_, DownloadRegistry>,
+    id: String,
+) -> std::result::Result<(), String> {
+    if registry_is_active(&registry, &id) {
+        return Err("model is downloading — cancel first".to_string());
+    }
+
     let models_root = app
         .path()
         .app_data_dir()
@@ -449,6 +513,7 @@ pub fn delete_model(app: AppHandle, id: String) -> std::result::Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::tempdir;
 
     // --- resume offset / hash continuation ---------------------------------
@@ -549,7 +614,10 @@ mod tests {
     fn throttle_emits_at_zero_then_only_after_min_interval_elapses() {
         let mut throttle = ProgressThrottle::new(Duration::from_millis(250));
         let base = Instant::now();
-        let offsets_ms = [0u64, 100, 300, 600];
+        // 250 sits exactly on the min_interval boundary — pins that
+        // `should_emit` treats "exactly min_interval elapsed" as due
+        // (`>=`), not "must be strictly more" (`>`).
+        let offsets_ms = [0u64, 100, 250, 300, 600];
 
         let emitted: Vec<u64> = offsets_ms
             .iter()
@@ -557,7 +625,7 @@ mod tests {
             .filter(|&ms| throttle.should_emit(base + Duration::from_millis(ms)))
             .collect();
 
-        assert_eq!(emitted, vec![0, 300, 600]);
+        assert_eq!(emitted, vec![0, 250, 600]);
     }
 
     #[test]
@@ -653,6 +721,26 @@ mod tests {
 
         registry_finish(&registry, "whisper-small");
         assert!(!registry_is_active(&registry, "whisper-small"));
+    }
+
+    // --- resume-restart decision ------------------------------------------------
+
+    #[test]
+    fn should_restart_false_when_server_honors_range_with_206() {
+        assert!(!should_restart(true, reqwest::StatusCode::PARTIAL_CONTENT));
+    }
+
+    #[test]
+    fn should_restart_true_when_range_requested_but_server_answers_full_200() {
+        assert!(should_restart(true, reqwest::StatusCode::OK));
+    }
+
+    #[test]
+    fn should_restart_false_when_no_range_was_requested() {
+        // A fresh download (no existing .part, nothing to resume) never
+        // requests a Range, so a plain 200 here is the expected, normal
+        // response — not a signal to restart anything.
+        assert!(!should_restart(false, reqwest::StatusCode::OK));
     }
 
     #[test]
