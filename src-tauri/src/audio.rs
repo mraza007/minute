@@ -32,6 +32,16 @@ pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 /// partial frame (`samples.len()` not a multiple of `channels` — shouldn't
 /// happen from a real cpal callback, but cheap to handle) is averaged over
 /// however many samples it actually has rather than dropped or panicking.
+///
+/// Note: the `channels <= 1` branch still heap-allocates a full copy via
+/// `to_vec()` rather than returning a zero-copy `Cow::Borrowed` — kept this
+/// way so the signature stays the simple, directly-tested `-> Vec<f32>`
+/// rather than threading a `Cow` (and its lifetime) through every call site
+/// and test assertion. Not a real hot-path concern in practice: the
+/// audio-callback caller immediately feeds this into `LinearResampler::
+/// resample`, which always allocates its own fresh `Vec` right afterward
+/// regardless, so this copy is one of several unavoidable per-callback
+/// allocations rather than an isolated one worth complicating the API for.
 pub fn downmix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     let ch = channels.max(1) as usize;
     if ch == 1 {
@@ -256,30 +266,36 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// State shared between the cpal audio callback (running on cpal's own
-/// realtime thread) and the control-plane `RecorderHandle` (driven from
-/// Tauri commands).
+/// realtime thread), the dedicated writer thread, and the control-plane
+/// `RecorderHandle` (driven from Tauri commands).
+///
+/// Deliberately holds no `WavWriter` — the writer thread owns that
+/// exclusively (see `run_writer_thread`), so the realtime audio callback
+/// never touches a mutex guarding filesystem state.
 struct SharedState {
-    wav_writer: Mutex<Option<WavWriter>>,
     tracker: Mutex<ElapsedTracker>,
     paused: AtomicBool,
     /// cpal's data/error callbacks can't return a `Result` — errors raised
-    /// from inside them (a write failure, a device error) are stashed here
-    /// (and `log::warn!`'d at the call site) instead, for a caller to
-    /// surface later via `RecorderHandle::last_error`.
+    /// from inside them (a device error) are stashed here (and
+    /// `log::warn!`'d at the call site) instead, for a caller to surface
+    /// later via `RecorderHandle::last_error`. The writer thread also
+    /// stashes its own append/finalize errors here for the same reason.
     last_error: Mutex<Option<String>>,
 }
 
-/// Builds a cpal input stream over sample type `T`, wiring its data
-/// callback to: skip entirely while paused, else downmix -> resample ->
-/// (a) forward the chunk to `sample_tx` (Task 6's `SttWorker` consumes
-/// this; until then the channel just queues, see `ActiveRecording`) and
-/// (b) append it to the shared WAV writer.
+/// Builds a cpal input stream over sample type `T`. Its data callback is
+/// realtime-safe: skip entirely while paused, else convert -> downmix ->
+/// resample -> send the chunk (wrapped once in an `Arc` so it can be
+/// shared with the STT path without copying) into `writer_tx`. No locks
+/// beyond the `paused` atomic, no filesystem I/O, no unbounded blocking —
+/// `run_writer_thread` on a dedicated OS thread owns the WAV file and does
+/// all of that off this thread.
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: u16,
     shared: Arc<SharedState>,
-    sample_tx: Sender<Vec<f32>>,
+    writer_tx: Sender<Arc<Vec<f32>>>,
     mut resampler: LinearResampler,
 ) -> Result<cpal::Stream>
 where
@@ -300,16 +316,11 @@ where
                 if resampled.is_empty() {
                     return;
                 }
-                // Receiver is held (unused) in `ActiveRecording` until Task
-                // 6 wires the STT worker to drain it — `send` never fails
-                // from a dropped receiver in the meantime.
-                let _ = sample_tx.send(resampled.clone());
-                if let Some(writer) = lock(&shared.wav_writer).as_mut() {
-                    if let Err(e) = writer.append(&resampled) {
-                        log::warn!("failed to append recorded samples to wav: {e}");
-                        *lock(&shared.last_error) = Some(e.to_string());
-                    }
-                }
+                // `writer_tx`'s only reader is the writer thread's plain
+                // `mpsc::Receiver` (unbounded) — this never blocks. It's
+                // dropped (ending the writer thread's loop) when `stream`
+                // is dropped in `RecorderHandle::stop`.
+                let _ = writer_tx.send(Arc::new(resampled));
             },
             move |err| {
                 log::warn!("cpal input stream error: {err}");
@@ -320,26 +331,64 @@ where
         .map_err(|e| MinuteError::Other(format!("failed to build input stream: {e}")))
 }
 
+/// Drains `chunk_rx`, appending each chunk to `writer` and forwarding the
+/// *same* `Arc` (a cheap refcount bump, not a data copy) to `stt_tx` for
+/// Task 6's `SttWorker`. Runs on a dedicated OS thread spawned from
+/// `Recorder::start`, so this — not the realtime cpal callback — is where
+/// WAV file I/O actually happens.
+///
+/// Returns once `chunk_rx`'s sender (owned by the audio callback) is
+/// dropped and every already-queued chunk has been drained, at which point
+/// it finalizes and closes the WAV file.
+///
+/// A free function (rather than a method) so it's unit-testable by feeding
+/// it a channel directly, without a real cpal device.
+fn run_writer_thread(
+    mut writer: WavWriter,
+    chunk_rx: Receiver<Arc<Vec<f32>>>,
+    // TODO(task6): unbounded for now, matching the pre-existing contract
+    // that a slow/absent STT consumer never blocks recording. Once
+    // `SttWorker` is wired and actually drains this, switch to a bounded
+    // `sync_channel` and use `try_send` here with drop-count logging on
+    // `Full` instead of an unconditional (and here, silently-swallowed)
+    // `send`.
+    stt_tx: Sender<Arc<Vec<f32>>>,
+    shared: Arc<SharedState>,
+) -> Result<u64> {
+    while let Ok(chunk) = chunk_rx.recv() {
+        if let Err(e) = writer.append(&chunk) {
+            log::warn!("failed to append recorded samples to wav: {e}");
+            *lock(&shared.last_error) = Some(e.to_string());
+        }
+        let _ = stt_tx.send(chunk.clone());
+    }
+    writer.finalize()
+}
+
 /// Factory namespace for starting a recording — see [`Recorder::start`].
 /// (Zero-sized; the returned [`RecorderHandle`] is the actual owner of the
 /// cpal stream and recording state.)
 pub struct Recorder;
 
-/// A live recording in progress: owns the cpal stream (kept alive for as
-/// long as this handle lives) and exposes pause/resume/stop.
+/// A live recording in progress: owns the cpal stream and the dedicated
+/// WAV-writer thread (both kept alive for as long as this handle lives),
+/// and exposes pause/resume/stop.
 pub struct RecorderHandle {
     stream: cpal::Stream,
     shared: Arc<SharedState>,
     wav_path: PathBuf,
+    writer_thread: std::thread::JoinHandle<Result<u64>>,
 }
 
 impl Recorder {
     /// Opens the default input device, starts capturing at its native
     /// rate/format, and writes into `note_dir/audio.wav` (16 kHz mono
-    /// 16-bit PCM, resampled from whatever the device provides). Each
-    /// downmixed+resampled chunk is also cloned onto `sample_tx` for Task
-    /// 6's live transcription worker.
-    pub fn start(note_dir: PathBuf, sample_tx: Sender<Vec<f32>>) -> Result<RecorderHandle> {
+    /// 16-bit PCM, resampled from whatever the device provides) via a
+    /// dedicated writer thread — see `run_writer_thread`. Each
+    /// downmixed+resampled chunk is also forwarded (as a shared `Arc`, no
+    /// extra copy) onto `sample_tx` for Task 6's live transcription
+    /// worker.
+    pub fn start(note_dir: PathBuf, sample_tx: Sender<Arc<Vec<f32>>>) -> Result<RecorderHandle> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -357,12 +406,17 @@ impl Recorder {
         let wav_writer = WavWriter::create(&wav_path)?;
 
         let shared = Arc::new(SharedState {
-            wav_writer: Mutex::new(Some(wav_writer)),
             tracker: Mutex::new(ElapsedTracker::new()),
             paused: AtomicBool::new(false),
             last_error: Mutex::new(None),
         });
         lock(&shared.tracker).start(Instant::now());
+
+        let (writer_tx, writer_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let writer_shared = shared.clone();
+        let writer_thread = std::thread::spawn(move || {
+            run_writer_thread(wav_writer, writer_rx, sample_tx, writer_shared)
+        });
 
         let resampler = LinearResampler::new(from_hz, TARGET_SAMPLE_RATE);
 
@@ -372,7 +426,7 @@ impl Recorder {
                 &config,
                 channels,
                 shared.clone(),
-                sample_tx,
+                writer_tx,
                 resampler,
             )?,
             cpal::SampleFormat::I16 => build_stream::<i16>(
@@ -380,7 +434,7 @@ impl Recorder {
                 &config,
                 channels,
                 shared.clone(),
-                sample_tx,
+                writer_tx,
                 resampler,
             )?,
             cpal::SampleFormat::U16 => build_stream::<u16>(
@@ -388,7 +442,7 @@ impl Recorder {
                 &config,
                 channels,
                 shared.clone(),
-                sample_tx,
+                writer_tx,
                 resampler,
             )?,
             other => {
@@ -406,6 +460,7 @@ impl Recorder {
             stream,
             shared,
             wav_path,
+            writer_thread,
         })
     }
 }
@@ -438,17 +493,20 @@ impl RecorderHandle {
     }
 
     /// Stops capture and finalizes the WAV file. Drops the cpal stream
-    /// first, so the audio callback is guaranteed to never fire again
-    /// before the WAV writer underneath it is finalized.
+    /// first — that drops the audio callback's `writer_tx` sender clone,
+    /// which (once the writer thread drains whatever was already queued)
+    /// ends `run_writer_thread`'s loop and lets it finalize the file — then
+    /// joins that thread to make sure the file is actually closed before
+    /// returning.
     pub fn stop(self) -> Result<(f64, PathBuf)> {
         drop(self.stream);
 
         let elapsed_ms = lock(&self.shared.tracker).elapsed_ms(Instant::now());
 
-        let writer = lock(&self.shared.wav_writer)
-            .take()
-            .ok_or_else(|| MinuteError::Other("recorder already finalized".to_string()))?;
-        writer.finalize()?;
+        let _total_samples = self
+            .writer_thread
+            .join()
+            .map_err(|_| MinuteError::Other("wav writer thread panicked".to_string()))??;
 
         Ok((elapsed_ms as f64 / 1000.0, self.wav_path))
     }
@@ -462,10 +520,10 @@ impl RecorderHandle {
 struct ActiveRecording {
     note_id: String,
     handle: RecorderHandle,
-    /// Held so `sample_tx.send` in the audio callback never fails; drained
+    /// Held so `sample_tx.send` in the writer thread never fails; drained
     /// by Task 6's `SttWorker` (not yet wired). Never read here.
     #[allow(dead_code)]
-    sample_rx: Receiver<Vec<f32>>,
+    sample_rx: Receiver<Arc<Vec<f32>>>,
     /// The 1s `recording-state` ticker spawned in `start_recording`,
     /// aborted in `stop_recording`.
     tick_handle: tokio::task::JoinHandle<()>,
@@ -534,8 +592,26 @@ pub async fn start_recording(
         .map_err(|e| e.to_string())?;
     let note_dir = lock_store(&store).note_dir(&meta.id);
 
-    let (sample_tx, sample_rx) = std::sync::mpsc::channel();
-    let handle = Recorder::start(note_dir, sample_tx).map_err(|e| e.to_string())?;
+    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+    let handle = match Recorder::start(note_dir.clone(), sample_tx) {
+        Ok(handle) => handle,
+        Err(e) => {
+            // The note directory was already created by `create_note_now`
+            // above — if the recorder itself then fails to start (no input
+            // device, stream build failure, ...), that note would
+            // otherwise sit forever with status "recording" and no way to
+            // ever finish it. It holds no user data yet (no audio, no
+            // transcript), so it's safe to just remove it; best-effort —
+            // if cleanup itself fails, log and still surface the original
+            // `Recorder::start` error rather than masking it.
+            if let Err(cleanup_err) = std::fs::remove_dir_all(&note_dir) {
+                log::warn!(
+                    "failed to remove note dir {note_dir:?} after failed recorder start: {cleanup_err}"
+                );
+            }
+            return Err(e.to_string());
+        }
+    };
 
     let note_id = meta.id.clone();
     let tick_app = app.clone();
@@ -610,6 +686,19 @@ pub fn resume_recording(
 /// `transcribed`, speakers 1 — Task 6 revisits status; diarization is out
 /// of scope for Stage 2), and emits a final `stopped` `recording-state`.
 /// Errors if none is active.
+///
+/// Failure handling: once `active` is taken out of `RecorderState`, there
+/// is no way for a later call to retry stopping this specific recording —
+/// so a failure partway through must not leave the note stuck at status
+/// "recording" forever. If `Recorder::stop` itself fails (writer thread
+/// panic, WAV finalize error), we still finalize the note using the
+/// elapsed time captured *before* attempting `stop()`, on the reasoning
+/// that "note closed out with an approximate duration" is strictly more
+/// useful than "note permanently stuck as if still recording". The one
+/// case left unhandled is `finalize_note` itself failing (e.g. a meta.json
+/// write error) — there's no further fallback for that, since finalizing
+/// the note *is* the mechanism being used for every other fallback here
+/// too; that error is surfaced as-is.
 #[tauri::command]
 pub fn stop_recording(
     app: AppHandle,
@@ -631,7 +720,18 @@ pub fn stop_recording(
     }
 
     let note_id = active.note_id;
-    let (duration_sec, _wav_path) = active.handle.stop().map_err(|e| e.to_string())?;
+    let fallback_elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
+
+    let duration_sec = match active.handle.stop() {
+        Ok((duration_sec, _wav_path)) => duration_sec,
+        Err(e) => {
+            log::warn!(
+                "failed to cleanly stop recording {note_id}: {e}; finalizing the note anyway \
+                 with its last known elapsed time so it doesn't stay stuck as \"recording\""
+            );
+            fallback_elapsed_secs
+        }
+    };
 
     let meta = lock_store(&store)
         .finalize_note(&note_id, duration_sec, 1)
@@ -830,6 +930,95 @@ mod tests {
         // `finalize` takes `self` by value, so the type system itself
         // prevents calling `append` afterward — nothing to assert at
         // runtime; this test documents the guarantee.
+    }
+
+    // --- run_writer_thread (the audio callback -> WAV + STT hand-off) -------
+
+    fn test_shared_state() -> Arc<SharedState> {
+        Arc::new(SharedState {
+            tracker: Mutex::new(ElapsedTracker::new()),
+            paused: AtomicBool::new(false),
+            last_error: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn writer_thread_drains_queue_writes_correct_wav_and_forwards_same_arc_to_stt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, stt_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+
+        let chunk_a = Arc::new(vec![0.1f32, 0.2, 0.3]);
+        let chunk_b = Arc::new(vec![-0.4f32, 0.5]);
+        chunk_tx.send(chunk_a.clone()).unwrap();
+        chunk_tx.send(chunk_b.clone()).unwrap();
+        // Dropping the sender is exactly what `RecorderHandle::stop`
+        // triggers by dropping the cpal stream — it's what lets
+        // `run_writer_thread`'s `recv()` loop end (after draining what's
+        // already queued) instead of blocking forever.
+        drop(chunk_tx);
+
+        let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 5);
+
+        // Forwarded to the STT channel as the *same* allocation, not a copy.
+        let forwarded_a = stt_rx.recv().unwrap();
+        let forwarded_b = stt_rx.recv().unwrap();
+        assert!(Arc::ptr_eq(&forwarded_a, &chunk_a));
+        assert!(Arc::ptr_eq(&forwarded_b, &chunk_b));
+
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
+        let expected: Vec<i16> = [0.1f32, 0.2, 0.3, -0.4, 0.5]
+            .iter()
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16)
+            .collect();
+        assert_eq!(samples.len(), expected.len());
+        for (got, want) in samples.iter().zip(expected.iter()) {
+            assert!((*got as i32 - *want as i32).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn writer_thread_with_no_chunks_finalizes_empty_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, _stt_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        drop(chunk_tx);
+
+        let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 0);
+
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.len(), 0);
+    }
+
+    #[test]
+    fn writer_thread_survives_a_dropped_stt_receiver() {
+        // If nothing is draining the STT side (matches today's reality —
+        // Task 6 hasn't wired a consumer yet), the writer thread must keep
+        // writing to the WAV file regardless; `send`ing into a channel
+        // with no receiver just fails silently rather than panicking or
+        // blocking.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, stt_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        drop(stt_rx);
+
+        chunk_tx.send(Arc::new(vec![0.25f32, -0.25])).unwrap();
+        drop(chunk_tx);
+
+        let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 2);
     }
 
     // --- ElapsedTracker -------------------------------------------------------

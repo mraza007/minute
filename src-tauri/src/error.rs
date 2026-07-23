@@ -4,10 +4,10 @@
 pub enum MinuteError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// A caller-initiated cancellation (e.g. `cancel_download`,
-    /// `pause_recording`'s stop path) — distinguished from `Other` so
-    /// callers can `match` on it instead of string-comparing an error
-    /// message to recover "was this cancelled?".
+    /// A caller-initiated cancellation (currently only `cancel_download`'s
+    /// in-flight download loop) — distinguished from `Other` so callers can
+    /// `match` on it instead of string-comparing an error message to
+    /// recover "was this cancelled?".
     #[error("cancelled")]
     Cancelled,
     #[error("{0}")]
