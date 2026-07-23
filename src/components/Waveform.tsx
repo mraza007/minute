@@ -1,8 +1,10 @@
+import { memo } from 'react'
+
 interface WaveformProps {
   paused?: boolean
 }
 
-export function Waveform({ paused }: WaveformProps) {
+export const Waveform = memo(function Waveform({ paused }: WaveformProps) {
   return (
     <div
       data-testid="waveform-bars"
@@ -24,4 +26,4 @@ export function Waveform({ paused }: WaveformProps) {
       ))}
     </div>
   )
-}
+})
