@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -151,4 +151,51 @@ export function pickInitialSttModel(models: ModelStatus[], recommendation: Recom
   const installedStt = models.filter(m => m.kind === 'stt' && m.state === 'installed')
   const recommendedInstalled = installedStt.find(m => m.id === recommendation.stt)
   return recommendedInstalled?.id ?? installedStt[0]?.id ?? recommendation.stt ?? ''
+}
+
+/**
+ * Display name for a catalog model id — falls back to the bare id itself
+ * when it isn't (yet) present in the loaded `models` list (e.g. briefly
+ * between mount and the first `list_models` resolving).
+ */
+export function modelDisplayName(models: ModelStatus[], id: string): string {
+  return models.find(m => m.id === id)?.displayName ?? id
+}
+
+/** `n` (possibly fractional) seconds as `mm:ss`, floored to whole seconds and clamped at zero — the REC-pill / live-transcript timestamp format. */
+export function formatMmSs(totalSeconds: number): string {
+  const wholeSeconds = Math.max(0, Math.floor(totalSeconds))
+  const mm = Math.floor(wholeSeconds / 60)
+  const ss = wholeSeconds % 60
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+}
+
+/** One row of the live-transcript display: consecutive same-speaker segments merged into a single entry. */
+export interface LiveTranscriptGroup {
+  speaker: string
+  /** Stream-time (seconds) of the first segment in this group. */
+  start: number
+  /** Stream-time (seconds) of the last segment in this group. */
+  end: number
+  text: string
+}
+
+/**
+ * Groups a flat, arrival-ordered list of `transcript-segment` event
+ * payloads into display rows: consecutive segments from the same speaker
+ * merge into one row (`text` joined with a space, `start` kept from the
+ * first segment in the run, `end` extended to the last), while any change
+ * in speaker — even back to one seen earlier — always starts a fresh row
+ * rather than re-merging into a non-adjacent earlier group. Pure and
+ * side-effect free: callers own updating a note's live segment buffer and
+ * re-derive this on every append.
+ */
+export function groupLiveSegments(segments: TranscriptSegmentEvent[]): LiveTranscriptGroup[] {
+  return segments.reduce<LiveTranscriptGroup[]>((groups, seg) => {
+    const last = groups[groups.length - 1]
+    if (last && last.speaker === seg.speaker) {
+      return [...groups.slice(0, -1), { ...last, end: seg.end, text: `${last.text} ${seg.text}` }]
+    }
+    return [...groups, { speaker: seg.speaker, start: seg.start, end: seg.end, text: seg.text }]
+  }, [])
 }

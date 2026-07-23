@@ -53,8 +53,9 @@ export const deleteNote = (id: string): Promise<void> => invokeCmd('delete_note'
 
 export const storageStats = (): Promise<StorageStats> => invokeCmd('storage_stats')
 
-/** Starts a new recording; resolves with the new note's id. */
-export const startRecording = (): Promise<string> => invokeCmd('start_recording')
+/** Starts a new recording using the given STT model id; resolves with the new note's id. */
+export const startRecording = (modelId: string): Promise<string> =>
+  invokeCmd('start_recording', { modelId })
 
 export const pauseRecording = (): Promise<void> => invokeCmd('pause_recording')
 

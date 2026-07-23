@@ -1,13 +1,95 @@
-import { liveTranscript } from '../data/demo'
+import type { LiveTranscriptGroup } from '../state/adapters'
+import { formatMmSs } from '../state/adapters'
+import type { SttStatus } from '../types'
 import { Waveform } from './Waveform'
 
 interface RecordingViewProps {
+  liveSegments: LiveTranscriptGroup[]
   paused: boolean
   togglePause: () => void
   stopRec: () => void
+  stopping: boolean
+  sttStatus: SttStatus
+  sttError: string | null
+  modelName: string
 }
 
-export function RecordingView({ paused, togglePause, stopRec }: RecordingViewProps) {
+function TranscribingIndicator() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b3200c', fontSize: 13, fontWeight: 600 }}>
+      <span style={{ width: 8, height: 16, borderRadius: 3, background: '#e04430', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
+      transcribing…
+    </div>
+  )
+}
+
+function SttErrorRow({ sttError }: { sttError: string | null }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 3,
+        background: '#ffe6e1',
+        border: '1px solid rgba(224,68,48,.3)',
+        borderRadius: 10,
+        padding: '10px 14px',
+        color: '#b3200c',
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600 }}>Recording continues — transcript unavailable</div>
+      {sttError && <div style={{ fontSize: 12, color: '#c65847' }}>{sttError}</div>}
+    </div>
+  )
+}
+
+function LiveTranscriptBody({
+  liveSegments,
+  sttStatus,
+  sttError,
+  modelName,
+}: {
+  liveSegments: LiveTranscriptGroup[]
+  sttStatus: SttStatus
+  sttError: string | null
+  modelName: string
+}) {
+  if (liveSegments.length === 0) {
+    if (sttStatus === 'loading') {
+      return <div style={{ fontSize: 13, color: '#9a938c' }}>Loading {modelName}…</div>
+    }
+    if (sttStatus === 'error') {
+      return <SttErrorRow sttError={sttError} />
+    }
+    return <TranscribingIndicator />
+  }
+
+  return (
+    <>
+      {liveSegments.map((group, i) => (
+        <div key={i}>
+          <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
+            <b>{group.speaker}</b>
+            <span style={{ color: '#b0a9a2' }}>{formatMmSs(group.start)}</span>
+          </div>
+          <div style={{ fontSize: 14.5, lineHeight: 1.65, color: '#33302c', textWrap: 'pretty' }}>{group.text}</div>
+        </div>
+      ))}
+      {sttStatus === 'error' ? <SttErrorRow sttError={sttError} /> : <TranscribingIndicator />}
+    </>
+  )
+}
+
+export function RecordingView({
+  liveSegments,
+  paused,
+  togglePause,
+  stopRec,
+  stopping,
+  sttStatus,
+  sttError,
+  modelName,
+}: RecordingViewProps) {
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0, background: '#f7f6f4' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
@@ -46,27 +128,16 @@ export function RecordingView({ paused, togglePause, stopRec }: RecordingViewPro
             </div>
           </div>
           <Waveform paused={paused} />
-          <div style={{ fontSize: 12, color: '#9a938c', flex: 'none' }}>Whisper-small · 62× realtime</div>
+          <div style={{ fontSize: 12, color: '#9a938c', flex: 'none' }}>{modelName} · on-device</div>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 740 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c' }}>LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
-          {liveTranscript.map((segment, i) => (
-            <div key={i}>
-              <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
-                <b>{segment.speaker}</b>
-                <span style={{ color: '#b0a9a2' }}>{segment.time}</span>
-              </div>
-              <div style={{ fontSize: 14.5, lineHeight: 1.65, color: '#33302c', textWrap: 'pretty' }}>{segment.text}</div>
-            </div>
-          ))}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b3200c', fontSize: 13, fontWeight: 600 }}>
-            <span style={{ width: 8, height: 16, borderRadius: 3, background: '#e04430', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
-            transcribing…
-          </div>
+          <LiveTranscriptBody liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
         </div>
         <div style={{ padding: '14px 32px 18px', display: 'flex', gap: 10, flex: 'none' }}>
           <button
             onClick={stopRec}
+            disabled={stopping}
             className="btn-rec"
             style={{
               display: 'flex',
@@ -80,25 +151,28 @@ export function RecordingView({ paused, togglePause, stopRec }: RecordingViewPro
               fontFamily: 'inherit',
               fontWeight: 600,
               fontSize: 13.5,
-              cursor: 'pointer',
+              cursor: stopping ? 'default' : 'pointer',
+              opacity: stopping ? 0.7 : 1,
               boxShadow: '0 1px 4px rgba(224,68,48,.35)',
             }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <rect width="12" height="12" x="6" y="6" rx="2"></rect>
             </svg>
-            Stop &amp; summarize
+            {stopping ? 'Finishing…' : 'Stop & transcribe'}
           </button>
           <button
             onClick={togglePause}
+            disabled={stopping}
             className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: '#fff', color: '#1c1a18', fontFamily: 'inherit', fontWeight: 600, fontSize: 13.5, cursor: 'pointer' }}
+            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: '#fff', color: '#1c1a18', fontFamily: 'inherit', fontWeight: 600, fontSize: 13.5, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
           <button
+            disabled={stopping}
             className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: '#fff', color: '#1c1a18', fontFamily: 'inherit', fontWeight: 600, fontSize: 13.5, cursor: 'pointer' }}
+            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: '#fff', color: '#1c1a18', fontFamily: 'inherit', fontWeight: 600, fontSize: 13.5, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
           >
             Add marker
           </button>

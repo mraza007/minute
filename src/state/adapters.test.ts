@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { ModelStatus, NoteMeta, Recommendation } from '../ipc/types'
+import type { ModelStatus, NoteMeta, Recommendation, TranscriptSegmentEvent } from '../ipc/types'
 import {
   formatBytes,
+  formatMmSs,
+  groupLiveSegments,
+  modelDisplayName,
   modelStatusToSttInfo,
   noteMetaToListItem,
   notesToSidebarItems,
@@ -177,5 +180,93 @@ describe('pickInitialSttModel', () => {
       model({ id: 'whisper-medium', kind: 'stt', state: 'installed' }),
     ]
     expect(pickInitialSttModel(models, recommendation)).toBe('whisper-medium')
+  })
+})
+
+describe('modelDisplayName', () => {
+  it('returns the display name for a known model id', () => {
+    const models = [model({ id: 'whisper-small', displayName: 'Whisper small' })]
+    expect(modelDisplayName(models, 'whisper-small')).toBe('Whisper small')
+  })
+
+  it('falls back to the bare id when the model is not (yet) in the loaded catalog', () => {
+    expect(modelDisplayName([], 'whisper-small')).toBe('whisper-small')
+  })
+})
+
+describe('formatMmSs', () => {
+  it('formats whole seconds as mm:ss, zero-padded', () => {
+    expect(formatMmSs(0)).toBe('00:00')
+    expect(formatMmSs(5)).toBe('00:05')
+    expect(formatMmSs(65)).toBe('01:05')
+    expect(formatMmSs(3661)).toBe('61:01')
+  })
+
+  it('floors fractional seconds', () => {
+    expect(formatMmSs(59.9)).toBe('00:59')
+  })
+
+  it('clamps negative values to zero', () => {
+    expect(formatMmSs(-5)).toBe('00:00')
+  })
+})
+
+function segEvent(overrides: Partial<TranscriptSegmentEvent> = {}): TranscriptSegmentEvent {
+  return {
+    noteId: '20260722-120000',
+    speaker: 'Speaker 1',
+    start: 0,
+    end: 1,
+    text: 'hello',
+    ...overrides,
+  }
+}
+
+describe('groupLiveSegments', () => {
+  it('returns an empty array for no segments', () => {
+    expect(groupLiveSegments([])).toEqual([])
+  })
+
+  it('keeps a single segment as its own group', () => {
+    const groups = groupLiveSegments([segEvent({ start: 0, end: 1, text: 'hello' })])
+    expect(groups).toEqual([{ speaker: 'Speaker 1', start: 0, end: 1, text: 'hello' }])
+  })
+
+  it('merges consecutive same-speaker segments into one group with a joined-text and extended end', () => {
+    const groups = groupLiveSegments([
+      segEvent({ speaker: 'Speaker 1', start: 0, end: 2, text: 'Hello there' }),
+      segEvent({ speaker: 'Speaker 1', start: 2, end: 4, text: 'how are you' }),
+    ])
+    expect(groups).toEqual([{ speaker: 'Speaker 1', start: 0, end: 4, text: 'Hello there how are you' }])
+  })
+
+  it('starts a new group when the speaker changes', () => {
+    const groups = groupLiveSegments([
+      segEvent({ speaker: 'Speaker 1', start: 0, end: 2, text: 'first' }),
+      segEvent({ speaker: 'Speaker 2', start: 2, end: 4, text: 'second' }),
+    ])
+    expect(groups).toEqual([
+      { speaker: 'Speaker 1', start: 0, end: 2, text: 'first' },
+      { speaker: 'Speaker 2', start: 2, end: 4, text: 'second' },
+    ])
+  })
+
+  it('handles speaker A -> B -> A as three separate groups (does not re-merge into the earlier A group)', () => {
+    const groups = groupLiveSegments([
+      segEvent({ speaker: 'Speaker 1', start: 0, end: 1, text: 'a1' }),
+      segEvent({ speaker: 'Speaker 2', start: 1, end: 2, text: 'b1' }),
+      segEvent({ speaker: 'Speaker 1', start: 2, end: 3, text: 'a2' }),
+    ])
+    expect(groups.map(g => g.speaker)).toEqual(['Speaker 1', 'Speaker 2', 'Speaker 1'])
+    expect(groups[2]).toEqual({ speaker: 'Speaker 1', start: 2, end: 3, text: 'a2' })
+  })
+
+  it('keeps the first segment start when merging a run of more than two', () => {
+    const groups = groupLiveSegments([
+      segEvent({ speaker: 'Speaker 1', start: 0, end: 1, text: 'one' }),
+      segEvent({ speaker: 'Speaker 1', start: 1, end: 2, text: 'two' }),
+      segEvent({ speaker: 'Speaker 1', start: 2, end: 3, text: 'three' }),
+    ])
+    expect(groups).toEqual([{ speaker: 'Speaker 1', start: 0, end: 3, text: 'one two three' }])
   })
 })

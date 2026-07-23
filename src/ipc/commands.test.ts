@@ -166,13 +166,13 @@ describe('ipc/commands', () => {
     expect(result).toEqual(stats)
   })
 
-  it('startRecording invokes start_recording and resolves the new note id', async () => {
+  it('startRecording invokes start_recording with { modelId } and resolves the new note id', async () => {
     const calls = captureIPC(() => '20260722-130000')
 
-    const result = await commands.startRecording()
+    const result = await commands.startRecording('whisper-small')
 
     expect(calls[0].cmd).toBe('start_recording')
-    expect(calls[0].args).toEqual({})
+    expect(calls[0].args).toEqual({ modelId: 'whisper-small' })
     expect(result).toBe('20260722-130000')
   })
 

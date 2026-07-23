@@ -652,28 +652,29 @@ fn emit_recording_state(app: &AppHandle, note_id: &str, state: &'static str, ela
 }
 
 /// Starts a new recording: creates a note via the store (title "New
-/// recording", hardcoded model id until Task 8 wires real settings),
-/// starts the `Recorder` writing into that note's `audio.wav`, spawns the
-/// live-transcription `SttWorker` (if the configured model is installed —
-/// recording still proceeds without one otherwise, just without a live
-/// transcript; see the `stt-status` error emitted below), and spawns the 1s
-/// ticker that keeps emitting `recording-state` while active. Returns the
-/// new note's id.
+/// recording", using the caller-supplied `model_id` — the frontend passes
+/// the user's currently selected STT model — falling back to
+/// "whisper-small" when `None`), starts the `Recorder` writing into that
+/// note's `audio.wav`, spawns the live-transcription `SttWorker` (if the
+/// resolved model is actually installed — recording still proceeds without
+/// one otherwise, just without a live transcript; an id that isn't even in
+/// the catalog is treated exactly the same way as "not installed", see
+/// `spawn_stt_worker_if_model_installed`), and spawns the 1s ticker that
+/// keeps emitting `recording-state` while active. Returns the new note's id.
 #[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
     store: State<'_, SharedStore>,
     recorder: State<'_, SharedRecorderState>,
+    model_id: Option<String>,
 ) -> std::result::Result<String, String> {
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
     }
 
-    // TODO(task8): use the user's selected STT model id once settings.json
-    // exists. Hardcoded for now.
-    let model_id = "whisper-small";
+    let model_id = model_id.unwrap_or_else(|| "whisper-small".to_string());
     let meta = lock_store(&store)
-        .create_note_now("New recording", model_id)
+        .create_note_now("New recording", &model_id)
         .map_err(|e| e.to_string())?;
     let note_dir = lock_store(&store).note_dir(&meta.id);
 
@@ -701,7 +702,7 @@ pub async fn start_recording(
 
     let note_id = meta.id.clone();
 
-    let stt_worker = spawn_stt_worker_if_model_installed(&app, &store, &note_id, model_id, sample_rx);
+    let stt_worker = spawn_stt_worker_if_model_installed(&app, &store, &note_id, &model_id, sample_rx);
 
     let tick_app = app.clone();
     let tick_note_id = note_id.clone();
@@ -1321,5 +1322,100 @@ mod tests {
     fn elapsed_tracker_never_started_reports_zero() {
         let tracker = ElapsedTracker::new();
         assert_eq!(tracker.elapsed_ms(Instant::now()), 0);
+    }
+
+    // --- real recording smoke test (manual only) -----------------------------
+
+    /// End-to-end smoke test against real hardware, exercising the exact
+    /// same pieces `start_recording`/`stop_recording` wire together (minus
+    /// the `AppHandle`, which those two need only to emit Tauri events —
+    /// everything else here is plain, non-Tauri Rust). Opens the *real*
+    /// app-data store, plays a short `say` utterance through the speakers
+    /// (so there's real speech for the mic to catch and whisper to
+    /// transcribe), records ~10s from the default input device, transcribes
+    /// it live with the installed whisper-small model, and asserts a real
+    /// note directory with `audio.wav` shows up under the real app data
+    /// dir. Requires whisper-small already installed (Task 4's real
+    /// download test) and a working, permission-granted input device — a
+    /// `Recorder::start` failure (no input device / mic permission denied)
+    /// fails this test with that error message rather than silently
+    /// no-op'ing, so a permission problem shows up directly in the test
+    /// output. Run manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///     real_recording_end_to_end -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_recording_end_to_end() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let app_data_dir = PathBuf::from(&home).join("Library/Application Support/dev.minute.app");
+
+        let catalog = catalog::load_catalog().expect("catalog.json should parse");
+        let entry = catalog
+            .into_iter()
+            .find(|e| e.id == "whisper-small")
+            .expect("catalog.json must contain whisper-small");
+        let model_path = catalog::installed_path(&entry, &app_data_dir);
+        assert!(
+            model_path.exists(),
+            "expected whisper-small installed at {model_path:?} (run Task 4's \
+             real_download_of_whisper_small test first)"
+        );
+
+        let store = crate::store::open_shared(app_data_dir.clone());
+        let meta = lock_store(&store)
+            .create_note_now("Smoke test recording", "whisper-small")
+            .expect("failed to create note");
+        let note_dir = lock_store(&store).note_dir(&meta.id);
+        eprintln!("recording into {note_dir:?}");
+
+        // Real speech through the speakers for the mic to (hopefully) pick
+        // up — non-fatal if `say` itself isn't available; the test still
+        // exercises the mechanical recording/finalize pipeline either way,
+        // just against ambient audio instead.
+        if let Err(e) = std::process::Command::new("say")
+            .arg("The quick brown fox jumps over the lazy dog.")
+            .spawn()
+        {
+            eprintln!("failed to spawn `say` (non-fatal, continuing with ambient audio): {e}");
+        }
+
+        let (sample_tx, sample_rx) =
+            std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let handle = Recorder::start(note_dir.clone(), sample_tx)
+            .expect("Recorder::start failed — check mic permission / input device availability");
+
+        let events: Arc<Mutex<Vec<stt::SttEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let worker_ctx = WorkerCtx {
+            note_id: meta.id.clone(),
+            store: store.clone(),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        };
+        let worker = stt::SttWorker::spawn(model_path, sample_rx, worker_ctx);
+
+        std::thread::sleep(Duration::from_secs(10));
+
+        let (duration_sec, wav_path) = handle.stop().expect("Recorder::stop failed");
+        worker.join().expect("stt worker thread panicked");
+        let final_meta = lock_store(&store)
+            .finalize_note(&meta.id, duration_sec, 1)
+            .expect("finalize_note failed");
+
+        eprintln!("recorded {duration_sec:.1}s, wav at {wav_path:?}");
+        eprintln!("final note status: {:?}", final_meta.status);
+        let events = events.lock().unwrap();
+        eprintln!("captured {} stt events: {:?}", events.len(), *events);
+
+        assert!(note_dir.exists(), "note directory should exist");
+        assert!(wav_path.exists(), "audio.wav should exist");
+        let wav_len = std::fs::metadata(&wav_path).map(|m| m.len()).unwrap_or(0);
+        eprintln!("audio.wav size: {wav_len} bytes");
+        assert!(wav_len > 44, "audio.wav should contain more than just a WAV header");
+
+        let (_meta, transcript) = lock_store(&store).get_note(&meta.id).unwrap();
+        eprintln!("transcript.json segments: {:?}", transcript.segments);
     }
 }

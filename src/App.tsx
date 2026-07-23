@@ -44,7 +44,18 @@ export default function App() {
           statsLine={s.statsLine}
         />
         {s.view === 'notes' && <NoteView state={s} />}
-        {s.view === 'recording' && <RecordingView paused={s.paused} togglePause={s.togglePause} stopRec={s.stopRec} />}
+        {s.view === 'recording' && (
+          <RecordingView
+            liveSegments={s.liveSegments}
+            paused={s.paused}
+            togglePause={s.togglePause}
+            stopRec={s.stopRec}
+            stopping={s.stopping}
+            sttStatus={s.sttStatus}
+            sttError={s.sttError}
+            modelName={s.sttModelDisplayName}
+          />
+        )}
         {s.view === 'settings' && (
           <SettingsView
             models={s.models}

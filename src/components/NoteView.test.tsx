@@ -27,9 +27,15 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
     storage: null,
     lastError: null,
     sttModel: '',
+    sttModelDisplayName: '',
     sel: 0,
-    recSeconds: 0,
+    recElapsed: 0,
     paused: false,
+    stopping: false,
+    sttStatus: 'idle',
+    sttError: null,
+    sttStatusNoteId: null,
+    liveSegments: [],
     asked: false,
     askDraft: '',
     tDel: true,
@@ -122,5 +128,48 @@ describe('NoteView', () => {
     expect(screen.getByText('AI notes')).toBeInTheDocument()
     expect(screen.getByText('Summaries arrive in a later update.')).toBeInTheDocument()
     expect(screen.queryByText('ASK YOUR NOTES')).not.toBeInTheDocument()
+  })
+
+  describe('status pill', () => {
+    it('shows a "Finalizing transcript…" pill when the selected note is mid-finalization', () => {
+      const note = noteFixture({ id: 'note-1', status: 'recording' })
+      render(<NoteView state={makeState({ notes: [note], sttStatusNoteId: 'note-1', sttStatus: 'finalizing' })} />)
+      expect(screen.getByText('Finalizing transcript…')).toBeInTheDocument()
+      expect(screen.queryByText('Transcribed')).not.toBeInTheDocument()
+    })
+
+    it('shows a green "Transcribed" pill when the selected note is transcribed', () => {
+      const note = noteFixture({ id: 'note-1', status: 'transcribed' })
+      render(<NoteView state={makeState({ notes: [note], sttStatusNoteId: null, sttStatus: 'idle' })} />)
+      expect(screen.getByText('Transcribed')).toBeInTheDocument()
+      expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
+    })
+
+    it('prefers the finalizing pill over the transcribed pill for the same note', () => {
+      // meta.status can already read 'transcribed' (the backend finalizes
+      // the note before the stt worker's tail flush finishes emitting its
+      // last stt-status event) — while sttStatus still says 'finalizing'
+      // for this note, that takes priority.
+      const note = noteFixture({ id: 'note-1', status: 'transcribed' })
+      render(<NoteView state={makeState({ notes: [note], sttStatusNoteId: 'note-1', sttStatus: 'finalizing' })} />)
+      expect(screen.getByText('Finalizing transcript…')).toBeInTheDocument()
+      expect(screen.queryByText('Transcribed')).not.toBeInTheDocument()
+    })
+
+    it('shows no pill when the note is still recording and sttStatus does not reference it', () => {
+      const note = noteFixture({ id: 'note-1', status: 'recording' })
+      render(<NoteView state={makeState({ notes: [note], sttStatusNoteId: 'some-other-note', sttStatus: 'finalizing' })} />)
+      expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
+      expect(screen.queryByText('Transcribed')).not.toBeInTheDocument()
+    })
+
+    it('does not show the finalizing pill for a different (non-selected) note', () => {
+      const notes = [
+        noteFixture({ id: 'note-1', title: 'First', status: 'recording' }),
+        noteFixture({ id: 'note-2', title: 'Second', status: 'recording' }),
+      ]
+      render(<NoteView state={makeState({ notes, sel: 0, sttStatusNoteId: 'note-2', sttStatus: 'finalizing' })} />)
+      expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
+    })
   })
 })

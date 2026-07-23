@@ -56,22 +56,29 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
 function setupIPC(opts: { models?: ModelStatus[]; notes?: NoteMeta[] } = {}) {
   const models = opts.models ?? [sttModel({ state: 'installed' }), llmModel()]
   const notes = opts.notes ?? [noteFixture()]
-  mockIPC(cmd => {
-    switch (cmd) {
-      case 'list_models':
-        return models
-      case 'list_notes':
-        return notes
-      case 'hardware_info':
-        return hardware
-      case 'recommended_models':
-        return recommendation
-      case 'storage_stats':
-        return storage
-      default:
-        return null
-    }
-  })
+  mockIPC(
+    cmd => {
+      switch (cmd) {
+        case 'list_models':
+          return models
+        case 'list_notes':
+          return notes
+        case 'hardware_info':
+          return hardware
+        case 'recommended_models':
+          return recommendation
+        case 'storage_stats':
+          return storage
+        case 'start_recording':
+          return '20260722-130000'
+        case 'stop_recording':
+          return notes[0] ?? noteFixture()
+        default:
+          return null
+      }
+    },
+    { shouldMockEvents: true },
+  )
 }
 
 describe('App', () => {
@@ -100,17 +107,18 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument())
     expect(screen.getByText('REC 00:00')).toBeInTheDocument()
   })
 
-  it('returns to the notes view when "Stop & summarize" is clicked', async () => {
+  it('returns to the notes view when "Stop & transcribe" is clicked', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    fireEvent.click(screen.getByRole('button', { name: /stop & summarize/i }))
-    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
   })
 
   it('shows SettingsView when Settings is clicked in the sidebar, and returns to notes via "All notes"', async () => {

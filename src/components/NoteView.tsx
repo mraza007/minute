@@ -1,3 +1,4 @@
+import type { NoteMeta } from '../ipc/types'
 import type { AppState } from '../state/useAppState'
 import { noteMetaToListItem } from '../state/adapters'
 import { MarkdownCard } from './MarkdownCard'
@@ -46,6 +47,79 @@ function AiPlaceholderPanel() {
   )
 }
 
+/**
+ * Header status pill: "Finalizing transcript…" (red spinner, same visual
+ * language as AiNotesPanel's "Summarizing on-device" banner) while the
+ * selected note's transcript is still being flushed by the stt worker,
+ * else a green "Transcribed" pill once the note has actually reached that
+ * status. The finalizing check is keyed off `sttStatusNoteId` matching
+ * this note specifically — not just "any recording is finalizing" — so it
+ * never applies to the wrong note, and it wins over `meta.status` already
+ * reading 'transcribed' (the backend finalizes the note before the stt
+ * worker's tail-window flush finishes emitting its last event).
+ */
+function StatusPill({ state, meta }: { state: AppState; meta: NoteMeta }) {
+  const finalizing = state.sttStatusNoteId === meta.id && state.sttStatus === 'finalizing'
+
+  if (finalizing) {
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 10px',
+          borderRadius: 999,
+          background: '#ffe6e1',
+          border: '1px solid rgba(224,68,48,.3)',
+          color: '#b3200c',
+          fontSize: 11.5,
+          fontWeight: 700,
+          flex: 'none',
+        }}
+      >
+        <span
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: '50%',
+            border: '2px solid rgba(224,68,48,.25)',
+            borderTopColor: '#e04430',
+            animation: 'spin .8s linear infinite',
+            flex: 'none',
+          }}
+        />
+        Finalizing transcript…
+      </span>
+    )
+  }
+
+  if (meta.status === 'transcribed') {
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 7,
+          padding: '4px 10px',
+          borderRadius: 999,
+          background: 'rgba(40,167,69,.1)',
+          border: '1px solid rgba(40,167,69,.25)',
+          color: '#1e7c34',
+          fontSize: 11.5,
+          fontWeight: 700,
+          flex: 'none',
+        }}
+      >
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#28a745' }} />
+        Transcribed
+      </span>
+    )
+  }
+
+  return null
+}
+
 function slugify(title: string): string {
   const slug = title
     .toLowerCase()
@@ -78,7 +152,10 @@ export function NoteView({ state }: NoteViewProps) {
           }}
         >
           <div>
-            <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>{meta.title}</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>{meta.title}</h1>
+              <StatusPill state={state} meta={meta} />
+            </div>
             <div style={{ marginTop: 4, fontSize: 12.5, color: '#8d867f' }}>
               {metaLine} · {dateLabel} · stored locally
             </div>

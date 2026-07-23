@@ -1,10 +1,10 @@
-// Test fixtures, mostly. As of Stage 2 the app renders real data from the
-// Tauri backend (src/ipc/*) for notes/models/settings — those components no
-// longer import this file at runtime. The one holdout is RecordingView,
-// which still renders `liveTranscript` from here directly: wiring the live
-// transcript to real `transcript-segment` events is Task 9's job, not this
-// one. Everything else here is a reusable fixture for component tests
-// (Sidebar.test, TranscriptList.test, AiNotesPanel.test, MarkdownCard.test).
+// Test-fixtures-only, as of Task 9. The app renders real data from the
+// Tauri backend (src/ipc/*) for notes/models/settings/live transcripts —
+// no component imports this file at runtime anymore (RecordingView's live
+// transcript is now wired to real `transcript-segment` events, grouped via
+// `state/adapters.ts`'s `groupLiveSegments`). Everything here is a reusable
+// fixture for component tests (Sidebar.test, TranscriptList.test,
+// AiNotesPanel.test, MarkdownCard.test).
 
 import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
 
@@ -56,27 +56,6 @@ export const demoTranscript: TranscriptSegment[] = [
     time: '02:26',
     isMe: true,
     text: "Yes — Markdown export is templated, I'll set one up and share it with the pilot group before Friday.",
-  },
-]
-
-export const liveTranscript: TranscriptSegment[] = [
-  {
-    initials: 'S1',
-    speaker: 'Speaker 1',
-    time: '13:58',
-    text: '…so the headline for the board is that churn is down for the third straight month, and the Acme expansion covers the shortfall from the SMB tier.',
-  },
-  {
-    initials: 'S2',
-    speaker: 'Speaker 2',
-    time: '14:16',
-    text: "Agreed. I'd put the security-review milestone on the timeline slide — it gates the 200-seat rollout, so the board should see it explicitly.",
-  },
-  {
-    initials: 'S1',
-    speaker: 'Speaker 1',
-    time: '14:31',
-    text: 'Good call. Then the ask: two additional hires for the on-device inference team, starting',
   },
 ]
 

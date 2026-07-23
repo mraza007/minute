@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
-import type { Hardware, NoteMeta, StorageStats } from '../ipc/types'
-import type { NoteTab, View } from '../types'
-import { formatBytes, notesToSidebarItems } from './adapters'
+import { onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
+import type { Hardware, NoteMeta, StorageStats, TranscriptSegmentEvent } from '../ipc/types'
+import type { NoteTab, SttStatus, View } from '../types'
+import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { useModelManager } from './useModelManager'
+import { useTauriEvent } from './useTauriEvent'
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -20,11 +22,29 @@ export function useAppState() {
   const [lastError, setLastErrorState] = useState<string | null>(null)
 
   const [sel, setSel] = useState(0)
-  const [recSeconds, setRecSeconds] = useState(0)
-  const [paused, setPaused] = useState(false)
   const [asked, setAsked] = useState(false)
   const [askDraft, setAskDraft] = useState('')
   const [noteTab, setNoteTab] = useState<NoteTab>('transcript')
+
+  // Recording slice — entirely backend-event-driven (no local interval
+  // timer): `activeNoteId` is what every recording/segment event handler
+  // below filters incoming payloads against, so a stray event belonging to
+  // a previous (already-stopped) recording can never leak into the live
+  // view. See `startRec`/`togglePause`/`stopRec` further down.
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
+  const [liveSegmentsRaw, setLiveSegmentsRaw] = useState<TranscriptSegmentEvent[]>([])
+  const [recElapsed, setRecElapsed] = useState(0)
+  const [paused, setPaused] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [sttStatus, setSttStatus] = useState<SttStatus>('idle')
+  const [sttError, setSttError] = useState<string | null>(null)
+  // The note id the most recent onSttStatus event was actually about.
+  // Unlike `activeNoteId`, `stopRec` deliberately leaves this (and
+  // `sttStatus`/`sttError`) alone — NoteView matches it against the
+  // selected note's id to show a "Finalizing transcript…" pill for the
+  // stretch (if any) between a note being marked stopped and its
+  // transcript actually finishing.
+  const [sttStatusNoteId, setSttStatusNoteId] = useState<string | null>(null)
 
   // TODO: not yet persisted — settings.json is a backend task (see the
   // design doc's storage shapes); local-only until then.
@@ -77,13 +97,41 @@ export function useAppState() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Local recording timer — Task 9 replaces this with the real `elapsed`
-  // field off `recording-state` events and drops this interval entirely.
-  useEffect(() => {
-    if (view !== 'recording' || paused) return
-    const t = setInterval(() => setRecSeconds(s => s + 1), 1000)
-    return () => clearInterval(t)
-  }, [view, paused])
+  // Subscribed unconditionally (not gated on `view === 'recording'`) so
+  // there's no mount-timing race against `start_recording`'s response —
+  // every handler below filters on `activeNoteId` instead. useTauriEvent
+  // refreshes its callback closure on every render, so referencing
+  // `activeNoteId` directly here always sees its latest value without a
+  // manual ref.
+  useTauriEvent(
+    onRecordingState,
+    payload => {
+      if (payload.noteId !== activeNoteId) return
+      setRecElapsed(payload.elapsed)
+      setPaused(payload.state === 'paused')
+    },
+    [],
+  )
+
+  useTauriEvent(
+    onTranscriptSegment,
+    payload => {
+      if (payload.noteId !== activeNoteId) return
+      setLiveSegmentsRaw(prev => [...prev, payload])
+    },
+    [],
+  )
+
+  useTauriEvent(
+    onSttStatus,
+    payload => {
+      if (payload.noteId !== activeNoteId) return
+      setSttStatus(payload.state)
+      setSttError(payload.error)
+      setSttStatusNoteId(payload.noteId)
+    },
+    [],
+  )
 
   const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
 
@@ -92,8 +140,73 @@ export function useAppState() {
     return `${notes.length} notes · ${formatBytes(totalBytes)} local · nothing synced`
   }, [notes, storage])
 
-  const mm = Math.floor(recSeconds / 60)
-  const ss = recSeconds % 60
+  const liveSegments = useMemo(() => groupLiveSegments(liveSegmentsRaw), [liveSegmentsRaw])
+
+  const sttModelDisplayName = useMemo(
+    () => modelDisplayName(modelManager.models, modelManager.sttModel),
+    [modelManager.models, modelManager.sttModel],
+  )
+
+  /** Starts a new recording with the currently selected STT model. */
+  function startRec() {
+    ipc
+      .startRecording(modelManager.sttModel)
+      .then(noteId => {
+        setActiveNoteId(noteId)
+        setLiveSegmentsRaw([])
+        setRecElapsed(0)
+        setPaused(false)
+        setSttStatus('idle')
+        setSttError(null)
+        setSttStatusNoteId(null)
+        setView('recording')
+      })
+      .catch(reportError)
+  }
+
+  /**
+   * Flips `paused` optimistically, then asks the backend to actually
+   * pause/resume. The next `recording-state` tick (at most ~1s away, or
+   * immediate — `pause_recording`/`resume_recording` themselves emit one
+   * synchronously) reconciles it either way, so a failed call just needs to
+   * be reported, not manually rolled back.
+   */
+  function togglePause() {
+    const nextPaused = !paused
+    setPaused(nextPaused)
+    const action = nextPaused ? ipc.pauseRecording() : ipc.resumeRecording()
+    action.catch(reportError)
+  }
+
+  /**
+   * Stops the active recording: sets `stopping` (RecordingView disables its
+   * controls off this) until the backend finishes finalizing, then
+   * refreshes the note list + storage stats, selects the newly finalized
+   * note, and returns to the notes view. Only `activeNoteId` and the live
+   * segment buffer are cleared — `sttStatus`/`sttError`/`sttStatusNoteId`
+   * are deliberately left as-is; see their declarations above for why.
+   */
+  function stopRec() {
+    setStopping(true)
+    ipc
+      .stopRecording()
+      .then(newNote =>
+        Promise.all([ipc.listNotes(), ipc.storageStats()]).then(([freshNotes, freshStorage]) => {
+          setNotes(freshNotes)
+          setStorage(freshStorage)
+          const idx = freshNotes.findIndex(n => n.id === newNote.id)
+          setSel(idx >= 0 ? idx : 0)
+          setView('notes')
+          setActiveNoteId(null)
+          setLiveSegmentsRaw([])
+          setStopping(false)
+        }),
+      )
+      .catch(err => {
+        setStopping(false)
+        reportError(err)
+      })
+  }
 
   return {
     view,
@@ -105,9 +218,15 @@ export function useAppState() {
     storage,
     lastError: lastError ?? modelManager.lastError,
     sttModel: modelManager.sttModel,
+    sttModelDisplayName,
     sel,
-    recSeconds,
+    recElapsed,
     paused,
+    stopping,
+    sttStatus,
+    sttError,
+    sttStatusNoteId,
+    liveSegments,
     asked,
     askDraft,
     tDel,
@@ -115,17 +234,13 @@ export function useAppState() {
     noteTab,
     sidebarNotes,
     statsLine,
-    recTime: `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`,
+    recTime: formatMmSs(recElapsed),
     askText: askDraft || 'What did we promise Acme?',
     goNotes: () => setView('notes'),
     goSettings: () => setView('settings'),
-    startRec: () => {
-      setView('recording')
-      setRecSeconds(0)
-      setPaused(false)
-    },
-    stopRec: () => setView('notes'),
-    togglePause: () => setPaused(p => !p),
+    startRec,
+    stopRec,
+    togglePause,
     selectNote: setSel,
     setNoteTab,
     setAskDraft,
