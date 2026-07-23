@@ -87,4 +87,16 @@ describe('NoteView', () => {
     render(<NoteView state={makeState({ noteTab: 'transcript' })} />)
     expect(screen.queryByText('client-call-acme.md')).not.toBeInTheDocument()
   })
+
+  it('shows the AI notes panel on the transcript tab', () => {
+    render(<NoteView state={makeState({ noteTab: 'transcript' })} />)
+    expect(screen.getByText('AI notes')).toBeInTheDocument()
+    expect(screen.getByText('ASK YOUR NOTES')).toBeInTheDocument()
+  })
+
+  it('shows the AI notes panel on the markdown tab', () => {
+    render(<NoteView state={makeState({ noteTab: 'md' })} />)
+    expect(screen.getByText('AI notes')).toBeInTheDocument()
+    expect(screen.getByText('ASK YOUR NOTES')).toBeInTheDocument()
+  })
 })

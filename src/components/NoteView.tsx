@@ -1,5 +1,6 @@
 import { demoNotes, demoTranscript } from '../data/demo'
 import type { AppState } from '../state/useAppState'
+import { AiNotesPanel } from './AiNotesPanel'
 import { MarkdownCard } from './MarkdownCard'
 import { PlayerBar } from './PlayerBar'
 import { TranscriptList } from './TranscriptList'
@@ -177,6 +178,16 @@ export function NoteView({ state }: NoteViewProps) {
         )}
         {state.noteTab === 'md' && <MarkdownCard />}
       </div>
+      <AiNotesPanel
+        summarizing={state.summarizing}
+        actions={state.actions}
+        toggleAction={state.toggleAction}
+        asked={state.asked}
+        askText={state.askText}
+        askDraft={state.askDraft}
+        setAskDraft={state.setAskDraft}
+        ask={state.ask}
+      />
     </div>
   )
 }
