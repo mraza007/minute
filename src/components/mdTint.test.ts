@@ -59,4 +59,22 @@ describe('mdTint', () => {
     const tokens = mdTint('')
     expect(tokens).toEqual([{ text: '' }])
   })
+
+  it('leaves unclosed bold markers as a single plain token with literal asterisks', () => {
+    const tokens = mdTint('**Date: May 21')
+    expect(tokens).toEqual([{ text: '**Date: May 21' }])
+  })
+
+  it('pins current behavior for a marker-only unchecked action item line', () => {
+    const tokens = mdTint('- [ ]')
+    expect(tokens).toEqual([{ text: '- [ ]', color: '#9a938c' }])
+  })
+
+  it('pins current behavior for a marker-only dash-bullet line', () => {
+    const tokens = mdTint('- ')
+    expect(tokens).toEqual([
+      { text: '-', color: '#9a938c' },
+      { text: ' ' },
+    ])
+  })
 })

@@ -1,3 +1,9 @@
+// Tints only the markdown subset the app itself emits (ATX headings, "- " /
+// "- [x]" bullets, **bold**, " (HH:MM)" timestamps, " ★ highlight").
+// TODO(stage3): revisit when summaries come from the local LLM — ordered
+// lists, blockquotes, code fences, links, and italics currently render
+// as plain text, and markers are only detected at column 0.
+
 export interface MdToken {
   text: string
   color?: string
