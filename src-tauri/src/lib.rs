@@ -9,9 +9,11 @@ mod store;
 mod audio;
 #[allow(dead_code)]
 mod stt;
+mod download;
 mod error;
 
-use catalog::{Hardware, ModelStatus, Recommendation};
+use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
+use download::DownloadRegistry;
 use store::{lock_store, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
@@ -20,8 +22,18 @@ fn hardware_info() -> Hardware {
   catalog::detect_hardware()
 }
 
+/// Lists every catalog entry with its current install state. A model's
+/// state is `Downloading` iff the download registry has an active
+/// cancellation flag for it right now — not merely because a `.part` file
+/// exists on disk. A `.part` with no active registry entry means an idle,
+/// resumable-but-not-installed download (e.g. cancelled, or left over from
+/// a killed app), which is reported the same as `NotInstalled` rather than
+/// a misleading "still downloading".
 #[tauri::command]
-fn list_models(app: AppHandle) -> Result<Vec<ModelStatus>, String> {
+fn list_models(
+  app: AppHandle,
+  registry: State<DownloadRegistry>,
+) -> Result<Vec<ModelStatus>, String> {
   let models_root = app
     .path()
     .app_data_dir()
@@ -31,7 +43,11 @@ fn list_models(app: AppHandle) -> Result<Vec<ModelStatus>, String> {
     entries
       .into_iter()
       .map(|entry| {
-        let state = catalog::install_state(&entry, &models_root);
+        let state = if download::registry_is_active(&registry, &entry.id) {
+          InstallState::Downloading
+        } else {
+          catalog::install_state(&entry, &models_root)
+        };
         ModelStatus { entry, state }
       })
       .collect(),
@@ -102,7 +118,10 @@ pub fn run() {
       get_note,
       rename_note,
       delete_note,
-      storage_stats
+      storage_stats,
+      download::download_model,
+      download::cancel_download,
+      download::delete_model
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -124,6 +143,12 @@ pub fn run() {
       // way to obtain one; `Store::new` itself is private to `store.rs`.
       let shared_store: SharedStore = store::open_shared(app_data_dir);
       app.manage(shared_store);
+
+      // Tracks in-flight model downloads so `cancel_download` can signal
+      // them and `list_models` can report `Downloading` state — see
+      // `download::DownloadRegistry`.
+      let download_registry: DownloadRegistry = download::open_registry();
+      app.manage(download_registry);
 
       Ok(())
     })
