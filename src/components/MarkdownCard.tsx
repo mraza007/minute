@@ -1,9 +1,14 @@
 import type { ReactNode } from 'react'
-import { demoMarkdown } from '../data/demo'
 import { mdTint } from './mdTint'
 
-function MarkdownBody() {
-  const lines = demoMarkdown.split('\n')
+interface MarkdownCardProps {
+  filename: string
+  subtitle: string
+  markdown: string
+}
+
+function MarkdownBody({ markdown }: { markdown: string }) {
+  const lines = markdown.split('\n')
   const nodes: ReactNode[] = []
 
   lines.forEach((line, lineIdx) => {
@@ -25,7 +30,7 @@ function MarkdownBody() {
   return <>{nodes}</>
 }
 
-export function MarkdownCard() {
+export function MarkdownCard({ filename, subtitle, markdown }: MarkdownCardProps) {
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px 28px', minHeight: 0 }}>
       <div
@@ -53,9 +58,9 @@ export function MarkdownCard() {
             <path d="M15 3v6h6"></path>
           </svg>
           <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, fontWeight: 600, color: '#33302c' }}>
-            client-call-acme.md
+            {filename}
           </span>
-          <span style={{ fontSize: 11, color: '#9a938c' }}>4.2 KB · saved locally</span>
+          <span style={{ fontSize: 11, color: '#9a938c' }}>{subtitle}</span>
           <div style={{ flex: 1 }} />
           <button
             className="btn-light"
@@ -101,7 +106,7 @@ export function MarkdownCard() {
             overflowWrap: 'break-word',
           }}
         >
-          <MarkdownBody />
+          <MarkdownBody markdown={markdown} />
         </div>
       </div>
     </div>

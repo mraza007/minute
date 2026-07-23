@@ -1,4 +1,4 @@
-export type View = 'notes' | 'recording' | 'settings'
+export type View = 'loading' | 'onboarding' | 'notes' | 'recording' | 'settings'
 export type NoteTab = 'transcript' | 'md'
 
 export interface NoteListItem {

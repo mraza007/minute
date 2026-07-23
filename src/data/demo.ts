@@ -1,3 +1,9 @@
+// Test fixtures only. As of Stage 2 the app renders real data from the
+// Tauri backend (src/ipc/*) — nothing here is imported by production
+// components/state anymore. Kept around purely as reusable fixtures for
+// component tests (Sidebar.test, TranscriptList.test, AiNotesPanel.test,
+// MarkdownCard.test, RecordingView's still-demo live-insights panel, ...).
+
 import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
 
 export const demoNotes: NoteListItem[] = [

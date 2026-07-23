@@ -1,6 +1,5 @@
-import { demoNotes, demoTranscript } from '../data/demo'
 import type { AppState } from '../state/useAppState'
-import { AiNotesPanel } from './AiNotesPanel'
+import { noteMetaToListItem } from '../state/adapters'
 import { MarkdownCard } from './MarkdownCard'
 import { PlayerBar } from './PlayerBar'
 import { TranscriptList } from './TranscriptList'
@@ -9,8 +8,61 @@ interface NoteViewProps {
   state: AppState
 }
 
+function EmptyNotesArea() {
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f7f6f4' }}>
+      <div style={{ textAlign: 'center', maxWidth: 340 }}>
+        <div style={{ fontWeight: 700, fontSize: 17 }}>No notes yet</div>
+        <div style={{ marginTop: 6, fontSize: 13, color: '#8d867f', lineHeight: 1.6 }}>
+          Hit "New recording" in the title bar to capture your first meeting — transcription happens entirely on this
+          Mac.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AiPlaceholderPanel() {
+  return (
+    <div
+      style={{
+        width: 330,
+        flex: 'none',
+        borderLeft: '1px solid rgba(0,0,0,.07)',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        background: '#f2f0ee',
+      }}
+    >
+      <div style={{ padding: '16px 16px 12px', fontWeight: 700, fontSize: 14 }}>AI notes</div>
+      <div style={{ padding: '0 16px 16px' }}>
+        <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 12, padding: '14px 16px' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c', marginBottom: 6 }}>SUMMARY</div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.6, color: '#9a938c' }}>Summaries arrive in a later update.</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function slugify(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'note'
+}
+
 export function NoteView({ state }: NoteViewProps) {
-  const note = demoNotes[state.sel]
+  if (state.notes.length === 0) {
+    return <EmptyNotesArea />
+  }
+
+  const meta = state.notes[state.sel] ?? state.notes[0]
+  const metaLine = noteMetaToListItem(meta, new Date()).meta
+  const dateLabel = new Date(meta.createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+  const noteMarkdown = `# ${meta.title}\n\nMarkdown export will include the full transcript once available.`
 
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0, background: '#f7f6f4' }}>
@@ -26,42 +78,10 @@ export function NoteView({ state }: NoteViewProps) {
           }}
         >
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>{note.title}</h1>
-              {!state.summarizing && (
-                <span style={{ padding: '3px 10px', borderRadius: 999, background: '#e9f5ec', color: '#1e7c34', fontSize: 11, fontWeight: 600 }}>
-                  Summarized
-                </span>
-              )}
-              {state.summarizing && (
-                <span
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '3px 10px',
-                    borderRadius: 999,
-                    background: '#fff4f1',
-                    color: '#b3200c',
-                    fontSize: 11,
-                    fontWeight: 600,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 9,
-                      height: 9,
-                      borderRadius: '50%',
-                      border: '1.5px solid rgba(224,68,48,.3)',
-                      borderTopColor: '#e04430',
-                      animation: 'spin .8s linear infinite',
-                    }}
-                  />
-                  Summarizing…
-                </span>
-              )}
+            <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>{meta.title}</h1>
+            <div style={{ marginTop: 4, fontSize: 12.5, color: '#8d867f' }}>
+              {metaLine} · {dateLabel} · stored locally
             </div>
-            <div style={{ marginTop: 4, fontSize: 12.5, color: '#8d867f' }}>{note.meta} · May 21, 2026 · stored locally</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 'none' }}>
             <div role="tablist" aria-label="Note content" style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
@@ -176,22 +196,16 @@ export function NoteView({ state }: NoteViewProps) {
         </div>
         {state.noteTab === 'transcript' && (
           <>
-            <TranscriptList segments={demoTranscript} />
+            {/* Real segments load via get_note in Task 10 — empty for now. */}
+            <TranscriptList segments={[]} />
             <PlayerBar />
           </>
         )}
-        {state.noteTab === 'md' && <MarkdownCard />}
+        {state.noteTab === 'md' && (
+          <MarkdownCard filename={`${slugify(meta.title)}.md`} subtitle="saved locally" markdown={noteMarkdown} />
+        )}
       </div>
-      <AiNotesPanel
-        summarizing={state.summarizing}
-        actions={state.actions}
-        toggleAction={state.toggleAction}
-        asked={state.asked}
-        askText={state.askText}
-        askDraft={state.askDraft}
-        setAskDraft={state.setAskDraft}
-        ask={state.ask}
-      />
+      <AiPlaceholderPanel />
     </div>
   )
 }

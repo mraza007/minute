@@ -9,6 +9,7 @@ const base = {
   view: 'notes' as const,
   onGoNotes: vi.fn(),
   onGoSettings: vi.fn(),
+  statsLine: '6 notes · 3.2 GB local · nothing synced',
 }
 
 describe('Sidebar', () => {
@@ -58,5 +59,16 @@ describe('Sidebar', () => {
     render(<Sidebar {...base} onGoSettings={onGoSettings} />)
     fireEvent.click(screen.getByRole('button', { name: /settings/i }))
     expect(onGoSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the given stats line', () => {
+    render(<Sidebar {...base} statsLine="0 notes · 0 MB local · nothing synced" />)
+    expect(screen.getByText('0 notes · 0 MB local · nothing synced')).toBeInTheDocument()
+  })
+
+  it('shows an empty-library message and no note rows when notes is empty', () => {
+    render(<Sidebar {...base} notes={[]} />)
+    expect(screen.getByText(/no notes yet/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /board prep sync/i })).not.toBeInTheDocument()
   })
 })

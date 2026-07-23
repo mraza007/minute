@@ -1,9 +1,61 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import type { ModelStatus, StorageStats } from '../ipc/types'
 import { SettingsView } from './SettingsView'
 
+function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
+  return {
+    id: 'whisper-small',
+    kind: 'stt',
+    displayName: 'Whisper small',
+    desc: '62× realtime · good for meetings',
+    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
+    sha256: 'a'.repeat(64),
+    sizeBytes: 466_000_000,
+    minRamGb: 0,
+    requiresAppleSilicon: false,
+    state: 'notInstalled',
+    ...overrides,
+  }
+}
+
+function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
+  return {
+    id: 'qwen3.5-4b',
+    kind: 'llm',
+    displayName: 'Qwen3.5-4B',
+    desc: 'fast default summarizer',
+    url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
+    sha256: 'b'.repeat(64),
+    sizeBytes: 2_600_000_000,
+    minRamGb: 8,
+    requiresAppleSilicon: false,
+    state: 'notInstalled',
+    ...overrides,
+  }
+}
+
+const models: ModelStatus[] = [
+  sttModel({ id: 'whisper-small', state: 'installed' }),
+  sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'notInstalled', sizeBytes: 1_500_000_000 }),
+  sttModel({ id: 'whisper-large-v3-turbo', displayName: 'Whisper large-v3-turbo', state: 'downloading' }),
+  llmModel({ id: 'qwen3.5-4b', state: 'installed' }),
+  llmModel({ id: 'gemma-4-e4b', displayName: 'Gemma 4 E4B', state: 'notInstalled', sizeBytes: 5_300_000_000 }),
+  llmModel({ id: 'qwen3.5-9b', displayName: 'Qwen3.5-9B', state: 'notInstalled', sizeBytes: 5_600_000_000 }),
+]
+
+const storage: StorageStats = { modelsBytes: 6_400_000_000, audioBytes: 4_100_000_000, notesBytes: 1_900_000_000 }
+
 const base = {
-  sttModel: 'medium',
+  models,
+  downloads: { 'whisper-large-v3-turbo': { downloaded: 800_000_000, total: 1_600_000_000 } },
+  sttModel: 'whisper-small',
   setSttModel: vi.fn(),
+  downloadModel: vi.fn(),
+  cancelDownload: vi.fn(),
+  deleteModel: vi.fn(),
+  storage,
+  noteCount: 14,
   tDel: true,
   toggleDel: vi.fn(),
   tEnc: false,
@@ -16,39 +68,72 @@ describe('SettingsView', () => {
     expect(screen.getByText('Nothing leaves this machine.')).toBeInTheDocument()
   })
 
-  it('calls setSttModel with the clicked model id', () => {
-    const setSttModel = vi.fn()
-    render(<SettingsView {...base} setSttModel={setSttModel} />)
-    fireEvent.click(screen.getByRole('radio', { name: /whisper small/i }))
-    expect(setSttModel).toHaveBeenCalledWith('small')
-
-    fireEvent.click(screen.getByRole('radio', { name: /whisper large-v3/i }))
-    expect(setSttModel).toHaveBeenCalledWith('large')
-  })
-
-  it('shows the "in use" sub text for the selected model and the plain sub text for others', () => {
-    render(<SettingsView {...base} sttModel="medium" />)
-    const selected = screen.getByRole('radio', { name: /whisper medium/i })
-    expect(selected).toHaveTextContent('Installed · in use')
-    expect(selected).toHaveAttribute('aria-checked', 'true')
-
-    const unselected = screen.getByRole('radio', { name: /whisper small/i })
-    expect(unselected).toHaveTextContent('Recommended for this Mac')
-    expect(unselected).not.toHaveTextContent('Installed · in use')
-    expect(unselected).toHaveAttribute('aria-checked', 'false')
-  })
-
-  it('groups the transcription models under a radiogroup', () => {
+  it('groups the transcription models under a radiogroup with one radio per STT entry', () => {
     render(<SettingsView {...base} />)
     expect(screen.getByRole('radiogroup', { name: /transcription model/i })).toBeInTheDocument()
     expect(screen.getAllByRole('radio')).toHaveLength(3)
   })
 
-  it('renders the Qwen summary model card copy', () => {
+  it('calls setSttModel with the clicked model id', () => {
+    const setSttModel = vi.fn()
+    render(<SettingsView {...base} setSttModel={setSttModel} />)
+    fireEvent.click(screen.getByRole('radio', { name: /whisper medium/i }))
+    expect(setSttModel).toHaveBeenCalledWith('whisper-medium')
+  })
+
+  it('shows "Installed · in use" for the selected installed model and aria-checked reflects selection', () => {
+    render(<SettingsView {...base} sttModel="whisper-small" />)
+    const selected = screen.getByRole('radio', { name: /whisper small/i })
+    expect(selected).toHaveTextContent('Installed · in use')
+    expect(selected).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('shows "Not downloaded · X GB/MB" and a Download button for a not-installed model', () => {
     render(<SettingsView {...base} />)
-    expect(screen.getByText('Qwen3.5-4B (4-bit)')).toBeInTheDocument()
-    expect(screen.getByText(/2\.5 GB · summaries, action items & ask-your-notes/)).toBeInTheDocument()
-    expect(screen.getByText('Installed · in use · avg. summary 4 s')).toBeInTheDocument()
+    const row = screen.getByRole('radio', { name: /whisper medium/i })
+    expect(row).toHaveTextContent('Not downloaded · 1.5 GB')
+    expect(screen.getByRole('button', { name: /download \(1\.5 gb\)/i })).toBeInTheDocument()
+  })
+
+  it('clicking Download does not also select the radio', () => {
+    const setSttModel = vi.fn()
+    const downloadModel = vi.fn()
+    render(<SettingsView {...base} setSttModel={setSttModel} downloadModel={downloadModel} />)
+    fireEvent.click(screen.getByRole('button', { name: /download \(1\.5 gb\)/i }))
+    expect(downloadModel).toHaveBeenCalledWith('whisper-medium')
+    expect(setSttModel).not.toHaveBeenCalled()
+  })
+
+  it('shows a progress bar and Cancel button for a downloading model', () => {
+    const cancelDownload = vi.fn()
+    render(<SettingsView {...base} cancelDownload={cancelDownload} />)
+    const row = screen.getByRole('radio', { name: /whisper large-v3-turbo/i })
+    expect(row).toHaveTextContent('Downloading 50%')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(cancelDownload).toHaveBeenCalledWith('whisper-large-v3-turbo')
+  })
+
+  it('shows a Remove button for an installed, not-in-use model and wires it to deleteModel', () => {
+    const deleteModel = vi.fn()
+    render(<SettingsView {...base} sttModel="whisper-medium" models={[sttModel({ id: 'whisper-small', state: 'installed' })]} deleteModel={deleteModel} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(deleteModel).toHaveBeenCalledWith('whisper-small')
+  })
+
+  it('renders all three real LLM entries with a coming-later note', () => {
+    render(<SettingsView {...base} />)
+    expect(screen.getByText('Qwen3.5-4B', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText(/Gemma 4 E4B/)).toBeInTheDocument()
+    expect(screen.getByText(/Qwen3.5-9B/)).toBeInTheDocument()
+    expect(screen.getByText(/powers summaries — coming in a later update/i)).toBeInTheDocument()
+  })
+
+  it('renders real storage stats and note count', () => {
+    render(<SettingsView {...base} />)
+    expect(screen.getByText(/Models 6.4 GB/)).toBeInTheDocument()
+    expect(screen.getByText(/Audio 4.1 GB/)).toBeInTheDocument()
+    expect(screen.getByText(/Notes 1.9 GB/)).toBeInTheDocument()
+    expect(screen.getByText('14 notes')).toBeInTheDocument()
   })
 
   it('wires the storage toggles to their handlers', () => {

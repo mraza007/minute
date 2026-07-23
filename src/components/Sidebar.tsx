@@ -8,6 +8,7 @@ interface SidebarProps {
   view: View
   onGoNotes: () => void
   onGoSettings: () => void
+  statsLine: string
 }
 
 const navBase: CSSProperties = {
@@ -27,7 +28,7 @@ const navBase: CSSProperties = {
   textAlign: 'left',
 }
 
-export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }: SidebarProps) {
+export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, statsLine }: SidebarProps) {
   return (
     <div
       style={{
@@ -77,6 +78,11 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }:
         </span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 1 }}>
+        {notes.length === 0 && (
+          <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 12.5, color: '#8d867f', lineHeight: 1.6 }}>
+            No notes yet — hit "New recording"
+          </div>
+        )}
         {notes.map((note, i) => (
           <div key={i}>
             {note.group && (
@@ -156,7 +162,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings }:
           </svg>
           Settings
         </button>
-        <div style={{ padding: '8px 10px 2px', fontSize: 11, color: '#9a938c' }}>14 notes · 3.2 GB local · nothing synced</div>
+        <div style={{ padding: '8px 10px 2px', fontSize: 11, color: '#9a938c' }}>{statsLine}</div>
       </div>
     </div>
   )
