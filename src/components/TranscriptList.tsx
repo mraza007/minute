@@ -4,9 +4,13 @@ interface TranscriptListProps {
   segments: TranscriptSegment[]
 }
 
+function isExternalHighlightSpeaker(segment: TranscriptSegment) {
+  return segment.initials === 'TR' || segment.speaker.startsWith('Tom')
+}
+
 function avatarColors(segment: TranscriptSegment) {
   if (segment.isMe) return { background: '#1c1a18', color: '#fff' }
-  if (segment.initials === 'TR' || segment.speaker.startsWith('Tom')) {
+  if (isExternalHighlightSpeaker(segment)) {
     return { background: '#fde8e4', color: '#b3200c' }
   }
   return { background: '#eceae7', color: '#6d675f' }
@@ -14,7 +18,7 @@ function avatarColors(segment: TranscriptSegment) {
 
 function Segment({ segment }: { segment: TranscriptSegment }) {
   const { background, color } = avatarColors(segment)
-  const isTr = segment.initials === 'TR' || segment.speaker.startsWith('Tom')
+  const isTr = isExternalHighlightSpeaker(segment)
 
   const content = (
     <>
