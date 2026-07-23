@@ -64,8 +64,15 @@ describe('AiNotesPanel', () => {
   it('calls ask when the send button is clicked', () => {
     const ask = vi.fn()
     render(<AiNotesPanel {...base} ask={ask} />)
-    fireEvent.click(screen.getByRole('button', { name: '' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
     expect(ask).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call ask when Enter fires during IME composition', () => {
+    const ask = vi.fn()
+    render(<AiNotesPanel {...base} ask={ask} />)
+    fireEvent.keyDown(screen.getByPlaceholderText('e.g. what did we promise Acme?'), { key: 'Enter', isComposing: true })
+    expect(ask).not.toHaveBeenCalled()
   })
 
   it('shows the answer card with the asked question and answer text when asked', () => {

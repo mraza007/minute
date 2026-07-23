@@ -135,7 +135,7 @@ export function AiNotesPanel({ summarizing, actions, toggleAction, asked, askTex
             value={askDraft}
             onChange={e => setAskDraft(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter') ask()
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) ask()
             }}
             placeholder="e.g. what did we promise Acme?"
             className="input-focus"
@@ -154,6 +154,7 @@ export function AiNotesPanel({ summarizing, actions, toggleAction, asked, askTex
           />
           <button
             onClick={ask}
+            aria-label="Ask"
             className="btn-dark-accent"
             style={{
               width: 36,
