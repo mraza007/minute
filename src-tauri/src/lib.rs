@@ -1,15 +1,21 @@
 mod catalog;
+// create_note/finalize_note/write_transcript/append_segment/create_note_now
+// aren't called yet — Task 5 (audio.rs) drives note creation/finalization
+// during recording, and Task 6 (stt.rs) drives segment appends. Keep the
+// module-level allow until those callers land, matching audio/stt below.
 #[allow(dead_code)]
 mod store;
 #[allow(dead_code)]
 mod audio;
 #[allow(dead_code)]
 mod stt;
-#[allow(dead_code)]
 mod error;
 
+use std::sync::Mutex;
+
 use catalog::{Hardware, ModelStatus, Recommendation};
-use tauri::{AppHandle, Manager};
+use store::{NoteMeta, Store, StorageStats, Transcript};
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 fn hardware_info() -> Hardware {
@@ -44,13 +50,67 @@ fn recommended_models(_app: AppHandle) -> Result<Recommendation, String> {
   Ok(catalog::recommend(&catalog, &hw))
 }
 
+struct StoreState(Mutex<Store>);
+
+/// JSON-friendly wrapper for the `get_note` command — `Store::get_note`
+/// returns a `(NoteMeta, Transcript)` tuple internally, but a tuple
+/// serializes as a bare JSON array, so the command boundary shapes it into
+/// a named object for the frontend.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NoteWithTranscript {
+  meta: NoteMeta,
+  transcript: Transcript,
+}
+
+#[tauri::command]
+fn list_notes(state: State<StoreState>) -> Result<Vec<NoteMeta>, String> {
+  state.0.lock().unwrap().list_notes().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_note(state: State<StoreState>, id: String) -> Result<NoteWithTranscript, String> {
+  let (meta, transcript) = state
+    .0
+    .lock()
+    .unwrap()
+    .get_note(&id)
+    .map_err(|e| e.to_string())?;
+  Ok(NoteWithTranscript { meta, transcript })
+}
+
+#[tauri::command]
+fn rename_note(state: State<StoreState>, id: String, title: String) -> Result<NoteMeta, String> {
+  state
+    .0
+    .lock()
+    .unwrap()
+    .rename_note(&id, &title)
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_note(state: State<StoreState>, id: String) -> Result<(), String> {
+  state.0.lock().unwrap().delete_note(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn storage_stats(state: State<StoreState>) -> Result<StorageStats, String> {
+  state.0.lock().unwrap().storage_stats().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
     .invoke_handler(tauri::generate_handler![
       hardware_info,
       list_models,
-      recommended_models
+      recommended_models,
+      list_notes,
+      get_note,
+      rename_note,
+      delete_note,
+      storage_stats
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -60,6 +120,14 @@ pub fn run() {
             .build(),
         )?;
       }
+
+      let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .expect("failed to resolve app data dir");
+      let store = Store::new(app_data_dir).expect("failed to initialize note store");
+      app.manage(StoreState(Mutex::new(store)));
+
       Ok(())
     })
     .run(tauri::generate_context!())

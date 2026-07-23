@@ -103,6 +103,7 @@ dependencies = [
  "tauri-plugin-log",
  "tempfile",
  "thiserror 2.0.19",
+ "time",
  "trash",
  "whisper-rs",
 ]
