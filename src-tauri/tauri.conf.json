@@ -39,6 +39,9 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    },
+    "macOS": {
+      "infoPlist": "Info.plist"
     }
   }
 }

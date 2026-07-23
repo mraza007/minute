@@ -33,7 +33,7 @@ sysinfo = "0.36.1"
 reqwest = { version = "0.13.3", default-features = false, features = ["stream", "rustls"] }
 time = { version = "0.3.54", features = ["formatting", "macros", "parsing"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["fs", "rt"] }
+tokio = { version = "1", features = ["fs", "rt", "time"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

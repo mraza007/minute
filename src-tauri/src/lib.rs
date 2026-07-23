@@ -1,11 +1,11 @@
 mod catalog;
-// create_note/finalize_note/write_transcript/append_segment/create_note_now
-// aren't called yet — Task 5 (audio.rs) drives note creation/finalization
-// during recording, and Task 6 (stt.rs) drives segment appends. Keep the
-// module-level allow until those callers land, matching audio/stt below.
+// write_transcript/append_segment aren't called yet — Task 6 (stt.rs) drives
+// segment appends during transcription. Keep the module-level allow until
+// that caller lands, matching stt below. audio.rs (Task 5) now drives note
+// creation/finalization during recording, so store's remaining methods are
+// all reachable.
 #[allow(dead_code)]
 mod store;
-#[allow(dead_code)]
 mod audio;
 #[allow(dead_code)]
 mod stt;
@@ -121,7 +121,11 @@ pub fn run() {
       storage_stats,
       download::download_model,
       download::cancel_download,
-      download::delete_model
+      download::delete_model,
+      audio::start_recording,
+      audio::pause_recording,
+      audio::resume_recording,
+      audio::stop_recording
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -149,6 +153,12 @@ pub fn run() {
       // `download::DownloadRegistry`.
       let download_registry: DownloadRegistry = download::open_registry();
       app.manage(download_registry);
+
+      // Tracks the single in-progress recording (if any) so pause/resume/
+      // stop commands can reach the active `Recorder` — see
+      // `audio::SharedRecorderState`.
+      let recorder_state: audio::SharedRecorderState = audio::open_shared();
+      app.manage(recorder_state);
 
       Ok(())
     })
