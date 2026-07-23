@@ -192,6 +192,46 @@ describe('App', () => {
     expect(screen.getByText('Transcribed')).toBeInTheDocument()
   })
 
+  it('keeps a recording reachable and its live transcript accumulating while navigated away to Settings, and back to Notes, via the REC pill', async () => {
+    setupIPC()
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument())
+
+    await act(async () => {
+      await emit('transcript-segment', { noteId: '20260722-130000', speaker: 'Speaker 1', start: 0, end: 1, text: 'Hello there' })
+    })
+    expect(screen.getByText('Hello there')).toBeInTheDocument()
+
+    // Navigate to Settings mid-recording — the REC pill (not "New
+    // recording") must still be showing, proving `isRecording` survived
+    // the view change instead of collapsing back to false.
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByText('Nothing leaves this machine.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /new recording/i })).not.toBeInTheDocument()
+
+    // A live segment arriving while a different screen is on-screen must
+    // still be captured — the event subscriptions are unconditional.
+    await act(async () => {
+      await emit('transcript-segment', { noteId: '20260722-130000', speaker: 'Speaker 1', start: 1, end: 2, text: 'how are you' })
+    })
+
+    // Also navigate through Notes mid-recording — allowed, and still
+    // doesn't lose the recording.
+    fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
+    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
+
+    // Clicking the REC pill returns to the live recording view with every
+    // segment accumulated so far — including the one that arrived while on
+    // Settings — visible and merged.
+    fireEvent.click(screen.getByRole('button', { name: 'Return to recording' }))
+    await waitFor(() => expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument())
+    expect(screen.getByText('Hello there how are you')).toBeInTheDocument()
+  })
+
   it('shows an error banner when stopping a recording fails, and not otherwise', async () => {
     setupIPC({ stopRecordingReject: 'wav writer thread panicked' })
     render(<App />)

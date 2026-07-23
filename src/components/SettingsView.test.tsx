@@ -76,11 +76,39 @@ describe('SettingsView', () => {
     expect(screen.getAllByRole('radio')).toHaveLength(3)
   })
 
-  it('calls setSttModel with the clicked model id', () => {
+  it('calls setSttModel when clicking an installed, not-currently-selected model', () => {
     const setSttModel = vi.fn()
-    render(<SettingsView {...base} setSttModel={setSttModel} />)
+    const installedModels: ModelStatus[] = [
+      sttModel({ id: 'whisper-small', state: 'installed' }),
+      sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'installed' }),
+    ]
+    render(<SettingsView {...base} models={installedModels} setSttModel={setSttModel} />)
     fireEvent.click(screen.getByRole('radio', { name: /whisper medium/i }))
     expect(setSttModel).toHaveBeenCalledWith('whisper-medium')
+  })
+
+  it('does not call setSttModel when clicking a not-installed model — the radio is inert until it is downloaded', () => {
+    const setSttModel = vi.fn()
+    render(<SettingsView {...base} setSttModel={setSttModel} />)
+    const row = screen.getByRole('radio', { name: /whisper medium/i })
+    fireEvent.click(row)
+    expect(setSttModel).not.toHaveBeenCalled()
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    expect(row).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('does not call setSttModel when clicking a downloading model — only Cancel is actionable', () => {
+    const setSttModel = vi.fn()
+    render(<SettingsView {...base} setSttModel={setSttModel} />)
+    fireEvent.click(screen.getByRole('radio', { name: /whisper large-v3-turbo/i }))
+    expect(setSttModel).not.toHaveBeenCalled()
+  })
+
+  it('keeps the installed, selected row selectable (aria-disabled false, tabindex 0)', () => {
+    render(<SettingsView {...base} />)
+    const row = screen.getByRole('radio', { name: /whisper small/i })
+    expect(row).toHaveAttribute('aria-disabled', 'false')
+    expect(row).toHaveAttribute('tabindex', '0')
   })
 
   it('shows "Installed · in use" for the selected installed model and aria-checked reflects selection', () => {

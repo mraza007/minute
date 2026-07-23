@@ -300,6 +300,63 @@ describe('useAppState', () => {
       expect(result.current.view).not.toBe('recording')
     })
 
+    it('isRecording is derived from backend truth (activeNoteId), not the current view — stays true after navigating to notes/settings mid-recording', async () => {
+      const result = await loadedAndRecording()
+      expect(result.current.isRecording).toBe(true)
+
+      act(() => result.current.goSettings())
+      expect(result.current.view).toBe('settings')
+      expect(result.current.isRecording).toBe(true)
+
+      act(() => result.current.goNotes())
+      expect(result.current.view).toBe('notes')
+      expect(result.current.isRecording).toBe(true)
+
+      act(() => result.current.goRecording())
+      expect(result.current.view).toBe('recording')
+      expect(result.current.isRecording).toBe(true)
+    })
+
+    it('isRecording is false before starting and after stopping', async () => {
+      setupIPC()
+      const result = await loaded()
+      expect(result.current.isRecording).toBe(false)
+
+      act(() => result.current.startRec())
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
+
+      act(() => result.current.stopRec())
+      await waitFor(() => expect(result.current.view).toBe('notes'))
+      expect(result.current.isRecording).toBe(false)
+    })
+
+    it('keeps accumulating transcript-segment events while navigated away to notes/settings, visible again after navigating back', async () => {
+      const result = await loadedAndRecording()
+
+      await act(async () => {
+        await emit('transcript-segment', segment({ start: 0, end: 1, text: 'Hello there' }))
+      })
+      expect(result.current.liveSegments).toEqual([{ speaker: 'Speaker 1', start: 0, end: 1, text: 'Hello there' }])
+
+      act(() => result.current.goSettings())
+      expect(result.current.view).toBe('settings')
+
+      await act(async () => {
+        await emit('transcript-segment', segment({ start: 1, end: 2, text: 'how are you' }))
+      })
+      // The subscriptions are unconditional (not gated on view === 'recording'),
+      // so events keep landing even while a different screen is on-screen.
+      expect(result.current.liveSegments).toEqual([
+        { speaker: 'Speaker 1', start: 0, end: 2, text: 'Hello there how are you' },
+      ])
+
+      act(() => result.current.goRecording())
+      expect(result.current.view).toBe('recording')
+      expect(result.current.liveSegments).toEqual([
+        { speaker: 'Speaker 1', start: 0, end: 2, text: 'Hello there how are you' },
+      ])
+    })
+
     it('appends transcript-segment events, grouped, and filters out events for a different noteId', async () => {
       const result = await loadedAndRecording()
 

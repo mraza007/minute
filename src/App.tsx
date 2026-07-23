@@ -37,7 +37,7 @@ export default function App() {
   return (
     <>
       <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13.5, lineHeight: 1.5, background: '#f2f0ee' }}>
-        <TitleBar recording={s.view === 'recording'} recTime={s.recTime} onStartRec={s.startRec} />
+        <TitleBar isRecording={s.isRecording} recTime={s.recTime} onStartRec={s.startRec} onReturnToRecording={s.goRecording} />
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           <Sidebar
             notes={s.sidebarNotes}

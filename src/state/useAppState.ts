@@ -363,6 +363,16 @@ export function useAppState() {
 
   return {
     view,
+    // Derived from backend truth (a recording is active iff the backend
+    // gave us a note id for it via `start_recording` and we haven't seen
+    // `stop_recording` resolve yet) rather than `view === 'recording'` —
+    // `view` is just which screen is on-screen right now and legitimately
+    // moves to 'notes'/'settings' while a recording keeps running in the
+    // background (see `goNotes`/`goSettings`/`goRecording` below); this is
+    // what TitleBar's REC pill vs "New recording" button switch on, so it
+    // stays correct regardless of which view the user is currently looking
+    // at.
+    isRecording: activeNoteId !== null,
     models: modelManager.models,
     downloads: modelManager.downloads,
     notes,
@@ -394,6 +404,11 @@ export function useAppState() {
     askText: askDraft || 'What did we promise Acme?',
     goNotes: () => setView('notes'),
     goSettings: () => setView('settings'),
+    // The REC pill's "return to recording" action — navigating to Settings
+    // or the notes list mid-recording is legitimate (goNotes/goSettings
+    // above stay unguarded), so this is the persistent way back to the
+    // live view.
+    goRecording: () => setView('recording'),
     startRec,
     stopRec,
     togglePause,

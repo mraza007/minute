@@ -23,6 +23,7 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
   const selectedMetaDefault = notes[sel] ?? notes[0] ?? null
   return {
     view: 'notes',
+    isRecording: false,
     models: [],
     downloads: {},
     notes,
@@ -54,6 +55,7 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
     askText: 'What did we promise Acme?',
     goNotes: vi.fn(),
     goSettings: vi.fn(),
+    goRecording: vi.fn(),
     startRec: vi.fn(),
     stopRec: vi.fn(),
     togglePause: vi.fn(),

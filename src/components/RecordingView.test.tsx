@@ -97,12 +97,14 @@ describe('RecordingView', () => {
     expect(screen.queryByRole('button', { name: /stop & transcribe/i })).not.toBeInTheDocument()
   })
 
-  it('shows the live insights panel with action items, key points, and info box', () => {
+  it('shows an honest live insights placeholder — no fake AI content during a real recording', () => {
     render(<RecordingView {...base} />)
     expect(screen.getByText('Live insights')).toBeInTheDocument()
-    expect(screen.getByText('ACTION ITEMS · SO FAR')).toBeInTheDocument()
-    expect(screen.getByText('KEY POINTS')).toBeInTheDocument()
-    expect(screen.getByText(/Insights refresh every 60 s while recording/)).toBeInTheDocument()
+    expect(screen.getByText('Live insights arrive in a later update.')).toBeInTheDocument()
+    expect(screen.getByText('Transcription runs on-device — nothing leaves this machine.')).toBeInTheDocument()
+    expect(screen.queryByText('ACTION ITEMS · SO FAR')).not.toBeInTheDocument()
+    expect(screen.queryByText('KEY POINTS')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Acme expansion offsets SMB shortfall/)).not.toBeInTheDocument()
   })
 
   it('renders 56 waveform bars', () => {

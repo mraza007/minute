@@ -186,25 +186,12 @@ export const RecordingView = memo(function RecordingView({
       <div style={{ width: 330, flex: 'none', borderLeft: '1px solid rgba(0,0,0,.07)', display: 'flex', flexDirection: 'column', minHeight: 0, background: '#f2f0ee' }}>
         <div style={{ padding: '16px 16px 12px', fontWeight: 700, fontSize: 14 }}>Live insights</div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ background: '#fff', border: '1px solid rgba(0,0,0,.07)', borderRadius: 12, padding: '14px 16px', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#b3200c', marginBottom: 8 }}>ACTION ITEMS · SO FAR</div>
-            <div style={{ fontSize: 13, lineHeight: 1.55, color: '#33302c', display: 'flex', gap: 8, marginBottom: 7 }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#1c1a18', flex: 'none', marginTop: 7 }} />
-              Add security-review milestone to the board timeline slide.
-            </div>
-            <div style={{ fontSize: 13, lineHeight: 1.55, color: '#33302c', display: 'flex', gap: 8 }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#1c1a18', flex: 'none', marginTop: 7 }} />
-              Draft headcount ask: two hires, on-device inference team.
-            </div>
-          </div>
-          <div style={{ background: '#fff', border: '1px solid rgba(0,0,0,.07)', borderRadius: 12, padding: '14px 16px', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#b3200c', marginBottom: 6 }}>KEY POINTS</div>
-            <div style={{ fontSize: 13, lineHeight: 1.6, color: '#33302c', textWrap: 'pretty' }}>
-              Churn down three consecutive months. Acme expansion offsets SMB shortfall. Security review gates the 200-seat rollout.
-            </div>
+          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 12, padding: '14px 16px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c', marginBottom: 6 }}>LIVE INSIGHTS</div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.6, color: '#9a938c' }}>Live insights arrive in a later update.</div>
           </div>
           <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 12, padding: '12px 14px', fontSize: 12, lineHeight: 1.55, color: '#9a938c' }}>
-            Insights refresh every 60 s while recording. Model runs on the Neural Engine — battery impact ~4%/hr.
+            Transcription runs on-device — nothing leaves this machine.
           </div>
         </div>
       </div>

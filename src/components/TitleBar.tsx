@@ -1,10 +1,12 @@
 interface TitleBarProps {
-  recording: boolean
+  isRecording: boolean
   recTime: string
   onStartRec: () => void
+  /** Returns to the recording view — the REC pill is clickable so a recording started while on Notes/Settings stays reachable from anywhere. */
+  onReturnToRecording: () => void
 }
 
-export function TitleBar({ recording, recTime, onStartRec }: TitleBarProps) {
+export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording }: TitleBarProps) {
   return (
     <div
       data-tauri-drag-region=""
@@ -39,20 +41,25 @@ export function TitleBar({ recording, recTime, onStartRec }: TitleBarProps) {
         Offline · On-device
       </div>
       <div data-tauri-drag-region="" style={{ flex: 1 }} />
-      {recording && (
-        <div
-          data-tauri-drag-region=""
+      {isRecording && (
+        <button
+          type="button"
+          aria-label="Return to recording"
+          onClick={onReturnToRecording}
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 8,
             padding: '6px 14px',
+            border: 'none',
             borderRadius: 999,
             background: '#ffe6e1',
             color: '#b3200c',
+            fontFamily: 'inherit',
             fontWeight: 700,
             fontSize: 12.5,
             fontVariantNumeric: 'tabular-nums',
+            cursor: 'pointer',
           }}
         >
           <span
@@ -65,9 +72,9 @@ export function TitleBar({ recording, recTime, onStartRec }: TitleBarProps) {
             }}
           />
           REC {recTime}
-        </div>
+        </button>
       )}
-      {!recording && (
+      {!isRecording && (
         <button
           onClick={onStartRec}
           className="btn-rec"

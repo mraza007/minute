@@ -134,19 +134,29 @@ interface TranscriptionModelRowProps extends ModelRowAction {
 function TranscriptionModelRow({ entry, downloads, selected, onSelect, downloadModel, cancelDownload, deleteModel }: TranscriptionModelRowProps) {
   const info = modelStatusToSttInfo(entry, selected ? entry.id : '', downloads)
   const progress = downloads[entry.id]
+  // Only an installed model can actually be selected as the in-use STT
+  // model — a not-yet-downloaded or still-downloading row shows its state
+  // but the radio itself is inert until the download finishes (the
+  // Download/Cancel button, unaffected by this, is how you act on it).
+  const selectable = info.state === 'installed'
 
   return (
     <div
       role="radio"
       aria-checked={selected}
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={e => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onSelect()
-        }
-      }}
+      aria-disabled={!selectable}
+      tabIndex={selectable ? 0 : -1}
+      onClick={selectable ? onSelect : undefined}
+      onKeyDown={
+        selectable
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelect()
+              }
+            }
+          : undefined
+      }
       className="model-card"
       style={{
         display: 'flex',
@@ -158,7 +168,7 @@ function TranscriptionModelRow({ entry, downloads, selected, onSelect, downloadM
         background: selected ? '#fff6f4' : '#fff',
         borderRadius: 10,
         padding: selected ? '11.5px 13.5px' : '12px 14px',
-        cursor: 'pointer',
+        cursor: selectable ? 'pointer' : 'default',
         fontSize: 13,
         lineHeight: 1.5,
         transition: 'border-color .15s, background .15s',
