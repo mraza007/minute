@@ -1,0 +1,68 @@
+[
+  {
+    "id": "whisper-small",
+    "kind": "stt",
+    "displayName": "Whisper small",
+    "desc": "466 MB · 62× realtime · good for meetings",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+    "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+    "sizeBytes": 487601967,
+    "minRamGb": 0,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "whisper-medium",
+    "kind": "stt",
+    "displayName": "Whisper medium",
+    "desc": "1.5 GB · 21× realtime · better accents & jargon",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+    "sha256": "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+    "sizeBytes": 1533763059,
+    "minRamGb": 16,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "whisper-large-v3-turbo",
+    "kind": "stt",
+    "displayName": "Whisper large-v3-turbo",
+    "desc": "1.6 GB · 6× realtime · maximum accuracy",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+    "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+    "sizeBytes": 1624555275,
+    "minRamGb": 16,
+    "requiresAppleSilicon": true
+  },
+  {
+    "id": "qwen3.5-4b",
+    "kind": "llm",
+    "displayName": "Qwen3.5-4B",
+    "desc": "2.6 GB · Q4_K_M · fast default summarizer",
+    "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+    "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+    "sizeBytes": 2740937888,
+    "minRamGb": 8,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "gemma-4-e4b",
+    "kind": "llm",
+    "displayName": "Gemma 4 E4B",
+    "desc": "5.3 GB · Q4_K_M · best at summarization",
+    "url": "https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
+    "sha256": "0ffb122c8b6921f13cbc34186e052524d0b5803b17f4867b7197a561400b3770",
+    "sizeBytes": 5335291936,
+    "minRamGb": 16,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "qwen3.5-9b",
+    "kind": "llm",
+    "displayName": "Qwen3.5-9B",
+    "desc": "5.7 GB · Q4_K_M · quality tier summarizer",
+    "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+    "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+    "sizeBytes": 5680522464,
+    "minRamGb": 16,
+    "requiresAppleSilicon": false
+  }
+]
