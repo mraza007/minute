@@ -21,13 +21,29 @@ use crate::error::{MinuteError, Result};
 use crate::store::{lock_store, NoteMeta, SharedStore};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
 
-/// Capacity of the bounded channel forwarding downmixed/resampled audio
-/// chunks from the writer thread to the `SttWorker` — see
-/// `run_writer_thread`'s docs for why this is bounded (unlike the cpal
-/// callback -> writer thread channel, which stays unbounded).
-const STT_CHANNEL_CAPACITY: usize = 64;
+/// Size (in samples, at [`TARGET_SAMPLE_RATE`]) of each block the writer
+/// thread batches downmixed/resampled audio into before forwarding it to
+/// the `SttWorker` — ~0.5s. cpal delivers callbacks in ~10-20ms bursts;
+/// forwarding those raw makes each channel slot worth only ~10-20ms of
+/// audio, so a channel sized in "slots" alone buys almost no real time
+/// headroom no matter how large its capacity. Batching into ~0.5s blocks
+/// first means [`STT_CHANNEL_CAPACITY`] slots are worth ~0.5s each instead.
+const STT_BLOCK_SAMPLES: usize = 8_000;
 
-/// Log a warning every this many consecutive dropped STT chunks, rather
+/// Capacity of the bounded channel forwarding ~0.5s audio blocks from the
+/// writer thread to the `SttWorker` — see `run_writer_thread`'s docs for
+/// why this is bounded (unlike the cpal callback -> writer thread channel,
+/// which stays unbounded). At `STT_BLOCK_SAMPLES` per slot, 256 slots is
+/// ~128s of buffered audio headroom (a few MB of `Arc`'d `f32`s) —
+/// comfortably absorbing the `SttWorker`'s one-time model load (1-3s) and
+/// steady-state per-window inference (roughly 1-2s per 8s window on
+/// typical Apple Silicon, per the e2e test's measured realtime factor).
+/// Drops only kick in under a *sustained* slower-than-realtime stretch,
+/// which is the designed degradation: gaps in the live transcript rather
+/// than a stalled recording.
+const STT_CHANNEL_CAPACITY: usize = 256;
+
+/// Log a warning every this many consecutive dropped STT blocks, rather
 /// than once per drop (which could spam the log heavily during a sustained
 /// slow patch) or only once ever (which would hide an ongoing problem).
 const STT_DROP_LOG_INTERVAL: u64 = 50;
@@ -344,27 +360,55 @@ where
         .map_err(|e| MinuteError::Other(format!("failed to build input stream: {e}")))
 }
 
-/// Drains `chunk_rx`, appending each chunk to `writer` and forwarding the
-/// *same* `Arc` (a cheap refcount bump, not a data copy) to `stt_tx` for
-/// the `SttWorker`. Runs on a dedicated OS thread spawned from
-/// `Recorder::start`, so this — not the realtime cpal callback — is where
-/// WAV file I/O actually happens.
+/// Tries to forward one accumulated audio block to the `SttWorker` via
+/// `stt_tx`. Bounded + `try_send` rather than `send`: a slow or stalled
+/// `SttWorker` (e.g. still loading the model, or a burst of inference on a
+/// slower machine) must never make recording/WAV-writing block on it — the
+/// recording is the thing that must never stall. When the channel is full
+/// (the worker has fallen behind by more than `STT_CHANNEL_CAPACITY`'s
+/// ~128s of headroom — a sustained slower-than-realtime stretch, not a
+/// momentary blip), the block is dropped (the transcript gets a gap; the
+/// WAV file is unaffected, since `writer.append` already ran before this is
+/// called) and a running drop counter is logged every `STT_DROP_LOG_INTERVAL`
+/// drops rather than on every single one. A `Disconnected` error (no
+/// `SttWorker` running at all — e.g. the model wasn't installed, so
+/// `start_recording` never spawned one) is silently ignored.
+fn try_send_stt_block(stt_tx: &SyncSender<Arc<Vec<f32>>>, block: Vec<f32>, dropped: &mut u64) {
+    match stt_tx.try_send(Arc::new(block)) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            *dropped += 1;
+            if *dropped % STT_DROP_LOG_INTERVAL == 0 {
+                let approx_secs =
+                    *dropped as f64 * (STT_BLOCK_SAMPLES as f64 / TARGET_SAMPLE_RATE as f64);
+                log::warn!(
+                    "stt channel full — dropped {dropped} ~0.5s audio blocks so far \
+                     (~{approx_secs:.1}s of audio; transcript will have gaps; recording/wav \
+                     continue unaffected)"
+                );
+            }
+        }
+        Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
+/// Drains `chunk_rx`, appending each chunk to `writer` immediately (so WAV
+/// durability never depends on the STT side), while separately batching
+/// the same samples into `STT_BLOCK_SAMPLES`-sized (~0.5s) blocks and
+/// forwarding *those* — via [`try_send_stt_block`] — to the `SttWorker`.
+/// Runs on a dedicated OS thread spawned from `Recorder::start`, so this —
+/// not the realtime cpal callback — is where WAV file I/O actually happens.
 ///
-/// `stt_tx` is bounded (`STT_CHANNEL_CAPACITY`) and fed via `try_send`
-/// rather than `send`: a slow or stalled `SttWorker` (e.g. still loading
-/// the model, or a burst of inference on a slower machine) must never make
-/// recording/WAV-writing block on it — the recording is the thing that
-/// must never stall. When the channel is full, the chunk is dropped
-/// (the transcript gets a small gap; the WAV file itself is unaffected,
-/// since `writer.append` above already ran) and a running drop counter is
-/// logged every `STT_DROP_LOG_INTERVAL` drops rather than on every single
-/// one. A `Disconnected` error (no `SttWorker` running at all — e.g. the
-/// model wasn't installed, so `start_recording` never spawned one) is
-/// silently ignored, same as the old unconditional `send`'s failure case.
+/// Batching matters for the channel's real buffering headroom: see
+/// `STT_BLOCK_SAMPLES`/`STT_CHANNEL_CAPACITY`'s docs. cpal's own chunk
+/// boundaries (`chunk_rx`'s items) are irrelevant to the STT side beyond
+/// being the unit samples arrive in — a block can span many cpal chunks.
 ///
 /// Returns once `chunk_rx`'s sender (owned by the audio callback) is
-/// dropped and every already-queued chunk has been drained, at which point
-/// it finalizes and closes the WAV file.
+/// dropped and every already-queued chunk has been drained — at which
+/// point it flushes whatever's left of a partial (not-yet-`STT_BLOCK_SAMPLES`)
+/// trailing block (so audio recorded right up to `stop_recording` isn't
+/// silently lost off the end) and finalizes and closes the WAV file.
 ///
 /// A free function (rather than a method) so it's unit-testable by feeding
 /// it a channel directly, without a real cpal device.
@@ -375,25 +419,28 @@ fn run_writer_thread(
     shared: Arc<SharedState>,
 ) -> Result<u64> {
     let mut dropped: u64 = 0;
+    let mut block: Vec<f32> = Vec::with_capacity(STT_BLOCK_SAMPLES);
+
     while let Ok(chunk) = chunk_rx.recv() {
         if let Err(e) = writer.append(&chunk) {
             log::warn!("failed to append recorded samples to wav: {e}");
             *lock(&shared.last_error) = Some(e.to_string());
         }
-        match stt_tx.try_send(chunk.clone()) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                dropped += 1;
-                if dropped % STT_DROP_LOG_INTERVAL == 0 {
-                    log::warn!(
-                        "stt channel full — dropped {dropped} audio chunks so far (transcript \
-                         will have gaps; recording/wav continue unaffected)"
-                    );
-                }
-            }
-            Err(TrySendError::Disconnected(_)) => {}
+
+        block.extend_from_slice(&chunk);
+        while block.len() >= STT_BLOCK_SAMPLES {
+            let full_block: Vec<f32> = block.drain(..STT_BLOCK_SAMPLES).collect();
+            try_send_stt_block(&stt_tx, full_block, &mut dropped);
         }
     }
+
+    // Flush the trailing partial block (if any) rather than dropping it —
+    // this is exactly the tail of audio a `stop_recording` call interrupts
+    // mid-block.
+    if !block.is_empty() {
+        try_send_stt_block(&stt_tx, block, &mut dropped);
+    }
+
     writer.finalize()
 }
 
@@ -845,6 +892,15 @@ pub fn stop_recording(
     // that flush (and its `append_segment` calls) has actually happened,
     // so the transcript on disk is complete before `finalize_note` runs.
     if let Some(worker) = active.stt_worker {
+        // Tail-window inference can take a second or two — let the
+        // frontend show a "finalizing transcript" state for that stretch
+        // rather than nothing between "stopped recording" and the note
+        // actually being ready.
+        stt::tauri_emit(app.clone())(SttEvent::SttStatus(SttStatusPayload {
+            note_id: note_id.clone(),
+            state: SttStatusState::Finalizing,
+            error: None,
+        }));
         if let Err(e) = worker.join() {
             log::warn!("stt worker thread panicked for note {note_id}: {e:?}");
         }
@@ -1060,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn writer_thread_drains_queue_writes_correct_wav_and_forwards_same_arc_to_stt() {
+    fn writer_thread_flushes_partial_trailing_block_to_stt_on_channel_close() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audio.wav");
         let writer = WavWriter::create(&path).unwrap();
@@ -1081,11 +1137,17 @@ mod tests {
         let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
         assert_eq!(total, 5);
 
-        // Forwarded to the STT channel as the *same* allocation, not a copy.
-        let forwarded_a = stt_rx.recv().unwrap();
-        let forwarded_b = stt_rx.recv().unwrap();
-        assert!(Arc::ptr_eq(&forwarded_a, &chunk_a));
-        assert!(Arc::ptr_eq(&forwarded_b, &chunk_b));
+        // Well under one full ~0.5s block (STT_BLOCK_SAMPLES), so both
+        // chunks are batched together into a single partial block and
+        // flushed as one when the channel closes — not forwarded
+        // chunk-by-chunk (no longer the same `Arc` as either input chunk),
+        // and not lost off the end.
+        let forwarded = stt_rx.recv().unwrap();
+        assert_eq!(*forwarded, vec![0.1f32, 0.2, 0.3, -0.4, 0.5]);
+        assert!(
+            stt_rx.try_recv().is_err(),
+            "expected exactly one forwarded block"
+        );
 
         let mut reader = hound::WavReader::open(&path).unwrap();
         let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
@@ -1097,6 +1159,36 @@ mod tests {
         for (got, want) in samples.iter().zip(expected.iter()) {
             assert!((*got as i32 - *want as i32).abs() <= 1);
         }
+    }
+
+    #[test]
+    fn writer_thread_sends_full_block_as_soon_as_it_accumulates_then_flushes_the_remainder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        // One full block plus a small remainder, delivered as two cpal-ish
+        // chunks whose boundaries don't line up with the block boundary.
+        chunk_tx
+            .send(Arc::new(vec![0.2f32; STT_BLOCK_SAMPLES]))
+            .unwrap();
+        chunk_tx.send(Arc::new(vec![0.3f32; 100])).unwrap();
+        drop(chunk_tx);
+
+        let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, STT_BLOCK_SAMPLES as u64 + 100);
+
+        let first = stt_rx.recv().unwrap();
+        assert_eq!(first.len(), STT_BLOCK_SAMPLES);
+        let second = stt_rx.recv().unwrap();
+        assert_eq!(second.len(), 100);
+        assert!(
+            stt_rx.try_recv().is_err(),
+            "expected exactly two forwarded blocks"
+        );
     }
 
     #[test]
@@ -1139,11 +1231,11 @@ mod tests {
     }
 
     #[test]
-    fn writer_thread_drops_chunks_and_logs_when_stt_channel_is_full() {
-        // Capacity-1 channel with nothing draining it: the first chunk
-        // fills it, every subsequent chunk must be dropped (not block, not
-        // error out `run_writer_thread` itself) while the WAV file still
-        // receives every single one.
+    fn writer_thread_drops_blocks_and_logs_when_stt_channel_is_full() {
+        // Capacity-1 channel with nothing draining it: the first ~0.5s
+        // block fills it, every subsequent block must be dropped (not
+        // block, not error out `run_writer_thread` itself) while the WAV
+        // file still receives every single sample.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audio.wav");
         let writer = WavWriter::create(&path).unwrap();
@@ -1151,16 +1243,21 @@ mod tests {
         let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
         let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(1);
 
-        for _ in 0..5 {
-            chunk_tx.send(Arc::new(vec![0.1f32])).unwrap();
-        }
+        // Exactly 3 full ~0.5s blocks worth of audio, sent as one chunk —
+        // the writer thread batches internally regardless of how
+        // `chunk_rx`'s items happen to be sized.
+        let total_samples = STT_BLOCK_SAMPLES * 3;
+        chunk_tx
+            .send(Arc::new(vec![0.1f32; total_samples]))
+            .unwrap();
         drop(chunk_tx);
 
         let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
-        // Every chunk still made it into the WAV file...
-        assert_eq!(total, 5);
-        // ...but only the one that fit in the bounded channel's capacity
-        // made it to the STT side; the rest were dropped, not queued.
+        // Every sample still made it into the WAV file...
+        assert_eq!(total, total_samples as u64);
+        // ...but only as many ~0.5s blocks as the bounded channel's
+        // capacity (1) made it to the STT side; the rest were dropped, not
+        // queued.
         assert_eq!(stt_rx.try_iter().count(), 1);
     }
 

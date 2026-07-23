@@ -128,6 +128,21 @@ pub struct Segment {
 /// is dropped, not kept — `already_emitted_until` is itself the end of an
 /// already-emitted segment, so a new segment centered exactly there would be
 /// a duplicate of it, not a fresh one.
+///
+/// **Accepted loss mode:** a segment is an atomic unit here — one that
+/// genuinely *straddles* the overlap boundary (starts inside the already-
+/// emitted region but continues meaningfully past it) is dropped in its
+/// *entirety* if its midpoint still falls inside that region, rather than
+/// being split at the boundary and having its tail kept. In practice this
+/// can lose real words, but the loss is bounded: it can only happen to
+/// whisper's re-transcription of the shared `OVERLAP_SECS` (1s) region
+/// itself, so at most ~1s of audio per chunk boundary is at risk, and only
+/// when whisper happens to group it into one segment whose midpoint lands
+/// on the "already emitted" side. Splitting segments at the boundary
+/// instead would require token-level timestamps, which isn't implemented
+/// here — revisit if this shows up as real "missing words" complaints.
+/// Every drop is logged at `debug` level (text + absolute times) below so
+/// such reports are debuggable after the fact.
 pub fn dedupe_segments(
     new_segments: &[Segment],
     chunk_start_secs: f64,
@@ -146,6 +161,11 @@ pub fn dedupe_segments(
                     text: seg.text.clone(),
                 })
             } else {
+                log::debug!(
+                    "stt: dropped overlap-region segment {start:.2}-{end:.2}s \
+                     (already emitted until {already_emitted_until:.2}s): {:?}",
+                    seg.text
+                );
                 None
             }
         })
@@ -195,7 +215,13 @@ fn ensure_whisper_logging_redirected() {
 /// [`Segment`]s (seconds).
 fn run_full_and_extract(state: &mut WhisperState, samples: &[f32]) -> Result<Vec<Segment>> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    // Auto-detect the spoken language rather than assuming English.
+    // Auto-detect the spoken language rather than assuming English. This is
+    // re-detected independently per window (no state carried across
+    // windows), so it can visibly flip mid-recording on genuinely
+    // ambiguous audio — accepted deliberately, since it's what makes
+    // code-switching (a meeting that shifts between languages) work at
+    // all; revisit if users report it flapping on audio that isn't actually
+    // multilingual.
     params.set_language(Some("auto"));
     // Keep whisper.cpp's own logging off stdout — this runs on a
     // background thread and the app already has its own `log` pipeline.
@@ -259,12 +285,18 @@ pub fn transcribe_samples(model_path: &Path, samples: &[f32]) -> Result<Vec<Segm
     run_full_and_extract(&mut state, samples)
 }
 
-/// `stt-status` event's lifecycle state.
+/// `stt-status` event's lifecycle state: `loading` (model load in
+/// progress) -> `ready` (loaded, actively consuming chunks) -> `finalizing`
+/// (recording stopped, worker draining/flushing its tail window before its
+/// thread is joined — see `stop_recording`) is the normal happy path;
+/// `error` can be emitted at any point a fatal or per-window failure
+/// occurs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SttStatusState {
     Loading,
     Ready,
+    Finalizing,
     Error,
 }
 
@@ -346,10 +378,9 @@ impl SttWorker {
     }
 }
 
-/// Runs one transcription window through `state`, dedupes it against
-/// `emitted_until`, and for every kept segment: persists it via
-/// `ctx.store.append_segment` and emits `transcript-segment`. Advances
-/// `*emitted_until` to the end of the last kept segment. A per-window
+/// Runs one transcription window through `state` (the actual whisper
+/// inference), then hands its raw segments off to
+/// [`handle_window_segments`] for dedupe/persist/emit. A per-window
 /// inference failure is logged + reported via an `stt-status` error event
 /// but is not treated as fatal — the worker keeps consuming subsequent
 /// chunks (fatal errors are model-load/state-creation failures only, which
@@ -377,7 +408,25 @@ fn process_window(
         }
     };
 
-    let kept = dedupe_segments(&raw_segments, window.start_offset_secs, *emitted_until);
+    handle_window_segments(&raw_segments, window.start_offset_secs, emitted_until, ctx);
+}
+
+/// Bookkeeping half of window processing, split out from [`process_window`]
+/// so it's unit-testable without a real `WhisperContext`/inference: dedupes
+/// `raw_segments` (whisper's raw, chunk-relative output) against
+/// `*emitted_until` via [`dedupe_segments`], then for every kept segment
+/// persists it via `ctx.store.append_segment` and emits
+/// `SttEvent::TranscriptSegment`, in order. Advances `*emitted_until` to
+/// the *maximum* end time among kept segments (not simply the last one
+/// processed — whisper's segments are normally end-time-ordered, but nothing
+/// here assumes that).
+fn handle_window_segments(
+    raw_segments: &[Segment],
+    chunk_start_secs: f64,
+    emitted_until: &mut f64,
+    ctx: &WorkerCtx,
+) {
+    let kept = dedupe_segments(raw_segments, chunk_start_secs, *emitted_until);
     for seg in kept {
         if seg.end > *emitted_until {
             *emitted_until = seg.end;
@@ -506,6 +555,7 @@ fn run_worker(model_path: std::path::PathBuf, sample_rx: Receiver<Arc<Vec<f32>>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     // --- Chunker ------------------------------------------------------------
 
@@ -690,6 +740,131 @@ mod tests {
         let segments = vec![seg(0.0, 1.0, "first"), seg(1.0, 2.0, "second")];
         let kept = dedupe_segments(&segments, 0.0, 0.0);
         assert_eq!(kept.len(), 2);
+    }
+
+    // --- handle_window_segments ----------------------------------------------
+
+    /// Builds a `WorkerCtx` over a fresh tempdir-backed `SharedStore` (with
+    /// one note already created, so `append_segment`'s note directory
+    /// exists) plus an `emit` closure that pushes every event into `events`
+    /// for the test to inspect afterward. Returns `(ctx, events)` — kept as
+    /// a `TestGuard`-style tuple rather than a struct since every caller
+    /// destructures it immediately.
+    fn test_ctx() -> (WorkerCtx, String, Arc<Mutex<Vec<SttEvent>>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let note_id = lock_store(&store)
+            .create_note_now("Test note", "whisper-small")
+            .unwrap()
+            .id;
+
+        let events: Arc<Mutex<Vec<SttEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let ctx = WorkerCtx {
+            note_id: note_id.clone(),
+            store,
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        };
+        (ctx, note_id, events, dir)
+    }
+
+    fn stored_segments(ctx: &WorkerCtx) -> Vec<StoredSegment> {
+        lock_store(&ctx.store).get_note(&ctx.note_id).unwrap().1.segments
+    }
+
+    #[test]
+    fn handle_window_segments_persists_and_emits_kept_segments_in_order() {
+        let (ctx, note_id, events, _dir) = test_ctx();
+        let mut emitted_until = 0.0f64;
+
+        let raw = vec![seg(0.0, 1.0, "hello"), seg(1.0, 2.0, "world")];
+        handle_window_segments(&raw, 0.0, &mut emitted_until, &ctx);
+
+        assert_eq!(emitted_until, 2.0);
+
+        let stored = stored_segments(&ctx);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].text, "hello");
+        assert_eq!(stored[0].speaker, SPEAKER_PLACEHOLDER);
+        assert_eq!((stored[0].start, stored[0].end), (0.0, 1.0));
+        assert_eq!(stored[1].text, "world");
+        assert_eq!((stored[1].start, stored[1].end), (1.0, 2.0));
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            SttEvent::TranscriptSegment(payload) => {
+                assert_eq!(payload.note_id, note_id);
+                assert_eq!(payload.speaker, SPEAKER_PLACEHOLDER);
+                assert_eq!(payload.text, "hello");
+                assert_eq!((payload.start, payload.end), (0.0, 1.0));
+            }
+            other => panic!("expected TranscriptSegment, got {other:?}"),
+        }
+        match &events[1] {
+            SttEvent::TranscriptSegment(payload) => assert_eq!(payload.text, "world"),
+            other => panic!("expected TranscriptSegment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_window_segments_drops_overlap_straddling_segment_persists_nothing() {
+        let (ctx, _note_id, events, _dir) = test_ctx();
+        // already_emitted_until = 8.0 (from a previous window); this
+        // chunk starts at 7.0s, and its one segment (chunk-relative
+        // 0.0-0.5s -> absolute 7.0-7.5s, midpoint 7.25s) falls inside the
+        // already-emitted overlap region, so `dedupe_segments` drops it
+        // whole (see its doc comment's "accepted loss mode") — this test
+        // exercises that the drop propagates through as "nothing
+        // persisted, nothing emitted, emitted_until unchanged"; the
+        // corresponding `log::debug!` firing for the drop is exercised by
+        // `dedupe_segments` directly and isn't independently asserted here
+        // (no test-log-capture harness in this codebase).
+        let mut emitted_until = 8.0f64;
+
+        let raw = vec![seg(0.0, 0.5, "the lazy")];
+        handle_window_segments(&raw, 7.0, &mut emitted_until, &ctx);
+
+        assert_eq!(emitted_until, 8.0, "emitted_until must not move");
+        assert!(stored_segments(&ctx).is_empty());
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn handle_window_segments_emitted_until_advances_to_max_kept_end_not_last_processed() {
+        let (ctx, _note_id, _events, _dir) = test_ctx();
+        // Very negative starting point so both segments are trivially
+        // kept regardless of overlap logic.
+        let mut emitted_until = -100.0f64;
+
+        // Deliberately out of end-time order: the second (later-processed)
+        // segment ends *before* the first one does, so naively taking
+        // "the last processed segment's end" would wrongly leave
+        // emitted_until at 2.0 instead of the true max, 5.0.
+        let raw = vec![seg(0.0, 5.0, "A"), seg(1.0, 2.0, "B")];
+        handle_window_segments(&raw, 0.0, &mut emitted_until, &ctx);
+
+        assert_eq!(emitted_until, 5.0);
+        assert_eq!(stored_segments(&ctx).len(), 2);
+    }
+
+    #[test]
+    fn handle_window_segments_partial_overlap_drop_keeps_the_fresh_segment() {
+        let (ctx, _note_id, _events, _dir) = test_ctx();
+        let mut emitted_until = 8.0f64;
+
+        // Chunk starts at 7.0s: first segment straddles the overlap and is
+        // dropped (as above), second is past it and kept.
+        let raw = vec![
+            seg(0.0, 0.5, "dropped"),
+            seg(2.0, 3.0, "brand new words"),
+        ];
+        handle_window_segments(&raw, 7.0, &mut emitted_until, &ctx);
+
+        assert_eq!(emitted_until, 10.0);
+        let stored = stored_segments(&ctx);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].text, "brand new words");
     }
 
     // --- e2e: real model, real audio (manual only) --------------------------
