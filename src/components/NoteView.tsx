@@ -1,5 +1,6 @@
 import { demoNotes, demoTranscript } from '../data/demo'
 import type { AppState } from '../state/useAppState'
+import { MarkdownCard } from './MarkdownCard'
 import { PlayerBar } from './PlayerBar'
 import { TranscriptList } from './TranscriptList'
 
@@ -174,6 +175,7 @@ export function NoteView({ state }: NoteViewProps) {
             <PlayerBar />
           </>
         )}
+        {state.noteTab === 'md' && <MarkdownCard />}
       </div>
     </div>
   )

@@ -76,9 +76,15 @@ describe('NoteView', () => {
     expect(screen.getByText('18:21 / 48:22')).toBeInTheDocument()
   })
 
-  it('hides the transcript list and player when noteTab is md', () => {
+  it('shows the markdown card and hides the transcript list and player when noteTab is md', () => {
     render(<NoteView state={makeState({ noteTab: 'md' })} />)
+    expect(screen.getByText('client-call-acme.md')).toBeInTheDocument()
     expect(screen.queryByText('Tom Reyes — Acme')).not.toBeInTheDocument()
     expect(screen.queryByText('18:21 / 48:22')).not.toBeInTheDocument()
+  })
+
+  it('hides the markdown card when noteTab is transcript', () => {
+    render(<NoteView state={makeState({ noteTab: 'transcript' })} />)
+    expect(screen.queryByText('client-call-acme.md')).not.toBeInTheDocument()
   })
 })
