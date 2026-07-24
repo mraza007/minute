@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { NoteMeta, StoredSegment, SummaryDoc } from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
 import { formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
@@ -51,7 +51,7 @@ const DELETE_CONFIRM_TIMEOUT_MS = 4000
 
 function EmptyNotesArea() {
   return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-soft)' }}>
+    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-soft)' }}>
       <div style={{ textAlign: 'center', maxWidth: 340 }}>
         <div style={{ fontWeight: 700, fontSize: 17 }}>No notes yet</div>
         <div style={{ marginTop: 6, fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
@@ -59,7 +59,7 @@ function EmptyNotesArea() {
           Mac.
         </div>
       </div>
-    </div>
+    </main>
   )
 }
 
@@ -99,7 +99,7 @@ function StatusPill({
 
   if (finalizing) {
     return (
-      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
+      <span role="status" style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
           style={{
             width: 10,
@@ -118,7 +118,7 @@ function StatusPill({
 
   if (summaryStatus === 'running') {
     return (
-      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
+      <span role="status" style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
           style={{
             width: 10,
@@ -187,6 +187,7 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
         <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>{meta.title}</h1>
         <button
           title="Rename"
+          aria-label="Rename"
           className="icon-btn"
           onClick={() => {
             setDraft(meta.title)
@@ -266,39 +267,47 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
   useEffect(() => () => clearTimeout(confirmTimeout.current), [])
 
   return (
-    <button
-      title={confirming ? 'Confirm delete?' : 'Delete'}
-      className="icon-btn-danger"
-      onClick={() => {
-        if (!confirming) {
-          setConfirming(true)
-          confirmTimeout.current = setTimeout(() => setConfirming(false), DELETE_CONFIRM_TIMEOUT_MS)
-          return
-        }
-        clearTimeout(confirmTimeout.current)
-        setConfirming(false)
-        onDelete(id)
-      }}
-      style={{
-        width: 32,
-        height: 32,
-        border: 'none',
-        borderRadius: 8,
-        background: confirming ? 'rgba(224,68,48,.12)' : 'transparent',
-        color: confirming ? 'var(--accent-text)' : 'var(--ink-muted)',
-        cursor: 'pointer',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flex: 'none',
-      }}
-    >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 6h18"></path>
-        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
-        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
-      </svg>
-    </button>
+    <>
+      <button
+        title={confirming ? 'Confirm delete?' : 'Delete'}
+        aria-label={confirming ? 'Confirm delete?' : 'Delete'}
+        className="icon-btn-danger"
+        onClick={() => {
+          if (!confirming) {
+            setConfirming(true)
+            confirmTimeout.current = setTimeout(() => setConfirming(false), DELETE_CONFIRM_TIMEOUT_MS)
+            return
+          }
+          clearTimeout(confirmTimeout.current)
+          setConfirming(false)
+          onDelete(id)
+        }}
+        style={{
+          width: 32,
+          height: 32,
+          border: 'none',
+          borderRadius: 8,
+          background: confirming ? 'rgba(224,68,48,.12)' : 'transparent',
+          color: confirming ? 'var(--accent-text)' : 'var(--ink-muted)',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flex: 'none',
+        }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 6h18"></path>
+          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+        </svg>
+      </button>
+      {confirming && (
+        <span role="status" className="visually-hidden">
+          Press again to confirm deletion
+        </span>
+      )}
+    </>
   )
 }
 
@@ -325,6 +334,9 @@ export function NoteView({
   onRegenerateSummary,
   onGoSettings,
 }: NoteViewProps) {
+  const transcriptTabRef = useRef<HTMLButtonElement>(null)
+  const mdTabRef = useRef<HTMLButtonElement>(null)
+
   if (!meta) {
     return <EmptyNotesArea />
   }
@@ -346,8 +358,19 @@ export function NoteView({
   const markdown = transcriptReady ? selectedMarkdown : ''
   const markdownBytes = new TextEncoder().encode(markdown).length
 
+  // Two-item roving-focus tablist: Left/Right just toggles between the only
+  // two tabs (Transcript/Markdown) — moves selection *and* focus, per the
+  // WAI-ARIA tabs pattern.
+  function handleTabKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    const next: NoteTab = noteTab === 'transcript' ? 'md' : 'transcript'
+    setNoteTab(next)
+    ;(next === 'transcript' ? transcriptTabRef : mdTabRef).current?.focus()
+  }
+
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
+    <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
         <div
           style={{
@@ -369,10 +392,14 @@ export function NoteView({
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 'none' }}>
-            <div role="tablist" aria-label="Note content" style={{ display: 'flex', background: 'var(--panel-warm)', borderRadius: 9, padding: 3 }}>
+            <div role="tablist" aria-label="Note content" onKeyDown={handleTabKeyDown} style={{ display: 'flex', background: 'var(--panel-warm)', borderRadius: 9, padding: 3 }}>
               <button
+                ref={transcriptTabRef}
+                id="note-tab-transcript"
                 role="tab"
                 aria-selected={noteTab === 'transcript'}
+                aria-controls="note-panel-transcript"
+                tabIndex={noteTab === 'transcript' ? 0 : -1}
                 onClick={() => setNoteTab('transcript')}
                 className={noteTab === 'transcript' ? undefined : 'seg-off'}
                 style={{
@@ -391,8 +418,12 @@ export function NoteView({
                 Transcript
               </button>
               <button
+                ref={mdTabRef}
+                id="note-tab-md"
                 role="tab"
                 aria-selected={noteTab === 'md'}
+                aria-controls="note-panel-md"
+                tabIndex={noteTab === 'md' ? 0 : -1}
                 onClick={() => setNoteTab('md')}
                 className={noteTab === 'md' ? undefined : 'seg-off'}
                 style={{
@@ -417,7 +448,7 @@ export function NoteView({
           </div>
         </div>
         {noteTab === 'transcript' && (
-          <>
+          <div id="note-panel-transcript" role="tabpanel" aria-labelledby="note-tab-transcript" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
             {showTranscriptLoading ? (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, color: 'var(--ink-muted)' }}>
                 Loading transcript…
@@ -426,16 +457,18 @@ export function NoteView({
               <TranscriptList segments={displaySegments} />
             )}
             <PlayerBar durationSec={meta.durationSec} />
-          </>
+          </div>
         )}
         {noteTab === 'md' && (
-          <MarkdownCard
-            filename={`${slugify(meta.title)}.md`}
-            subtitle={`${formatBytes(markdownBytes)} · saved locally`}
-            markdown={markdown}
-            onReveal={() => onReveal(meta.id)}
-            onCopyError={onCopyError}
-          />
+          <div id="note-panel-md" role="tabpanel" aria-labelledby="note-tab-md" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+            <MarkdownCard
+              filename={`${slugify(meta.title)}.md`}
+              subtitle={`${formatBytes(markdownBytes)} · saved locally`}
+              markdown={markdown}
+              onReveal={() => onReveal(meta.id)}
+              onCopyError={onCopyError}
+            />
+          </div>
         )}
       </div>
       <AiNotesPanel
@@ -460,6 +493,6 @@ export function NoteView({
         onExport={() => onReveal(meta.id)}
         onGoSettings={onGoSettings}
       />
-    </div>
+    </main>
   )
 }

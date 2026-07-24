@@ -90,6 +90,7 @@ function Spinner({ color }: { color: string }) {
 function SummarizingBanner({ modelName }: { modelName: string }) {
   return (
     <div
+      role="status"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -112,7 +113,7 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
 
 function ErrorCard({ error, onRegenerate }: { error?: string; onRegenerate: () => void }) {
   return (
-    <div style={{ ...cardStyle, border: '1px solid rgba(224,68,48,.3)', background: '#fff4f1' }}>
+    <div role="alert" style={{ ...cardStyle, border: '1px solid rgba(224,68,48,.3)', background: '#fff4f1' }}>
       <div style={errorLabelStyle}>SUMMARY FAILED</div>
       <div style={{ fontSize: 13, lineHeight: 1.6, color: '#7a1c0e', marginBottom: 10 }}>
         {error || 'Something went wrong generating this summary.'}
@@ -272,7 +273,7 @@ export function AiNotesPanel({
   return (
     <div style={panelStyle}>
       <div style={{ padding: '16px 16px 12px', display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>AI notes</div>
+        <h2 style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>AI notes</h2>
         <div style={{ fontSize: 11, color: 'var(--ink-faint)' }}>generated locally</div>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>

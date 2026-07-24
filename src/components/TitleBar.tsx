@@ -8,7 +8,7 @@ interface TitleBarProps {
 
 export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording }: TitleBarProps) {
   return (
-    <div
+    <header
       data-tauri-drag-region=""
       style={{
         display: 'flex',
@@ -111,6 +111,6 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
           New recording
         </button>
       )}
-    </div>
+    </header>
   )
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import type { ModelStatus, StorageStats } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
@@ -33,6 +33,7 @@ const cardStyle: CSSProperties = {
 }
 
 const cardHeaderStyle: CSSProperties = {
+  margin: 0,
   padding: '16px 20px 4px',
   fontWeight: 700,
   fontSize: 14,
@@ -108,29 +109,38 @@ function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload,
     )
   }
   return (
-    <button
-      className="icon-btn-danger"
-      onClick={e => {
-        e.stopPropagation()
-        if (!confirming) {
-          setConfirming(true)
-          confirmTimeout.current = setTimeout(() => setConfirming(false), REMOVE_CONFIRM_TIMEOUT_MS)
-          return
-        }
-        clearTimeout(confirmTimeout.current)
-        setConfirming(false)
-        deleteModel(entry.id)
-      }}
-      style={dangerBtnStyle}
-    >
-      {confirming ? 'Confirm removal?' : 'Remove'}
-    </button>
+    <>
+      <button
+        className="icon-btn-danger"
+        onClick={e => {
+          e.stopPropagation()
+          if (!confirming) {
+            setConfirming(true)
+            confirmTimeout.current = setTimeout(() => setConfirming(false), REMOVE_CONFIRM_TIMEOUT_MS)
+            return
+          }
+          clearTimeout(confirmTimeout.current)
+          setConfirming(false)
+          deleteModel(entry.id)
+        }}
+        style={dangerBtnStyle}
+      >
+        {confirming ? 'Confirm removal?' : 'Remove'}
+      </button>
+      {confirming && (
+        <span role="status" className="visually-hidden">
+          Press again to confirm removal
+        </span>
+      )}
+    </>
   )
 }
 
 interface SelectableModelRowProps extends ModelRowAction {
   selected: boolean
   onSelect: () => void
+  /** True iff this is the single row that owns the radiogroup's tab stop right now (roving tabindex) — see `rovingSttId`/`rovingLlmId` in `SettingsView`. */
+  roving: boolean
 }
 
 /**
@@ -140,7 +150,7 @@ interface SelectableModelRowProps extends ModelRowAction {
  * its Download/Cancel affordance but the radio itself stays inert (not
  * `selectable`) until the model actually finishes installing.
  */
-function SelectableModelRow({ entry, downloads, selected, onSelect, downloadModel, cancelDownload, deleteModel }: SelectableModelRowProps) {
+function SelectableModelRow({ entry, downloads, selected, onSelect, roving, downloadModel, cancelDownload, deleteModel }: SelectableModelRowProps) {
   const info = modelStatusToSttInfo(entry, selected ? entry.id : '', downloads)
   const progress = downloads[entry.id]
   // Only an installed model can actually be selected as the in-use STT
@@ -154,7 +164,13 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, downloadMode
       role="radio"
       aria-checked={selected}
       aria-disabled={!selectable}
-      tabIndex={selectable ? 0 : -1}
+      // Roving tabindex: only one selectable row is ever a Tab stop at a
+      // time (the selected one, or the first selectable row if none is
+      // selected yet) — Up/Down (handled by the radiogroup container) moves
+      // both focus and selection among selectable rows, same as the native
+      // <input type="radio"> group pattern.
+      tabIndex={selectable ? (roving ? 0 : -1) : -1}
+      data-model-id={entry.id}
       onClick={selectable ? onSelect : undefined}
       onKeyDown={
         selectable
@@ -232,6 +248,29 @@ export function SettingsView({
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
 
+  const sttGroupRef = useRef<HTMLDivElement>(null)
+  const llmGroupRef = useRef<HTMLDivElement>(null)
+
+  const selectableSttIds = sttModels.filter(m => modelStatusToSttInfo(m, '', downloads).state === 'installed').map(m => m.id)
+  const selectableLlmIds = llmModels.filter(m => modelStatusToSttInfo(m, '', downloads).state === 'installed').map(m => m.id)
+  // The roving tab stop: the selected row if it's actually selectable, else
+  // the first selectable row, else nothing (no installed models yet).
+  const rovingSttId = selectableSttIds.includes(sttModel) ? sttModel : selectableSttIds[0]
+  const rovingLlmId = llmModel && selectableLlmIds.includes(llmModel) ? llmModel : selectableLlmIds[0]
+
+  /** Shared Up/Down roving-focus handler for both model radiogroups — moves focus and selection together among selectable (installed) rows only, wrapping at the ends. */
+  function handleRadiogroupKeyDown(e: KeyboardEvent<HTMLDivElement>, ids: string[], onSelect: (id: string) => void, groupEl: HTMLDivElement | null) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    if (ids.length === 0) return
+    e.preventDefault()
+    const currentId = (e.target as HTMLElement).getAttribute('data-model-id')
+    const currentIndex = currentId ? ids.indexOf(currentId) : -1
+    const delta = e.key === 'ArrowDown' ? 1 : -1
+    const nextId = ids[(currentIndex + delta + ids.length) % ids.length]
+    onSelect(nextId)
+    groupEl?.querySelector<HTMLElement>(`[data-model-id="${nextId}"]`)?.focus()
+  }
+
   const modelsBytes = storage?.modelsBytes ?? 0
   const audioBytes = storage?.audioBytes ?? 0
   const notesBytes = storage?.notesBytes ?? 0
@@ -239,7 +278,7 @@ export function SettingsView({
   const pct = (n: number) => (totalBytes > 0 ? (n / totalBytes) * 100 : 0)
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', background: 'var(--surface-soft)' }}>
+    <main style={{ flex: 1, overflow: 'auto', background: 'var(--surface-soft)' }}>
       <div style={{ maxWidth: 760, padding: '28px 36px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Settings</h1>
 
@@ -251,10 +290,12 @@ export function SettingsView({
         </div>
 
         <div style={cardStyle}>
-          <div style={cardHeaderStyle}>Transcription model</div>
+          <h2 style={cardHeaderStyle}>Transcription model</h2>
           <div
+            ref={sttGroupRef}
             role="radiogroup"
             aria-label="Transcription model"
+            onKeyDown={e => handleRadiogroupKeyDown(e, selectableSttIds, setSttModel, sttGroupRef.current)}
             style={{ padding: '12px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
           >
             {sttModels.map(m => (
@@ -263,6 +304,7 @@ export function SettingsView({
                 entry={m}
                 downloads={downloads}
                 selected={sttModel === m.id}
+                roving={m.id === rovingSttId}
                 onSelect={() => setSttModel(m.id)}
                 downloadModel={downloadModel}
                 cancelDownload={cancelDownload}
@@ -273,11 +315,13 @@ export function SettingsView({
         </div>
 
         <div style={cardStyle}>
-          <div style={cardHeaderStyle}>Summary model</div>
+          <h2 style={cardHeaderStyle}>Summary model</h2>
           <div style={{ padding: '4px 20px 4px', fontSize: 12, color: 'var(--ink-faint)' }}>Powers summaries, decisions & action items.</div>
           <div
+            ref={llmGroupRef}
             role="radiogroup"
             aria-label="Summary model"
+            onKeyDown={e => handleRadiogroupKeyDown(e, selectableLlmIds, setLlmModel, llmGroupRef.current)}
             style={{ padding: '8px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
           >
             {llmModels.map(m => (
@@ -286,6 +330,7 @@ export function SettingsView({
                 entry={m}
                 downloads={downloads}
                 selected={llmModel === m.id}
+                roving={m.id === rovingLlmId}
                 onSelect={() => setLlmModel(m.id)}
                 downloadModel={downloadModel}
                 cancelDownload={cancelDownload}
@@ -296,7 +341,7 @@ export function SettingsView({
         </div>
 
         <div style={cardStyle}>
-          <div style={cardHeaderStyle}>Storage</div>
+          <h2 style={cardHeaderStyle}>Storage</h2>
           <div style={{ padding: '12px 20px 18px' }}>
             <div style={{ display: 'flex', height: 12, borderRadius: 999, overflow: 'hidden', background: 'var(--panel-warm)', maxWidth: 520 }}>
               <div style={{ width: `${pct(modelsBytes)}%`, background: 'var(--ink)' }} />
@@ -324,6 +369,6 @@ export function SettingsView({
           </div>
         </div>
       </div>
-    </div>
+    </main>
   )
 }

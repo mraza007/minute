@@ -30,7 +30,8 @@ const navBase: CSSProperties = {
 
 export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, statsLine }: SidebarProps) {
   return (
-    <div
+    <nav
+      aria-label="Notes"
       style={{
         width: 250,
         flex: 'none',
@@ -44,6 +45,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
       <div style={{ padding: '12px 12px 4px', position: 'relative' }}>
         <input
           placeholder="Search notes…"
+          aria-label="Search notes"
           className="input-focus"
           style={{
             width: '100%',
@@ -164,6 +166,6 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
         </button>
         <div style={{ padding: '8px 10px 2px', fontSize: 11, color: 'var(--ink-faint)' }}>{statsLine}</div>
       </div>
-    </div>
+    </nav>
   )
 }

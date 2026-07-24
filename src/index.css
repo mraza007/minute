@@ -101,3 +101,30 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .input-focus:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(224, 68, 48, .15) !important; }
 .model-card:hover { background: var(--surface-softer) !important; }
 .seg-off:hover { color: var(--ink) !important; }
+
+/* Visible keyboard focus on every interactive control (WCAG 2.4.7) — text
+   inputs keep their existing box-shadow via .input-focus instead so the two
+   treatments don't double up. */
+button:focus-visible,
+[role="radio"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="switch"]:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input.input-focus:focus-visible { outline: none; }
+
+/* Screen-reader-only utility — visually hidden, still announced. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

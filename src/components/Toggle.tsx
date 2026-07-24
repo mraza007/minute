@@ -27,8 +27,8 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
     >
       <span
         style={{
-          width: 36,
-          height: 22,
+          width: 40,
+          height: 24,
           boxSizing: 'border-box',
           borderRadius: 999,
           background: on ? 'var(--accent)' : '#d8d4cf',
@@ -44,9 +44,9 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
           style={{
             position: 'absolute',
             top: 2,
-            left: on ? 16 : 2,
-            width: 18,
-            height: 18,
+            left: on ? 18 : 2,
+            width: 20,
+            height: 20,
             borderRadius: '50%',
             background: 'var(--card)',
             boxShadow: '0 1px 3px rgba(0,0,0,.25)',

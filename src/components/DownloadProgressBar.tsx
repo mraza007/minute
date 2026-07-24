@@ -16,7 +16,14 @@ export function DownloadProgressBar({ downloaded, total }: DownloadProgressBarPr
           {formatBytes(downloaded)} / {formatBytes(total)}
         </span>
       </div>
-      <div style={{ height: 6, borderRadius: 999, background: 'var(--panel-warm)', overflow: 'hidden' }}>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${formatBytes(downloaded)} of ${formatBytes(total)}`}
+        style={{ height: 6, borderRadius: 999, background: 'var(--panel-warm)', overflow: 'hidden' }}
+      >
         <div style={{ height: '100%', width: `${percent}%`, background: 'var(--accent)', borderRadius: 999, transition: 'width .2s' }} />
       </div>
     </div>

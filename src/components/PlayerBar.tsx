@@ -21,7 +21,10 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
         }}
       >
         <button
-          title="Back 15s"
+          disabled
+          aria-disabled="true"
+          aria-label="Back 15s"
+          title="Back 15s — playback arrives in a later update."
           className="icon-btn"
           style={{
             width: 30,
@@ -30,7 +33,8 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             borderRadius: '50%',
             background: 'transparent',
             color: 'var(--ink-muted)',
-            cursor: 'pointer',
+            cursor: 'default',
+            opacity: 0.5,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -65,7 +69,10 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
           </svg>
         </button>
         <button
-          title="Forward 15s"
+          disabled
+          aria-disabled="true"
+          aria-label="Forward 15s"
+          title="Forward 15s — playback arrives in a later update."
           className="icon-btn"
           style={{
             width: 30,
@@ -74,7 +81,8 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             borderRadius: '50%',
             background: 'transparent',
             color: 'var(--ink-muted)',
-            cursor: 'pointer',
+            cursor: 'default',
+            opacity: 0.5,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -89,6 +97,7 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
         <div style={{ flex: 1, height: 5, borderRadius: 999, background: '#e8e5e1', position: 'relative' }}>
           <div style={{ position: 'absolute', inset: '0 100% 0 0', borderRadius: 999, background: 'var(--ink)' }} />
           <div
+            aria-hidden="true"
             style={{
               position: 'absolute',
               left: '0%',
@@ -106,9 +115,13 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
           00:00 / {formatMmSs(durationSec)}
         </div>
         <button
+          disabled
+          aria-disabled="true"
+          aria-label="Playback speed"
+          title="Playback speed — playback arrives in a later update."
           className="btn-light"
           style={{
-            padding: '4px 10px',
+            padding: '6px 10px',
             border: '1px solid var(--border-strong)',
             borderRadius: 999,
             background: 'var(--card)',
@@ -116,7 +129,8 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             fontSize: 12,
             fontWeight: 700,
             color: 'var(--ink)',
-            cursor: 'pointer',
+            cursor: 'default',
+            opacity: 0.5,
             flex: 'none',
           }}
         >

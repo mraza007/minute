@@ -21,9 +21,9 @@ describe('Toggle', () => {
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('positions the knob at left 16 when on and 2 when off', () => {
+  it('positions the knob at left 18 when on and 2 when off', () => {
     const { rerender } = render(<Toggle on={true} onToggle={vi.fn()} label="Encrypt" />)
-    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '16px' })
+    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '18px' })
 
     rerender(<Toggle on={false} onToggle={vi.fn()} label="Encrypt" />)
     expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '2px' })
