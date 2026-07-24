@@ -186,12 +186,12 @@ describe('SettingsView', () => {
     expect(setSttModel).not.toHaveBeenCalled()
   })
 
-  it('renders all three real LLM entries with a coming-later note', () => {
+  it('renders all three real LLM entries with a note on what the summary model powers', () => {
     render(<SettingsView {...base} />)
     expect(screen.getByText('Qwen3.5-4B', { exact: false })).toBeInTheDocument()
     expect(screen.getByText(/Gemma 4 E4B/)).toBeInTheDocument()
     expect(screen.getByText(/Qwen3.5-9B/)).toBeInTheDocument()
-    expect(screen.getByText(/powers summaries — coming in a later update/i)).toBeInTheDocument()
+    expect(screen.getByText(/powers summaries, decisions & action items/i)).toBeInTheDocument()
   })
 
   it('groups the summary models under their own radiogroup with one radio per LLM entry', () => {

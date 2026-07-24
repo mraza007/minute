@@ -274,7 +274,7 @@ export function SettingsView({
 
         <div style={cardStyle}>
           <div style={cardHeaderStyle}>Summary model</div>
-          <div style={{ padding: '4px 20px 4px', fontSize: 12, color: '#9a938c' }}>Powers summaries — coming in a later update.</div>
+          <div style={{ padding: '4px 20px 4px', fontSize: 12, color: '#9a938c' }}>Powers summaries, decisions & action items.</div>
           <div
             role="radiogroup"
             aria-label="Summary model"

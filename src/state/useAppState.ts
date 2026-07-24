@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
-import { onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
-import type { Hardware, NoteMeta, NoteWithTranscript, StorageStats, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
+import { onRecordingState, onSttStatus, onSummaryStatus, onTranscriptSegment } from '../ipc/events'
+import type { Hardware, NoteMeta, NoteWithTranscript, StorageStats, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { useModelManager } from './useModelManager'
@@ -12,6 +12,38 @@ function messageOf(err: unknown): string {
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000
+
+/**
+ * Per-note summarization lifecycle as tracked in `summaryStatus`/
+ * `summaryError` below — mirrors the wire event's `state` field
+ * (`SummaryStatusEvent['state']`) exactly, including `'done'`, since that's
+ * a real, meaningful transition worth remembering per note (e.g. so a
+ * background summarization for a non-selected note is still known to have
+ * finished if the user switches to it later).
+ */
+export type SummaryEventState = 'running' | 'done' | 'error'
+
+/**
+ * The AI notes panel's (and NoteView's status pill's) simplified view of a
+ * note's summarization state — `'idle'` covers both "no `summary-status`
+ * event seen this session" and "the last one was `'done'`", since `'done'`
+ * itself carries no special UI once it's landed (the panel just renders the
+ * real summary/decisions/action items normally at that point). Callers
+ * collapse `summaryStatus[id]` (a `SummaryEventState | undefined`) down to
+ * this before handing it to `NoteView`/`AiNotesPanel` — see `App.tsx`.
+ */
+export type SummaryStatus = 'idle' | 'running' | 'error'
+
+/**
+ * How many notes' `get_note` responses (transcript + summary + markdown)
+ * `transcriptCache` keeps resident at once — carried debt flagged in the
+ * Stage 3 plan. A plain re-insert-on-access `Map` (insertion order doubles
+ * as recency order) with oldest-evict-on-overflow: `cacheGet` moves a hit to
+ * the end, `cacheSet` does the same and then drops the first (oldest) entry
+ * once the map exceeds this cap. Cheap and good enough at note-library
+ * scale — no need for a dedicated LRU data structure.
+ */
+const TRANSCRIPT_CACHE_CAP = 20
 
 export function useAppState() {
   const [view, setView] = useState<View>('loading')
@@ -56,6 +88,18 @@ export function useAppState() {
   const [tDel, setTDel] = useState(true)
   const [tEnc, setTEnc] = useState(false)
 
+  // Per-note summarization status/error, driven entirely by `summary-status`
+  // events (registered at app-mount level below, alongside the recording
+  // listeners — an auto-triggered summarization must not be missed just
+  // because NoteView isn't mounted to see it land). Keyed by note id rather
+  // than tracking only "the selected note" so a background summarization
+  // (e.g. for a note the user has since navigated away from) still updates
+  // correctly once its note is reselected. `summaryError` only ever holds
+  // entries for notes currently in `'error'` state — cleared once a later
+  // `running`/`done` event supersedes it.
+  const [summaryStatus, setSummaryStatus] = useState<Record<string, SummaryEventState>>({})
+  const [summaryError, setSummaryError] = useState<Record<string, string>>({})
+
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Stable identity (only refs/setState in its closure) — required so that
@@ -72,15 +116,19 @@ export function useAppState() {
 
   // --- Note detail: real transcript loading for the selected note --------
   //
-  // `selectedMeta`/`selectedTranscript` back NoteView's Transcript/Markdown
-  // tabs once a note is actually selected — fetched via `get_note` (the
-  // notes list itself only carries `NoteMeta`, no segments). Cached per id
-  // in `transcriptCache` so re-selecting an already-viewed note is instant
-  // and doesn't re-hit the backend; `renameNote`/`deleteNote` below
-  // invalidate a note's cache entry since its on-disk content just changed
-  // out from under whatever's cached.
+  // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
+  // back NoteView's Transcript/Markdown tabs and the AI notes panel once a
+  // note is actually selected — fetched via `get_note` (the notes list
+  // itself only carries `NoteMeta`, no segments/summary/markdown). Cached
+  // per id in `transcriptCache` (LRU-capped — see `cacheGet`/`cacheSet`) so
+  // re-selecting an already-viewed note is instant and doesn't re-hit the
+  // backend; `renameNote`/`deleteNote`/the `summary-status` 'done' handler
+  // below invalidate a note's cache entry since its on-disk content just
+  // changed out from under whatever's cached.
   const [selectedTranscript, setSelectedTranscript] = useState<StoredSegment[]>([])
   const [selectedMeta, setSelectedMeta] = useState<NoteMeta | null>(null)
+  const [selectedSummary, setSelectedSummary] = useState<SummaryDoc | null>(null)
+  const [selectedMarkdown, setSelectedMarkdown] = useState('')
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const transcriptCache = useRef(new Map<string, NoteWithTranscript>())
   // Bumped on every `loadNoteTranscript` call and captured per in-flight
@@ -88,12 +136,34 @@ export function useAppState() {
   // selecting note A then B) clobbering newer state with a stale response.
   const transcriptRequestId = useRef(0)
 
+  /** Reads a cache entry, marking it most-recently-used (moves it to the end of the map) — see `TRANSCRIPT_CACHE_CAP`'s docs. `undefined` on a miss, same as `Map.get`. */
+  function cacheGet(id: string): NoteWithTranscript | undefined {
+    const entry = transcriptCache.current.get(id)
+    if (entry) {
+      transcriptCache.current.delete(id)
+      transcriptCache.current.set(id, entry)
+    }
+    return entry
+  }
+
+  /** Writes a cache entry as most-recently-used, evicting the single oldest entry if this pushes the map over `TRANSCRIPT_CACHE_CAP`. */
+  function cacheSet(id: string, data: NoteWithTranscript) {
+    transcriptCache.current.delete(id)
+    transcriptCache.current.set(id, data)
+    if (transcriptCache.current.size > TRANSCRIPT_CACHE_CAP) {
+      const oldestId = transcriptCache.current.keys().next().value
+      if (oldestId !== undefined) transcriptCache.current.delete(oldestId)
+    }
+  }
+
   function loadNoteTranscript(id: string, opts: { force?: boolean } = {}) {
     if (!opts.force) {
-      const cached = transcriptCache.current.get(id)
+      const cached = cacheGet(id)
       if (cached) {
         setSelectedMeta(cached.meta)
         setSelectedTranscript(cached.transcript.segments)
+        setSelectedSummary(cached.summary)
+        setSelectedMarkdown(cached.markdown)
         setTranscriptLoading(false)
         return
       }
@@ -103,10 +173,12 @@ export function useAppState() {
     ipc
       .getNote(id)
       .then(data => {
-        transcriptCache.current.set(id, data)
+        cacheSet(id, data)
         if (transcriptRequestId.current !== requestId) return
         setSelectedMeta(data.meta)
         setSelectedTranscript(data.transcript.segments)
+        setSelectedSummary(data.summary)
+        setSelectedMarkdown(data.markdown)
       })
       .catch(err => {
         if (transcriptRequestId.current !== requestId) return
@@ -123,6 +195,8 @@ export function useAppState() {
     if (!selectedNoteId) {
       setSelectedMeta(null)
       setSelectedTranscript([])
+      setSelectedSummary(null)
+      setSelectedMarkdown('')
       return
     }
     loadNoteTranscript(selectedNoteId)
@@ -245,6 +319,48 @@ export function useAppState() {
     [],
   )
 
+  // Registered unconditionally at app-mount level (not gated on a note
+  // being selected, or on `view === 'notes'`) — same rationale as the
+  // recording listeners above: `stop_recording` auto-triggers
+  // summarization in the background, so the `running`/`done`/`error`
+  // sequence for it must land even if the user has navigated to Settings
+  // or a different note in the meantime. References `selectedNoteId`
+  // directly rather than through a ref — safe because `useTauriEvent`
+  // refreshes its callback closure on every render (see its docs), so this
+  // always sees the latest selection without needing one.
+  useTauriEvent(
+    onSummaryStatus,
+    payload => {
+      setSummaryStatus(prev => ({ ...prev, [payload.noteId]: payload.state }))
+
+      if (payload.state === 'error') {
+        setSummaryError(prev => ({ ...prev, [payload.noteId]: payload.error ?? 'Summarization failed' }))
+        return
+      }
+      // 'running' or 'done' supersedes any previous error for this note.
+      setSummaryError(prev => {
+        if (!(payload.noteId in prev)) return prev
+        const next = { ...prev }
+        delete next[payload.noteId]
+        return next
+      })
+
+      if (payload.state === 'done') {
+        // The note's summary/markdown/status just changed on disk —
+        // invalidate its cache entry, refetch it if it's the one currently
+        // on screen (so the AI notes panel picks up the real summary
+        // without a manual reselect), and refresh the notes list so its
+        // status flips transcribed -> ready in the sidebar/header pill.
+        transcriptCache.current.delete(payload.noteId)
+        if (payload.noteId === selectedNoteId) {
+          loadNoteTranscript(payload.noteId, { force: true })
+        }
+        ipc.listNotes().then(setNotes).catch(reportError)
+      }
+    },
+    [],
+  )
+
   const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
 
   const statsLine = useMemo(() => {
@@ -258,6 +374,72 @@ export function useAppState() {
     () => modelDisplayName(modelManager.models, modelManager.sttModel),
     [modelManager.models, modelManager.sttModel],
   )
+
+  const llmModelDisplayName = useMemo(
+    () => modelDisplayName(modelManager.models, modelManager.llmModel ?? ''),
+    [modelManager.models, modelManager.llmModel],
+  )
+
+  /** Whether the currently selected summary model is actually installed — what the AI notes panel's empty state (a "Generate summary" button vs. a "download a model" prompt) branches on. */
+  const llmInstalled = useMemo(
+    () => modelManager.llmModel !== null && modelManager.models.some(m => m.kind === 'llm' && m.id === modelManager.llmModel && m.state === 'installed'),
+    [modelManager.models, modelManager.llmModel],
+  )
+
+  /**
+   * Regenerate button / auto-trigger retry: (re)triggers summarization for
+   * `id` via `summarize_note`. Resolves once the backend has *queued* the
+   * worker, not once it finishes — `summary-status` events (see the
+   * listener above) are what actually drive `summaryStatus`/`summaryError`
+   * and the eventual cache refresh. Still worth its own `.catch` here
+   * (rather than relying solely on the event stream): `summarize_note`
+   * rejects synchronously — with no `summary-status` event at all — when
+   * the engine is already busy with another note, so that failure would
+   * otherwise go unsurfaced.
+   */
+  function regenerateSummary(id: string) {
+    ipc.summarizeNote(id).catch(err => {
+      setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
+      setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
+    })
+  }
+
+  /**
+   * AI notes panel checkbox click: flips one action item's `done` state.
+   * Optimistic — updates the cached `SummaryDoc` (and, if `id` is the
+   * selected note, `selectedSummary`) immediately, then confirms via
+   * `toggle_action_item`. On success the cache entry is dropped and (if
+   * selected) force-refetched rather than merged from the command's
+   * response — `toggle_action_item` only returns the updated `SummaryDoc`,
+   * not a fresh `markdown` rendering, and `note.md`'s checkbox did change
+   * server-side, so a full refetch is what keeps the Markdown tab honest.
+   * On failure, reverts the optimistic edit and reports the error.
+   */
+  function toggleActionItem(id: string, index: number, done: boolean) {
+    const previous = cacheGet(id)
+    if (previous?.summary) {
+      const optimisticSummary: SummaryDoc = {
+        ...previous.summary,
+        actionItems: previous.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
+      }
+      cacheSet(id, { ...previous, summary: optimisticSummary })
+      if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
+    }
+
+    ipc
+      .toggleActionItem(id, index, done)
+      .then(() => {
+        transcriptCache.current.delete(id)
+        if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
+      })
+      .catch(err => {
+        if (previous) {
+          cacheSet(id, previous)
+          if (id === selectedNoteId) setSelectedSummary(previous.summary)
+        }
+        reportError(err)
+      })
+  }
 
   /**
    * Starts a new recording with the currently selected STT model.
@@ -393,6 +575,8 @@ export function useAppState() {
     sttModel: modelManager.sttModel,
     sttModelDisplayName,
     llmModel: modelManager.llmModel,
+    llmModelDisplayName,
+    llmInstalled,
     sel,
     recElapsed,
     paused,
@@ -403,6 +587,10 @@ export function useAppState() {
     liveSegments,
     selectedTranscript,
     selectedMeta,
+    selectedSummary,
+    selectedMarkdown,
+    summaryStatus,
+    summaryError,
     transcriptLoading,
     asked,
     askDraft,
@@ -455,14 +643,16 @@ export function useAppState() {
       if (rec) {
         const sttInstalled = modelManager.models.find(m => m.kind === 'stt' && m.id === rec.stt && m.state === 'installed')
         if (sttInstalled) modelManager.setSttModel(sttInstalled.id)
-        const llmInstalled = modelManager.models.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
-        if (llmInstalled) modelManager.setLlmModel(llmInstalled.id)
+        const llmInstalledEntry = modelManager.models.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
+        if (llmInstalledEntry) modelManager.setLlmModel(llmInstalledEntry.id)
       }
       setView('notes')
     },
     renameNote,
     deleteNote,
     revealNote,
+    regenerateSummary,
+    toggleActionItem,
     reportError,
   }
 }

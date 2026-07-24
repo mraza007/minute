@@ -10,6 +10,19 @@ import { SettingsView } from './components/SettingsView'
 export default function App() {
   const s = useAppState()
 
+  // The selected note's list-level metadata — the same "notes[sel], falling
+  // back to notes[0]" rule NoteView used to apply internally before its
+  // narrow-props refactor (Stage 3 Task 5); computed once here since
+  // several of the props below (summaryStatus/summaryError) key off its id.
+  const selectedNoteMeta = s.notes[s.sel] ?? s.notes[0] ?? null
+
+  // NoteView/AiNotesPanel only distinguish 'idle' | 'running' | 'error' —
+  // `summaryStatus`'s `'done'` (and "no event seen this session") both
+  // collapse to 'idle' here, since 'done' carries no special UI once it's
+  // landed (the panel just shows the real summary at that point).
+  const rawSummaryEventState = selectedNoteMeta ? s.summaryStatus[selectedNoteMeta.id] : undefined
+  const selectedSummaryStatus = rawSummaryEventState === 'running' || rawSummaryEventState === 'error' ? rawSummaryEventState : 'idle'
+
   if (s.view === 'loading') {
     return (
       <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f2f0ee', fontSize: 13, color: '#8d867f' }}>
@@ -48,7 +61,31 @@ export default function App() {
             onGoSettings={s.goSettings}
             statsLine={s.statsLine}
           />
-          {s.view === 'notes' && <NoteView state={s} />}
+          {s.view === 'notes' && (
+            <NoteView
+              meta={selectedNoteMeta}
+              selectedMeta={s.selectedMeta}
+              selectedTranscript={s.selectedTranscript}
+              selectedSummary={s.selectedSummary}
+              selectedMarkdown={s.selectedMarkdown}
+              transcriptLoading={s.transcriptLoading}
+              noteTab={s.noteTab}
+              setNoteTab={s.setNoteTab}
+              sttStatus={s.sttStatus}
+              sttStatusNoteId={s.sttStatusNoteId}
+              summaryStatus={selectedSummaryStatus}
+              summaryError={selectedNoteMeta ? s.summaryError[selectedNoteMeta.id] : undefined}
+              llmInstalled={s.llmInstalled}
+              llmModelName={s.llmModelDisplayName}
+              onRename={s.renameNote}
+              onDelete={s.deleteNote}
+              onReveal={s.revealNote}
+              onCopyError={s.reportError}
+              onToggleActionItem={s.toggleActionItem}
+              onRegenerateSummary={s.regenerateSummary}
+              onGoSettings={s.goSettings}
+            />
+          )}
           {s.view === 'recording' && (
             <RecordingView
               liveSegments={s.liveSegments}

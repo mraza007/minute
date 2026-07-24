@@ -61,6 +61,10 @@ interface SetupOpts {
   startRecordingId?: string
   stopRecordingResult?: NoteMeta
   stopRecordingReject?: string
+  /** Overrides `get_note`'s response — defaults to `{ meta: match, transcript: { segments: [] }, summary: null, markdown: '# {title}' }`. */
+  getNote?: (id: string) => NoteWithTranscript
+  /** Overrides `list_notes`'s response, evaluated fresh on every call (so it can reflect state mutated after the initial render, e.g. a note flipping to `ready`) — defaults to the static `notes` fixture. */
+  listNotes?: () => NoteMeta[]
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -72,7 +76,7 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'list_models':
           return models
         case 'list_notes':
-          return notes
+          return opts.listNotes ? opts.listNotes() : notes
         case 'hardware_info':
           return hardware
         case 'recommended_models':
@@ -86,6 +90,7 @@ function setupIPC(opts: SetupOpts = {}) {
           return opts.stopRecordingResult ?? notes[0] ?? noteFixture()
         case 'get_note': {
           const { id } = args as { id: string }
+          if (opts.getNote) return opts.getNote(id)
           const match = notes.find(n => n.id === id) ?? notes[0] ?? noteFixture()
           return {
             meta: match,
@@ -252,5 +257,51 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('wav writer thread panicked'))
+  })
+
+  it('auto-trigger simulation: record, stop, summary-status running then done shows the real summary in the AI notes panel', async () => {
+    const noteId = '20260722-130000'
+    const finishedNote = noteFixture({ id: noteId, title: 'Auto-summarized note', status: 'transcribed' })
+    const readyNote = { ...finishedNote, status: 'ready' as const }
+    let summarized = false
+
+    setupIPC({
+      notes: [finishedNote],
+      startRecordingId: noteId,
+      stopRecordingResult: finishedNote,
+      listNotes: () => [summarized ? readyNote : finishedNote],
+      getNote: id => ({
+        meta: summarized && id === noteId ? readyNote : finishedNote,
+        transcript: { segments: [] },
+        summary: summarized
+          ? { summary: 'Auto-generated summary of the call.', decisions: [], actionItems: [] }
+          : null,
+        markdown: '# Auto-summarized note',
+      }),
+    })
+
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Auto-summarized note' })).toBeInTheDocument())
+
+    // Backend auto-triggers summarize_note after stop_recording finalizes —
+    // simulated here directly via the summary-status events it emits.
+    await act(async () => {
+      await emit('summary-status', { noteId, state: 'running', error: null })
+    })
+    expect(screen.getByText('Summarizing…')).toBeInTheDocument()
+
+    summarized = true
+    await act(async () => {
+      await emit('summary-status', { noteId, state: 'done', error: null })
+    })
+
+    await waitFor(() => expect(screen.getByText('Auto-generated summary of the call.')).toBeInTheDocument())
+    expect(screen.getByText('Ready')).toBeInTheDocument()
+    expect(screen.queryByText('Summarizing…')).not.toBeInTheDocument()
   })
 })

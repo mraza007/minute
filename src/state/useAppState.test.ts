@@ -13,6 +13,8 @@ import type {
   StorageStats,
   StoredSegment,
   SttStatusEvent,
+  SummaryDoc,
+  SummaryStatusEvent,
   TranscriptSegmentEvent,
 } from '../ipc/types'
 import { useAppState } from './useAppState'
@@ -97,6 +99,12 @@ interface SetupOpts {
   renameNoteResult?: (id: string, title: string) => NoteMeta
   /** `get_settings`'s response — defaults to `settingsFixture()`. */
   settings?: Settings
+  /** `toggle_action_item(id, index, done)`'s response — defaults to rejecting (tests that need it must supply this). */
+  toggleActionItem?: (id: string, index: number, done: boolean) => SummaryDoc | Promise<SummaryDoc>
+  /** Forces `toggle_action_item` to reject with this message instead of calling `toggleActionItem`. */
+  toggleActionItemReject?: string
+  /** Forces `summarize_note` to reject with this message (defaults to resolving `null`). */
+  summarizeNoteReject?: string
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -154,6 +162,15 @@ function setupIPC(opts: SetupOpts = {}) {
           return settings
         case 'set_settings':
           return settings
+        case 'toggle_action_item': {
+          if (opts.toggleActionItemReject) throw opts.toggleActionItemReject
+          const { id, index, done } = args as { id: string; index: number; done: boolean }
+          if (opts.toggleActionItem) return opts.toggleActionItem(id, index, done)
+          throw new Error('toggle_action_item called without a toggleActionItem fixture')
+        }
+        case 'summarize_note':
+          if (opts.summarizeNoteReject) throw opts.summarizeNoteReject
+          return null
         default:
           return null
       }
@@ -847,6 +864,231 @@ describe('useAppState', () => {
         act(() => result.current.revealNote('note-a'))
         await waitFor(() => expect(result.current.lastError).toContain('no such file'))
       })
+    })
+  })
+
+  describe('summarization', () => {
+    const noteA = noteFixture({ id: 'note-a', title: 'Note A' })
+    const segmentsA: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 1, text: 'hello from A' }]
+    const noteSummary: SummaryDoc = {
+      summary: 'Discussed Q3 roadmap.',
+      decisions: ['Ship by Friday'],
+      actionItems: [{ text: 'Write release notes', done: false }],
+    }
+
+    function summaryStatusEvent(overrides: Partial<SummaryStatusEvent> = {}): SummaryStatusEvent {
+      return { noteId: 'note-a', state: 'running', error: null, ...overrides }
+    }
+
+    describe('summary-status event flow', () => {
+      it('running then done invalidates the cache, refetches the selected note, and refreshes the notes list (status ready)', async () => {
+        let summarized = false
+        const readyNote: NoteMeta = { ...noteA, status: 'ready' }
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        setupIPC({
+          notes: [noteA],
+          getNote: () => ({
+            meta: summarized ? readyNote : noteA,
+            transcript: { segments: segmentsA },
+            summary: summarized ? noteSummary : null,
+            markdown: summarized ? '# with summary' : '# no summary',
+          }),
+          listNotesAfter: () => [readyNote],
+          onCmd: (cmd, args) => calls.push({ cmd, args }),
+        })
+
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+        expect(result.current.selectedSummary).toBeNull()
+
+        await act(async () => {
+          await emit('summary-status', summaryStatusEvent({ state: 'running' }))
+        })
+        expect(result.current.summaryStatus['note-a']).toBe('running')
+
+        summarized = true
+        await act(async () => {
+          await emit('summary-status', summaryStatusEvent({ state: 'done' }))
+        })
+
+        await waitFor(() => expect(result.current.selectedSummary).toEqual(noteSummary))
+        expect(result.current.summaryStatus['note-a']).toBe('done')
+        expect(result.current.notes).toEqual([readyNote])
+        expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2)
+      })
+
+      it('error sets summaryStatus/summaryError for that note only, without touching another note', async () => {
+        setupIPC({ notes: [noteA] })
+        const result = await loaded()
+
+        await act(async () => {
+          await emit('summary-status', summaryStatusEvent({ state: 'error', error: 'no summary model installed' }))
+        })
+
+        expect(result.current.summaryStatus['note-a']).toBe('error')
+        expect(result.current.summaryError['note-a']).toBe('no summary model installed')
+        expect(result.current.summaryStatus['note-b']).toBeUndefined()
+        expect(result.current.summaryError['note-b']).toBeUndefined()
+      })
+
+      it('falls back to a generic message when an error event carries none', async () => {
+        setupIPC({ notes: [noteA] })
+        const result = await loaded()
+
+        await act(async () => {
+          await emit('summary-status', summaryStatusEvent({ state: 'error', error: null }))
+        })
+
+        expect(result.current.summaryError['note-a']).toBe('Summarization failed')
+      })
+
+      it('a later running/done event clears a previously recorded error for the same note', async () => {
+        setupIPC({ notes: [noteA] })
+        const result = await loaded()
+
+        await act(async () => {
+          await emit('summary-status', summaryStatusEvent({ state: 'error', error: 'boom' }))
+        })
+        expect(result.current.summaryError['note-a']).toBe('boom')
+
+        await act(async () => {
+          await emit('summary-status', summaryStatusEvent({ state: 'running' }))
+        })
+        expect(result.current.summaryError['note-a']).toBeUndefined()
+        expect(result.current.summaryStatus['note-a']).toBe('running')
+      })
+    })
+
+    describe('regenerateSummary', () => {
+      it('invokes summarize_note with the given id', async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        setupIPC({ notes: [noteA], onCmd: (cmd, args) => calls.push({ cmd, args }) })
+        const result = await loaded()
+
+        act(() => result.current.regenerateSummary('note-a'))
+
+        expect(calls.some(c => c.cmd === 'summarize_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
+      })
+
+      it('sets per-note summaryStatus/summaryError when summarize_note rejects synchronously (e.g. already busy)', async () => {
+        setupIPC({ notes: [noteA], summarizeNoteReject: 'summarization already running' })
+        const result = await loaded()
+
+        act(() => result.current.regenerateSummary('note-a'))
+
+        await waitFor(() => expect(result.current.summaryStatus['note-a']).toBe('error'))
+        expect(result.current.summaryError['note-a']).toBe('summarization already running')
+      })
+    })
+
+    describe('toggleActionItem', () => {
+      function summaryFixture(overrides: Partial<SummaryDoc> = {}): NoteWithTranscript {
+        return {
+          meta: noteA,
+          transcript: { segments: segmentsA },
+          summary: { summary: 'x', decisions: [], actionItems: [{ text: 'Write release notes', done: false }], ...overrides },
+          markdown: '# note',
+        }
+      }
+
+      it('optimistically flips the action item, calls toggle_action_item, then refetches the note', async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        let resolveToggle: (v: SummaryDoc) => void = () => {}
+        const pending = new Promise<SummaryDoc>(resolve => {
+          resolveToggle = resolve
+        })
+        setupIPC({
+          notes: [noteA],
+          getNote: () => summaryFixture(),
+          toggleActionItem: () => pending,
+          onCmd: (cmd, args) => calls.push({ cmd, args }),
+        })
+
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedSummary?.actionItems[0].done).toBe(false))
+
+        act(() => result.current.toggleActionItem('note-a', 0, true))
+
+        // Optimistic: flips immediately, before the IPC call has resolved.
+        expect(result.current.selectedSummary?.actionItems[0].done).toBe(true)
+        expect(
+          calls.some(
+            c =>
+              c.cmd === 'toggle_action_item' &&
+              (c.args as { id: string; index: number; done: boolean }).id === 'note-a' &&
+              (c.args as { id: string; index: number; done: boolean }).index === 0 &&
+              (c.args as { id: string; index: number; done: boolean }).done === true,
+          ),
+        ).toBe(true)
+
+        await act(async () => {
+          resolveToggle({ summary: 'x', decisions: [], actionItems: [{ text: 'Write release notes', done: true }] })
+          await pending
+        })
+
+        // A confirmed toggle re-fetches the note (rather than trusting the
+        // command's bare SummaryDoc response) so the Markdown tab's
+        // checkbox stays in sync with the backend's re-rendered note.md.
+        await waitFor(() => expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2))
+      })
+
+      it('reverts the optimistic flip and reports lastError when toggle_action_item rejects', async () => {
+        setupIPC({
+          notes: [noteA],
+          getNote: () => summaryFixture(),
+          toggleActionItemReject: 'note note-a has no summary yet',
+        })
+
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedSummary?.actionItems[0].done).toBe(false))
+
+        act(() => result.current.toggleActionItem('note-a', 0, true))
+        expect(result.current.selectedSummary?.actionItems[0].done).toBe(true)
+
+        await waitFor(() => expect(result.current.lastError).toContain('note note-a has no summary yet'))
+        expect(result.current.selectedSummary?.actionItems[0].done).toBe(false)
+      })
+    })
+  })
+
+  describe('transcript cache LRU (cap 20)', () => {
+    it('evicts the oldest note once a 21st distinct note is viewed, but keeps recently viewed notes cached', async () => {
+      const manyNotes = Array.from({ length: 21 }, (_, i) => noteFixture({ id: `note-${i}`, title: `Note ${i}` }))
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        notes: manyNotes,
+        getNote: id => ({
+          meta: manyNotes.find(n => n.id === id) as NoteMeta,
+          transcript: { segments: [] },
+          summary: null,
+          markdown: '',
+        }),
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-0'))
+
+      // Select every other note in order: 21 distinct notes viewed in total
+      // (note-0 from the initial selection, plus note-1..note-20 here).
+      for (let i = 1; i < 21; i++) {
+        act(() => result.current.selectNote(i))
+        // eslint-disable-next-line no-await-in-loop
+        await waitFor(() => expect(result.current.selectedMeta?.id).toBe(`note-${i}`))
+      }
+      expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(21)
+
+      // note-0 was the oldest entry and is now past the 20-entry cap —
+      // reselecting it must refetch rather than serve from cache.
+      act(() => result.current.selectNote(0))
+      await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-0'))
+      expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(22)
+
+      // note-20 (recently viewed, well within the cap) must still be served
+      // from cache — no extra fetch.
+      act(() => result.current.selectNote(20))
+      await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-20'))
+      expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(22)
     })
   })
 

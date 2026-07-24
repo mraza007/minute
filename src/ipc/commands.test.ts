@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats } from './types'
+import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats, SummaryDoc } from './types'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -263,6 +263,21 @@ describe('ipc/commands', () => {
 
     expect(calls[0].cmd).toBe('summarize_note')
     expect(calls[0].args).toEqual({ id: '20260722-120000' })
+  })
+
+  it('toggleActionItem invokes toggle_action_item with { id, index, done } and passes through the updated SummaryDoc', async () => {
+    const updated: SummaryDoc = {
+      summary: 'Discussed Q3 roadmap.',
+      decisions: ['Ship by Friday'],
+      actionItems: [{ text: 'Write release notes', done: true }],
+    }
+    const calls = captureIPC(() => updated)
+
+    const result = await commands.toggleActionItem('20260722-120000', 0, true)
+
+    expect(calls[0].cmd).toBe('toggle_action_item')
+    expect(calls[0].args).toEqual({ id: '20260722-120000', index: 0, done: true })
+    expect(result).toEqual(updated)
   })
 
   it('normalizes a raw string rejection into an Error instance', async () => {

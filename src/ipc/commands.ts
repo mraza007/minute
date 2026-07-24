@@ -14,6 +14,7 @@ import type {
   Settings,
   SettingsPatch,
   StorageStats,
+  SummaryDoc,
 } from './types'
 
 /**
@@ -82,3 +83,14 @@ export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
  * (`onSummaryStatus`) for progress.
  */
 export const summarizeNote = (id: string): Promise<void> => invokeCmd('summarize_note', { id })
+
+/**
+ * Flips one action item's `done` state in a note's summary (read-modify-
+ * write server-side — see `store::Store::toggle_action_item`, wired up
+ * through the `toggle_action_item` command) and resolves with the note's
+ * full updated `SummaryDoc`. `index` is the action item's position in
+ * `summary.actionItems`; rejects if the note has no summary yet or `index`
+ * is out of bounds.
+ */
+export const toggleActionItem = (id: string, index: number, done: boolean): Promise<SummaryDoc> =>
+  invokeCmd('toggle_action_item', { id, index, done })
