@@ -367,6 +367,40 @@ fn action_item_from_value(value: serde_json::Value) -> Option<ActionItem> {
     }
 }
 
+/// Converts a parsed [`RawSummary`] into the wire-facing [`SummaryDoc`],
+/// converting each `action_items` entry independently (see
+/// [`action_item_from_value`]) — a malformed entry is skipped rather than
+/// failing the whole summary. Every extracted action item starts `done:
+/// false` — the model has no channel to mark one already done. Factored out
+/// of [`extract_summary_json`] so its candidate loop can inspect a fully
+/// converted candidate's emptiness (see [`is_nonempty_summary`]) before
+/// committing to it, not just whether it merely *parsed*.
+fn raw_to_summary_doc(parsed: RawSummary) -> SummaryDoc {
+    let action_items = parsed
+        .action_items
+        .into_iter()
+        .filter_map(action_item_from_value)
+        .collect();
+    SummaryDoc {
+        summary: parsed.summary,
+        decisions: parsed.decisions,
+        action_items,
+    }
+}
+
+/// Whether `doc` has anything worth showing: at least one of `summary`,
+/// `decisions`, or `action_items` is non-empty. Used by
+/// [`extract_summary_json`]'s candidate loop to tell a *real* summary
+/// object apart from an incidental-but-syntactically-valid JSON object that
+/// happens to appear earlier in a model's output (e.g. `{"status": "open",
+/// "id": 42}` sitting in front of the actual summary) — such an object
+/// parses into `RawSummary` cleanly (missing keys default to empty; unknown
+/// keys are ignored), but accepting it as *the* summary would silently
+/// discard the real one that follows.
+fn is_nonempty_summary(doc: &SummaryDoc) -> bool {
+    !doc.summary.is_empty() || !doc.decisions.is_empty() || !doc.action_items.is_empty()
+}
+
 /// Tolerantly extracts a [`SummaryDoc`] from a model's raw generation
 /// output. Handles, in order:
 ///
@@ -376,27 +410,29 @@ fn action_item_from_value(value: serde_json::Value) -> Option<ActionItem> {
 /// 3. A balanced `{...}` JSON object in what remains (see
 ///    [`balanced_json_object_at`]) — tolerates prose before/after it
 ///    ("Here is the summary: {...} hope that helps"). If the first `{`
-///    found either never balances or balances but doesn't parse as the
+///    found either never balances, balances but doesn't parse as the
 ///    expected shape (e.g. an incidental `{see above}` aside earlier in the
-///    prose), the scan resumes just past that `{` and tries the next one,
-///    up to [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on the
-///    first candidate.
+///    prose), or balances *and* parses but converts to an empty
+///    [`SummaryDoc`] (see [`is_nonempty_summary`] — e.g. an incidental
+///    `{"status": "open", "id": 42}` object with no summary-shaped keys at
+///    all), the scan resumes just past that `{` and tries the next one, up
+///    to [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on (or
+///    settling for) the first candidate.
 ///
-/// Once a JSON object is found, it's parsed tolerantly: missing keys become
-/// empty defaults, and each `action_items` entry is converted independently
-/// (see [`action_item_from_value`]) — a malformed entry is skipped rather
-/// than failing the whole summary. Every extracted action item starts
-/// `done: false` — the model has no channel to mark one already done.
+/// A valid-but-empty candidate is remembered (only the first one — later
+/// empty candidates don't overwrite it) rather than discarded outright: if
+/// the scan never finds a genuinely non-empty candidate before running out
+/// of `{` positions or hitting the candidate cap, that remembered empty
+/// candidate is returned as a *degradation*, not an `Err` — a model
+/// legitimately producing `{"summary": "", "decisions": [], "action_items":
+/// []}` (or a shapeless-but-JSON aside with nothing else in the response)
+/// still deserves an empty `SummaryDoc` back, not a hard failure over
+/// having found some valid JSON.
 ///
 /// `Err` (with a ≤200-char snippet of what was actually seen, for the
-/// `summary-status` error event) when: the response is pure reasoning, no
-/// candidate `{...}` in the (cleaned) output ever both balances and parses
-/// as JSON within the first [`MAX_JSON_CANDIDATES`] `{` positions tried, or
-/// that cap is reached.
-///
-/// Not yet called from anywhere outside its own tests — `LlmEngine`'s real
-/// generation path (Task 4) is the eventual caller; see
-/// [`build_summary_prompt`]'s docs for the same not-wired-in-yet note.
+/// `summary-status` error event) only when no candidate `{...}` ever even
+/// balances-and-parses as [`RawSummary`] at all — pure reasoning, or no
+/// `{` anywhere, or every `{` found is either unbalanced or invalid JSON.
 #[allow(dead_code)]
 pub fn extract_summary_json(raw: &str) -> Result<SummaryDoc> {
     let after_reasoning = strip_reasoning(raw)?;
@@ -409,52 +445,59 @@ pub fn extract_summary_json(raw: &str) -> Result<SummaryDoc> {
         ))
     };
 
-    // Walk successive '{' positions: each candidate that balances is tried
-    // against RawSummary's shape; on failure (unbalanced, or balanced but
-    // not the expected JSON shape) resume searching just past that '{'
-    // rather than giving up. `search_from` strictly increases every
-    // iteration, so this always terminates within `cleaned.len()`
-    // iterations — but that alone isn't a tight enough bound: a small
-    // model's degenerate repetition failure (e.g. tens of thousands of
-    // bare `{` chars with nothing else) makes `balanced_json_object_at`
-    // rescan most of the remaining string from every one of those
-    // positions, which is quadratic in the length of that run. Capping the
-    // number of *candidates actually tried* at [`MAX_JSON_CANDIDATES`]
-    // keeps this fast on that adversarial input without changing behavior
-    // on any real model output — a well-formed response never has anywhere
-    // near that many `{` occurrences before its actual JSON object.
+    // Walk successive '{' positions: each candidate that balances and
+    // parses is checked for emptiness (see `is_nonempty_summary`) — a
+    // non-empty one wins immediately, an empty one is remembered (first
+    // only) but the search keeps going. On failure to balance/parse,
+    // resume searching just past that '{' rather than giving up.
+    // `search_from` strictly increases every iteration, so this always
+    // terminates within `cleaned.len()` iterations — but that alone isn't a
+    // tight enough bound: a small model's degenerate repetition failure
+    // (e.g. tens of thousands of bare `{` chars with nothing else) makes
+    // `balanced_json_object_at` rescan most of the remaining string from
+    // every one of those positions, which is quadratic in the length of
+    // that run. Capping the number of *candidates actually tried* at
+    // [`MAX_JSON_CANDIDATES`] keeps this fast on that adversarial input
+    // without changing behavior on any real model output — a well-formed
+    // response never has anywhere near that many `{` occurrences before
+    // its actual JSON object.
     let mut search_from = 0usize;
     let mut candidates_tried = 0usize;
-    let parsed: RawSummary = loop {
+    let mut first_empty_candidate: Option<SummaryDoc> = None;
+
+    let doc = loop {
         if candidates_tried >= MAX_JSON_CANDIDATES {
-            return Err(not_found_err());
+            match first_empty_candidate {
+                Some(doc) => break doc,
+                None => return Err(not_found_err()),
+            }
         }
         let Some(rel_start) = cleaned[search_from..].find('{') else {
-            return Err(not_found_err());
+            match first_empty_candidate {
+                Some(doc) => break doc,
+                None => return Err(not_found_err()),
+            }
         };
         let start = search_from + rel_start;
         candidates_tried += 1;
 
         match balanced_json_object_at(&cleaned, start) {
             Some(candidate) => match serde_json::from_str::<RawSummary>(candidate) {
-                Ok(parsed) => break parsed,
+                Ok(parsed) => {
+                    let doc = raw_to_summary_doc(parsed);
+                    if is_nonempty_summary(&doc) {
+                        break doc;
+                    }
+                    first_empty_candidate.get_or_insert(doc);
+                    search_from = start + 1;
+                }
                 Err(_) => search_from = start + 1,
             },
             None => search_from = start + 1,
         }
     };
 
-    let action_items = parsed
-        .action_items
-        .into_iter()
-        .filter_map(action_item_from_value)
-        .collect();
-
-    Ok(SummaryDoc {
-        summary: parsed.summary,
-        decisions: parsed.decisions,
-        action_items,
-    })
+    Ok(doc)
 }
 
 #[cfg(test)]
@@ -778,6 +821,46 @@ mod tests {
         let raw = "prefix { unbalanced then {\"summary\": \"Found it.\", \"decisions\": [], \"action_items\": []}";
         let doc = extract_summary_json(raw).unwrap();
         assert_eq!(doc.summary, "Found it.");
+    }
+
+    // --- extract_summary_json: shapeless-but-valid JSON candidates (rider) -----
+    //
+    // A candidate that's syntactically valid JSON but converts to an empty
+    // SummaryDoc (no summary-shaped keys at all, e.g. an incidental
+    // `{"status": "open", "id": 42}`) must not be accepted as *the* summary
+    // if a real one follows — see `is_nonempty_summary`'s docs.
+
+    #[test]
+    fn incidental_shapeless_valid_json_before_the_real_summary_is_skipped() {
+        let raw = r#"{"status": "open", "id": 42} {"summary": "Real one.", "decisions": [], "action_items": []}"#;
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc.summary, "Real one.");
+    }
+
+    #[test]
+    fn only_an_empty_valid_object_present_degrades_to_an_empty_summary_doc_not_an_error() {
+        let raw = r#"{"status": "open", "id": 42}"#;
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc, SummaryDoc::default());
+    }
+
+    #[test]
+    fn multiple_shapeless_empty_candidates_still_degrade_to_empty_rather_than_erroring() {
+        // Two different shapeless-but-valid objects, neither ever
+        // summary-shaped — the *first* one is what gets remembered and
+        // returned, not an error.
+        let raw = r#"{"status": "open"} {"id": 42}"#;
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc, SummaryDoc::default());
+    }
+
+    #[test]
+    fn nothing_valid_at_all_is_still_an_error() {
+        // Unchanged from before the rider: no candidate ever balances *and*
+        // parses as JSON, so there's nothing to degrade to.
+        let raw = "{oops} {also not json} {still not shaped like json either}";
+        let err = extract_summary_json(raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
     }
 
     // --- extract_summary_json: per-item action item degradation ----------------
