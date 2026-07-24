@@ -59,6 +59,7 @@ pub struct StorageStats {
 }
 
 const META_FILE: &str = "meta.json";
+const META_TMP_FILE: &str = "meta.json.tmp";
 const TRANSCRIPT_FILE: &str = "transcript.json";
 const TRANSCRIPT_TMP_FILE: &str = "transcript.json.tmp";
 const AUDIO_FILE: &str = "audio.wav";
@@ -162,6 +163,10 @@ impl Store {
         self.note_dir(id).join(META_FILE)
     }
 
+    fn meta_tmp_path(&self, id: &str) -> PathBuf {
+        self.note_dir(id).join(META_TMP_FILE)
+    }
+
     fn transcript_path(&self, id: &str) -> PathBuf {
         self.note_dir(id).join(TRANSCRIPT_FILE)
     }
@@ -186,10 +191,16 @@ impl Store {
         self.note_dir(id).join(NOTE_MD_TMP_FILE)
     }
 
+    /// Atomically writes a note's `meta.json` (write to `.tmp`, then rename
+    /// over the final path — same pattern as [`Store::write_transcript`]/
+    /// [`Store::write_summary`]) so readers (including a concurrent
+    /// `list_notes` walk) never observe a partially written file.
     fn write_meta(&self, meta: &NoteMeta) -> Result<()> {
         let json = serde_json::to_string_pretty(meta)
             .map_err(|e| MinuteError::Other(format!("failed to serialize meta.json: {e}")))?;
-        fs::write(self.meta_path(&meta.id), json)?;
+        let tmp_path = self.meta_tmp_path(&meta.id);
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, self.meta_path(&meta.id))?;
         Ok(())
     }
 
@@ -743,6 +754,11 @@ mod tests {
         let (read_back, transcript) = store.get_note(&meta.id).unwrap();
         assert_eq!(read_back, meta);
         assert!(transcript.segments.is_empty());
+
+        // write_meta is atomic (tmp + rename, like every other on-disk
+        // writer in this module) — no leftover .tmp file after the write.
+        assert!(store.meta_path(&meta.id).exists());
+        assert!(!store.meta_tmp_path(&meta.id).exists());
     }
 
     #[test]
@@ -1198,6 +1214,25 @@ mod tests {
         assert!(updated.action_items[0].done);
         let read_back = store.read_summary(&meta.id).unwrap().unwrap();
         assert!(read_back.action_items[0].done);
+    }
+
+    #[test]
+    fn toggle_action_item_regenerates_note_md_with_the_flipped_checkbox() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        store.write_summary(&meta.id, &sample_summary()).unwrap();
+        store.write_note_md(&meta.id).unwrap();
+
+        let before = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(before.contains("- [ ] Write release notes"));
+
+        store.toggle_action_item(&meta.id, 0, true).unwrap();
+
+        let after = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(after.contains("- [x] Write release notes"));
+        assert!(!after.contains("- [ ] Write release notes"));
     }
 
     #[test]
