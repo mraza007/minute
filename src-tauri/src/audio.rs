@@ -1090,7 +1090,7 @@ fn auto_trigger_summarize(
     // `String`s, a `PathBuf`, an `AppHandle` — is cheap to clone), so a
     // clone runs this first try, leaving the original free to move into
     // the retry thread below untouched if it's needed.
-    let mut first_attempt = attempt_spawn.clone();
+    let first_attempt = attempt_spawn.clone();
     if first_attempt().is_ok() {
         return;
     }
