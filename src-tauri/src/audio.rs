@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
-use crate::llm::{self, SharedLlmEngine};
+use crate::llm::{self, SharedLlmEngine, SummarizeBusy};
 use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, NoteMeta, SharedStore};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
@@ -871,6 +871,7 @@ pub fn stop_recording(
     recorder: State<SharedRecorderState>,
     settings: State<SharedSettings>,
     engine: State<SharedLlmEngine>,
+    summarize_busy: State<SummarizeBusy>,
 ) -> std::result::Result<NoteMeta, String> {
     let active = lock_recorder_state(&recorder)
         .active
@@ -937,7 +938,7 @@ pub fn stop_recording(
 
     emit_recording_state(&app, &note_id, "stopped", duration_sec);
 
-    auto_trigger_summarize(&app, &store, &settings, &engine, &note_id);
+    auto_trigger_summarize(&app, &store, &settings, &engine, &summarize_busy, &note_id);
 
     Ok(meta)
 }
@@ -967,6 +968,7 @@ fn auto_trigger_summarize(
     store: &State<SharedStore>,
     settings: &State<SharedSettings>,
     engine: &State<SharedLlmEngine>,
+    busy: &State<SummarizeBusy>,
     note_id: &str,
 ) {
     let models_root = match app.path().app_data_dir() {
@@ -1002,6 +1004,7 @@ fn auto_trigger_summarize(
     if let Err(msg) = llm::try_spawn_summarize(
         store.inner().clone(),
         engine.inner().clone(),
+        busy.inner().clone(),
         entry.id.clone(),
         model_path,
         note_id.to_string(),

@@ -9,7 +9,7 @@ mod settings;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
-use llm::{SharedLlmEngine, SummaryDoc};
+use llm::{SharedLlmEngine, SummarizeBusy, SummaryDoc};
 use settings::{Settings, SettingsPatch, SharedSettings};
 use store::{lock_store, render_note_md, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
@@ -196,7 +196,8 @@ fn finalize_active_recording_on_exit(app: &AppHandle) {
   let recorder = app.state::<audio::SharedRecorderState>();
   let settings = app.state::<SharedSettings>();
   let engine = app.state::<SharedLlmEngine>();
-  match audio::stop_recording(app.clone(), store, recorder, settings, engine) {
+  let summarize_busy = app.state::<SummarizeBusy>();
+  match audio::stop_recording(app.clone(), store, recorder, settings, engine, summarize_busy) {
     Ok(meta) => log::info!("finalized in-progress recording {} on app close", meta.id),
     Err(e) if e == "no active recording" => {}
     Err(e) => log::warn!("failed to finalize in-progress recording on app close: {e}"),
@@ -258,11 +259,17 @@ pub fn run() {
       let shared_store: SharedStore = store::open_shared(app_data_dir);
       app.manage(shared_store);
 
-      // Managed state guarding the single loaded summarization LLM (and the
-      // `busy` flag serializing `summarize_note`/auto-trigger runs) — see
+      // Managed state guarding the single loaded summarization LLM — see
       // `llm::SharedLlmEngine`.
       let llm_engine: SharedLlmEngine = llm::open_shared();
       app.manage(llm_engine);
+
+      // Single-summarization-at-a-time gate, deliberately a separate atomic
+      // from `llm_engine`'s mutex (see `llm::LlmEngineState`'s concurrency
+      // note) — checking or claiming it never blocks on a long-running
+      // generation.
+      let summarize_busy: SummarizeBusy = llm::open_busy_flag();
+      app.manage(summarize_busy);
 
       // Tracks in-flight model downloads so `cancel_download` can signal
       // them and `list_models` can report `Downloading` state — see

@@ -58,13 +58,17 @@
 //! without evaluating any Jinja. Confirmed effective: the same test dropped
 //! from ~20s (mostly spent reasoning, then failing to finish before the
 //! token cap) to ~3.3s producing a clean, complete JSON summary with no
-//! `<think>` block at all. Both are applied (the harmless-if-ignored
-//! [`NO_THINK_TAG`] and the actually-effective [`NO_THINK_PREFILL`]) since
-//! neither costs anything beyond a string append — no template engine was
-//! built for either.
+//! `<think>` block at all. [`NO_THINK_TAG`] (harmless if ignored) is
+//! applied for every model; [`NO_THINK_PREFILL`] is only applied when the
+//! loaded model's id looks like a Qwen model (see
+//! [`apply_no_think_prefill`]) — it was verified against Qwen3.5-4B's
+//! specific baked template only, and blindly prefilling another family's
+//! (Gemma, etc.) template with this exact literal string is as likely to
+//! corrupt its structure as help it.
 
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -555,14 +559,31 @@ struct LoadedModel {
     model: LlamaModel,
 }
 
-/// Managed state guarding at most one loaded LLM at a time, plus a `busy`
-/// flag serializing summarization runs — only one summarization (manual
-/// `summarize_note`/Regenerate, or `audio::stop_recording`'s auto-trigger)
-/// proceeds at a time; see [`try_spawn_summarize`], the sole place `busy` is
-/// claimed and [`BusyGuard`], the sole place it's released.
+/// Managed state guarding at most one loaded LLM at a time.
+///
+/// **Concurrency note:** this is *only* ever locked by the summarize worker
+/// thread itself, for the duration of `ensure_loaded`+`generate` (see
+/// [`run_summarize`]) — never by [`try_spawn_summarize`]'s busy
+/// check-and-claim, which is a separate [`SummarizeBusy`] atomic precisely
+/// so that a multi-second (or, on a first load, ten-plus-second) generation
+/// never blocks *anything else* behind this mutex, including a concurrent
+/// `stop_recording` trying to auto-trigger a *different* note's
+/// summarization (it would fail fast via the atomic instead) or any other
+/// command that happens to need this state. By design this mutex should
+/// almost never see real contention: the atomic is what gates entry to the
+/// one worker thread allowed to touch it at a time.
+///
+/// **Keep-loaded, no idle-unload (intentional, deferred debt):** once a
+/// model is loaded here, it stays resident — there's no unload-after-idle
+/// timer. This is deliberate: a loaded model is ~2.6 GB (Qwen3.5-4B
+/// Q4_K_M) that would otherwise need reloading (hundreds of ms, per
+/// `ensure_loaded`'s logged load time) on every single `summarize_note`
+/// call, including a quick Regenerate right after the first summary. The
+/// cost is holding that memory for the rest of the app's session even when
+/// nothing is summarizing. Revisit if this shows up as real memory pressure
+/// complaints — tracked in the design doc's Known debt list.
 pub struct LlmEngineState {
     loaded: Option<LoadedModel>,
-    busy: bool,
 }
 
 /// Shared handle to an [`LlmEngineState`] — same `Arc<Mutex<_>>` shape as
@@ -577,10 +598,23 @@ pub fn lock_llm_engine(engine: &SharedLlmEngine) -> MutexGuard<'_, LlmEngineStat
     engine.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Creates an empty, ready-to-`app.manage()` engine state — no model
-/// loaded, not busy.
+/// Creates an empty, ready-to-`app.manage()` engine state — no model loaded.
 pub(crate) fn open_shared() -> SharedLlmEngine {
-    Arc::new(Mutex::new(LlmEngineState { loaded: None, busy: false }))
+    Arc::new(Mutex::new(LlmEngineState { loaded: None }))
+}
+
+/// Single-summarization-at-a-time gate — deliberately *not* a field on
+/// [`LlmEngineState`] (see that struct's concurrency note for why): a bare
+/// `Arc<AtomicBool>`, claimed via `compare_exchange` in
+/// [`try_spawn_summarize`] and released by [`BusyGuard`] on drop. Checking
+/// or claiming this never requires locking the engine mutex, so a busy
+/// check (or a busy *rejection*) is always instant regardless of how long
+/// the in-flight generation is taking.
+pub type SummarizeBusy = Arc<AtomicBool>;
+
+/// Creates a fresh, ready-to-`app.manage()` busy flag — not busy.
+pub(crate) fn open_busy_flag() -> SummarizeBusy {
+    Arc::new(AtomicBool::new(false))
 }
 
 /// Context window (tokens) every loaded model is given — sized for the
@@ -684,11 +718,33 @@ const NO_THINK_TAG: &str = "/no_think";
 /// preamble, but this prefill does.
 const NO_THINK_PREFILL: &str = "<think>\n\n</think>\n\n";
 
+/// Appends [`NO_THINK_PREFILL`] after `templated`'s trailing
+/// `<|im_start|>assistant\n` — but only when `model_id` looks like a Qwen
+/// model (`starts_with("qwen")`, matching the catalog's id convention, e.g.
+/// `qwen3.5-4b`/`qwen3.5-9b`). The prefill was verified (see
+/// [`NO_THINK_PREFILL`]'s docs and [`tests::real_llm_summarizes_transcript`])
+/// against Qwen3.5-4B's specific baked chat template only — its exact
+/// content (`<think>\n\n</think>\n\n`) is read directly out of *that*
+/// GGUF's `tokenizer.chat_template` Jinja source, not a general chat-format
+/// constant. Another model family (Gemma, etc.) has an entirely different
+/// template and no reason to expect this same literal string reproduces
+/// *its* non-thinking branch — it could just as easily corrupt that
+/// template's structure as help, so non-Qwen model ids get the templated
+/// prompt untouched instead of a blind guess.
+fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
+    if model_id.starts_with("qwen") {
+        format!("{templated}{NO_THINK_PREFILL}")
+    } else {
+        templated.to_string()
+    }
+}
+
 /// The actual decode/sample loop, run against `loaded`'s model: chat-template
 /// `prompt` (appending [`NO_THINK_TAG`] to the user content, then
-/// [`NO_THINK_PREFILL`] to the templated result — see both constants' docs
-/// for why both are applied despite only the latter empirically working),
-/// tokenize, decode the prompt in one batch, then sample token-by-token — a repetition penalty,
+/// [`apply_no_think_prefill`]ing the templated result — see the constants'
+/// docs for why both are applied despite only the latter, and only for Qwen
+/// models, empirically working), tokenize, decode the prompt in one batch,
+/// then sample token-by-token — a repetition penalty,
 /// then top-p, then temperature 0.3, then a seeded `dist` draw (llama.cpp's
 /// usual penalties-before-temperature chain ordering) — until an
 /// end-of-generation token or [`MAX_GENERATION_TOKENS`], accumulating raw
@@ -715,7 +771,7 @@ fn generate_with_loaded(loaded: &LoadedModel, prompt: &str) -> Result<String> {
         .model
         .apply_chat_template(&tmpl, &messages, true)
         .map_err(|e| MinuteError::Other(format!("chat template application failed: {e}")))?;
-    let templated = format!("{templated}{NO_THINK_PREFILL}");
+    let templated = apply_no_think_prefill(&templated, &loaded.model_id);
 
     let prompt_tokens = loaded
         .model
@@ -844,13 +900,14 @@ pub fn emit_summary_status_error(app: &AppHandle, note_id: &str, error: &str) {
 // ---------------------------------------------------------------------------
 
 /// Everything a summarization worker thread needs: which note, where to
-/// read/write it, the engine to generate against, which model to ensure is
-/// loaded, and how to notify the outside world. Same shape as
-/// `stt::WorkerCtx`.
+/// read/write it, the engine to generate against, the busy flag to release
+/// on exit, which model to ensure is loaded, and how to notify the outside
+/// world. Same shape as `stt::WorkerCtx`.
 pub struct SummarizeWorkerCtx {
     pub note_id: String,
     pub store: SharedStore,
     pub engine: SharedLlmEngine,
+    pub busy: SummarizeBusy,
     pub model_id: String,
     pub model_path: PathBuf,
     pub emit: Box<dyn Fn(SummaryEvent) + Send + 'static>,
@@ -865,22 +922,34 @@ impl SummarizeWorker {
     /// generation happen on the spawned thread, never on the caller's
     /// (a Tauri command handler, or `stop_recording`'s own thread for the
     /// auto-trigger path).
+    ///
+    /// The returned `JoinHandle` is deliberately never joined by any
+    /// caller (both `try_spawn_summarize`'s callers just drop it) —
+    /// intentional, not an oversight: every step the worker takes
+    /// (`store::Store::append`-style writes, `write_summary_and_finalize`)
+    /// is already atomic on its own, and nothing persists a "summarizing"
+    /// state to disk for this to leave dangling, so a note whose worker
+    /// gets abandoned (app quit mid-generation, a panic) simply stays at
+    /// `transcribed` — safely recoverable with a plain Regenerate, not a
+    /// corrupt or stuck state.
     pub fn spawn(ctx: SummarizeWorkerCtx) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || run_summarize_worker(ctx))
     }
 }
 
-/// Clears the engine's `busy` flag when dropped — created at the very top of
-/// [`run_summarize_worker`] so the flag is released no matter how the worker
-/// exits (the ordinary success/error paths, or even a panic unwinding
-/// through the thread). Same RAII shape as `download::RegistryGuard`.
+/// Clears the [`SummarizeBusy`] flag when dropped — created at the very top
+/// of [`run_summarize_worker`] so the flag is released no matter how the
+/// worker exits (the ordinary success/error paths, or even a panic
+/// unwinding through the thread). Same RAII shape as
+/// `download::RegistryGuard`. Deliberately holds only the atomic, never the
+/// engine mutex — see [`LlmEngineState`]'s concurrency note.
 struct BusyGuard {
-    engine: SharedLlmEngine,
+    busy: SummarizeBusy,
 }
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        lock_llm_engine(&self.engine).busy = false;
+        self.busy.store(false, Ordering::SeqCst);
     }
 }
 
@@ -893,7 +962,7 @@ impl Drop for BusyGuard {
 /// `run_summarize`'s success path (via `store::Store::write_summary_and_finalize`)
 /// flips it to `ready`.
 fn run_summarize_worker(ctx: SummarizeWorkerCtx) {
-    let _busy_guard = BusyGuard { engine: ctx.engine.clone() };
+    let _busy_guard = BusyGuard { busy: ctx.busy.clone() };
 
     (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
         note_id: ctx.note_id.clone(),
@@ -944,37 +1013,44 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     Ok(())
 }
 
-/// Attempts to claim the engine's `busy` slot and spawn a summarization
-/// worker thread for `note_id` against `model_id`/`model_path`. The
-/// check-and-claim happens under the engine's own mutex in one critical
-/// section — the single authoritative point where "already running" is
-/// decided (`summarize_note`'s own pre-check is just a fast-path that skips
-/// the catalog lookup when obviously busy; this is what's actually
-/// race-safe). Returns `Err("summarization already running")` without
-/// spawning anything if one is already in flight; callers decide how to
-/// surface that — `summarize_note` returns it to the frontend directly,
+/// Attempts to claim [`SummarizeBusy`] and spawn a summarization worker
+/// thread for `note_id` against `model_id`/`model_path`. The check-and-claim
+/// is a single atomic `compare_exchange` on `busy` — the single
+/// authoritative point where "already running" is decided
+/// (`summarize_note`'s own pre-check is just a fast-path that skips the
+/// catalog lookup when obviously busy; this is what's actually race-safe).
+/// Returns `Err("summarization already running")` without spawning anything
+/// if one is already in flight; callers decide how to surface that —
+/// `summarize_note` returns it to the frontend directly,
 /// `audio::stop_recording`'s auto-trigger just logs it and emits an error
 /// event instead of failing the recording.
+///
+/// Deliberately never touches the engine mutex — claiming `busy` is O(1)
+/// and instant regardless of whether some other summarization is mid-load
+/// or mid-generate (seconds, sometimes tens of seconds) holding that mutex;
+/// see [`LlmEngineState`]'s concurrency note. The spawned worker thread is
+/// the only thing that ever locks it, once it actually starts running.
 pub fn try_spawn_summarize(
     store: SharedStore,
     engine: SharedLlmEngine,
+    busy: SummarizeBusy,
     model_id: String,
     model_path: PathBuf,
     note_id: String,
     emit: Box<dyn Fn(SummaryEvent) + Send + 'static>,
 ) -> std::result::Result<(), &'static str> {
+    if busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
     {
-        let mut guard = lock_llm_engine(&engine);
-        if guard.busy {
-            return Err("summarization already running");
-        }
-        guard.busy = true;
+        return Err("summarization already running");
     }
 
     let ctx = SummarizeWorkerCtx {
         note_id,
         store,
         engine,
+        busy,
         model_id,
         model_path,
         emit,
@@ -1006,9 +1082,14 @@ pub async fn summarize_note(
     store: State<'_, SharedStore>,
     settings: State<'_, SharedSettings>,
     engine: State<'_, SharedLlmEngine>,
+    busy: State<'_, SummarizeBusy>,
     id: String,
 ) -> std::result::Result<(), String> {
-    if lock_llm_engine(&engine).busy {
+    // Fast pre-check only — a plain load, not a claim, so it costs nothing
+    // and never touches the engine mutex. The authoritative claim happens
+    // in `try_spawn_summarize` right before spawning; this just avoids the
+    // catalog/settings lookup below when it's obviously going to fail.
+    if busy.load(Ordering::SeqCst) {
         return Err("summarization already running".to_string());
     }
 
@@ -1038,6 +1119,7 @@ pub async fn summarize_note(
     try_spawn_summarize(
         store.inner().clone(),
         engine.inner().clone(),
+        busy.inner().clone(),
         entry.id.clone(),
         model_path,
         id,
@@ -1501,7 +1583,7 @@ mod tests {
 
     #[test]
     fn generate_with_nothing_loaded_errors() {
-        let state = LlmEngineState { loaded: None, busy: false };
+        let state = LlmEngineState { loaded: None };
         let result = state.generate("Say OK.");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no LLM model loaded"));
@@ -1509,14 +1591,14 @@ mod tests {
 
     #[test]
     fn busy_guard_clears_the_busy_flag_on_drop() {
-        let engine = open_shared();
-        lock_llm_engine(&engine).busy = true;
+        let busy = open_busy_flag();
+        busy.store(true, Ordering::SeqCst);
 
         {
-            let _guard = BusyGuard { engine: engine.clone() };
+            let _guard = BusyGuard { busy: busy.clone() };
         }
 
-        assert!(!lock_llm_engine(&engine).busy);
+        assert!(!busy.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1524,7 +1606,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_shared(dir.path().to_path_buf());
         let engine = open_shared();
-        lock_llm_engine(&engine).busy = true;
+        let busy = open_busy_flag();
+        busy.store(true, Ordering::SeqCst);
 
         let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_emit = events.clone();
@@ -1532,6 +1615,7 @@ mod tests {
         let result = try_spawn_summarize(
             store,
             engine,
+            busy,
             "qwen3.5-4b".to_string(),
             dir.path().join("does-not-exist.gguf"),
             "some-note".to_string(),
@@ -1548,10 +1632,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_shared(dir.path().to_path_buf());
         let engine = open_shared();
+        let busy = open_busy_flag();
 
         let result = try_spawn_summarize(
             store,
-            engine.clone(),
+            engine,
+            busy.clone(),
             "qwen3.5-4b".to_string(),
             dir.path().join("does-not-exist.gguf"),
             "some-note".to_string(),
@@ -1559,6 +1645,43 @@ mod tests {
         );
 
         assert!(result.is_ok());
+        assert!(busy.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn try_spawn_summarize_claims_busy_without_ever_touching_the_engine_mutex() {
+        // Regression test for the "stop_recording blocks behind an
+        // in-flight generation" bug: the busy claim must be independent of
+        // the engine mutex. Hold the engine mutex on *this* thread for the
+        // whole call — if `try_spawn_summarize`'s busy claim needed that
+        // mutex (the bug), this call would deadlock right here (a
+        // `std::sync::Mutex` isn't reentrant, so a second lock attempt on
+        // the same thread hangs forever) instead of returning.
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        let busy = open_busy_flag();
+
+        let _engine_guard = lock_llm_engine(&engine);
+
+        let result = try_spawn_summarize(
+            store,
+            engine.clone(),
+            busy,
+            "qwen3.5-4b".to_string(),
+            dir.path().join("does-not-exist.gguf"),
+            "some-note".to_string(),
+            Box::new(|_event| {}),
+        );
+
+        assert!(
+            result.is_ok(),
+            "claiming busy and spawning must not require the engine mutex"
+        );
+        // The spawned worker thread will itself now block trying to lock
+        // `engine` (inside `run_summarize`) until `_engine_guard` drops at
+        // the end of this test — that's fine, it's a detached thread this
+        // test never joins (see `SummarizeWorker::spawn`'s docs).
     }
 
     // --- run_summarize / run_summarize_worker: empty-transcript short-circuit --
@@ -1584,6 +1707,7 @@ mod tests {
             note_id,
             store,
             engine,
+            busy: open_busy_flag(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
@@ -1601,8 +1725,8 @@ mod tests {
     #[test]
     fn run_summarize_worker_on_empty_transcript_emits_running_then_error_and_clears_busy() {
         let (ctx, events, _dir) = worker_test_ctx();
-        let engine = ctx.engine.clone();
-        lock_llm_engine(&engine).busy = true;
+        let busy = ctx.busy.clone();
+        busy.store(true, Ordering::SeqCst);
 
         run_summarize_worker(ctx);
 
@@ -1618,9 +1742,39 @@ mod tests {
             }
         }
         assert!(
-            !lock_llm_engine(&engine).busy,
+            !busy.load(Ordering::SeqCst),
             "the worker's BusyGuard must clear busy on exit even though this test called it directly"
         );
+    }
+
+    // --- apply_no_think_prefill: gated per model family -------------------------
+
+    #[test]
+    fn no_think_prefill_applied_for_qwen_model_ids() {
+        let templated = "<|im_start|>assistant\n";
+        let out = apply_no_think_prefill(templated, "qwen3.5-4b");
+        assert_eq!(out, format!("{templated}{NO_THINK_PREFILL}"));
+    }
+
+    #[test]
+    fn no_think_prefill_applied_for_other_qwen_ids_too() {
+        let out = apply_no_think_prefill("prefix", "qwen3.5-9b");
+        assert!(out.ends_with(NO_THINK_PREFILL));
+    }
+
+    #[test]
+    fn no_think_prefill_not_applied_for_gemma_model_ids() {
+        let templated = "<|im_start|>assistant\n";
+        let out = apply_no_think_prefill(templated, "gemma-4-e4b");
+        assert_eq!(out, templated, "non-Qwen models must get the templated prompt untouched");
+    }
+
+    #[test]
+    fn no_think_prefill_not_applied_for_whisper_ids() {
+        // Nonsensical in practice (whisper is never the summarizer), but
+        // pins that the gate is a real allowlist, not just "not gemma".
+        let out = apply_no_think_prefill("prefix", "whisper-small");
+        assert_eq!(out, "prefix");
     }
 
     // --- e2e: real model, real generation (manual only) ----------------------
@@ -1833,7 +1987,7 @@ mod tests {
         let segments = fake_product_launch_transcript();
         let prompt = build_summary_prompt("Aurora launch planning", &segments);
 
-        let mut state = LlmEngineState { loaded: None, busy: false };
+        let mut state = LlmEngineState { loaded: None };
 
         let load_start = Instant::now();
         state
