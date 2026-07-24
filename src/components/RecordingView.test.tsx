@@ -124,4 +124,46 @@ describe('RecordingView', () => {
     const bars = container.querySelectorAll('[data-testid="waveform-bars"] > span')
     expect(bars[0]).not.toHaveStyle({ animationPlayState: 'paused' })
   })
+
+  describe('live transcript auto-scroll (H6)', () => {
+    /** jsdom never computes real layout — scrollHeight/clientHeight are always 0 — so the scroll metrics the component reads have to be stubbed directly on the node. */
+    function setScrollMetrics(el: HTMLElement, metrics: { scrollTop: number; scrollHeight: number; clientHeight: number }) {
+      Object.defineProperty(el, 'scrollHeight', { value: metrics.scrollHeight, configurable: true })
+      Object.defineProperty(el, 'clientHeight', { value: metrics.clientHeight, configurable: true })
+      Object.defineProperty(el, 'scrollTop', { value: metrics.scrollTop, writable: true, configurable: true })
+    }
+
+    it('does not show the "Jump to latest" pill while stuck to the bottom', () => {
+      render(<RecordingView {...base} />)
+      expect(screen.queryByRole('button', { name: /jump to latest/i })).not.toBeInTheDocument()
+    })
+
+    it('shows the "Jump to latest" pill once the user scrolls away from the bottom', () => {
+      render(<RecordingView {...base} />)
+      const scroller = screen.getByTestId('live-transcript-scroll')
+      setScrollMetrics(scroller, { scrollTop: 0, scrollHeight: 1000, clientHeight: 400 })
+      fireEvent.scroll(scroller)
+      expect(screen.getByRole('button', { name: /jump to latest/i })).toBeInTheDocument()
+    })
+
+    it('stays stuck (no pill) when the scroll position is within the stick threshold of the bottom', () => {
+      render(<RecordingView {...base} />)
+      const scroller = screen.getByTestId('live-transcript-scroll')
+      setScrollMetrics(scroller, { scrollTop: 580, scrollHeight: 1000, clientHeight: 400 })
+      fireEvent.scroll(scroller)
+      expect(screen.queryByRole('button', { name: /jump to latest/i })).not.toBeInTheDocument()
+    })
+
+    it('clicking "Jump to latest" scrolls to the bottom and hides the pill again', () => {
+      render(<RecordingView {...base} />)
+      const scroller = screen.getByTestId('live-transcript-scroll')
+      setScrollMetrics(scroller, { scrollTop: 0, scrollHeight: 1000, clientHeight: 400 })
+      fireEvent.scroll(scroller)
+      expect(screen.getByRole('button', { name: /jump to latest/i })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /jump to latest/i }))
+      expect(scroller.scrollTop).toBe(1000)
+      expect(screen.queryByRole('button', { name: /jump to latest/i })).not.toBeInTheDocument()
+    })
+  })
 })

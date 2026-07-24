@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 interface TitleBarProps {
   isRecording: boolean
   recTime: string
@@ -6,7 +8,11 @@ interface TitleBarProps {
   onReturnToRecording: () => void
 }
 
-export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording }: TitleBarProps) {
+// Memoized so App re-renders for unrelated reasons (e.g. a note being
+// selected) don't also re-render TitleBar — `recTime` still ticks it once a
+// second while `isRecording`, same as before, since that's a real prop
+// change; this only skips the *other* renders.
+export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording }: TitleBarProps) {
   return (
     <header
       data-tauri-drag-region=""
@@ -63,6 +69,7 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
           }}
         >
           <span
+            className="blink-dot"
             style={{
               width: 7,
               height: 7,
@@ -113,4 +120,4 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
       )}
     </header>
   )
-}
+})

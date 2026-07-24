@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { NoteMeta, StoredSegment, SummaryDoc } from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
 import { formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
@@ -48,6 +48,11 @@ export interface NoteViewProps {
 }
 
 const DELETE_CONFIRM_TIMEOUT_MS = 4000
+
+// A single stable reference for the "not ready yet" case — a fresh `[]`
+// literal on every render would defeat `displaySegments`'s useMemo below
+// (and its own exhaustive-deps lint) despite being value-equal every time.
+const EMPTY_SEGMENTS: StoredSegment[] = []
 
 function EmptyNotesArea() {
   return (
@@ -101,6 +106,7 @@ function StatusPill({
     return (
       <span role="status" style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
+          className="spin"
           style={{
             width: 10,
             height: 10,
@@ -120,6 +126,7 @@ function StatusPill({
     return (
       <span role="status" style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
+          className="spin"
           style={{
             width: 10,
             height: 10,
@@ -337,26 +344,33 @@ export function NoteView({
   const transcriptTabRef = useRef<HTMLButtonElement>(null)
   const mdTabRef = useRef<HTMLButtonElement>(null)
 
+  // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
+  // are useAppState's async `get_note` fetch for whichever note was
+  // selected *when that fetch started* — only trust them once
+  // `selectedMeta.id` actually matches the note being rendered right now,
+  // so a still-in-flight fetch for a just-abandoned selection can never
+  // flash a previous (or coming) note's data here. Computed ahead of the
+  // `!meta` early return below (with hooks can't be conditional) even
+  // though they're meaningless in that branch — `meta` may be `null` here.
+  const transcriptReady = meta !== null && selectedMeta?.id === meta.id
+  const segments = transcriptReady ? selectedTranscript : EMPTY_SEGMENTS
+  const showTranscriptLoading = transcriptLoading && !transcriptReady
+  const summary = transcriptReady ? selectedSummary : null
+  const markdown = transcriptReady ? selectedMarkdown : ''
+
+  // Both re-derive their full input on every call (a segment-by-segment
+  // adapter pass, a UTF-8 byte-length encode) — worth skipping once
+  // `segments`/`markdown` themselves haven't changed, same rationale as the
+  // rest of this sweep (see MarkdownCard/Sidebar/TitleBar).
+  const displaySegments = useMemo(() => storedSegmentsToDisplay(segments), [segments])
+  const markdownBytes = useMemo(() => new TextEncoder().encode(markdown).length, [markdown])
+
   if (!meta) {
     return <EmptyNotesArea />
   }
 
   const metaLine = noteMetaToListItem(meta, new Date()).meta
   const dateLabel = new Date(meta.createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
-
-  // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
-  // are useAppState's async `get_note` fetch for whichever note was
-  // selected *when that fetch started* — only trust them once
-  // `selectedMeta.id` actually matches the note being rendered right now,
-  // so a still-in-flight fetch for a just-abandoned selection can never
-  // flash a previous (or coming) note's data here.
-  const transcriptReady = selectedMeta?.id === meta.id
-  const segments = transcriptReady ? selectedTranscript : []
-  const displaySegments = storedSegmentsToDisplay(segments)
-  const showTranscriptLoading = transcriptLoading && !transcriptReady
-  const summary = transcriptReady ? selectedSummary : null
-  const markdown = transcriptReady ? selectedMarkdown : ''
-  const markdownBytes = new TextEncoder().encode(markdown).length
 
   // Two-item roving-focus tablist: Left/Right just toggles between the only
   // two tabs (Transcript/Markdown) — moves selection *and* focus, per the

@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { memo, type CSSProperties } from 'react'
 import type { SummaryDoc } from '../ipc/types'
 
 // Revived for Stage 3 Task 5 — real `SummaryDoc`s instead of the Stage 1
@@ -74,6 +74,7 @@ const btnStyle: CSSProperties = {
 function Spinner({ color }: { color: string }) {
   return (
     <span
+      className="spin"
       style={{
         width: 14,
         height: 14,
@@ -256,7 +257,11 @@ function NoLlmPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
   )
 }
 
-export function AiNotesPanel({
+// Memoized — NoteView re-renders this panel's props unchanged whenever
+// something outside the AI-notes slice changes (e.g. the transcript tab's
+// own state); skip the re-render (and this component's own tokenization-ish
+// work) when nothing it actually reads has moved.
+export const AiNotesPanel = memo(function AiNotesPanel({
   summary,
   status,
   error,
@@ -311,4 +316,4 @@ export function AiNotesPanel({
       </div>
     </div>
   )
-}
+})

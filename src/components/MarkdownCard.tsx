@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import { mdTint } from './mdTint'
 
 interface MarkdownCardProps {
@@ -18,29 +18,39 @@ interface MarkdownCardProps {
 }
 
 function MarkdownBody({ markdown }: { markdown: string }) {
-  const lines = markdown.split('\n')
-  const nodes: ReactNode[] = []
+  // Re-tokenizing every line on every render is wasted work once `markdown`
+  // itself hasn't changed (e.g. a parent re-render for an unrelated reason)
+  // — keyed on `markdown` alone, same as everything else this derives from.
+  const nodes = useMemo(() => {
+    const lines = markdown.split('\n')
+    const out: ReactNode[] = []
 
-  lines.forEach((line, lineIdx) => {
-    mdTint(line).forEach((token, tokenIdx) => {
-      if (token.text === '') return
-      if (token.color || token.fontWeight) {
-        nodes.push(
-          <span key={`${lineIdx}-${tokenIdx}`} style={{ color: token.color, fontWeight: token.fontWeight }}>
-            {token.text}
-          </span>,
-        )
-      } else {
-        nodes.push(token.text)
-      }
+    lines.forEach((line, lineIdx) => {
+      mdTint(line).forEach((token, tokenIdx) => {
+        if (token.text === '') return
+        if (token.color || token.fontWeight) {
+          out.push(
+            <span key={`${lineIdx}-${tokenIdx}`} style={{ color: token.color, fontWeight: token.fontWeight }}>
+              {token.text}
+            </span>,
+          )
+        } else {
+          out.push(token.text)
+        }
+      })
+      if (lineIdx < lines.length - 1) out.push('\n')
     })
-    if (lineIdx < lines.length - 1) nodes.push('\n')
-  })
+
+    return out
+  }, [markdown])
 
   return <>{nodes}</>
 }
 
-export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyError }: MarkdownCardProps) {
+// Memoized — NoteView passes this the same `markdown` string across
+// re-renders that don't actually touch the Markdown tab (e.g. the transcript
+// tab's own state), so there's no reason to re-run MarkdownBody's tokenizer.
+export const MarkdownCard = memo(function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyError }: MarkdownCardProps) {
   function handleCopy() {
     if (!navigator.clipboard) {
       onCopyError?.(new Error('Clipboard unavailable'))
@@ -131,4 +141,4 @@ export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyErr
       </div>
     </div>
   )
-}
+})

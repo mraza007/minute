@@ -49,6 +49,7 @@ export default function App() {
 
   return (
     <>
+      {/* minWidth mirrors src-tauri/tauri.conf.json's windows[0].minWidth — keep both in sync, they can't reference each other across the JS/Rust boundary. */}
       <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
         <TitleBar isRecording={s.isRecording} recTime={s.recTime} onStartRec={s.startRec} onReturnToRecording={s.goRecording} />
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>

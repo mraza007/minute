@@ -21,12 +21,12 @@ describe('Toggle', () => {
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('positions the knob at left 18 when on and 2 when off', () => {
+  it('translates the knob 16px (2 -> 18 left, track 40 − knob 20 − inset 2) when on, and leaves it untranslated when off', () => {
     const { rerender } = render(<Toggle on={true} onToggle={vi.fn()} label="Encrypt" />)
-    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '18px' })
+    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '2px', transform: 'translateX(16px)' })
 
     rerender(<Toggle on={false} onToggle={vi.fn()} label="Encrypt" />)
-    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '2px' })
+    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '2px', transform: 'translateX(0)' })
   })
 
   it('renders the label text', () => {

@@ -1,8 +1,11 @@
-import { memo } from 'react'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import type { LiveTranscriptGroup } from '../state/adapters'
 import { formatMmSs } from '../state/adapters'
 import type { SttStatus } from '../types'
 import { Waveform } from './Waveform'
+
+/** Within this many px of the bottom still counts as "stuck" — accounts for sub-pixel scrollHeight rounding, not just an exact 0. */
+const STICK_THRESHOLD_PX = 48
 
 interface RecordingViewProps {
   liveSegments: LiveTranscriptGroup[]
@@ -18,7 +21,7 @@ interface RecordingViewProps {
 function TranscribingIndicator() {
   return (
     <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-text)', fontSize: 13, fontWeight: 600 }}>
-      <span style={{ width: 8, height: 16, borderRadius: 3, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
+      <span className="blink-dot" style={{ width: 8, height: 16, borderRadius: 3, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
       transcribing…
     </div>
   )
@@ -85,6 +88,96 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
     </>
   )
 })
+
+/**
+ * Stick-to-bottom scroll container for the live transcript (H6 — previously
+ * new segments just appended below the fold with no way back to them short
+ * of manually scrolling). Tracks whether the user is within
+ * `STICK_THRESHOLD_PX` of the bottom via `onScroll`; while stuck, a
+ * `useLayoutEffect` keyed on the content itself (`liveSegments`/`sttStatus`/
+ * `sttError` — whatever `LiveTranscriptBody` actually renders off) pins
+ * `scrollTop` to the bottom *before paint* so new text never visibly
+ * flashes below the fold. Scrolling up breaks the stick and surfaces a
+ * floating "Jump to latest" pill; clicking it (or `stuck` flipping back to
+ * `true`) re-pins on the next layout pass.
+ */
+function LiveTranscriptScroller({
+  liveSegments,
+  sttStatus,
+  sttError,
+  modelName,
+}: {
+  liveSegments: LiveTranscriptGroup[]
+  sttStatus: SttStatus
+  sttError: string | null
+  modelName: string
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [stuck, setStuck] = useState(true)
+
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setStuck(distanceFromBottom <= STICK_THRESHOLD_PX)
+  }
+
+  useLayoutEffect(() => {
+    if (!stuck) return
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [liveSegments, sttStatus, sttError, stuck])
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        data-testid="live-transcript-scroll"
+        style={{ position: 'absolute', inset: 0, overflow: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 740 }}
+      >
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
+        <LiveTranscriptBody liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
+      </div>
+      {!stuck && (
+        <button
+          type="button"
+          onClick={() => {
+            setStuck(true)
+            const el = scrollRef.current
+            if (el) el.scrollTop = el.scrollHeight
+          }}
+          style={{
+            position: 'absolute',
+            bottom: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '7px 14px',
+            border: '1px solid var(--border)',
+            borderRadius: 999,
+            background: 'var(--card)',
+            color: 'var(--ink)',
+            fontFamily: 'inherit',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: 'pointer',
+            boxShadow: '0 2px 8px rgba(0,0,0,.12)',
+          }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14"></path>
+            <path d="m19 12-7 7-7-7"></path>
+          </svg>
+          Jump to latest
+        </button>
+      )}
+    </div>
+  )
+}
 
 export const RecordingView = memo(function RecordingView({
   liveSegments,
@@ -160,10 +253,7 @@ export const RecordingView = memo(function RecordingView({
           <Waveform paused={paused} />
           <div style={{ fontSize: 12, color: 'var(--ink-faint)', flex: 'none' }}>{modelName} · on-device</div>
         </div>
-        <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 740 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
-          <LiveTranscriptBody liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
-        </div>
+        <LiveTranscriptScroller liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
         <div style={{ padding: '14px 32px 18px', display: 'flex', gap: 10, flex: 'none' }}>
           <button
             onClick={stopRec}

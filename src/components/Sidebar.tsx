@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { memo, type CSSProperties } from 'react'
 import type { NoteListItem, View } from '../types'
 
 interface SidebarProps {
@@ -28,7 +28,13 @@ const navBase: CSSProperties = {
   textAlign: 'left',
 }
 
-export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, statsLine }: SidebarProps) {
+// Memoized — the recording view's 1Hz elapsed-time tick re-renders App,
+// which would otherwise re-render Sidebar every second even though none of
+// its props (notes/sel/view/statsLine/the three callbacks) actually change
+// during a recording. Only pays off once App stops handing it fresh
+// object/array/lambda props each render — see useAppState's useCallback'd
+// goNotes/goSettings and the memoized `sidebarNotes`/`statsLine`.
+export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, statsLine }: SidebarProps) {
   return (
     <nav
       aria-label="Notes"
@@ -168,4 +174,4 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
       </div>
     </nav>
   )
-}
+})

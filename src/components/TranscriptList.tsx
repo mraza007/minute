@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { TranscriptSegment } from '../types'
 
 interface TranscriptListProps {
@@ -35,7 +36,10 @@ function Segment({ segment }: { segment: TranscriptSegment }) {
   )
 }
 
-export function TranscriptList({ segments }: TranscriptListProps) {
+// Memoized so re-rendering NoteView's containing tabpanel (e.g. a status
+// pill tick elsewhere) doesn't re-render every segment row when `segments`
+// itself hasn't changed — see `displaySegments`'s `useMemo` in NoteView.
+export const TranscriptList = memo(function TranscriptList({ segments }: TranscriptListProps) {
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 700 }}>
       {segments.map((segment, i) => (
@@ -43,4 +47,4 @@ export function TranscriptList({ segments }: TranscriptListProps) {
       ))}
     </div>
   )
-}
+})

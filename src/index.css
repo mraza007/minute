@@ -102,6 +102,19 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .model-card:hover { background: var(--surface-softer) !important; }
 .seg-off:hover { color: var(--ink) !important; }
 
+/* prefers-reduced-motion: every looping animation in the app (waveform bars,
+   the REC/transcribing blink dot, spinners) is purely decorative — each is
+   paired with real text (a status pill, "REC 00:00", "transcribing…") that
+   carries the same information, so turning the motion off loses nothing.
+   The waveform bars freeze at a static mid-height instead of their `scaleY`
+   keyframe's resting (.25) value so recording doesn't visually read as
+   "silent"/collapsed. */
+@media (prefers-reduced-motion: reduce) {
+  .wf-bar { animation: none !important; transform: scaleY(.6); }
+  .blink-dot { animation: none !important; }
+  .spin { animation: none !important; }
+}
+
 /* Visible keyboard focus on every interactive control (WCAG 2.4.7) — text
    inputs keep their existing box-shadow via .input-focus instead so the two
    treatments don't double up. */

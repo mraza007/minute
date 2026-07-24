@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onDownloadDone, onDownloadProgress } from '../ipc/events'
 import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
@@ -56,11 +56,15 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  function reportError(err: unknown) {
+  // Stable identity (only refs/setters in its closure) — same rationale as
+  // useAppState's own `reportError`: everything below that depends on it via
+  // `useCallback` needs *this* to be stable too, or their own memoization is
+  // a no-op (a fresh `[reportError]` dep every render still busts the cache).
+  const reportError = useCallback((err: unknown) => {
     clearTimeout(errorTimeout.current)
     setLastErrorState(messageOf(err))
     errorTimeout.current = setTimeout(() => setLastErrorState(null), LAST_ERROR_TIMEOUT_MS)
-  }
+  }, [])
 
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
 
@@ -133,43 +137,58 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   }
 
   /** Sets the selected transcription model and persists it to settings.json (fire-and-forget — a failed persist just gets reported, the in-memory selection still applies). */
-  function setSttModel(id: string) {
-    setSttModelState(id)
-    ipc.setSettings({ sttModel: id }).catch(reportError)
-  }
+  const setSttModel = useCallback(
+    (id: string) => {
+      setSttModelState(id)
+      ipc.setSettings({ sttModel: id }).catch(reportError)
+    },
+    [reportError],
+  )
 
   /** Sets the selected summary (LLM) model and persists it to settings.json — same fire-and-forget shape as `setSttModel`. */
-  function setLlmModel(id: string) {
-    setLlmModelState(id)
-    ipc.setSettings({ llmModel: id }).catch(reportError)
-  }
+  const setLlmModel = useCallback(
+    (id: string) => {
+      setLlmModelState(id)
+      ipc.setSettings({ llmModel: id }).catch(reportError)
+    },
+    [reportError],
+  )
 
-  function downloadModel(id: string) {
-    const entry = models.find(m => m.id === id)
-    // Optimistic: mark it "downloading" immediately so the card reflects
-    // the click right away, ahead of the first (throttled) progress event.
-    setDownloads(prev => ({ ...prev, [id]: { downloaded: 0, total: entry?.sizeBytes ?? 0 } }))
-    ipc.downloadModel(id).catch(err => {
-      reportError(err)
-      setDownloads(prev => {
-        const next = { ...prev }
-        delete next[id]
-        return next
+  const downloadModel = useCallback(
+    (id: string) => {
+      const entry = models.find(m => m.id === id)
+      // Optimistic: mark it "downloading" immediately so the card reflects
+      // the click right away, ahead of the first (throttled) progress event.
+      setDownloads(prev => ({ ...prev, [id]: { downloaded: 0, total: entry?.sizeBytes ?? 0 } }))
+      ipc.downloadModel(id).catch(err => {
+        reportError(err)
+        setDownloads(prev => {
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
       })
-    })
-  }
+    },
+    [models, reportError],
+  )
 
-  function cancelDownload(id: string) {
-    ipc.cancelDownload(id).catch(reportError)
-  }
+  const cancelDownload = useCallback(
+    (id: string) => {
+      ipc.cancelDownload(id).catch(reportError)
+    },
+    [reportError],
+  )
 
-  function deleteModel(id: string) {
-    ipc
-      .deleteModel(id)
-      .then(() => ipc.listModels())
-      .then(setModels)
-      .catch(reportError)
-  }
+  const deleteModel = useCallback(
+    (id: string) => {
+      ipc
+        .deleteModel(id)
+        .then(() => ipc.listModels())
+        .then(setModels)
+        .catch(reportError)
+    },
+    [reportError],
+  )
 
   return {
     models,

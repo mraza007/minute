@@ -13,6 +13,7 @@ export const Waveform = memo(function Waveform({ paused }: WaveformProps) {
       {Array.from({ length: 56 }, (_, i) => (
         <span
           key={i}
+          className="wf-bar"
           style={{
             width: 3,
             height: 24,

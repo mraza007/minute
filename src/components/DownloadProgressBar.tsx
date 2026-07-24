@@ -24,7 +24,18 @@ export function DownloadProgressBar({ downloaded, total }: DownloadProgressBarPr
         aria-valuetext={`${formatBytes(downloaded)} of ${formatBytes(total)}`}
         style={{ height: 6, borderRadius: 999, background: 'var(--panel-warm)', overflow: 'hidden' }}
       >
-        <div style={{ height: '100%', width: `${percent}%`, background: 'var(--accent)', borderRadius: 999, transition: 'width .2s' }} />
+        {/* Full-width fill scaled down via `transform` (M12) instead of animating `width` — `transform-origin: left` keeps it growing from the start edge, same as the old width-based fill; the track's `overflow: hidden` above keeps the (always full-width) rounded corners looking right. */}
+        <div
+          style={{
+            height: '100%',
+            width: '100%',
+            background: 'var(--accent)',
+            borderRadius: 999,
+            transform: `scaleX(${percent / 100})`,
+            transformOrigin: 'left',
+            transition: 'transform .2s',
+          }}
+        />
       </div>
     </div>
   )

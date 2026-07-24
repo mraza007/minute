@@ -570,6 +570,34 @@ export function useAppState() {
       })
   }, [reportError])
 
+  // `useCallback` (stable identity, no deps beyond the setter) — passed
+  // straight through to the memoized Sidebar/TitleBar as `onGoNotes`/
+  // `onGoSettings`/`onReturnToRecording`; a fresh arrow here every render
+  // would defeat those memos exactly like an unstable `startRec`/
+  // `togglePause`/`stopRec` would defeat RecordingView's.
+  const goNotes = useCallback(() => setView('notes'), [])
+  const goSettings = useCallback(() => setView('settings'), [])
+  // The REC pill's "return to recording" action — navigating to Settings or
+  // the notes list mid-recording is legitimate (goNotes/goSettings above
+  // stay unguarded), so this is the persistent way back to the live view.
+  const goRecording = useCallback(() => setView('recording'), [])
+
+  const toggleDel = useCallback(() => {
+    setTDel(next => {
+      const flipped = !next
+      ipc.setSettings({ deleteAudioAfter30d: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  const toggleEnc = useCallback(() => {
+    setTEnc(next => {
+      const flipped = !next
+      ipc.setSettings({ encryptLibrary: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
   return {
     view,
     // Derived from backend truth (a recording is active iff the backend
@@ -615,13 +643,9 @@ export function useAppState() {
     sidebarNotes,
     statsLine,
     recTime: formatMmSs(recElapsed),
-    goNotes: () => setView('notes'),
-    goSettings: () => setView('settings'),
-    // The REC pill's "return to recording" action — navigating to Settings
-    // or the notes list mid-recording is legitimate (goNotes/goSettings
-    // above stay unguarded), so this is the persistent way back to the
-    // live view.
-    goRecording: () => setView('recording'),
+    goNotes,
+    goSettings,
+    goRecording,
     startRec,
     stopRec,
     togglePause,
@@ -629,16 +653,8 @@ export function useAppState() {
     setNoteTab,
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,
-    toggleDel: () => {
-      const next = !tDel
-      setTDel(next)
-      ipc.setSettings({ deleteAudioAfter30d: next }).catch(reportError)
-    },
-    toggleEnc: () => {
-      const next = !tEnc
-      setTEnc(next)
-      ipc.setSettings({ encryptLibrary: next }).catch(reportError)
-    },
+    toggleDel,
+    toggleEnc,
     downloadModel: modelManager.downloadModel,
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,

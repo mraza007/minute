@@ -44,13 +44,18 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
           style={{
             position: 'absolute',
             top: 2,
-            left: on ? 18 : 2,
+            // Constant `left` (the off position) + a `transform` for the
+            // on/off delta (M12) — transform-based instead of animating
+            // `left` itself, same geometry as before: off-left 2, on-left
+            // 18 (track width 40 − knob 20 − inset 2).
+            left: 2,
             width: 20,
             height: 20,
             borderRadius: '50%',
             background: 'var(--card)',
             boxShadow: '0 1px 3px rgba(0,0,0,.25)',
-            transition: 'left .18s',
+            transform: on ? 'translateX(16px)' : 'translateX(0)',
+            transition: 'transform .18s',
           }}
         />
       </span>
