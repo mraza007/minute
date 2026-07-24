@@ -127,6 +127,8 @@ describe('ipc/commands', () => {
       transcript: {
         segments: [{ speaker: 'Speaker 1', start: 0, end: 3.2, text: 'Hello there.' }],
       },
+      summary: null,
+      markdown: '# Client call — Acme',
     }
     const calls = captureIPC(() => fixture)
 

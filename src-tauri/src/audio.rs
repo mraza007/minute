@@ -922,6 +922,16 @@ pub fn stop_recording(
         .finalize_note(&note_id, duration_sec, 1)
         .map_err(|e| e.to_string())?;
 
+    // Best-effort: note.md is a derived convenience file (single source of
+    // truth lives in meta.json/transcript.json), so a write failure here
+    // shouldn't fail the whole stop_recording call — it just leaves note.md
+    // stale/absent until the next write that regenerates it (a summary, a
+    // rename, ...). The transcript now exists, so this is the point every
+    // finalized note should get one.
+    if let Err(e) = lock_store(&store).write_note_md(&note_id) {
+        log::warn!("failed to write note.md for {note_id}: {e}");
+    }
+
     emit_recording_state(&app, &note_id, "stopped", duration_sec);
     Ok(meta)
 }

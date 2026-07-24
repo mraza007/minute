@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
+use crate::llm::SummaryDoc;
 
 /// Lifecycle status of a note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +62,10 @@ const META_FILE: &str = "meta.json";
 const TRANSCRIPT_FILE: &str = "transcript.json";
 const TRANSCRIPT_TMP_FILE: &str = "transcript.json.tmp";
 const AUDIO_FILE: &str = "audio.wav";
+const SUMMARY_FILE: &str = "summary.json";
+const SUMMARY_TMP_FILE: &str = "summary.json.tmp";
+const NOTE_MD_FILE: &str = "note.md";
+const NOTE_MD_TMP_FILE: &str = "note.md.tmp";
 
 /// Folder-per-note store rooted at an app-data directory.
 ///
@@ -163,6 +168,22 @@ impl Store {
 
     fn transcript_tmp_path(&self, id: &str) -> PathBuf {
         self.note_dir(id).join(TRANSCRIPT_TMP_FILE)
+    }
+
+    fn summary_path(&self, id: &str) -> PathBuf {
+        self.note_dir(id).join(SUMMARY_FILE)
+    }
+
+    fn summary_tmp_path(&self, id: &str) -> PathBuf {
+        self.note_dir(id).join(SUMMARY_TMP_FILE)
+    }
+
+    fn note_md_path(&self, id: &str) -> PathBuf {
+        self.note_dir(id).join(NOTE_MD_FILE)
+    }
+
+    fn note_md_tmp_path(&self, id: &str) -> PathBuf {
+        self.note_dir(id).join(NOTE_MD_TMP_FILE)
     }
 
     fn write_meta(&self, meta: &NoteMeta) -> Result<()> {
@@ -282,6 +303,103 @@ impl Store {
         self.write_transcript(id, &transcript)
     }
 
+    /// Atomically writes a note's summary (write to `.tmp`, then rename over
+    /// the final path — same pattern as [`Store::write_transcript`]).
+    pub fn write_summary(&self, id: &str, summary: &SummaryDoc) -> Result<()> {
+        let json = serde_json::to_string_pretty(summary)
+            .map_err(|e| MinuteError::Other(format!("failed to serialize summary.json: {e}")))?;
+        let tmp_path = self.summary_tmp_path(id);
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, self.summary_path(id))?;
+        Ok(())
+    }
+
+    /// Reads a note's summary. `Ok(None)` if no `summary.json` exists yet
+    /// (a note that hasn't been summarized, or an LLM error left it absent)
+    /// — not an error. A corrupt/unparseable file also degrades to
+    /// `Ok(None)` (logged via `log::warn!`) rather than failing the whole
+    /// `get_note` call, matching `list_notes`'s tolerance of corrupt
+    /// `meta.json`.
+    pub fn read_summary(&self, id: &str) -> Result<Option<SummaryDoc>> {
+        let path = self.summary_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = fs::read_to_string(&path)?;
+        match serde_json::from_str(&raw) {
+            Ok(summary) => Ok(Some(summary)),
+            Err(e) => {
+                log::warn!("failed to parse summary.json for {id}: {e}");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Persists a freshly generated summary and marks the note `Ready`.
+    ///
+    /// Ordering is deliberate and load-bearing for crash-safety: the summary
+    /// is written *first*, then `meta.json`'s status flips to `Ready`. If the
+    /// process dies between the two writes, the note is left at status
+    /// `Transcribed` with a valid `summary.json` already on disk — a safe
+    /// state to resume from (re-running the summarizer just overwrites the
+    /// existing summary and completes the status flip), rather than a
+    /// `Ready` note whose summary might not actually exist.
+    ///
+    /// Also (re)renders `note.md` — see [`Store::write_note_md`] — so the
+    /// on-disk markdown reflects the new summary immediately.
+    ///
+    /// Not yet called from any command — `summarize_note` (Task 4,
+    /// `docs/plans/2026-07-23-stage3-summaries.md`) is the real caller; the
+    /// `#[allow(dead_code)]` mirrors `llm::LlmEngine`'s same
+    /// not-wired-in-yet situation.
+    #[allow(dead_code)]
+    pub fn write_summary_and_finalize(&self, id: &str, summary: &SummaryDoc) -> Result<NoteMeta> {
+        self.write_summary(id, summary)?;
+        let mut meta = self.read_meta(id)?;
+        meta.status = NoteStatus::Ready;
+        self.write_meta(&meta)?;
+        self.write_note_md(id)?;
+        Ok(meta)
+    }
+
+    /// Flips a single action item's `done` state (read-modify-write) and
+    /// re-persists the whole summary. `Err` if the note has no summary yet,
+    /// or if `index` is out of bounds for its `action_items`.
+    pub fn toggle_action_item(&self, id: &str, index: usize, done: bool) -> Result<SummaryDoc> {
+        let mut summary = self
+            .read_summary(id)?
+            .ok_or_else(|| MinuteError::Other(format!("note {id} has no summary yet")))?;
+        let item_count = summary.action_items.len();
+        let item = summary.action_items.get_mut(index).ok_or_else(|| {
+            MinuteError::Other(format!(
+                "action item index {index} out of bounds for note {id} ({item_count} item(s))"
+            ))
+        })?;
+        item.done = done;
+        self.write_summary(id, &summary)?;
+        self.write_note_md(id)?;
+        Ok(summary)
+    }
+
+    /// Renders (via [`render_note_md`]) and atomically writes `note.md` for
+    /// a note from whatever's currently on disk — its `meta.json`,
+    /// `transcript.json` (empty if absent), and `summary.json` (omitted if
+    /// absent). Called after every write that changes what `note.md` should
+    /// say: `write_summary_and_finalize`, `toggle_action_item`,
+    /// `rename_note`, and `stop_recording`'s finalize path (audio.rs) —
+    /// `note.md` should exist for every finalized note, summarized or not.
+    pub fn write_note_md(&self, id: &str) -> Result<()> {
+        let meta = self.read_meta(id)?;
+        let transcript = self.read_transcript(id)?;
+        let summary = self.read_summary(id)?;
+        let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
+
+        let tmp_path = self.note_md_tmp_path(id);
+        fs::write(&tmp_path, markdown)?;
+        fs::rename(&tmp_path, self.note_md_path(id))?;
+        Ok(())
+    }
+
     /// Lists all notes, sorted by `createdAt` descending. Note directories
     /// with a missing or corrupt `meta.json` are logged and skipped rather
     /// than failing the whole scan.
@@ -338,11 +456,14 @@ impl Store {
         Ok((meta, transcript))
     }
 
-    /// Renames a note's title, preserving its id and createdAt.
+    /// Renames a note's title, preserving its id and createdAt. Re-renders
+    /// `note.md` (its `# {title}` header line) so the on-disk markdown
+    /// doesn't go stale — see [`Store::write_note_md`].
     pub fn rename_note(&self, id: &str, title: &str) -> Result<NoteMeta> {
         let mut meta = self.read_meta(id)?;
         meta.title = title.to_string();
         self.write_meta(&meta)?;
+        self.write_note_md(id)?;
         Ok(meta)
     }
 
@@ -490,6 +611,109 @@ pub fn storage_stats(root: &Path) -> Result<StorageStats> {
         audio_bytes,
         notes_bytes,
     })
+}
+
+/// Formats a segment's start time as `mm:ss` for `note.md`'s transcript
+/// section — the same rounding rule as the frontend's `formatMmSs`
+/// (`src/state/adapters.ts`) and `llm.rs`'s own copy for the summary prompt:
+/// negative/NaN clamps to 0, whole seconds only. Duplicated rather than
+/// shared with `llm::format_mm_ss` because the two render into different
+/// surrounding punctuation (`(mm:ss)` here vs `[mm:ss]` there) and neither
+/// module depends on the other — see that function's docs for the same
+/// rationale spelled out the other way round.
+fn format_mm_ss(total_seconds: f64) -> String {
+    let whole_seconds = total_seconds.max(0.0).floor() as u64;
+    let mm = whole_seconds / 60;
+    let ss = whole_seconds % 60;
+    format!("{mm:02}:{ss:02}")
+}
+
+/// Formats `created_at` (an RFC3339 string) as `Month D, YYYY` — matching
+/// the frontend's `formatDateLabel`
+/// (`new Date(createdAt).toLocaleDateString('en-US', { month: 'long', day:
+/// 'numeric', year: 'numeric' })`). `time::Month`'s `Display` impl prints
+/// the full English month name, which is exactly what `month: 'long'`
+/// produces. Falls back to the raw string, unformatted, if it doesn't parse
+/// as RFC3339 — deliberately tolerant rather than panicking, since this
+/// feeds a rendered document rather than being load-bearing data.
+fn format_date_label(created_at: &str) -> String {
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    match OffsetDateTime::parse(created_at, rfc3339) {
+        Ok(dt) => format!("{} {}, {}", dt.month(), dt.day(), dt.year()),
+        Err(_) => created_at.to_string(),
+    }
+}
+
+/// Renders the `## Transcript` section's body: `_No speech detected._` for
+/// an empty transcript, else each segment as `**Speaker** (mm:ss)\ntext`,
+/// blank-line-separated — byte-for-byte the same shape as the frontend's
+/// `transcriptBody` in `src/state/noteToMarkdown.ts`.
+fn transcript_body(segments: &[StoredSegment]) -> String {
+    if segments.is_empty() {
+        return "_No speech detected._".to_string();
+    }
+    segments
+        .iter()
+        .map(|seg| format!("**{}** ({})\n{}", seg.speaker, format_mm_ss(seg.start), seg.text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The single source of truth for a note's markdown rendering — both
+/// `note.md` on disk (via [`Store::write_note_md`]) and the `get_note`
+/// command's `markdown` field (rendered fresh on every read) go through
+/// this. Ports the frontend's `noteToMarkdown` (`src/state/noteToMarkdown.ts`)
+/// faithfully: with `summary: None`, the output byte-for-byte matches what
+/// that function still produces today (the frontend keeps using its own
+/// generator until Stage 3 Task 5 rewires it to this markdown field
+/// instead).
+///
+/// When `summary` is `Some`, three sections are inserted between the header
+/// and `## Transcript`: `## Summary` (always, since `SummaryDoc::summary` is
+/// a plain string with no "absent" state), then `## Decisions` and
+/// `## Action items` — each omitted entirely (no empty heading) when its
+/// list is empty, rather than rendered with no bullets under it. Action
+/// items render as GitHub-flavored task list items: `- [x] text` when done,
+/// `- [ ] text` otherwise.
+pub fn render_note_md(meta: &NoteMeta, summary: Option<&SummaryDoc>, transcript: &Transcript) -> String {
+    let minutes = (meta.duration_sec / 60.0).round() as i64;
+    let mut out = format!(
+        "# {}\n\n**Date:** {} · **Duration:** {} min · **Speakers:** {}",
+        meta.title,
+        format_date_label(&meta.created_at),
+        minutes,
+        meta.speakers,
+    );
+
+    if let Some(summary) = summary {
+        out.push_str(&format!("\n\n## Summary\n\n{}", summary.summary));
+
+        if !summary.decisions.is_empty() {
+            let decisions = summary
+                .decisions
+                .iter()
+                .map(|d| format!("- {d}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&format!("\n\n## Decisions\n\n{decisions}"));
+        }
+
+        if !summary.action_items.is_empty() {
+            let items = summary
+                .action_items
+                .iter()
+                .map(|item| {
+                    let checkbox = if item.done { "[x]" } else { "[ ]" };
+                    format!("- {checkbox} {}", item.text)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&format!("\n\n## Action items\n\n{items}"));
+        }
+    }
+
+    out.push_str(&format!("\n\n## Transcript\n\n{}", transcript_body(&transcript.segments)));
+    out
 }
 
 #[cfg(test)]
@@ -868,5 +1092,346 @@ mod tests {
         assert!(!store.note_dir(&meta.id).exists());
         let notes = store.list_notes().unwrap();
         assert!(notes.iter().all(|n| n.id != meta.id));
+    }
+
+    // --- write_summary / read_summary ------------------------------------------
+
+    use crate::llm::ActionItem;
+
+    fn sample_summary() -> SummaryDoc {
+        SummaryDoc {
+            summary: "Discussed Q3 roadmap.".to_string(),
+            decisions: vec!["Ship by Friday".to_string()],
+            action_items: vec![ActionItem { text: "Write release notes".to_string(), done: false }],
+        }
+    }
+
+    #[test]
+    fn write_summary_then_read_summary_roundtrips() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        store.write_summary(&meta.id, &sample_summary()).unwrap();
+        let read_back = store.read_summary(&meta.id).unwrap();
+
+        assert_eq!(read_back, Some(sample_summary()));
+    }
+
+    #[test]
+    fn write_summary_is_atomic_and_leaves_no_tmp_file() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        store.write_summary(&meta.id, &sample_summary()).unwrap();
+
+        assert!(store.summary_path(&meta.id).exists());
+        assert!(!store.summary_tmp_path(&meta.id).exists());
+    }
+
+    #[test]
+    fn read_summary_absent_returns_none() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        assert_eq!(store.read_summary(&meta.id).unwrap(), None);
+    }
+
+    #[test]
+    fn read_summary_corrupt_warns_and_returns_none() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        fs::write(store.summary_path(&meta.id), "not valid json {{{").unwrap();
+
+        assert_eq!(store.read_summary(&meta.id).unwrap(), None);
+    }
+
+    // --- write_summary_and_finalize ---------------------------------------------
+
+    #[test]
+    fn write_summary_and_finalize_sets_status_ready_and_persists_summary() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        store.finalize_note(&meta.id, 42.0, 1).unwrap();
+
+        let updated = store.write_summary_and_finalize(&meta.id, &sample_summary()).unwrap();
+
+        assert_eq!(updated.status, NoteStatus::Ready);
+        assert_eq!(store.read_summary(&meta.id).unwrap(), Some(sample_summary()));
+    }
+
+    #[test]
+    fn write_summary_and_finalize_also_writes_note_md() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        store.write_summary_and_finalize(&meta.id, &sample_summary()).unwrap();
+
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("Discussed Q3 roadmap."));
+    }
+
+    // --- toggle_action_item -------------------------------------------------------
+
+    #[test]
+    fn toggle_action_item_flips_done_and_persists() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        store.write_summary(&meta.id, &sample_summary()).unwrap();
+
+        let updated = store.toggle_action_item(&meta.id, 0, true).unwrap();
+
+        assert!(updated.action_items[0].done);
+        let read_back = store.read_summary(&meta.id).unwrap().unwrap();
+        assert!(read_back.action_items[0].done);
+    }
+
+    #[test]
+    fn toggle_action_item_out_of_bounds_index_errors() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        store.write_summary(&meta.id, &sample_summary()).unwrap();
+
+        let result = store.toggle_action_item(&meta.id, 5, true);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn toggle_action_item_without_a_summary_errors() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        let result = store.toggle_action_item(&meta.id, 0, true);
+
+        assert!(result.is_err());
+    }
+
+    // --- write_note_md / rename_note re-rendering ---------------------------------
+
+    #[test]
+    fn write_note_md_writes_a_file_matching_render_note_md() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        store.write_note_md(&meta.id).unwrap();
+
+        let on_disk = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        let (meta, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(on_disk, render_note_md(&meta, None, &transcript));
+    }
+
+    #[test]
+    fn write_note_md_is_atomic_and_leaves_no_tmp_file() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        store.write_note_md(&meta.id).unwrap();
+
+        assert!(store.note_md_path(&meta.id).exists());
+        assert!(!store.note_md_tmp_path(&meta.id).exists());
+    }
+
+    #[test]
+    fn rename_note_re_renders_note_md_with_the_new_title() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Original", "whisper-small", now).unwrap();
+        store.write_note_md(&meta.id).unwrap();
+
+        store.rename_note(&meta.id, "Renamed").unwrap();
+
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(markdown.starts_with("# Renamed"));
+    }
+
+    // --- render_note_md: golden strings -----------------------------------------
+
+    fn md_meta(overrides: impl FnOnce(&mut NoteMeta)) -> NoteMeta {
+        let mut meta = NoteMeta {
+            id: "20260521-140000".to_string(),
+            title: "Client call — Acme".to_string(),
+            created_at: "2026-05-21T14:00:00.000Z".to_string(),
+            duration_sec: 48.0 * 60.0,
+            model: "whisper-small".to_string(),
+            status: NoteStatus::Transcribed,
+            speakers: 4,
+        };
+        overrides(&mut meta);
+        meta
+    }
+
+    #[test]
+    fn render_note_md_without_summary_matches_the_frontend_generators_output() {
+        // Byte-for-byte port of noteToMarkdown.test.ts's
+        // "renders the full template shape for a note with segments" case.
+        let meta = md_meta(|_| {});
+        let transcript = Transcript {
+            segments: vec![
+                StoredSegment { speaker: "Speaker 1".into(), start: 41.0, end: 62.0, text: "Thanks for making time.".into() },
+                StoredSegment { speaker: "Speaker 1".into(), start: 94.0, end: 110.0, text: "Short answer: nowhere.".into() },
+            ],
+        };
+
+        let markdown = render_note_md(&meta, None, &transcript);
+
+        assert_eq!(
+            markdown,
+            "# Client call — Acme\n\
+             \n\
+             **Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 4\n\
+             \n\
+             ## Transcript\n\
+             \n\
+             **Speaker 1** (00:41)\n\
+             Thanks for making time.\n\
+             \n\
+             **Speaker 1** (01:34)\n\
+             Short answer: nowhere.",
+        );
+    }
+
+    #[test]
+    fn render_note_md_without_summary_and_empty_transcript_matches_frontend() {
+        let meta = md_meta(|_| {});
+
+        let markdown = render_note_md(&meta, None, &Transcript::default());
+
+        assert_eq!(
+            markdown,
+            "# Client call — Acme\n\
+             \n\
+             **Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 4\n\
+             \n\
+             ## Transcript\n\
+             \n\
+             _No speech detected._",
+        );
+    }
+
+    #[test]
+    fn render_note_md_date_label_matches_frontend_month_day_year_format() {
+        let meta = md_meta(|m| m.created_at = "2026-01-03T09:00:00.000Z".to_string());
+        let markdown = render_note_md(&meta, None, &Transcript::default());
+        assert!(markdown.contains("**Date:** January 3, 2026"));
+    }
+
+    #[test]
+    fn render_note_md_rounds_duration_to_whole_minutes() {
+        let meta = md_meta(|m| {
+            m.duration_sec = 95.0;
+            m.speakers = 1;
+        });
+        let markdown = render_note_md(&meta, None, &Transcript::default());
+        assert!(markdown.contains("**Duration:** 2 min · **Speakers:** 1"));
+    }
+
+    #[test]
+    fn render_note_md_with_summary_includes_summary_decisions_and_action_items() {
+        let meta = md_meta(|_| {});
+        let summary = SummaryDoc {
+            summary: "Reviewed the roadmap and aligned on priorities.".to_string(),
+            decisions: vec!["Ship the beta by Friday".to_string(), "Skip the redesign this quarter".to_string()],
+            action_items: vec![
+                ActionItem { text: "Write release notes".to_string(), done: true },
+                ActionItem { text: "Schedule the retro".to_string(), done: false },
+            ],
+        };
+
+        let markdown = render_note_md(&meta, Some(&summary), &Transcript::default());
+
+        assert_eq!(
+            markdown,
+            "# Client call — Acme\n\
+             \n\
+             **Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 4\n\
+             \n\
+             ## Summary\n\
+             \n\
+             Reviewed the roadmap and aligned on priorities.\n\
+             \n\
+             ## Decisions\n\
+             \n\
+             - Ship the beta by Friday\n\
+             - Skip the redesign this quarter\n\
+             \n\
+             ## Action items\n\
+             \n\
+             - [x] Write release notes\n\
+             - [ ] Schedule the retro\n\
+             \n\
+             ## Transcript\n\
+             \n\
+             _No speech detected._",
+        );
+    }
+
+    #[test]
+    fn render_note_md_omits_empty_decisions_and_action_items_sections() {
+        let meta = md_meta(|_| {});
+        let summary = SummaryDoc {
+            summary: "Quick sync, nothing decided.".to_string(),
+            decisions: vec![],
+            action_items: vec![],
+        };
+
+        let markdown = render_note_md(&meta, Some(&summary), &Transcript::default());
+
+        assert!(markdown.contains("## Summary"));
+        assert!(!markdown.contains("## Decisions"));
+        assert!(!markdown.contains("## Action items"));
+        assert_eq!(
+            markdown,
+            "# Client call — Acme\n\
+             \n\
+             **Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 4\n\
+             \n\
+             ## Summary\n\
+             \n\
+             Quick sync, nothing decided.\n\
+             \n\
+             ## Transcript\n\
+             \n\
+             _No speech detected._",
+        );
+    }
+
+    #[test]
+    fn render_note_md_omits_only_decisions_when_action_items_present() {
+        let meta = md_meta(|_| {});
+        let summary = SummaryDoc {
+            summary: "x".to_string(),
+            decisions: vec![],
+            action_items: vec![ActionItem { text: "Follow up".to_string(), done: false }],
+        };
+
+        let markdown = render_note_md(&meta, Some(&summary), &Transcript::default());
+
+        assert!(!markdown.contains("## Decisions"));
+        assert!(markdown.contains("## Action items"));
+        assert!(markdown.contains("- [ ] Follow up"));
     }
 }

@@ -139,7 +139,7 @@ function setupIPC(opts: SetupOpts = {}) {
           const { id } = args as { id: string }
           if (opts.getNote) return opts.getNote(id)
           const match = notes.find(n => n.id === id) ?? notes[0]
-          return { meta: match, transcript: { segments: [] } } satisfies NoteWithTranscript
+          return { meta: match, transcript: { segments: [] }, summary: null, markdown: '' } satisfies NoteWithTranscript
         }
         case 'rename_note': {
           const { id, title } = args as { id: string; title: string }
@@ -640,8 +640,8 @@ describe('useAppState', () => {
     const segmentsB: StoredSegment[] = [{ speaker: 'Speaker 1', start: 5, end: 6, text: 'hello from B' }]
 
     function getNoteFixture(id: string): NoteWithTranscript {
-      if (id === 'note-a') return { meta: noteA, transcript: { segments: segmentsA } }
-      if (id === 'note-b') return { meta: noteB, transcript: { segments: segmentsB } }
+      if (id === 'note-a') return { meta: noteA, transcript: { segments: segmentsA }, summary: null, markdown: '' }
+      if (id === 'note-b') return { meta: noteB, transcript: { segments: segmentsB }, summary: null, markdown: '' }
       throw new Error(`unexpected id ${id}`)
     }
 
@@ -725,7 +725,12 @@ describe('useAppState', () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         setupIPC({
           notes: [noteA],
-          getNote: () => ({ meta: { ...noteA, title: currentTitle }, transcript: { segments: segmentsA } }),
+          getNote: () => ({
+            meta: { ...noteA, title: currentTitle },
+            transcript: { segments: segmentsA },
+            summary: null,
+            markdown: '',
+          }),
           renameNoteResult: (_id, title) => {
             currentTitle = title
             return { ...noteA, title }

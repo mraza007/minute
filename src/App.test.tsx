@@ -87,7 +87,12 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'get_note': {
           const { id } = args as { id: string }
           const match = notes.find(n => n.id === id) ?? notes[0] ?? noteFixture()
-          return { meta: match, transcript: { segments: [] } } satisfies NoteWithTranscript
+          return {
+            meta: match,
+            transcript: { segments: [] },
+            summary: null,
+            markdown: `# ${match.title}`,
+          } satisfies NoteWithTranscript
         }
         case 'rename_note': {
           const { id, title } = args as { id: string; title: string }

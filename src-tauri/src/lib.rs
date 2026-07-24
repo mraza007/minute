@@ -9,8 +9,9 @@ mod settings;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
+use llm::SummaryDoc;
 use settings::{Settings, SettingsPatch, SharedSettings};
-use store::{lock_store, NoteMeta, SharedStore, StorageStats, Transcript};
+use store::{lock_store, render_note_md, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
@@ -63,12 +64,19 @@ fn recommended_models(_app: AppHandle) -> Result<Recommendation, String> {
 /// JSON-friendly wrapper for the `get_note` command — `Store::get_note`
 /// returns a `(NoteMeta, Transcript)` tuple internally, but a tuple
 /// serializes as a bare JSON array, so the command boundary shapes it into
-/// a named object for the frontend.
+/// a named object for the frontend. `summary` is the note's persisted
+/// summary if one exists (`None` for a note that hasn't been summarized
+/// yet); `markdown` is `store::render_note_md`'s output for the same
+/// meta/transcript/summary, rendered fresh on every read rather than read
+/// back off `note.md` — the file and this field are two renderings of the
+/// same source of truth, not two sources of truth.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NoteWithTranscript {
   meta: NoteMeta,
   transcript: Transcript,
+  summary: Option<SummaryDoc>,
+  markdown: String,
 }
 
 #[tauri::command]
@@ -78,14 +86,34 @@ fn list_notes(state: State<SharedStore>) -> Result<Vec<NoteMeta>, String> {
 
 #[tauri::command]
 fn get_note(state: State<SharedStore>, id: String) -> Result<NoteWithTranscript, String> {
-  let (meta, transcript) = lock_store(&state).get_note(&id).map_err(|e| e.to_string())?;
-  Ok(NoteWithTranscript { meta, transcript })
+  let store = lock_store(&state);
+  let (meta, transcript) = store.get_note(&id).map_err(|e| e.to_string())?;
+  let summary = store.read_summary(&id).map_err(|e| e.to_string())?;
+  let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
+  Ok(NoteWithTranscript { meta, transcript, summary, markdown })
 }
 
 #[tauri::command]
 fn rename_note(state: State<SharedStore>, id: String, title: String) -> Result<NoteMeta, String> {
   lock_store(&state)
     .rename_note(&id, &title)
+    .map_err(|e| e.to_string())
+}
+
+/// Toggles one action item's `done` state in a note's summary — read-
+/// modify-write of `summary.json` under the store's mutex (see
+/// `store::Store::toggle_action_item`), also re-rendering `note.md`.
+/// `summarize_note` itself (the command that produces the summary in the
+/// first place) is Task 4.
+#[tauri::command]
+fn toggle_action_item(
+  state: State<SharedStore>,
+  id: String,
+  index: usize,
+  done: bool,
+) -> Result<SummaryDoc, String> {
+  lock_store(&state)
+    .toggle_action_item(&id, index, done)
     .map_err(|e| e.to_string())
 }
 
@@ -183,6 +211,7 @@ pub fn run() {
       list_notes,
       get_note,
       rename_note,
+      toggle_action_item,
       delete_note,
       storage_stats,
       reveal_note,

@@ -87,10 +87,32 @@ export interface Transcript {
  * `lib.rs::NoteWithTranscript` — the `get_note` command's JSON-friendly
  * wrapper around the `(NoteMeta, Transcript)` tuple `Store::get_note`
  * returns internally (a bare tuple would serialize as a JSON array).
+ * `summary` is `null` until the note has been summarized; `markdown` is
+ * `store::render_note_md`'s output for the same data, rendered fresh on
+ * every read. The frontend keeps using its own `noteToMarkdown` generator
+ * until Stage 3 Task 5 rewires components onto this field — for now it's
+ * wired into the wire type only, unused by any component.
  */
 export interface NoteWithTranscript {
   meta: NoteMeta
   transcript: Transcript
+  summary: SummaryDoc | null
+  markdown: string
+}
+
+// --- llm.rs --------------------------------------------------------------
+
+/** `llm::ActionItem` — `#[serde(rename_all = "camelCase")]`. */
+export interface ActionItem {
+  text: string
+  done: boolean
+}
+
+/** `llm::SummaryDoc` — `#[serde(rename_all = "camelCase")]`. */
+export interface SummaryDoc {
+  summary: string
+  decisions: string[]
+  actionItems: ActionItem[]
 }
 
 /** `store::StorageStats` — `#[serde(rename_all = "camelCase")]`. */
