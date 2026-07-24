@@ -74,3 +74,11 @@ export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
 /** Merges `patch` into the persisted settings and resolves with the updated settings. */
 export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
   invokeCmd('set_settings', { patch })
+
+/**
+ * Triggers (or re-triggers — this is also what "Regenerate" calls)
+ * summarization for a note. Resolves once the worker has been queued, not
+ * once summarization finishes — listen for `summary-status` events
+ * (`onSummaryStatus`) for progress.
+ */
+export const summarizeNote = (id: string): Promise<void> => invokeCmd('summarize_note', { id })

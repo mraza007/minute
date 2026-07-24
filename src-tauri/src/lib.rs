@@ -9,7 +9,7 @@ mod settings;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
-use llm::SummaryDoc;
+use llm::{SharedLlmEngine, SummaryDoc};
 use settings::{Settings, SettingsPatch, SharedSettings};
 use store::{lock_store, render_note_md, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
@@ -194,7 +194,9 @@ fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
 fn finalize_active_recording_on_exit(app: &AppHandle) {
   let store = app.state::<SharedStore>();
   let recorder = app.state::<audio::SharedRecorderState>();
-  match audio::stop_recording(app.clone(), store, recorder) {
+  let settings = app.state::<SharedSettings>();
+  let engine = app.state::<SharedLlmEngine>();
+  match audio::stop_recording(app.clone(), store, recorder, settings, engine) {
     Ok(meta) => log::info!("finalized in-progress recording {} on app close", meta.id),
     Err(e) if e == "no active recording" => {}
     Err(e) => log::warn!("failed to finalize in-progress recording on app close: {e}"),
@@ -212,6 +214,7 @@ pub fn run() {
       get_note,
       rename_note,
       toggle_action_item,
+      llm::summarize_note,
       delete_note,
       storage_stats,
       reveal_note,
@@ -254,6 +257,12 @@ pub fn run() {
       // way to obtain one; `Store::new` itself is private to `store.rs`.
       let shared_store: SharedStore = store::open_shared(app_data_dir);
       app.manage(shared_store);
+
+      // Managed state guarding the single loaded summarization LLM (and the
+      // `busy` flag serializing `summarize_note`/auto-trigger runs) — see
+      // `llm::SharedLlmEngine`.
+      let llm_engine: SharedLlmEngine = llm::open_shared();
+      app.manage(llm_engine);
 
       // Tracks in-flight model downloads so `cancel_download` can signal
       // them and `list_models` can report `Downloading` state — see

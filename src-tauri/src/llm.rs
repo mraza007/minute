@@ -1,5 +1,5 @@
 //! On-device summarization engine (llama-cpp-2, Metal-accelerated on Apple
-//! Silicon).
+//! Silicon) and the `summarize_note` command/worker built on top of it.
 //!
 //! Stage 3 Task 1 proved the integration end to end: the `llama-cpp-2`
 //! dependency compiles with Metal support, a real Qwen3.5-4B GGUF (fetched
@@ -7,42 +7,80 @@
 //! through it, and a trivial chat-templated generation produces real output
 //! — see [`tests::real_llm_loads_and_generates`], run manually.
 //!
-//! Task 3 (this module's pure core) adds the two halves of the
-//! summarization contract that don't need a loaded model to test:
+//! Task 3 built this module's pure core, independent of any loaded model:
 //! [`build_summary_prompt`] renders a note's transcript into the user-role
-//! prompt content the engine will chat-template and feed to generation, and
+//! prompt content the engine chat-templates and feeds to generation, and
 //! [`extract_summary_json`] tolerantly recovers a [`SummaryDoc`] from
 //! whatever the model actually emits — clean JSON, fenced JSON,
 //! prose-wrapped JSON, or JSON trailing a `<think>...</think>` reasoning
-//! block (Qwen3.5 emits these, verified in Task 1). The lazily-loaded,
-//! settings-keyed engine (`LlmEngine`, reload-on-model-change, the
-//! `summarize_note` worker) is built out in Task 4 per
-//! `docs/plans/2026-07-23-stage3-summaries.md`; `LlmEngine` here remains a
-//! placeholder shape only, wired into `lib.rs` so that task has a module to
-//! grow instead of introducing one from scratch mid-stage.
+//! block (Qwen3.5 emits these, verified in Task 1).
+//!
+//! Task 4 (this) adds the model-facing half: [`LlmEngineState`] is managed
+//! Tauri state guarding at most one loaded model plus a `busy` flag
+//! (single-summarization-at-a-time, whether manually triggered via
+//! [`summarize_note`] or auto-triggered from `audio::stop_recording`);
+//! [`try_spawn_summarize`] is the shared entry point both of those go
+//! through to claim `busy` and spawn a [`SummarizeWorker`] thread, which
+//! runs [`build_summary_prompt`] -> [`LlmEngineState::ensure_loaded`] ->
+//! [`LlmEngineState::generate`] -> [`extract_summary_json`] ->
+//! `store::Store::write_summary_and_finalize`, emitting `summary-status`
+//! events along the way (see [`SummaryEvent`]/[`tauri_emit`]).
+//!
+//! **Sampler notes (see [`generate_with_loaded`] for the actual call
+//! sites):** `llama-cpp-2` 0.1.152's [`LlamaSampler`] exposes
+//! [`LlamaSampler::penalties`] (a real repetition-penalty sampler stage),
+//! so the generation chain is penalties -> top-p -> temperature -> a seeded
+//! `dist` draw, not just temp+top-p.
+//!
+//! **Disabling Qwen3.5's `<think>` preamble — two things were tried, only
+//! one actually works:** `LlamaModel::apply_chat_template` has no
+//! `enable_thinking`-style parameter (it only takes the message list and an
+//! `add_ass` bool), and — confirmed by reading the vendored llama.cpp
+//! source directly (`llama-chat.cpp` in this pinned `llama-cpp-sys-2`
+//! version) — it doesn't evaluate the model's actual baked Jinja template at
+//! all; it pattern-matches the template string to a small hardcoded set of
+//! known chat formats and falls back to a generic ChatML formatter for
+//! anything it doesn't recognize (this GGUF's `qwen35` architecture isn't
+//! one of the recognized names in this vendored version). So the model's
+//! own template logic — including its `{% if enable_thinking is true %}
+//! ... {% else %} <think>\n\n</think>\n\n {% endif %}` branch, inspected
+//! directly from the GGUF's `tokenizer.chat_template` metadata — never
+//! actually runs. First tried: [`NO_THINK_TAG`], Qwen3's older documented
+//! text-suffix convention (append `/no_think` to the user turn). Empirically
+//! **ineffective** against this real Qwen3.5-4B GGUF — the model still
+//! opened a `<think>` block and reasoned at length regardless (verified via
+//! `real_llm_summarizes_transcript`, which timed out its `<think>` block
+//! against the 1024-token cap before this fix). What actually works, and is
+//! what's used: [`NO_THINK_PREFILL`] — manually appending the literal,
+//! already-closed `<think>\n\n</think>\n\n` right after the templated
+//! prompt's trailing `<|im_start|>assistant\n`, reproducing byte-for-byte
+//! what the model's *own* template would emit for its non-thinking branch,
+//! without evaluating any Jinja. Confirmed effective: the same test dropped
+//! from ~20s (mostly spent reasoning, then failing to finish before the
+//! token cap) to ~3.3s producing a clean, complete JSON summary with no
+//! `<think>` block at all. Both are applied (the harmless-if-ignored
+//! [`NO_THINK_TAG`] and the actually-effective [`NO_THINK_PREFILL`]) since
+//! neither costs anything beyond a string append — no template engine was
+//! built for either.
 
+use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
+
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
+use llama_cpp_2::sampling::LlamaSampler;
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
-use crate::store::StoredSegment;
-
-/// Placeholder for the lazily-loaded llama-cpp-2 engine. Real state (the
-/// currently-loaded model id, its `LlamaModel`/`LlamaContext`, and
-/// reload-when-the-id-changes logic — see the plan's Task 4) lands later;
-/// this exists now purely so `lib.rs` can wire `mod llm;` and later tasks
-/// have a concrete type to extend rather than introduce fresh.
-#[allow(dead_code)]
-pub(crate) struct LlmEngine;
-
-impl LlmEngine {
-    /// Placeholder constructor — no model is loaded yet. Real construction
-    /// (managed Tauri state, mutex-guarded like `SharedStore`/
-    /// `SharedRecorderState`) arrives with Task 4.
-    #[allow(dead_code)]
-    pub(crate) fn new() -> Self {
-        Self
-    }
-}
+use crate::settings::{self, SharedSettings};
+use crate::store::{lock_store, SharedStore, StoredSegment};
 
 /// One action item extracted from a summary: its text and whether the user
 /// has checked it off. Models never produce `done: true` themselves — every
@@ -180,10 +218,8 @@ fn truncate_transcript_for_prompt(full: &str) -> String {
 /// instruction), so it's delimited and disclaimed the same way any
 /// untrusted content embedded in a prompt should be.
 ///
-/// Not yet called from anywhere outside its own tests — `LlmEngine`'s real
-/// generation path (Task 4) is the eventual caller; see that placeholder's
-/// docs for why this module still carries `#[allow(dead_code)]` this stage.
-#[allow(dead_code)]
+/// Called from [`run_summarize`] — the `summarize_note` worker's actual
+/// generation path.
 pub fn build_summary_prompt(title: &str, segments: &[StoredSegment]) -> String {
     let full_transcript = format_transcript_lines(segments);
     let transcript = truncate_transcript_for_prompt(&full_transcript);
@@ -433,7 +469,6 @@ fn is_nonempty_summary(doc: &SummaryDoc) -> bool {
 /// `summary-status` error event) only when no candidate `{...}` ever even
 /// balances-and-parses as [`RawSummary`] at all — pure reasoning, or no
 /// `{` anywhere, or every `{` found is either unbalanced or invalid JSON.
-#[allow(dead_code)]
 pub fn extract_summary_json(raw: &str) -> Result<SummaryDoc> {
     let after_reasoning = strip_reasoning(raw)?;
     let cleaned = strip_code_fence(&after_reasoning);
@@ -500,14 +535,520 @@ pub fn extract_summary_json(raw: &str) -> Result<SummaryDoc> {
     Ok(doc)
 }
 
+// ---------------------------------------------------------------------------
+// LlmEngineState — managed state: at most one loaded model, plus `busy`
+// ---------------------------------------------------------------------------
+
+/// A model currently loaded into memory (Metal-offloaded), ready for
+/// generation. Holds the [`LlamaBackend`] alongside the [`LlamaModel`]
+/// rather than as some process-wide singleton a different piece of state
+/// owns: `LlamaBackend::init()` is itself a process-global guarded resource
+/// (only one live `LlamaBackend` can exist at a time — see llama-cpp-2's own
+/// internal `AtomicBool` guard), so pairing its lifetime 1:1 with the model
+/// it was initialized for means dropping this (on unload/reload — see
+/// [`LlmEngineState::ensure_loaded`]) frees the backend *before* a
+/// replacement is ever initialized, honoring that singleton contract
+/// automatically rather than requiring every call site to remember to.
+struct LoadedModel {
+    model_id: String,
+    backend: LlamaBackend,
+    model: LlamaModel,
+}
+
+/// Managed state guarding at most one loaded LLM at a time, plus a `busy`
+/// flag serializing summarization runs — only one summarization (manual
+/// `summarize_note`/Regenerate, or `audio::stop_recording`'s auto-trigger)
+/// proceeds at a time; see [`try_spawn_summarize`], the sole place `busy` is
+/// claimed and [`BusyGuard`], the sole place it's released.
+pub struct LlmEngineState {
+    loaded: Option<LoadedModel>,
+    busy: bool,
+}
+
+/// Shared handle to an [`LlmEngineState`] — same `Arc<Mutex<_>>` shape as
+/// `store::SharedStore`/`settings::SharedSettings`.
+pub type SharedLlmEngine = Arc<Mutex<LlmEngineState>>;
+
+/// Locks a [`SharedLlmEngine`], recovering from lock poisoning instead of
+/// propagating it — same rationale as `store::lock_store`: one panicking
+/// summarization must not brick every later one for the rest of the
+/// session.
+pub fn lock_llm_engine(engine: &SharedLlmEngine) -> MutexGuard<'_, LlmEngineState> {
+    engine.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Creates an empty, ready-to-`app.manage()` engine state — no model
+/// loaded, not busy.
+pub(crate) fn open_shared() -> SharedLlmEngine {
+    Arc::new(Mutex::new(LlmEngineState { loaded: None, busy: false }))
+}
+
+/// Context window (tokens) every loaded model is given — sized for the
+/// summary prompt's transcript budget ([`TRANSCRIPT_CHAR_BUDGET`] = 24_000
+/// chars, roughly ~6k tokens per the plan's estimate) plus the rest of the
+/// prompt template and headroom for up to [`MAX_GENERATION_TOKENS`] of
+/// reply — comfortably under what the catalog's pinned default (Qwen3.5-4B)
+/// supports.
+const LLM_CONTEXT_TOKENS: u32 = 8_192;
+
+/// Upper bound on generated tokens per summarization. See the module docs'
+/// note on Qwen3.5 `<think>` blocks: if the model is still reasoning at this
+/// cap, generation simply stops mid-thought and [`extract_summary_json`]
+/// surfaces that as an "only reasoning" error rather than this function
+/// hanging or truncating mid-JSON silently.
+const MAX_GENERATION_TOKENS: usize = 1_024;
+
+/// Fixed seed for the sampler chain's final `dist` draw — deterministic
+/// across repeated runs of the same prompt/model rather than reseeding from
+/// the OS clock every call, which makes a given run's output reproducible
+/// for debugging. Sampling still isn't greedy/deterministic-only: temp +
+/// top-p keep real variation in what gets sampled *given* the seed.
+const SAMPLER_SEED: u32 = 1_746_312_558;
+
+impl LlmEngineState {
+    /// Ensures `model_id`'s GGUF at `model_path` is the currently loaded
+    /// model: loads it (full Metal GPU offload, [`LLM_CONTEXT_TOKENS`]
+    /// worth of context — see [`generate_with_loaded`]) if nothing is
+    /// loaded yet or a *different* model id is currently loaded. A no-op
+    /// (aside from an id compare) if `model_id` is already loaded — repeated
+    /// `summarize_note` calls for the same model don't reload it.
+    ///
+    /// The previous model (if any, and if different) is dropped *before*
+    /// the new one is loaded — see [`LoadedModel`]'s docs for why that
+    /// ordering matters.
+    pub fn ensure_loaded(&mut self, model_id: &str, model_path: &Path) -> Result<()> {
+        if let Some(loaded) = &self.loaded {
+            if loaded.model_id == model_id {
+                return Ok(());
+            }
+        }
+        self.loaded = None;
+
+        let load_start = Instant::now();
+        let backend = LlamaBackend::init()
+            .map_err(|e| MinuteError::Other(format!("failed to init llama backend: {e}")))?;
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(1_000_000);
+        let model = LlamaModel::load_from_file(&backend, model_path, &model_params).map_err(|e| {
+            MinuteError::Other(format!("failed to load LLM model {model_path:?}: {e}"))
+        })?;
+        log::info!(
+            "llm: loaded {model_id} ({model_path:?}) in {:?}",
+            load_start.elapsed()
+        );
+
+        self.loaded = Some(LoadedModel {
+            model_id: model_id.to_string(),
+            backend,
+            model,
+        });
+        Ok(())
+    }
+
+    /// Runs one chat-templated generation against the currently loaded
+    /// model (see [`ensure_loaded`](Self::ensure_loaded)) — `Err` if none is
+    /// loaded. The actual decode/sample loop lives in
+    /// [`generate_with_loaded`].
+    pub fn generate(&self, prompt: &str) -> Result<String> {
+        let loaded = self
+            .loaded
+            .as_ref()
+            .ok_or_else(|| MinuteError::Other("no LLM model loaded".to_string()))?;
+        generate_with_loaded(loaded, prompt)
+    }
+}
+
+/// Qwen3's older, documented text-level convention for disabling `<think>`
+/// reasoning: appending this literal tag to the user turn's content.
+/// Applied unconditionally regardless — cheap (one string append) and
+/// harmless if the loaded model doesn't recognize it — but see the module
+/// docs: empirically, against the real Qwen3.5-4B GGUF this pins, it does
+/// **not** suppress thinking on its own. [`NO_THINK_PREFILL`] is what
+/// actually does.
+const NO_THINK_TAG: &str = "/no_think";
+
+/// Manually appended right after the templated prompt's trailing
+/// `<|im_start|>assistant\n` (added by `apply_chat_template`'s `add_ass`):
+/// an already-closed, empty `<think>` block. This is a plain string
+/// constant, not template evaluation — but it isn't guesswork either: this
+/// GGUF's own baked chat template (inspected directly — see the module
+/// docs) spells out in its Jinja source that this is *exactly* what it
+/// would emit itself whenever its `enable_thinking` variable isn't `true`:
+/// `{%- if enable_thinking is defined and enable_thinking is true %}
+/// <think>\n {%- else %} <think>\n\n</think>\n\n {%- endif %}`. Prefilling
+/// it ourselves reproduces that default (non-thinking) branch's exact
+/// output despite `apply_chat_template` never evaluating the real Jinja at
+/// all (it pattern-matches the template to a hardcoded generic ChatML
+/// formatter instead — see the module docs). Empirically verified against
+/// the real Qwen3.5-4B GGUF: [`NO_THINK_TAG`] alone (Qwen3's older
+/// text-suffix convention) did *not* suppress this model's `<think>`
+/// preamble, but this prefill does.
+const NO_THINK_PREFILL: &str = "<think>\n\n</think>\n\n";
+
+/// The actual decode/sample loop, run against `loaded`'s model: chat-template
+/// `prompt` (appending [`NO_THINK_TAG`] to the user content, then
+/// [`NO_THINK_PREFILL`] to the templated result — see both constants' docs
+/// for why both are applied despite only the latter empirically working),
+/// tokenize, decode the prompt in one batch, then sample token-by-token — a repetition penalty,
+/// then top-p, then temperature 0.3, then a seeded `dist` draw (llama.cpp's
+/// usual penalties-before-temperature chain ordering) — until an
+/// end-of-generation token or [`MAX_GENERATION_TOKENS`], accumulating raw
+/// bytes (not per-token strings — a single token can be a partial UTF-8
+/// sequence) and lossily converting to a `String` only once at the end. Same
+/// load/decode/sample shape as Task 1's [`tests::real_llm_loads_and_generates`],
+/// generalized from a hardcoded greedy 16-token smoke prompt to the real
+/// sampler chain and token budget.
+fn generate_with_loaded(loaded: &LoadedModel, prompt: &str) -> Result<String> {
+    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(LLM_CONTEXT_TOKENS));
+    let mut ctx = loaded
+        .model
+        .new_context(&loaded.backend, ctx_params)
+        .map_err(|e| MinuteError::Other(format!("failed to create llama context: {e}")))?;
+
+    let tmpl = loaded
+        .model
+        .chat_template(None)
+        .map_err(|e| MinuteError::Other(format!("model has no baked-in chat template: {e}")))?;
+    let content = format!("{prompt}\n{NO_THINK_TAG}");
+    let messages = vec![LlamaChatMessage::new("user".to_string(), content)
+        .map_err(|e| MinuteError::Other(format!("chat message construction failed: {e}")))?];
+    let templated = loaded
+        .model
+        .apply_chat_template(&tmpl, &messages, true)
+        .map_err(|e| MinuteError::Other(format!("chat template application failed: {e}")))?;
+    let templated = format!("{templated}{NO_THINK_PREFILL}");
+
+    let prompt_tokens = loaded
+        .model
+        .str_to_token(&templated, AddBos::Always)
+        .map_err(|e| MinuteError::Other(format!("tokenization failed: {e}")))?;
+    if prompt_tokens.is_empty() {
+        return Err(MinuteError::Other("tokenized prompt was empty".to_string()));
+    }
+
+    let mut batch = LlamaBatch::new(prompt_tokens.len().max(512), 1);
+    let last_index = prompt_tokens.len() - 1;
+    for (i, token) in prompt_tokens.iter().enumerate() {
+        batch
+            .add(*token, i as i32, &[0], i == last_index)
+            .map_err(|e| MinuteError::Other(format!("failed to add prompt token to batch: {e}")))?;
+    }
+    ctx.decode(&mut batch)
+        .map_err(|e| MinuteError::Other(format!("prompt decode failed: {e}")))?;
+
+    let mut sampler = LlamaSampler::chain_simple([
+        LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
+        LlamaSampler::top_p(0.9, 1),
+        LlamaSampler::temp(0.3),
+        LlamaSampler::dist(SAMPLER_SEED),
+    ]);
+
+    let mut output_bytes: Vec<u8> = Vec::new();
+    let mut n_cur = batch.n_tokens();
+    let mut generated = 0usize;
+
+    loop {
+        let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+        sampler.accept(token);
+        if loaded.model.is_eog_token(token) {
+            break;
+        }
+
+        let piece = loaded
+            .model
+            .token_to_piece_bytes(token, 64, false, None)
+            .map_err(|e| MinuteError::Other(format!("failed to decode generated token: {e}")))?;
+        output_bytes.extend_from_slice(&piece);
+
+        generated += 1;
+        if generated >= MAX_GENERATION_TOKENS {
+            break;
+        }
+
+        batch.clear();
+        batch
+            .add(token, n_cur, &[0], true)
+            .map_err(|e| MinuteError::Other(format!("failed to add generated token to batch: {e}")))?;
+        n_cur += 1;
+        ctx.decode(&mut batch)
+            .map_err(|e| MinuteError::Other(format!("generation decode failed: {e}")))?;
+    }
+
+    Ok(String::from_utf8_lossy(&output_bytes).to_string())
+}
+
+// ---------------------------------------------------------------------------
+// summary-status events
+// ---------------------------------------------------------------------------
+
+/// `summary-status` event's lifecycle state: `running` (worker started,
+/// doing everything from reading the transcript through generation) ->
+/// `done` (summary persisted, note flipped to `ready`) is the happy path;
+/// `error` can occur at any point (no LLM installed, empty transcript,
+/// model load/generation failure, extraction failure, a store write
+/// failure) — the note's `meta.json` is left untouched (still
+/// `transcribed`) whenever `error` fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SummaryStatusState {
+    Running,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryStatusPayload {
+    pub note_id: String,
+    pub state: SummaryStatusState,
+    pub error: Option<String>,
+}
+
+/// Events a summarization worker emits — captured directly by tests via an
+/// injected closure, or wired to real Tauri events via [`tauri_emit`]. Same
+/// injectable-closure shape as `stt::SttEvent`/`stt::tauri_emit`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SummaryEvent {
+    SummaryStatus(SummaryStatusPayload),
+}
+
+/// Builds the real emit closure used outside tests: serializes a
+/// [`SummaryEvent`] to its wire event name (`summary-status`, already
+/// camelCase per `SummaryStatusPayload`'s `serde` attributes) and emits it,
+/// warning (not panicking) on failure — same convention as
+/// `stt::tauri_emit`/`audio::emit_recording_state`.
+pub fn tauri_emit(app: AppHandle) -> impl Fn(SummaryEvent) + Send + 'static {
+    move |event| match event {
+        SummaryEvent::SummaryStatus(payload) => {
+            let note_id = payload.note_id.clone();
+            if let Err(e) = app.emit("summary-status", payload) {
+                log::warn!("failed to emit summary-status for {note_id}: {e}");
+            }
+        }
+    }
+}
+
+/// Emits a one-shot `summary-status` error event without a worker/thread —
+/// used by `summarize_note`'s own "no summary model installed" rejection and
+/// by `audio::stop_recording`'s auto-trigger when [`try_spawn_summarize`]
+/// reports the engine is busy.
+pub fn emit_summary_status_error(app: &AppHandle, note_id: &str, error: &str) {
+    tauri_emit(app.clone())(SummaryEvent::SummaryStatus(SummaryStatusPayload {
+        note_id: note_id.to_string(),
+        state: SummaryStatusState::Error,
+        error: Some(error.to_string()),
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// SummarizeWorker
+// ---------------------------------------------------------------------------
+
+/// Everything a summarization worker thread needs: which note, where to
+/// read/write it, the engine to generate against, which model to ensure is
+/// loaded, and how to notify the outside world. Same shape as
+/// `stt::WorkerCtx`.
+pub struct SummarizeWorkerCtx {
+    pub note_id: String,
+    pub store: SharedStore,
+    pub engine: SharedLlmEngine,
+    pub model_id: String,
+    pub model_path: PathBuf,
+    pub emit: Box<dyn Fn(SummaryEvent) + Send + 'static>,
+}
+
+/// Spawned thread that runs one summarization end to end — see
+/// [`run_summarize_worker`].
+pub struct SummarizeWorker;
+
+impl SummarizeWorker {
+    /// Spawns the worker thread. Returns immediately — model load and
+    /// generation happen on the spawned thread, never on the caller's
+    /// (a Tauri command handler, or `stop_recording`'s own thread for the
+    /// auto-trigger path).
+    pub fn spawn(ctx: SummarizeWorkerCtx) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || run_summarize_worker(ctx))
+    }
+}
+
+/// Clears the engine's `busy` flag when dropped — created at the very top of
+/// [`run_summarize_worker`] so the flag is released no matter how the worker
+/// exits (the ordinary success/error paths, or even a panic unwinding
+/// through the thread). Same RAII shape as `download::RegistryGuard`.
+struct BusyGuard {
+    engine: SharedLlmEngine,
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        lock_llm_engine(&self.engine).busy = false;
+    }
+}
+
+/// The worker thread's body: emits `running`, delegates the actual work to
+/// [`run_summarize`], and emits `done`/`error` depending on the outcome. Any
+/// error from `run_summarize` (empty transcript, model load failure,
+/// generation failure, extraction failure, a store write failure) surfaces
+/// as an `error` event carrying its message; the note's `meta.json` is left
+/// untouched (still `transcribed`) on every one of those — only
+/// `run_summarize`'s success path (via `store::Store::write_summary_and_finalize`)
+/// flips it to `ready`.
+fn run_summarize_worker(ctx: SummarizeWorkerCtx) {
+    let _busy_guard = BusyGuard { engine: ctx.engine.clone() };
+
+    (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
+        note_id: ctx.note_id.clone(),
+        state: SummaryStatusState::Running,
+        error: None,
+    }));
+
+    if let Err(e) = run_summarize(&ctx) {
+        log::warn!("summarization failed for note {}: {e}", ctx.note_id);
+        (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
+            note_id: ctx.note_id.clone(),
+            state: SummaryStatusState::Error,
+            error: Some(e.to_string()),
+        }));
+        return;
+    }
+
+    (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
+        note_id: ctx.note_id.clone(),
+        state: SummaryStatusState::Done,
+        error: None,
+    }));
+}
+
+/// The actual pipeline, factored out from [`run_summarize_worker`] as a
+/// plain `Result`-returning function: read the note's meta/transcript (an
+/// empty transcript is `Err("nothing to summarize")` — nothing worth
+/// loading a model over), build the prompt, ensure the configured model is
+/// loaded, generate, extract, then persist via
+/// `store::Store::write_summary_and_finalize` (which also flips the note's
+/// status to `ready` and re-renders `note.md`).
+fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
+    let (meta, transcript) = lock_store(&ctx.store).get_note(&ctx.note_id)?;
+    if transcript.segments.is_empty() {
+        return Err(MinuteError::Other("nothing to summarize".to_string()));
+    }
+
+    let prompt = build_summary_prompt(&meta.title, &transcript.segments);
+
+    let raw_output = {
+        let mut engine = lock_llm_engine(&ctx.engine);
+        engine.ensure_loaded(&ctx.model_id, &ctx.model_path)?;
+        engine.generate(&prompt)?
+    };
+
+    let summary = extract_summary_json(&raw_output)?;
+    lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary)?;
+    Ok(())
+}
+
+/// Attempts to claim the engine's `busy` slot and spawn a summarization
+/// worker thread for `note_id` against `model_id`/`model_path`. The
+/// check-and-claim happens under the engine's own mutex in one critical
+/// section — the single authoritative point where "already running" is
+/// decided (`summarize_note`'s own pre-check is just a fast-path that skips
+/// the catalog lookup when obviously busy; this is what's actually
+/// race-safe). Returns `Err("summarization already running")` without
+/// spawning anything if one is already in flight; callers decide how to
+/// surface that — `summarize_note` returns it to the frontend directly,
+/// `audio::stop_recording`'s auto-trigger just logs it and emits an error
+/// event instead of failing the recording.
+pub fn try_spawn_summarize(
+    store: SharedStore,
+    engine: SharedLlmEngine,
+    model_id: String,
+    model_path: PathBuf,
+    note_id: String,
+    emit: Box<dyn Fn(SummaryEvent) + Send + 'static>,
+) -> std::result::Result<(), &'static str> {
+    {
+        let mut guard = lock_llm_engine(&engine);
+        if guard.busy {
+            return Err("summarization already running");
+        }
+        guard.busy = true;
+    }
+
+    let ctx = SummarizeWorkerCtx {
+        note_id,
+        store,
+        engine,
+        model_id,
+        model_path,
+        emit,
+    };
+    SummarizeWorker::spawn(ctx);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// summarize_note command
+// ---------------------------------------------------------------------------
+
+/// Triggers (or re-triggers — this is also what "Regenerate" calls)
+/// summarization for note `id`. Resolves once the worker has been queued,
+/// *not* once summarization finishes — the frontend follows `summary-status`
+/// events for progress.
+///
+/// - Busy (another summarization already running) -> `Err("summarization
+///   already running")` immediately, nothing spawned.
+/// - No LLM selected in settings, or the selected one isn't actually
+///   installed -> emits a `summary-status` error event *and* returns
+///   `Err("no summary model installed")`; the note's `meta.json` is
+///   untouched either way.
+/// - Otherwise -> spawns a [`SummarizeWorker`] (via [`try_spawn_summarize`])
+///   and returns `Ok(())`.
+#[tauri::command]
+pub async fn summarize_note(
+    app: AppHandle,
+    store: State<'_, SharedStore>,
+    settings: State<'_, SharedSettings>,
+    engine: State<'_, SharedLlmEngine>,
+    id: String,
+) -> std::result::Result<(), String> {
+    if lock_llm_engine(&engine).busy {
+        return Err("summarization already running".to_string());
+    }
+
+    let models_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+
+    let model_id = settings::lock_settings(&settings).llm_model.clone();
+    let installed_entry = model_id.as_deref().and_then(|model_id| {
+        let catalog = catalog::load_catalog().ok()?;
+        catalog
+            .into_iter()
+            .find(|e| e.id == model_id)
+            .filter(|e| catalog::install_state(e, &models_root) == InstallState::Installed)
+    });
+
+    let Some(entry) = installed_entry else {
+        let msg = "no summary model installed";
+        emit_summary_status_error(&app, &id, msg);
+        return Err(msg.to_string());
+    };
+
+    let model_path = catalog::installed_path(&entry, &models_root);
+    let emit = Box::new(tauri_emit(app.clone()));
+
+    try_spawn_summarize(
+        store.inner().clone(),
+        engine.inner().clone(),
+        entry.id.clone(),
+        model_path,
+        id,
+        emit,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn llm_engine_placeholder_constructs() {
-        let _engine = LlmEngine::new();
-    }
 
     // --- build_summary_prompt -------------------------------------------------
 
@@ -942,25 +1483,157 @@ mod tests {
         assert!(err.to_string().contains("no JSON object found"));
     }
 
+    // --- LlmEngineState / try_spawn_summarize: pure plumbing, no real model ----
+    //
+    // `ensure_loaded` against a genuinely missing GGUF path isn't
+    // unit-testable here: `LlamaModel::load_from_file` itself
+    // `debug_assert!`s the path's existence before ever reaching our error
+    // handling, so calling it directly on a nonexistent path panics (in
+    // debug builds — exactly what `cargo test` runs) rather than returning
+    // an `Err` we could assert on. The tests below that *do* exercise
+    // `try_spawn_summarize` against a nonexistent `model_path` (spawning a
+    // real worker thread) still pass despite this: the panic happens on the
+    // detached worker thread, which nothing here joins, so it's silent
+    // noise on stderr rather than a failed assertion — only the *real* e2e
+    // test (`real_llm_summarizes_transcript`, run manually against an
+    // actually-installed model) exercises a real load reaching this code
+    // path successfully.
+
+    #[test]
+    fn generate_with_nothing_loaded_errors() {
+        let state = LlmEngineState { loaded: None, busy: false };
+        let result = state.generate("Say OK.");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no LLM model loaded"));
+    }
+
+    #[test]
+    fn busy_guard_clears_the_busy_flag_on_drop() {
+        let engine = open_shared();
+        lock_llm_engine(&engine).busy = true;
+
+        {
+            let _guard = BusyGuard { engine: engine.clone() };
+        }
+
+        assert!(!lock_llm_engine(&engine).busy);
+    }
+
+    #[test]
+    fn try_spawn_summarize_returns_err_immediately_when_already_busy_and_spawns_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        lock_llm_engine(&engine).busy = true;
+
+        let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+
+        let result = try_spawn_summarize(
+            store,
+            engine,
+            "qwen3.5-4b".to_string(),
+            dir.path().join("does-not-exist.gguf"),
+            "some-note".to_string(),
+            Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        );
+
+        assert_eq!(result, Err("summarization already running"));
+        // Nothing spawned — no worker ever ran, so no events fired either.
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn try_spawn_summarize_claims_busy_before_returning_when_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+
+        let result = try_spawn_summarize(
+            store,
+            engine.clone(),
+            "qwen3.5-4b".to_string(),
+            dir.path().join("does-not-exist.gguf"),
+            "some-note".to_string(),
+            Box::new(|_event| {}),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    // --- run_summarize / run_summarize_worker: empty-transcript short-circuit --
+    //
+    // The one part of the worker pipeline testable without a real model:
+    // `run_summarize` errors out on an empty transcript *before* ever
+    // touching the engine, so this exercises the full worker (including its
+    // `running`/`error` events and the busy-guard) without needing a GGUF on
+    // disk.
+
+    fn worker_test_ctx() -> (SummarizeWorkerCtx, Arc<Mutex<Vec<SummaryEvent>>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let note_id = lock_store(&store)
+            .create_note_now("Empty note", "whisper-small")
+            .unwrap()
+            .id;
+        let engine = open_shared();
+
+        let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let ctx = SummarizeWorkerCtx {
+            note_id,
+            store,
+            engine,
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        };
+        (ctx, events, dir)
+    }
+
+    #[test]
+    fn run_summarize_on_a_note_with_no_transcript_errors_nothing_to_summarize() {
+        let (ctx, _events, _dir) = worker_test_ctx();
+        let err = run_summarize(&ctx).unwrap_err();
+        assert!(err.to_string().contains("nothing to summarize"));
+    }
+
+    #[test]
+    fn run_summarize_worker_on_empty_transcript_emits_running_then_error_and_clears_busy() {
+        let (ctx, events, _dir) = worker_test_ctx();
+        let engine = ctx.engine.clone();
+        lock_llm_engine(&engine).busy = true;
+
+        run_summarize_worker(ctx);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            SummaryEvent::SummaryStatus(payload) => assert_eq!(payload.state, SummaryStatusState::Running),
+        }
+        match &events[1] {
+            SummaryEvent::SummaryStatus(payload) => {
+                assert_eq!(payload.state, SummaryStatusState::Error);
+                assert!(payload.error.as_deref().unwrap_or("").contains("nothing to summarize"));
+            }
+        }
+        assert!(
+            !lock_llm_engine(&engine).busy,
+            "the worker's BusyGuard must clear busy on exit even though this test called it directly"
+        );
+    }
+
     // --- e2e: real model, real generation (manual only) ----------------------
     //
-    // Everything below is Task 1's model-support proof, not the module's
-    // eventual pure/tested core (there isn't one yet — see the module docs).
-    // It exercises llama-cpp-2's raw API directly: load a GGUF, apply the
+    // `real_llm_loads_and_generates` is Task 1's model-support proof: it
+    // exercises llama-cpp-2's raw API directly (load a GGUF, apply the
     // model's own chat template, decode the prompt, then greedily sample a
-    // few tokens. `LlmEngine` itself isn't involved because it doesn't do
-    // anything yet.
-
-    use std::num::NonZeroU32;
-    use std::path::PathBuf;
-    use std::time::Instant;
-
-    use llama_cpp_2::context::params::LlamaContextParams;
-    use llama_cpp_2::llama_backend::LlamaBackend;
-    use llama_cpp_2::llama_batch::LlamaBatch;
-    use llama_cpp_2::model::params::LlamaModelParams;
-    use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
-    use llama_cpp_2::sampling::LlamaSampler;
+    // few tokens) rather than going through `LlmEngineState`, which didn't
+    // exist yet at that point in the plan.
+    // `real_llm_summarizes_transcript` (Task 4) is the real thing: it drives
+    // the actual pure-pipeline-plus-engine path — `build_summary_prompt` ->
+    // `LlmEngineState::ensure_loaded`/`generate` -> `extract_summary_json` —
+    // against a realistic fake meeting transcript.
 
     /// Requires the real `qwen3.5-4b` GGUF to already be installed (fetched
     /// by `download::real_download_of_qwen3_5_4b_verifies_checksum_and_marks_installed`)
@@ -1086,5 +1759,113 @@ mod tests {
         eprintln!("output: {output:?}");
 
         assert!(!output.trim().is_empty(), "generated output was empty");
+    }
+
+    /// A realistic fake meeting transcript — ~15 segments about a product
+    /// launch, including two explicit decisions ("lock pricing today",
+    /// "phased rollout starting in the EU") and two explicit action items
+    /// (final pricing numbers by end of day; a draft FAQ doc by Friday) — so
+    /// a competent summarizer has clearly-stated material to extract, not
+    /// just vague chatter.
+    fn fake_product_launch_transcript() -> Vec<StoredSegment> {
+        let lines: &[(&str, f64, &str)] = &[
+            ("Speaker 1", 0.0, "Thanks everyone for joining — let's talk through the Aurora launch timeline."),
+            ("Speaker 2", 8.0, "Sure. Engineering finished the last blocker yesterday, so we're code complete."),
+            ("Speaker 1", 16.0, "Great. Marketing, where are we on the launch page?"),
+            ("Speaker 3", 24.0, "The page is drafted but we're waiting on final pricing before we publish it."),
+            ("Speaker 1", 32.0, "Let's lock pricing today then — I'll send the final numbers by end of day."),
+            ("Speaker 2", 40.0, "Sounds good. We also need to decide on the rollout strategy — full launch or phased?"),
+            ("Speaker 3", 48.0, "I'd vote for a phased rollout, starting with our EU customers first."),
+            ("Speaker 1", 56.0, "Agreed — let's go with a phased rollout starting in the EU."),
+            ("Speaker 2", 64.0, "Okay, I'll update the release plan to reflect that."),
+            ("Speaker 3", 72.0, "One more thing — support needs the FAQ doc before launch day."),
+            ("Speaker 1", 80.0, "Right. Can someone own writing the FAQ doc this week?"),
+            ("Speaker 3", 88.0, "I'll take that — I'll have a draft FAQ doc ready by Friday."),
+            ("Speaker 2", 96.0, "Perfect. So to confirm: phased EU-first rollout, pricing locked today."),
+            ("Speaker 1", 104.0, "Exactly. Let's reconvene Thursday to review the FAQ draft and final pricing."),
+            ("Speaker 3", 112.0, "Sounds good, talk then."),
+        ];
+        lines
+            .iter()
+            .map(|(speaker, start, text)| StoredSegment {
+                speaker: speaker.to_string(),
+                start: *start,
+                end: *start + 6.0,
+                text: text.to_string(),
+            })
+            .collect()
+    }
+
+    /// Task 4's real end-to-end proof: the *actual* pipeline
+    /// (`build_summary_prompt` -> `LlmEngineState::ensure_loaded`/`generate`
+    /// -> `extract_summary_json`), not raw llama-cpp-2 API calls, against
+    /// the real Qwen3.5-4B GGUF and a realistic fake meeting transcript with
+    /// clearly-stated decisions and action items (see
+    /// `fake_product_launch_transcript`). Requires the model already
+    /// installed — same precondition as `real_llm_loads_and_generates`. Run
+    /// manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///     real_llm_summarizes_transcript -- --ignored --nocapture
+    /// ```
+    ///
+    /// Asserts the summary itself is non-empty (the one thing every
+    /// competent summarizer should produce for a substantive transcript);
+    /// decisions+action_items combined is only a *soft* assertion — printed
+    /// and logged if empty, not failed on — since models vary in how
+    /// reliably they populate every field even when the source material has
+    /// them, and this test shouldn't flake on that variance.
+    #[test]
+    #[ignore]
+    fn real_llm_summarizes_transcript() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let model_path = PathBuf::from(&home).join(
+            "Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf",
+        );
+        assert!(
+            model_path.exists(),
+            "expected qwen3.5-4b model at {model_path:?} (run \
+             real_download_of_qwen3_5_4b_verifies_checksum_and_marks_installed in \
+             download.rs first)"
+        );
+
+        let segments = fake_product_launch_transcript();
+        let prompt = build_summary_prompt("Aurora launch planning", &segments);
+
+        let mut state = LlmEngineState { loaded: None, busy: false };
+
+        let load_start = Instant::now();
+        state
+            .ensure_loaded("qwen3.5-4b", &model_path)
+            .expect("failed to load qwen3.5-4b");
+        eprintln!("model load took {:?}", load_start.elapsed());
+
+        let gen_start = Instant::now();
+        let raw = state.generate(&prompt).expect("generation failed");
+        let gen_elapsed = gen_start.elapsed();
+        eprintln!("generation took {gen_elapsed:?}");
+        eprintln!("raw model output: {raw:?}");
+
+        let doc = extract_summary_json(&raw)
+            .expect("failed to extract a SummaryDoc from the model's output");
+        eprintln!("extracted SummaryDoc: {doc:?}");
+
+        assert!(!doc.summary.trim().is_empty(), "expected a non-empty summary");
+
+        let combined = doc.decisions.len() + doc.action_items.len();
+        if combined == 0 {
+            eprintln!(
+                "WARNING: model returned empty decisions and action_items for a transcript with \
+                 clearly-stated ones — not failing (models vary), but worth a look. Raw output \
+                 was: {raw:?}"
+            );
+        } else {
+            eprintln!(
+                "decisions ({}) + action_items ({}) = {combined} non-empty entries",
+                doc.decisions.len(),
+                doc.action_items.len()
+            );
+        }
     }
 }

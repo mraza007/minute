@@ -11,6 +11,7 @@ import type {
   ModelDownloadProgressEvent,
   RecordingStateEvent,
   SttStatusEvent,
+  SummaryStatusEvent,
   TranscriptSegmentEvent,
 } from './types'
 
@@ -41,4 +42,8 @@ export function onTranscriptSegment(
 
 export function onSttStatus(cb: (payload: SttStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SttStatusEvent>('stt-status', (event) => cb(event.payload))
+}
+
+export function onSummaryStatus(cb: (payload: SummaryStatusEvent) => void): Promise<UnlistenFn> {
+  return listen<SummaryStatusEvent>('summary-status', (event) => cb(event.payload))
 }

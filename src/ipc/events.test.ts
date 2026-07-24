@@ -7,6 +7,7 @@ import type {
   ModelDownloadProgressEvent,
   RecordingStateEvent,
   SttStatusEvent,
+  SummaryStatusEvent,
   TranscriptSegmentEvent,
 } from './types'
 
@@ -89,6 +90,17 @@ describe('ipc/events', () => {
     await events.onSttStatus(cb)
     const payload: SttStatusEvent = { noteId: '20260722-120000', state: 'ready', error: null }
     await emit('stt-status', payload)
+
+    expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onSummaryStatus subscribes to summary-status and delivers the payload', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onSummaryStatus(cb)
+    const payload: SummaryStatusEvent = { noteId: '20260722-120000', state: 'running', error: null }
+    await emit('summary-status', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
   })

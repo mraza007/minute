@@ -184,3 +184,10 @@ export interface SttStatusEvent {
   state: 'loading' | 'ready' | 'finalizing' | 'error'
   error: string | null
 }
+
+/** `llm.rs::SummaryStatusPayload` — event `summary-status`. */
+export interface SummaryStatusEvent {
+  noteId: string
+  state: 'running' | 'done' | 'error'
+  error: string | null
+}

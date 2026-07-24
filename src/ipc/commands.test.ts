@@ -256,6 +256,15 @@ describe('ipc/commands', () => {
     expect(result).toEqual(updated)
   })
 
+  it('summarizeNote invokes summarize_note with { id }', async () => {
+    const calls = captureIPC()
+
+    await commands.summarizeNote('20260722-120000')
+
+    expect(calls[0].cmd).toBe('summarize_note')
+    expect(calls[0].args).toEqual({ id: '20260722-120000' })
+  })
+
   it('normalizes a raw string rejection into an Error instance', async () => {
     mockIPC(() => {
       throw 'no active recording'

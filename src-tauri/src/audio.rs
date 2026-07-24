@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
+use crate::llm::{self, SharedLlmEngine};
 use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, NoteMeta, SharedStore};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
@@ -868,6 +869,8 @@ pub fn stop_recording(
     app: AppHandle,
     store: State<SharedStore>,
     recorder: State<SharedRecorderState>,
+    settings: State<SharedSettings>,
+    engine: State<SharedLlmEngine>,
 ) -> std::result::Result<NoteMeta, String> {
     let active = lock_recorder_state(&recorder)
         .active
@@ -933,7 +936,80 @@ pub fn stop_recording(
     }
 
     emit_recording_state(&app, &note_id, "stopped", duration_sec);
+
+    auto_trigger_summarize(&app, &store, &settings, &engine, &note_id);
+
     Ok(meta)
+}
+
+/// Best-effort auto-trigger for summarization right after a recording
+/// finalizes: if the settings' selected LLM is actually installed, spawns a
+/// summarization worker (via `llm::try_spawn_summarize`) for the
+/// just-finalized note — non-blocking, `stop_recording` itself doesn't wait
+/// for it to finish (or even start) before returning.
+///
+/// Mirrors `spawn_stt_worker_if_model_installed`'s not-installed-is-not-an-
+/// error shape, but stays silent (no event) rather than emitting a
+/// `summary-status` error when no LLM is selected or the selected one isn't
+/// installed — unlike a missing STT model (which breaks live transcription
+/// entirely for this recording), a note simply staying at `transcribed`
+/// with no summary is the expected, unremarkable steady state for anyone
+/// who hasn't set up a summary model yet (see the plan's status flow:
+/// `transcribed -> summarizing… -> ready`; no LLM installed just means it
+/// never leaves `transcribed`).
+///
+/// The one case this *does* surface an error event for is the engine being
+/// busy (e.g. a manual Regenerate on some other note still running) — rare,
+/// and worth telling the user about since this new note would otherwise
+/// silently never get summarized without an explicit Regenerate click.
+fn auto_trigger_summarize(
+    app: &AppHandle,
+    store: &State<SharedStore>,
+    settings: &State<SharedSettings>,
+    engine: &State<SharedLlmEngine>,
+    note_id: &str,
+) {
+    let models_root = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::warn!("auto-summarize: failed to resolve app data dir: {e}");
+            return;
+        }
+    };
+
+    let Some(model_id) = settings::lock_settings(settings).llm_model.clone() else {
+        return;
+    };
+
+    let catalog = match catalog::load_catalog() {
+        Ok(catalog) => catalog,
+        Err(e) => {
+            log::warn!("auto-summarize: failed to load model catalog: {e}");
+            return;
+        }
+    };
+    let entry = catalog.into_iter().find(|e| e.id == model_id);
+    let installed = entry
+        .as_ref()
+        .map(|e| catalog::install_state(e, &models_root) == InstallState::Installed)
+        .unwrap_or(false);
+    let Some(entry) = entry.filter(|_| installed) else {
+        return;
+    };
+
+    let model_path = catalog::installed_path(&entry, &models_root);
+    let emit = Box::new(llm::tauri_emit(app.clone()));
+    if let Err(msg) = llm::try_spawn_summarize(
+        store.inner().clone(),
+        engine.inner().clone(),
+        entry.id.clone(),
+        model_path,
+        note_id.to_string(),
+        emit,
+    ) {
+        log::warn!("auto-summarize: {msg} for note {note_id}");
+        llm::emit_summary_status_error(app, note_id, msg);
+    }
 }
 
 #[cfg(test)]
