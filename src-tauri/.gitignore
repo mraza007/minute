@@ -2,3 +2,8 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# Staged by scripts/stage-frameworks.sh from target/<profile>/ before
+# `tauri build` bundles them into Contents/Frameworks — machine-specific
+# build output, not source.
+/frameworks/

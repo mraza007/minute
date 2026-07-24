@@ -1,0 +1,10 @@
+# llama-cpp-2's `dynamic-link` feature (ODR fix vs whisper-rs's vendored
+# ggml, fc9bbdb) ships ggml/llama as dylibs with @rpath-relative install
+# names and no LC_RPATH of their own. `cargo run`/`cargo test` resolve them
+# anyway because cargo injects its own DYLD search path, but a bundled .app
+# has no such help — the binary itself needs an LC_RPATH pointing at
+# Contents/Frameworks, where tauri.conf.json's bundle.macOS.frameworks
+# copies scripts/stage-frameworks.sh's output. This is a no-op outside the
+# app bundle (the extra rpath entry is simply unused).
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-args=-Wl,-rpath,@executable_path/../Frameworks"]

@@ -7,7 +7,8 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build",
+    "beforeBundleCommand": "src-tauri/scripts/stage-frameworks.sh"
   },
   "app": {
     "windows": [
@@ -24,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self' asset: http://asset.localhost"
     }
   },
   "bundle": {
@@ -41,7 +42,15 @@
       "debugApplicationIdSuffix": ".debug"
     },
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "frameworks": [
+        "frameworks/libggml-base.0.dylib",
+        "frameworks/libggml-cpu.0.dylib",
+        "frameworks/libggml-metal.0.dylib",
+        "frameworks/libggml.0.dylib",
+        "frameworks/libllama-common.0.dylib",
+        "frameworks/libllama.0.dylib"
+      ]
     }
   }
 }
