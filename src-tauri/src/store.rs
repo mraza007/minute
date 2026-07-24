@@ -558,6 +558,18 @@ impl Store {
     /// matching for that note) — a corrupt file is additionally logged via
     /// `log::warn!` and likewise degrades to "no transcript hits for this
     /// note" rather than failing the whole search.
+    ///
+    /// Every note's transcript is read and scanned in full on every call —
+    /// including notes whose *title* already matched — rather than skipping
+    /// the transcript scan once a note has a title hit; a title match and a
+    /// transcript match are independently meaningful results (a title hit
+    /// tells you the note exists, a transcript hit tells you *where* in it),
+    /// and skipping the latter would silently drop timestamped citations for
+    /// exactly the notes most likely to be relevant. This makes `search_notes`
+    /// an O(notes × transcript size) full scan per keystroke (debounced),
+    /// no index — accepted at the local, single-user, few-hundred-notes
+    /// scale this app runs at; revisit (an in-memory or on-disk index) if
+    /// the note count or debounce cadence ever makes that cost visible.
     pub fn search_notes(&self, query: &str) -> Result<Vec<SearchHit>> {
         let trimmed = query.trim();
         if trimmed.is_empty() {
@@ -794,7 +806,11 @@ pub fn resolved_audio_path(meta: &NoteMeta, note_dir: &Path) -> Option<PathBuf> 
 
 /// Case-insensitive substring search for `needle_lower` (already
 /// lowercased) within `haystack`, returning a [`SEARCH_SNIPPET_RADIUS`]-char
-/// window around the first match — or `None` if there's no match.
+/// window around the first match — or `None` if there's no match. A `…` is
+/// prepended when the window doesn't reach the start of `haystack`, and/or
+/// appended when it doesn't reach the end — an honest signal to the
+/// frontend (and the person reading it) that the snippet is a truncated
+/// excerpt, not the whole title/segment.
 ///
 /// Entirely char-based (never byte-indexed), so it can never panic on
 /// multi-byte UTF-8 (emoji, CJK, accented Latin, ...) even when the ±radius
@@ -858,7 +874,17 @@ fn find_snippet(haystack: &str, needle_lower: &str) -> Option<String> {
 
     let snippet_start = orig_match_start.saturating_sub(SEARCH_SNIPPET_RADIUS);
     let snippet_end = (orig_match_end + SEARCH_SNIPPET_RADIUS).min(orig_chars.len());
-    Some(orig_chars[snippet_start..snippet_end].iter().collect())
+
+    let core: String = orig_chars[snippet_start..snippet_end].iter().collect();
+    let mut snippet = String::with_capacity(core.len() + 6);
+    if snippet_start > 0 {
+        snippet.push('…');
+    }
+    snippet.push_str(&core);
+    if snippet_end < orig_chars.len() {
+        snippet.push('…');
+    }
+    Some(snippet)
 }
 
 /// Recursively sums file sizes under `path`. Missing paths count as 0.
@@ -2106,11 +2132,23 @@ mod tests {
         let snippet = find_snippet(&haystack, "needle").unwrap();
 
         assert!(snippet.contains("NEEDLE"));
-        // 40 chars of filler on each side, not the full 100.
+        // Truncated on both sides (100 chars of filler each side, only 40
+        // kept) — both ends get an ellipsis marker.
+        assert!(snippet.starts_with('…'));
+        assert!(snippet.ends_with('…'));
         let before_in_snippet = snippet.split("NEEDLE").next().unwrap();
         let after_in_snippet = snippet.split("NEEDLE").nth(1).unwrap();
-        assert_eq!(before_in_snippet.len(), 40);
-        assert_eq!(after_in_snippet.len(), 40);
+        // 40 chars of filler on each side, not the full 100, plus the
+        // ellipsis marker itself — char count, not byte length, since '…'
+        // is multi-byte.
+        assert_eq!(before_in_snippet.chars().count(), 41); // '…' + 40 'x's
+        assert_eq!(after_in_snippet.chars().count(), 41); // 40 'y's + '…'
+    }
+
+    #[test]
+    fn find_snippet_no_ellipsis_when_the_whole_haystack_fits_in_the_window() {
+        let snippet = find_snippet("A short title with NEEDLE inside", "needle").unwrap();
+        assert!(!snippet.contains('…'));
     }
 
     #[test]
@@ -2118,6 +2156,8 @@ mod tests {
         let haystack = "NEEDLE and then some more trailing text after it";
         let snippet = find_snippet(haystack, "needle").unwrap();
         assert!(snippet.starts_with("NEEDLE"));
+        // Nothing precedes the match — no leading ellipsis.
+        assert!(!snippet.starts_with('…'));
     }
 
     #[test]
@@ -2125,6 +2165,8 @@ mod tests {
         let haystack = "some leading text before the NEEDLE";
         let snippet = find_snippet(haystack, "needle").unwrap();
         assert!(snippet.ends_with("NEEDLE"));
+        // The whole (short) haystack fits in the window — no ellipsis at all.
+        assert!(!snippet.contains('…'));
     }
 
     #[test]

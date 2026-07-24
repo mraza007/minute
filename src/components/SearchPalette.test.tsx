@@ -61,6 +61,10 @@ async function typeAndFlush(input: HTMLElement, value: string) {
 describe('SearchPalette', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    // jsdom doesn't implement scrollIntoView at all — stub it so the
+    // keyboard-selection-visibility effect doesn't throw, and so its call
+    // args are assertable.
+    Element.prototype.scrollIntoView = vi.fn()
   })
 
   afterEach(() => {
@@ -285,5 +289,52 @@ describe('SearchPalette', () => {
     await typeAndFlush(input, 'acme')
 
     expect(screen.getByText(/search failed: backend unavailable/i)).toBeInTheDocument()
+  })
+
+  it('clearing the query while a search is still in flight discards the stale response instead of repopulating results', async () => {
+    let resolveSearch: (hits: SearchHit[]) => void = () => {}
+    const pending = new Promise<SearchHit[]>(resolve => {
+      resolveSearch = resolve
+    })
+    const search = vi.fn().mockReturnValue(pending)
+    render(<SearchPalette {...baseProps({ search })} />)
+    const input = screen.getByRole('combobox', { name: 'Search notes' })
+
+    fireEvent.change(input, { target: { value: 'roadmap' } })
+    await act(async () => {
+      vi.advanceTimersByTime(150)
+      await Promise.resolve()
+    })
+    expect(search).toHaveBeenCalledWith('roadmap')
+
+    // Clear the query while that search is still unresolved.
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.getByText('Search note titles and transcripts.')).toBeInTheDocument()
+
+    // The stale in-flight response for "roadmap" resolves only now, after
+    // the clear — it must not repopulate results or replace the hint.
+    await act(async () => {
+      resolveSearch([titleHit()])
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('Search note titles and transcripts.')).toBeInTheDocument()
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
+  })
+
+  it('scrolls the active option into view as the roving selection moves via arrow keys', async () => {
+    const hits = [titleHit(), transcriptHit({ segmentStart: 10 }), transcriptHit({ segmentStart: 20 })]
+    const search = vi.fn().mockResolvedValue(hits)
+    render(<SearchPalette {...baseProps({ search })} />)
+    const input = screen.getByRole('combobox', { name: 'Search notes' })
+    await typeAndFlush(input, 'acme')
+
+    const scrollIntoView = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>
+    scrollIntoView.mockClear() // drop the call from results first rendering at activeIndex 0
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
   })
 })

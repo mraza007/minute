@@ -82,6 +82,14 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
   useEffect(() => {
     const trimmed = query.trim()
     setActiveIndex(0)
+    // Bumped unconditionally — including the blank-query clear branch below
+    // — so a response for whatever query was previously in flight can never
+    // land after this effect ran, even though the clear branch itself
+    // doesn't start a new debounced search. Without this, clearing the
+    // input while a search is still in flight would leave that stale
+    // request's id current, and its eventual `.then`/`.catch` would
+    // repopulate `hits` right after this effect just cleared them.
+    const requestId = ++requestSeq.current
     if (trimmed === '') {
       setHits([])
       setSearchError(null)
@@ -89,7 +97,6 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
       return
     }
 
-    const requestId = ++requestSeq.current
     const timer = setTimeout(() => {
       setLoading(true)
       search(trimmed)
@@ -110,6 +117,19 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
 
     return () => clearTimeout(timer)
   }, [query, search])
+
+  // Keeps the roving keyboard selection visible as it moves — with up to
+  // [`SEARCH_HIT_CAP`]-worth of results in a `maxHeight`-capped listbox,
+  // arrowing past the fold would otherwise only move
+  // `aria-activedescendant` (and the visual highlight) on a row that's
+  // scrolled out of view, with nothing on screen to show it happened.
+  // `block: 'nearest'` scrolls the minimum amount needed to bring the row
+  // into view — never re-centers or over-scrolls a row that's already
+  // visible.
+  useEffect(() => {
+    if (hits.length === 0) return
+    document.getElementById(`search-hit-${activeIndex}`)?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex, hits.length])
 
   function selectHit(hit: SearchHit) {
     if (hit.kind === 'title') {

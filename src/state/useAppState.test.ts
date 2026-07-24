@@ -1495,5 +1495,36 @@ describe('useAppState', () => {
       })
       expect(calls.filter(c => c.cmd === 'search_notes')).toHaveLength(1)
     })
+
+    it('clearing the query while a search is still in flight discards the stale response instead of repopulating sidebarMatchedIds', async () => {
+      const notes = [noteFixture({ id: 'note-a' })]
+      let resolveSearch: (hits: SearchHit[]) => void = () => {}
+      const pending = new Promise<SearchHit[]>(resolve => {
+        resolveSearch = resolve
+      })
+      setupIPC({ notes, searchNotes: () => pending })
+      const result = await loaded()
+      vi.useFakeTimers()
+
+      act(() => result.current.setSidebarQuery('roadmap'))
+      await act(async () => {
+        vi.advanceTimersByTime(150)
+        await Promise.resolve()
+      })
+      // The debounced call has fired (the promise is pending, unresolved) —
+      // clear the query before it settles.
+      act(() => result.current.setSidebarQuery(''))
+      expect(result.current.sidebarMatchedIds).toBeNull()
+
+      // The stale "roadmap" response resolves only now, after the clear —
+      // it must not repopulate sidebarMatchedIds.
+      await act(async () => {
+        resolveSearch([{ noteId: 'note-a', title: 'note-a', snippet: 'note-a', segmentStart: null, kind: 'title' }])
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(result.current.sidebarMatchedIds).toBeNull()
+    })
   })
 })

@@ -353,6 +353,14 @@ export function useAppState() {
   const setSidebarQuery = useCallback((query: string) => {
     setSidebarQueryState(query)
     clearTimeout(sidebarSearchTimeout.current)
+    // Bumped unconditionally — including the blank-query clear branch below
+    // — so a response for whatever query was previously in flight can never
+    // land after this call, even though the clear branch itself doesn't
+    // start a new debounced search. Without this, clearing the box while a
+    // search is still in flight would leave that stale request's id
+    // current, and its eventual `.then`/`.catch` would repopulate
+    // `sidebarMatchedIds` right after this call just set it back to `null`.
+    const requestId = ++sidebarSearchSeq.current
 
     const trimmed = query.trim()
     if (trimmed === '') {
@@ -360,7 +368,6 @@ export function useAppState() {
       return
     }
 
-    const requestId = ++sidebarSearchSeq.current
     sidebarSearchTimeout.current = setTimeout(() => {
       ipc
         .searchNotes(trimmed)
