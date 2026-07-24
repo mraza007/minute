@@ -256,6 +256,16 @@ fn strip_code_fence(s: &str) -> String {
     }
 }
 
+/// Upper bound on how many `'{'` candidates [`extract_summary_json`]'s
+/// retry loop will try before giving up. Real model output — even
+/// prose-wrapped or with an incidental brace aside — never has anywhere
+/// near this many `{` occurrences before its actual JSON object; this
+/// exists purely to bound a small model's degenerate repetition failure
+/// (e.g. tens of thousands of bare `{` chars with nothing else), where
+/// rescanning from every one of those positions would otherwise be
+/// quadratic in the length of that run.
+const MAX_JSON_CANDIDATES: usize = 50;
+
 /// Finds the balanced `{...}` object starting exactly at `s[start..]`
 /// (`s[start]` must be `'{'`) via a brace-depth scan that respects JSON
 /// string contents (braces inside a quoted string, or an escaped quote,
@@ -368,9 +378,9 @@ fn action_item_from_value(value: serde_json::Value) -> Option<ActionItem> {
 ///    ("Here is the summary: {...} hope that helps"). If the first `{`
 ///    found either never balances or balances but doesn't parse as the
 ///    expected shape (e.g. an incidental `{see above}` aside earlier in the
-///    prose), the scan resumes just past that `{` and tries the next one —
-///    bounded by the string's length, so this always terminates — rather
-///    than giving up on the first candidate.
+///    prose), the scan resumes just past that `{` and tries the next one,
+///    up to [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on the
+///    first candidate.
 ///
 /// Once a JSON object is found, it's parsed tolerantly: missing keys become
 /// empty defaults, and each `action_items` entry is converted independently
@@ -379,9 +389,10 @@ fn action_item_from_value(value: serde_json::Value) -> Option<ActionItem> {
 /// `done: false` — the model has no channel to mark one already done.
 ///
 /// `Err` (with a ≤200-char snippet of what was actually seen, for the
-/// `summary-status` error event) when: the response is pure reasoning, or
-/// no candidate `{...}` in the (cleaned) output ever both balances and
-/// parses as JSON.
+/// `summary-status` error event) when: the response is pure reasoning, no
+/// candidate `{...}` in the (cleaned) output ever both balances and parses
+/// as JSON within the first [`MAX_JSON_CANDIDATES`] `{` positions tried, or
+/// that cap is reached.
 ///
 /// Not yet called from anywhere outside its own tests — `LlmEngine`'s real
 /// generation path (Task 4) is the eventual caller; see
@@ -402,13 +413,27 @@ pub fn extract_summary_json(raw: &str) -> Result<SummaryDoc> {
     // against RawSummary's shape; on failure (unbalanced, or balanced but
     // not the expected JSON shape) resume searching just past that '{'
     // rather than giving up. `search_from` strictly increases every
-    // iteration, so this terminates within `cleaned.len()` iterations.
+    // iteration, so this always terminates within `cleaned.len()`
+    // iterations — but that alone isn't a tight enough bound: a small
+    // model's degenerate repetition failure (e.g. tens of thousands of
+    // bare `{` chars with nothing else) makes `balanced_json_object_at`
+    // rescan most of the remaining string from every one of those
+    // positions, which is quadratic in the length of that run. Capping the
+    // number of *candidates actually tried* at [`MAX_JSON_CANDIDATES`]
+    // keeps this fast on that adversarial input without changing behavior
+    // on any real model output — a well-formed response never has anywhere
+    // near that many `{` occurrences before its actual JSON object.
     let mut search_from = 0usize;
+    let mut candidates_tried = 0usize;
     let parsed: RawSummary = loop {
+        if candidates_tried >= MAX_JSON_CANDIDATES {
+            return Err(not_found_err());
+        }
         let Some(rel_start) = cleaned[search_from..].find('{') else {
             return Err(not_found_err());
         };
         let start = search_from + rel_start;
+        candidates_tried += 1;
 
         match balanced_json_object_at(&cleaned, start) {
             Some(candidate) => match serde_json::from_str::<RawSummary>(candidate) {
@@ -776,6 +801,62 @@ mod tests {
         let doc = extract_summary_json(raw).unwrap();
         assert_eq!(doc.action_items.len(), 1);
         assert_eq!(doc.action_items[0].text, "Keep this");
+    }
+
+    #[test]
+    fn all_action_items_invalid_leaves_an_empty_vec_with_summary_and_decisions_intact() {
+        let raw = r#"{"summary": "Good summary.", "decisions": ["Ship it"], "action_items": [{"foo": "bar"}, 42, null, {}]}"#;
+        let doc = extract_summary_json(raw).unwrap();
+
+        assert_eq!(doc.summary, "Good summary.");
+        assert_eq!(doc.decisions, vec!["Ship it".to_string()]);
+        assert!(doc.action_items.is_empty());
+    }
+
+    // --- extract_summary_json: bounded candidate retries ------------------------
+
+    #[test]
+    fn valid_json_as_the_third_candidate_still_extracts() {
+        let raw = "{oops} {also not json} {\"summary\": \"Third time's the charm.\", \"decisions\": [], \"action_items\": []}";
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc.summary, "Third time's the charm.");
+    }
+
+    #[test]
+    fn adversarial_run_of_unmatched_braces_fails_fast_instead_of_hanging() {
+        // A degenerate small-model repetition failure: tens of thousands of
+        // bare '{' with no closing brace anywhere and no valid JSON object
+        // at all. Without a cap on candidates tried, retrying from every
+        // one of these positions is quadratic in the length of the run.
+        let raw = "{".repeat(50_000);
+
+        let start = std::time::Instant::now();
+        let result = extract_summary_json(&raw);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("no JSON object found"),
+            "should fail via the ordinary not-found path, not panic or time out"
+        );
+        assert!(
+            elapsed.as_secs() < 1,
+            "extraction on adversarial input took {elapsed:?}, expected well under 1s"
+        );
+    }
+
+    #[test]
+    fn candidate_cap_is_exactly_max_json_candidates_attempts() {
+        // MAX_JSON_CANDIDATES invalid candidates, then a valid one just
+        // past the cap — must still fail, proving the cap counts tried
+        // candidates rather than e.g. only counting failures loosely.
+        let invalid_candidates = "{x} ".repeat(MAX_JSON_CANDIDATES);
+        let raw = format!(
+            "{invalid_candidates}{{\"summary\": \"Too late.\", \"decisions\": [], \"action_items\": []}}"
+        );
+
+        let err = extract_summary_json(&raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
     }
 
     // --- e2e: real model, real generation (manual only) ----------------------
