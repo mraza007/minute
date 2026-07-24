@@ -4,9 +4,10 @@ Minute is a fully offline meeting notetaker. It records audio, transcribes it on
 
 ## Status
 
-Stage 2 complete: records real audio, transcribes it live on-device with Whisper,
-and persists notes locally as plain folders (audio + transcript + metadata).
-Stage 3 (summaries via a local LLM) is next.
+Stage 3 complete: records, live-transcribes, and summarizes meetings fully
+on-device — summaries, decisions, and action items are generated in-process
+by a local Qwen3.5 model. Stage 4 next: ask-your-notes, playback, search,
+polish.
 
 ## Development
 
@@ -19,12 +20,12 @@ npm run test:rust # Rust backend tests (cargo test)
 
 ## Known debt
 
-- `set_settings`/`get_settings` backend not built yet — sttModel selection and
-  the two Settings toggles are frontend-local only.
-- `NoteView` takes the whole `AppState` blob instead of narrow props like its
-  siblings — refactor before Stage 3 adds summary state to it.
-- Transcript cache is an unbounded per-session `Map` — add an LRU cap later.
 - CSP is currently `null` in `src-tauri/tauri.conf.json` — tighten before Stage 4 release.
 - Google Fonts dependency (Instrument Sans) to be removed once fonts are bundled locally.
 - The chunk dedupe midpoint rule can drop up to ~1s of text straddling a chunk
   boundary (documented and `log::debug!`'d in `stt.rs`).
+- The LLM stays resident in memory after the first summary (~2.6 GB) —
+  unload-after-idle is deferred.
+- `summaryStatus`/`summaryError` records accumulate unbounded per session
+  (`deleteNote` doesn't prune them).
+- `useAppState` is ~650 lines — extract a `useNoteDetail` hook in Stage 4.
