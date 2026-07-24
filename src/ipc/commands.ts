@@ -11,6 +11,8 @@ import type {
   NoteMeta,
   NoteWithTranscript,
   Recommendation,
+  Settings,
+  SettingsPatch,
   StorageStats,
 } from './types'
 
@@ -66,3 +68,9 @@ export const resumeRecording = (): Promise<void> => invokeCmd('resume_recording'
 
 /** Stops the active recording; resolves with the finalized note's metadata. */
 export const stopRecording = (): Promise<NoteMeta> => invokeCmd('stop_recording')
+
+export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
+
+/** Merges `patch` into the persisted settings and resolves with the updated settings. */
+export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
+  invokeCmd('set_settings', { patch })

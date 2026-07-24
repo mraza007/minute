@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ModelStatus, StorageStats } from '../ipc/types'
 import { SettingsView } from './SettingsView'
@@ -51,6 +51,8 @@ const base = {
   downloads: { 'whisper-large-v3-turbo': { downloaded: 800_000_000, total: 1_600_000_000 } },
   sttModel: 'whisper-small',
   setSttModel: vi.fn(),
+  llmModel: 'qwen3.5-4b',
+  setLlmModel: vi.fn(),
   downloadModel: vi.fn(),
   cancelDownload: vi.fn(),
   deleteModel: vi.fn(),
@@ -72,8 +74,9 @@ describe('SettingsView', () => {
 
   it('groups the transcription models under a radiogroup with one radio per STT entry', () => {
     render(<SettingsView {...base} />)
-    expect(screen.getByRole('radiogroup', { name: /transcription model/i })).toBeInTheDocument()
-    expect(screen.getAllByRole('radio')).toHaveLength(3)
+    const group = screen.getByRole('radiogroup', { name: /transcription model/i })
+    expect(group).toBeInTheDocument()
+    expect(within(group).getAllByRole('radio')).toHaveLength(3)
   })
 
   it('calls setSttModel when clicking an installed, not-currently-selected model', () => {
@@ -189,6 +192,42 @@ describe('SettingsView', () => {
     expect(screen.getByText(/Gemma 4 E4B/)).toBeInTheDocument()
     expect(screen.getByText(/Qwen3.5-9B/)).toBeInTheDocument()
     expect(screen.getByText(/powers summaries — coming in a later update/i)).toBeInTheDocument()
+  })
+
+  it('groups the summary models under their own radiogroup with one radio per LLM entry', () => {
+    render(<SettingsView {...base} />)
+    const group = screen.getByRole('radiogroup', { name: /summary model/i })
+    expect(group).toBeInTheDocument()
+    expect(within(group).getAllByRole('radio')).toHaveLength(3)
+  })
+
+  it('shows "Installed · in use" for the selected installed llm model, aria-checked true', () => {
+    render(<SettingsView {...base} llmModel="qwen3.5-4b" />)
+    const selected = screen.getByRole('radio', { name: /qwen3\.5-4b/i })
+    expect(selected).toHaveTextContent('Installed · in use')
+    expect(selected).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('calls setLlmModel when clicking a different installed llm model', () => {
+    const setLlmModel = vi.fn()
+    const installedModels: ModelStatus[] = [
+      sttModel({ id: 'whisper-small', state: 'installed' }),
+      llmModel({ id: 'qwen3.5-4b', state: 'installed' }),
+      llmModel({ id: 'gemma-4-e4b', displayName: 'Gemma 4 E4B', state: 'installed' }),
+    ]
+    render(<SettingsView {...base} models={installedModels} llmModel="qwen3.5-4b" setLlmModel={setLlmModel} />)
+    fireEvent.click(screen.getByRole('radio', { name: /gemma 4 e4b/i }))
+    expect(setLlmModel).toHaveBeenCalledWith('gemma-4-e4b')
+  })
+
+  it('does not call setLlmModel when clicking a not-installed llm model — the radio is inert until it is downloaded', () => {
+    const setLlmModel = vi.fn()
+    render(<SettingsView {...base} setLlmModel={setLlmModel} />)
+    const row = screen.getByRole('radio', { name: /gemma 4 e4b/i })
+    fireEvent.click(row)
+    expect(setLlmModel).not.toHaveBeenCalled()
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    expect(row).toHaveAttribute('tabindex', '-1')
   })
 
   it('renders real storage stats and note count', () => {

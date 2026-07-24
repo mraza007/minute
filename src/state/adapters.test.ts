@@ -8,6 +8,7 @@ import {
   modelStatusToSttInfo,
   noteMetaToListItem,
   notesToSidebarItems,
+  pickInitialLlmModel,
   pickInitialSttModel,
   speakerInitials,
   storedSegmentsToDisplay,
@@ -245,6 +246,63 @@ describe('pickInitialSttModel', () => {
       model({ id: 'whisper-medium', kind: 'stt', state: 'installed' }),
     ]
     expect(pickInitialSttModel(models, recommendation)).toBe('whisper-medium')
+  })
+
+  it('prefers a persisted settings.sttModel over the recommendation when both are installed', () => {
+    const models = [
+      model({ id: 'whisper-small', state: 'installed' }),
+      model({ id: 'whisper-medium', state: 'installed' }),
+    ]
+    expect(pickInitialSttModel(models, recommendation, 'whisper-medium')).toBe('whisper-medium')
+  })
+
+  it('falls back past a persisted settings.sttModel that is not installed', () => {
+    const models = [
+      model({ id: 'whisper-small', state: 'installed' }),
+      model({ id: 'whisper-medium', state: 'notInstalled' }),
+    ]
+    expect(pickInitialSttModel(models, recommendation, 'whisper-medium')).toBe('whisper-small')
+  })
+
+  it('falls back to the existing rule when no preferred id is given', () => {
+    const models = [model({ id: 'whisper-small', state: 'installed' })]
+    expect(pickInitialSttModel(models, recommendation, null)).toBe('whisper-small')
+  })
+})
+
+describe('pickInitialLlmModel', () => {
+  const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
+
+  function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
+    return model({ id: 'qwen3.5-4b', kind: 'llm', ...overrides })
+  }
+
+  it('prefers a persisted settings.llmModel over the recommendation when both are installed', () => {
+    const models = [llmModel({ id: 'qwen3.5-4b', state: 'installed' }), llmModel({ id: 'gemma-4-e4b', state: 'installed' })]
+    expect(pickInitialLlmModel(models, recommendation, 'gemma-4-e4b')).toBe('gemma-4-e4b')
+  })
+
+  it('falls back past a persisted settings.llmModel that is not installed', () => {
+    const models = [llmModel({ id: 'qwen3.5-4b', state: 'installed' }), llmModel({ id: 'gemma-4-e4b', state: 'notInstalled' })]
+    expect(pickInitialLlmModel(models, recommendation, 'gemma-4-e4b')).toBe('qwen3.5-4b')
+  })
+
+  it('falls back to the recommended LLM when it is installed and nothing is preferred', () => {
+    const models = [llmModel({ id: 'qwen3.5-4b', state: 'installed' })]
+    expect(pickInitialLlmModel(models, recommendation)).toBe('qwen3.5-4b')
+  })
+
+  it('returns null when nothing is installed and nothing is preferred', () => {
+    const models = [llmModel({ id: 'qwen3.5-4b', state: 'notInstalled' })]
+    expect(pickInitialLlmModel(models, recommendation)).toBeNull()
+  })
+
+  it('ignores STT entries when picking an LLM model', () => {
+    const models = [
+      model({ id: 'whisper-small', kind: 'stt', state: 'installed' }),
+      llmModel({ id: 'gemma-4-e4b', state: 'installed' }),
+    ]
+    expect(pickInitialLlmModel(models, recommendation, 'gemma-4-e4b')).toBe('gemma-4-e4b')
   })
 })
 

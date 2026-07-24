@@ -9,6 +9,7 @@ import type {
   NoteWithTranscript,
   RecordingStateEvent,
   Recommendation,
+  Settings,
   StorageStats,
   StoredSegment,
   SttStatusEvent,
@@ -19,6 +20,16 @@ import { useAppState } from './useAppState'
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 const storage: StorageStats = { modelsBytes: 500_000_000, audioBytes: 200_000_000, notesBytes: 100_000_000 }
+
+function settingsFixture(overrides: Partial<Settings> = {}): Settings {
+  return {
+    sttModel: null,
+    llmModel: null,
+    deleteAudioAfter30d: true,
+    encryptLibrary: false,
+    ...overrides,
+  }
+}
 
 function sttModelFixture(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -84,11 +95,14 @@ interface SetupOpts {
   getNote?: (id: string) => NoteWithTranscript | Promise<NoteWithTranscript>
   /** `rename_note(id, title)`'s response — defaults to the matching note with `title` merged in. */
   renameNoteResult?: (id: string, title: string) => NoteMeta
+  /** `get_settings`'s response — defaults to `settingsFixture()`. */
+  settings?: Settings
 }
 
 function setupIPC(opts: SetupOpts = {}) {
   const models = opts.models ?? [sttModelFixture({ state: 'installed' }), llmModelFixture()]
   const notes = opts.notes ?? [noteFixture()]
+  const settings = opts.settings ?? settingsFixture()
   let listModelsCalls = 0
   let listNotesCalls = 0
   mockIPC(
@@ -136,6 +150,10 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'delete_note':
         case 'reveal_note':
           return null
+        case 'get_settings':
+          return settings
+        case 'set_settings':
+          return settings
         default:
           return null
       }
@@ -245,6 +263,81 @@ describe('useAppState', () => {
     expect(result.current.tEnc).toBe(false)
     act(() => result.current.toggleEnc())
     expect(result.current.tEnc).toBe(true)
+  })
+
+  it('initializes tDel/tEnc from persisted settings rather than the hardcoded default', async () => {
+    setupIPC({ settings: settingsFixture({ deleteAudioAfter30d: false, encryptLibrary: true }) })
+    const result = await loaded()
+    expect(result.current.tDel).toBe(false)
+    expect(result.current.tEnc).toBe(true)
+  })
+
+  it('toggleDel/toggleEnc persist the flipped value via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+
+    act(() => result.current.toggleDel())
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.deleteAudioAfter30d === false)).toBe(
+      true,
+    )
+
+    act(() => result.current.toggleEnc())
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.encryptLibrary === true)).toBe(true)
+  })
+
+  it('setSttModel/setLlmModel persist the selection via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      models: [sttModelFixture({ state: 'installed' }), llmModelFixture({ state: 'installed' })],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+    })
+    const result = await loaded()
+
+    act(() => result.current.setSttModel('whisper-medium'))
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.sttModel === 'whisper-medium')).toBe(
+      true,
+    )
+
+    act(() => result.current.setLlmModel('gemma-4-e4b'))
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.llmModel === 'gemma-4-e4b')).toBe(
+      true,
+    )
+  })
+
+  it('completeOnboarding persists the recommended STT + LLM pair when both finished installing', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      models: [sttModelFixture({ id: 'whisper-small', state: 'installed' }), llmModelFixture({ id: 'qwen3.5-4b', state: 'installed' })],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+    })
+    const result = await loaded()
+
+    act(() => result.current.completeOnboarding())
+
+    expect(result.current.view).toBe('notes')
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.sttModel === 'whisper-small')).toBe(
+      true,
+    )
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.llmModel === 'qwen3.5-4b')).toBe(
+      true,
+    )
+  })
+
+  it('completeOnboarding does not persist an llmModel pick when the recommended LLM was not installed', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      models: [sttModelFixture({ id: 'whisper-small', state: 'installed' }), llmModelFixture({ id: 'qwen3.5-4b', state: 'notInstalled' })],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+    })
+    const result = await loaded()
+
+    act(() => result.current.completeOnboarding())
+
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.sttModel === 'whisper-small')).toBe(
+      true,
+    )
+    expect(calls.some(c => c.cmd === 'set_settings' && 'llmModel' in (c.args as { patch: Partial<Settings> }).patch)).toBe(false)
   })
 
   it('setAskDraft/ask capture the ask-your-notes draft, with a fallback askText', async () => {

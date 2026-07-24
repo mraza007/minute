@@ -67,6 +67,8 @@ export default function App() {
               downloads={s.downloads}
               sttModel={s.sttModel}
               setSttModel={s.setSttModel}
+              llmModel={s.llmModel}
+              setLlmModel={s.setLlmModel}
               downloadModel={s.downloadModel}
               cancelDownload={s.cancelDownload}
               deleteModel={s.deleteModel}

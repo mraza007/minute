@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onDownloadDone, onDownloadProgress } from '../ipc/events'
-import type { ModelStatus, Recommendation } from '../ipc/types'
+import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
 import type { View } from '../types'
-import { pickInitialSttModel, type DownloadProgressState } from './adapters'
+import { pickInitialLlmModel, pickInitialSttModel, type DownloadProgressState } from './adapters'
 import { useTauriEvent } from './useTauriEvent'
+
+/** Used when `applyInitialLoad` is called without a real settings fixture (only ever happens in tests that don't care about settings-derived initial selections). */
+const DEFAULT_SETTINGS: Settings = {
+  sttModel: null,
+  llmModel: null,
+  deleteAudioAfter30d: true,
+  encryptLibrary: false,
+}
 
 const LAST_ERROR_TIMEOUT_MS = 5000
 
@@ -42,10 +50,8 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   const [models, setModels] = useState<ModelStatus[]>([])
   const [downloads, setDownloads] = useState<Record<string, DownloadProgressState>>({})
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null)
-  // TODO(settings-persistence): once settings.json (a backend task) lands,
-  // read the persisted selection here instead of re-deriving it from the
-  // recommendation on every launch, and write through set_settings on change.
-  const [sttModel, setSttModel] = useState('')
+  const [sttModel, setSttModelState] = useState('')
+  const [llmModel, setLlmModelState] = useState<string | null>(null)
   const [lastError, setLastErrorState] = useState<string | null>(null)
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -111,7 +117,7 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     if (recommendation) {
       const selected = models.find(m => m.id === sttModel)
       if (selected && selected.state !== 'installed') {
-        setSttModel(pickInitialSttModel(models, recommendation))
+        setSttModelState(pickInitialSttModel(models, recommendation))
       }
     }
     // Deliberately depends on `models` only — see the comment above.
@@ -119,10 +125,23 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   }, [models])
 
   /** Seeds this hook from useAppState's initial combined IPC load. */
-  function applyInitialLoad(loadedModels: ModelStatus[], loadedRecommendation: Recommendation) {
+  function applyInitialLoad(loadedModels: ModelStatus[], loadedRecommendation: Recommendation, settings: Settings = DEFAULT_SETTINGS) {
     setModels(loadedModels)
     setRecommendation(loadedRecommendation)
-    setSttModel(pickInitialSttModel(loadedModels, loadedRecommendation))
+    setSttModelState(pickInitialSttModel(loadedModels, loadedRecommendation, settings.sttModel))
+    setLlmModelState(pickInitialLlmModel(loadedModels, loadedRecommendation, settings.llmModel))
+  }
+
+  /** Sets the selected transcription model and persists it to settings.json (fire-and-forget — a failed persist just gets reported, the in-memory selection still applies). */
+  function setSttModel(id: string) {
+    setSttModelState(id)
+    ipc.setSettings({ sttModel: id }).catch(reportError)
+  }
+
+  /** Sets the selected summary (LLM) model and persists it to settings.json — same fire-and-forget shape as `setSttModel`. */
+  function setLlmModel(id: string) {
+    setLlmModelState(id)
+    ipc.setSettings({ llmModel: id }).catch(reportError)
   }
 
   function downloadModel(id: string) {
@@ -158,6 +177,8 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     recommendation,
     sttModel,
     setSttModel,
+    llmModel,
+    setLlmModel,
     lastError,
     downloadModel,
     cancelDownload,

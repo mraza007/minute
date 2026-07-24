@@ -156,16 +156,48 @@ export function modelStatusToSttInfo(
 }
 
 /**
- * Picks the STT model id to preselect on load: the recommended model if
- * it's actually installed, else the first installed STT model, else the
- * bare recommendation id as a placeholder (e.g. pre-onboarding, when
- * nothing is installed yet and the value is only used to pre-select the
- * onboarding card).
+ * Picks the STT model id to preselect on load: the persisted
+ * `settings.sttModel` (`preferredId`) if it's actually installed, else the
+ * recommended model if it's installed, else the first installed STT model,
+ * else the bare recommendation id as a placeholder (e.g. pre-onboarding,
+ * when nothing is installed yet and the value is only used to pre-select
+ * the onboarding card).
  */
-export function pickInitialSttModel(models: ModelStatus[], recommendation: Recommendation): string {
+export function pickInitialSttModel(
+  models: ModelStatus[],
+  recommendation: Recommendation,
+  preferredId?: string | null,
+): string {
   const installedStt = models.filter(m => m.kind === 'stt' && m.state === 'installed')
+  if (preferredId) {
+    const preferred = installedStt.find(m => m.id === preferredId)
+    if (preferred) return preferred.id
+  }
   const recommendedInstalled = installedStt.find(m => m.id === recommendation.stt)
   return recommendedInstalled?.id ?? installedStt[0]?.id ?? recommendation.stt ?? ''
+}
+
+/**
+ * Picks the LLM (summary) model id to preselect on load: the persisted
+ * `settings.llmModel` (`preferredId`) if it's actually installed, else the
+ * recommended LLM if it's installed, else `null` — unlike
+ * `pickInitialSttModel`, there's no "first installed" fallback and no
+ * placeholder id, since an LLM selection isn't required for the app to
+ * function yet (Stage 3 doesn't wire summarization through this
+ * selection).
+ */
+export function pickInitialLlmModel(
+  models: ModelStatus[],
+  recommendation: Recommendation,
+  preferredId?: string | null,
+): string | null {
+  const installedLlm = models.filter(m => m.kind === 'llm' && m.state === 'installed')
+  if (preferredId) {
+    const preferred = installedLlm.find(m => m.id === preferredId)
+    if (preferred) return preferred.id
+  }
+  const recommendedInstalled = installedLlm.find(m => m.id === recommendation.llm)
+  return recommendedInstalled?.id ?? null
 }
 
 /**

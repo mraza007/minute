@@ -3,11 +3,21 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ModelStatus, Recommendation } from '../ipc/types'
+import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
 import type { View } from '../types'
 import { useModelManager } from './useModelManager'
 
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
+
+function settingsFixture(overrides: Partial<Settings> = {}): Settings {
+  return {
+    sttModel: null,
+    llmModel: null,
+    deleteAudioAfter30d: true,
+    encryptLibrary: false,
+    ...overrides,
+  }
+}
 
 function sttModelFixture(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -65,8 +75,8 @@ function useHarness(initialView: View = 'notes') {
   const [loaded, setLoaded] = useState(false)
   const manager = useModelManager({ view, setView, loaded })
 
-  function seed(models: ModelStatus[], rec: Recommendation) {
-    manager.applyInitialLoad(models, rec)
+  function seed(models: ModelStatus[], rec: Recommendation, settings?: Settings) {
+    manager.applyInitialLoad(models, rec, settings)
     setLoaded(true)
   }
 
@@ -85,6 +95,90 @@ describe('useModelManager', () => {
     expect(result.current.models).toEqual(models)
     expect(result.current.recommendation).toEqual(recommendation)
     expect(result.current.sttModel).toBe('whisper-small')
+  })
+
+  it('applyInitialLoad prefers a persisted settings.sttModel/llmModel over the recommendation', () => {
+    setupIPC()
+    const { result } = renderHook(() => useHarness())
+    const models = [
+      sttModelFixture({ id: 'whisper-small', state: 'installed' }),
+      sttModelFixture({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'installed' }),
+      llmModelFixture({ id: 'qwen3.5-4b', state: 'installed' }),
+      llmModelFixture({ id: 'gemma-4-e4b', displayName: 'Gemma 4 E4B', state: 'installed' }),
+    ]
+    act(() => result.current.seed(models, recommendation, settingsFixture({ sttModel: 'whisper-medium', llmModel: 'gemma-4-e4b' })))
+
+    expect(result.current.sttModel).toBe('whisper-medium')
+    expect(result.current.llmModel).toBe('gemma-4-e4b')
+  })
+
+  it('applyInitialLoad falls back to the recommendation when the persisted settings selection is not installed', () => {
+    setupIPC()
+    const { result } = renderHook(() => useHarness())
+    const models = [sttModelFixture({ state: 'installed' }), llmModelFixture({ state: 'installed' })]
+    act(() =>
+      result.current.seed(models, recommendation, settingsFixture({ sttModel: 'whisper-medium', llmModel: 'gemma-4-e4b' })),
+    )
+
+    expect(result.current.sttModel).toBe('whisper-small')
+    expect(result.current.llmModel).toBe('qwen3.5-4b')
+  })
+
+  it('applyInitialLoad leaves llmModel null when nothing is installed and nothing is persisted', () => {
+    setupIPC()
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.seed([sttModelFixture({ state: 'installed' })], recommendation, settingsFixture()))
+
+    expect(result.current.llmModel).toBeNull()
+  })
+
+  it('setSttModel updates the selection immediately and persists it via set_settings', () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC((cmd, args) => {
+      calls.push({ cmd, args })
+    })
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.seed([sttModelFixture({ state: 'installed' })], recommendation, settingsFixture()))
+
+    act(() => result.current.setSttModel('whisper-medium'))
+
+    expect(result.current.sttModel).toBe('whisper-medium')
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.sttModel === 'whisper-medium')).toBe(
+      true,
+    )
+  })
+
+  it('setLlmModel updates the selection immediately and persists it via set_settings', () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC((cmd, args) => {
+      calls.push({ cmd, args })
+    })
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.seed([llmModelFixture({ state: 'installed' })], recommendation, settingsFixture()))
+
+    act(() => result.current.setLlmModel('gemma-4-e4b'))
+
+    expect(result.current.llmModel).toBe('gemma-4-e4b')
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.llmModel === 'gemma-4-e4b')).toBe(
+      true,
+    )
+  })
+
+  it('a rejected setSttModel persist call reports the error but keeps the optimistic selection', async () => {
+    setupIPC(cmd => {
+      if (cmd === 'set_settings') throw new Error('disk full')
+    })
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.seed([sttModelFixture({ state: 'installed' })], recommendation, settingsFixture()))
+
+    await act(async () => {
+      result.current.setSttModel('whisper-medium')
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(result.current.sttModel).toBe('whisper-medium')
+    expect(result.current.lastError).toContain('disk full')
   })
 
   it('downloadModel invokes download_model and optimistically marks the model as downloading', () => {

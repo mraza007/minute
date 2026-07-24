@@ -50,8 +50,9 @@ export function useAppState() {
   // one has resolved — see `togglePause`'s docs.
   const pauseInFlight = useRef(false)
 
-  // TODO: not yet persisted — settings.json is a backend task (see the
-  // design doc's storage shapes); local-only until then.
+  // Settings-backed storage/privacy toggles — seeded from `get_settings` in
+  // the initial load effect below; `toggleDel`/`toggleEnc` further down
+  // flip these optimistically and persist through `set_settings`.
   const [tDel, setTDel] = useState(true)
   const [tEnc, setTEnc] = useState(false)
 
@@ -174,13 +175,22 @@ export function useAppState() {
   // stays 'loading' — App.tsx renders nothing but a spinner for that state.
   useEffect(() => {
     let cancelled = false
-    Promise.all([ipc.listModels(), ipc.listNotes(), ipc.hardwareInfo(), ipc.recommendedModels(), ipc.storageStats()])
-      .then(([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage]) => {
+    Promise.all([
+      ipc.listModels(),
+      ipc.listNotes(),
+      ipc.hardwareInfo(),
+      ipc.recommendedModels(),
+      ipc.storageStats(),
+      ipc.getSettings(),
+    ])
+      .then(([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage, loadedSettings]) => {
         if (cancelled) return
-        modelManager.applyInitialLoad(loadedModels, loadedRecommendation)
+        modelManager.applyInitialLoad(loadedModels, loadedRecommendation, loadedSettings)
         setNotes(loadedNotes)
         setHardware(loadedHardware)
         setStorage(loadedStorage)
+        setTDel(loadedSettings.deleteAudioAfter30d)
+        setTEnc(loadedSettings.encryptLibrary)
         const hasInstalledStt = loadedModels.some(m => m.kind === 'stt' && m.state === 'installed')
         setView(hasInstalledStt ? 'notes' : 'onboarding')
         setLoaded(true)
@@ -382,6 +392,7 @@ export function useAppState() {
     lastError: lastError ?? modelManager.lastError,
     sttModel: modelManager.sttModel,
     sttModelDisplayName,
+    llmModel: modelManager.llmModel,
     sel,
     recElapsed,
     paused,
@@ -417,12 +428,38 @@ export function useAppState() {
     setAskDraft,
     ask: () => setAsked(true),
     setSttModel: modelManager.setSttModel,
-    toggleDel: () => setTDel(v => !v),
-    toggleEnc: () => setTEnc(v => !v),
+    setLlmModel: modelManager.setLlmModel,
+    toggleDel: () => {
+      const next = !tDel
+      setTDel(next)
+      ipc.setSettings({ deleteAudioAfter30d: next }).catch(reportError)
+    },
+    toggleEnc: () => {
+      const next = !tEnc
+      setTEnc(next)
+      ipc.setSettings({ encryptLibrary: next }).catch(reportError)
+    },
     downloadModel: modelManager.downloadModel,
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,
-    completeOnboarding: () => setView('notes'),
+    // Persists the recommended pair as the user's explicit selections for
+    // whichever of the two actually finished installing during onboarding
+    // (the STT one always did, by construction — "Start using Minute" is
+    // disabled otherwise; the LLM one is optional) — `modelManager.sttModel`/
+    // `llmModel` are already set to these in-memory (via the re-gate effect
+    // reacting to the download completing), but that reassignment doesn't
+    // itself write through to settings.json, so this call is what actually
+    // persists the pick once the user commits to it.
+    completeOnboarding: () => {
+      const rec = modelManager.recommendation
+      if (rec) {
+        const sttInstalled = modelManager.models.find(m => m.kind === 'stt' && m.id === rec.stt && m.state === 'installed')
+        if (sttInstalled) modelManager.setSttModel(sttInstalled.id)
+        const llmInstalled = modelManager.models.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
+        if (llmInstalled) modelManager.setLlmModel(llmInstalled.id)
+      }
+      setView('notes')
+    },
     renameNote,
     deleteNote,
     revealNote,

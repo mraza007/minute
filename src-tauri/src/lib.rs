@@ -5,9 +5,11 @@ mod stt;
 mod download;
 mod error;
 mod llm;
+mod settings;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
+use settings::{Settings, SettingsPatch, SharedSettings};
 use store::{lock_store, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
@@ -109,6 +111,31 @@ fn reveal_note(state: State<SharedStore>, id: String) -> Result<(), String> {
   Ok(())
 }
 
+/// Returns the current persisted settings.
+#[tauri::command]
+fn get_settings(state: State<SharedSettings>) -> Settings {
+  settings::lock_settings(&state).clone()
+}
+
+/// Merges `patch` into the current settings (only the fields it sets are
+/// changed — see `settings::apply_patch`), persists the result to
+/// `settings.json`, and returns the updated settings.
+#[tauri::command]
+fn set_settings(
+  app: AppHandle,
+  state: State<SharedSettings>,
+  patch: SettingsPatch,
+) -> Result<Settings, String> {
+  let root = app
+    .path()
+    .app_data_dir()
+    .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+  let mut guard = settings::lock_settings(&state);
+  settings::apply_patch(&mut guard, patch);
+  settings::save_settings(&root, &guard).map_err(|e| e.to_string())?;
+  Ok(guard.clone())
+}
+
 #[tauri::command]
 fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
   // Clone the root path out from under a brief lock, then run the
@@ -159,6 +186,8 @@ pub fn run() {
       delete_note,
       storage_stats,
       reveal_note,
+      get_settings,
+      set_settings,
       download::download_model,
       download::cancel_download,
       download::delete_model,
@@ -180,6 +209,15 @@ pub fn run() {
         .path()
         .app_data_dir()
         .expect("failed to resolve app data dir");
+
+      // Loaded once here (from `settings.json`, defaults if missing/corrupt
+      // — see `settings::load_settings`) and shared the same way as every
+      // other managed handle below; `start_recording` reads `sttModel` off
+      // this to resolve a default model when the frontend doesn't pass one
+      // explicitly.
+      let shared_settings: SharedSettings = settings::open_shared(&app_data_dir);
+      app.manage(shared_settings);
+
       // A single shared handle: Tauri commands and the recording/
       // transcription worker threads (Task 5/6) all clone this same
       // `SharedStore` rather than each opening their own `Store` — see the

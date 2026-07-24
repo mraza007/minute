@@ -3,11 +3,12 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import App from './App'
-import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, StorageStats } from './ipc/types'
+import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats } from './ipc/types'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 const storage: StorageStats = { modelsBytes: 500_000_000, audioBytes: 200_000_000, notesBytes: 100_000_000 }
+const settings: Settings = { sttModel: null, llmModel: null, deleteAudioAfter30d: true, encryptLibrary: false }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -96,6 +97,9 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'delete_note':
         case 'reveal_note':
           return null
+        case 'get_settings':
+        case 'set_settings':
+          return settings
         default:
           return null
       }

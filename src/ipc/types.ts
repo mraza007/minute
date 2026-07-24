@@ -100,6 +100,29 @@ export interface StorageStats {
   notesBytes: number
 }
 
+// --- settings.rs -------------------------------------------------------
+
+/** `settings::Settings` — `#[serde(rename_all = "camelCase")]`. */
+export interface Settings {
+  sttModel: string | null
+  llmModel: string | null
+  deleteAudioAfter30d: boolean
+  encryptLibrary: boolean
+}
+
+/**
+ * `settings::SettingsPatch` — `#[serde(rename_all = "camelCase")]`. Every
+ * field is optional; an omitted field is left unchanged server-side (see
+ * `settings::apply_patch`) — there's no way to explicitly clear a model
+ * selection back to unset.
+ */
+export interface SettingsPatch {
+  sttModel?: string
+  llmModel?: string
+  deleteAudioAfter30d?: boolean
+  encryptLibrary?: boolean
+}
+
 // --- events ----------------------------------------------------------------
 
 /** `download.rs::DownloadProgressEvent` — event `model-download-progress`. */

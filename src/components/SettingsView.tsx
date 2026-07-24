@@ -11,6 +11,8 @@ export interface SettingsViewProps {
   downloads: Record<string, DownloadProgressState>
   sttModel: string
   setSttModel: (id: string) => void
+  llmModel: string | null
+  setLlmModel: (id: string) => void
   downloadModel: (id: string) => void
   cancelDownload: (id: string) => void
   deleteModel: (id: string) => void
@@ -126,12 +128,19 @@ function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload,
   )
 }
 
-interface TranscriptionModelRowProps extends ModelRowAction {
+interface SelectableModelRowProps extends ModelRowAction {
   selected: boolean
   onSelect: () => void
 }
 
-function TranscriptionModelRow({ entry, downloads, selected, onSelect, downloadModel, cancelDownload, deleteModel }: TranscriptionModelRowProps) {
+/**
+ * One radio-style model row, shared by both the Transcription and Summary
+ * model sections: a selected/installed model shows the filled radio dot and
+ * "Installed · in use"; a not-yet-installed or still-downloading row shows
+ * its Download/Cancel affordance but the radio itself stays inert (not
+ * `selectable`) until the model actually finishes installing.
+ */
+function SelectableModelRow({ entry, downloads, selected, onSelect, downloadModel, cancelDownload, deleteModel }: SelectableModelRowProps) {
   const info = modelStatusToSttInfo(entry, selected ? entry.id : '', downloads)
   const progress = downloads[entry.id]
   // Only an installed model can actually be selected as the in-use STT
@@ -203,41 +212,13 @@ function TranscriptionModelRow({ entry, downloads, selected, onSelect, downloadM
   )
 }
 
-function SummaryModelRow({ entry, downloads, downloadModel, cancelDownload, deleteModel }: ModelRowAction) {
-  const info = modelStatusToSttInfo(entry, '', downloads)
-  const progress = downloads[entry.id]
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 12,
-        alignItems: 'flex-start',
-        border: '1px solid rgba(0,0,0,.1)',
-        background: '#fff',
-        borderRadius: 10,
-        padding: '12px 14px',
-        fontSize: 13,
-        lineHeight: 1.5,
-      }}
-    >
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <b>{info.displayName}</b> — {info.desc}
-        <br />
-        <span style={{ fontSize: 12, color: '#9a938c' }}>{info.sub}</span>
-        {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
-      </span>
-      <span style={{ flex: 'none' }}>
-        <ModelSecondaryAction entry={entry} downloads={downloads} downloadModel={downloadModel} cancelDownload={cancelDownload} deleteModel={deleteModel} />
-      </span>
-    </div>
-  )
-}
-
 export function SettingsView({
   models,
   downloads,
   sttModel,
   setSttModel,
+  llmModel,
+  setLlmModel,
   downloadModel,
   cancelDownload,
   deleteModel,
@@ -277,7 +258,7 @@ export function SettingsView({
             style={{ padding: '12px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
           >
             {sttModels.map(m => (
-              <TranscriptionModelRow
+              <SelectableModelRow
                 key={m.id}
                 entry={m}
                 downloads={downloads}
@@ -294,12 +275,18 @@ export function SettingsView({
         <div style={cardStyle}>
           <div style={cardHeaderStyle}>Summary model</div>
           <div style={{ padding: '4px 20px 4px', fontSize: 12, color: '#9a938c' }}>Powers summaries — coming in a later update.</div>
-          <div style={{ padding: '8px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div
+            role="radiogroup"
+            aria-label="Summary model"
+            style={{ padding: '8px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
+          >
             {llmModels.map(m => (
-              <SummaryModelRow
+              <SelectableModelRow
                 key={m.id}
                 entry={m}
                 downloads={downloads}
+                selected={llmModel === m.id}
+                onSelect={() => setLlmModel(m.id)}
                 downloadModel={downloadModel}
                 cancelDownload={cancelDownload}
                 deleteModel={deleteModel}

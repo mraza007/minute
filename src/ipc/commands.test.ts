@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, StorageStats } from './types'
+import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats } from './types'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -220,6 +220,38 @@ describe('ipc/commands', () => {
 
     expect(calls[0].cmd).toBe('reveal_note')
     expect(calls[0].args).toEqual({ id: '20260722-120000' })
+  })
+
+  it('getSettings invokes get_settings with no args', async () => {
+    const settings: Settings = {
+      sttModel: 'whisper-small',
+      llmModel: null,
+      deleteAudioAfter30d: true,
+      encryptLibrary: false,
+    }
+    const calls = captureIPC(() => settings)
+
+    const result = await commands.getSettings()
+
+    expect(calls[0].cmd).toBe('get_settings')
+    expect(calls[0].args).toEqual({})
+    expect(result).toEqual(settings)
+  })
+
+  it('setSettings invokes set_settings with { patch } and passes through the updated settings', async () => {
+    const updated: Settings = {
+      sttModel: 'whisper-medium',
+      llmModel: null,
+      deleteAudioAfter30d: true,
+      encryptLibrary: false,
+    }
+    const calls = captureIPC(() => updated)
+
+    const result = await commands.setSettings({ sttModel: 'whisper-medium' })
+
+    expect(calls[0].cmd).toBe('set_settings')
+    expect(calls[0].args).toEqual({ patch: { sttModel: 'whisper-medium' } })
+    expect(result).toEqual(updated)
   })
 
   it('normalizes a raw string rejection into an Error instance', async () => {

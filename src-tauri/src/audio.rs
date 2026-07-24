@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
+use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, NoteMeta, SharedStore};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
 
@@ -661,8 +662,9 @@ fn emit_recording_state(app: &AppHandle, note_id: &str, state: &'static str, ela
 
 /// Starts a new recording: creates a note via the store (title "New
 /// recording", using the caller-supplied `model_id` — the frontend passes
-/// the user's currently selected STT model — falling back to
-/// "whisper-small" when `None`), starts the `Recorder` writing into that
+/// the user's currently selected STT model — falling back to the persisted
+/// `settings.sttModel`, and then to "whisper-small" if neither is set; see
+/// `settings::resolve_stt_model`), starts the `Recorder` writing into that
 /// note's `audio.wav`, spawns the live-transcription `SttWorker` (if the
 /// resolved model is actually installed — recording still proceeds without
 /// one otherwise, just without a live transcript; an id that isn't even in
@@ -674,13 +676,14 @@ pub async fn start_recording(
     app: AppHandle,
     store: State<'_, SharedStore>,
     recorder: State<'_, SharedRecorderState>,
+    settings: State<'_, SharedSettings>,
     model_id: Option<String>,
 ) -> std::result::Result<String, String> {
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
     }
 
-    let model_id = model_id.unwrap_or_else(|| "whisper-small".to_string());
+    let model_id = settings::resolve_stt_model(model_id, &settings::lock_settings(&settings));
     let meta = lock_store(&store)
         .create_note_now("New recording", &model_id)
         .map_err(|e| e.to_string())?;
