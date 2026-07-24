@@ -102,11 +102,7 @@ fn get_note(state: State<SharedStore>, id: String) -> Result<NoteWithTranscript,
   let (meta, transcript) = store.get_note(&id).map_err(|e| e.to_string())?;
   let summary = store.read_summary(&id).map_err(|e| e.to_string())?;
   let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
-  let audio_path = if meta.audio_deleted {
-    None
-  } else {
-    store::audio_path(&store.note_dir(&id)).map(|p| p.to_string_lossy().into_owned())
-  };
+  let audio_path = store::resolved_audio_path(&meta, &store.note_dir(&id)).map(|p| p.to_string_lossy().into_owned());
   Ok(NoteWithTranscript { meta, transcript, summary, markdown, audio_path })
 }
 

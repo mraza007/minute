@@ -621,13 +621,14 @@ pub fn reveal_target(note_dir: &Path) -> PathBuf {
 }
 
 /// The absolute path to a note's `audio.wav`, if it's actually present on
-/// disk — `None` for a note whose audio was never captured, or (once Task
-/// 3's 30-day sweep lands) has since been deleted. Pure — a plain existence
-/// check, no process spawn — mirroring [`reveal_target`]'s shape so both the
-/// "reveal in Finder" path and the `get_note` command's `audioPath` field
-/// (which `PlayerBar` uses to decide between real playback and its honest
-/// "Audio removed" disabled state) agree on what "this note's audio exists"
-/// means.
+/// disk — `None` for a note whose audio was never captured, or has since
+/// been deleted. Pure — a plain existence check, no process spawn —
+/// mirroring [`reveal_target`]'s shape. Doesn't know about `audioDeleted` at
+/// all (it's a raw filesystem check, nothing more) — [`reveal_target`] wants
+/// exactly that (Finder should still find a stray `audio.wav` if one somehow
+/// exists). The `get_note` command instead goes through
+/// [`resolved_audio_path`], which layers the `audioDeleted` invariant on top
+/// of this.
 pub fn audio_path(note_dir: &Path) -> Option<PathBuf> {
     let audio = note_dir.join(AUDIO_FILE);
     if audio.exists() {
@@ -635,6 +636,22 @@ pub fn audio_path(note_dir: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// The `audioPath` the `get_note` command should report for a note: `None`
+/// whenever `meta.audioDeleted` is `true` — even if a stray `audio.wav`
+/// somehow still exists on disk (a race with an in-flight sweep, a manual
+/// restore, ...) — otherwise falls through to the plain [`audio_path`]
+/// existence check. `audioDeleted` is the single source of truth once it's
+/// `true`; a leftover file must never resurrect playback for a note the
+/// sweep has already marked swept. Pure (same shape as [`audio_path`]/
+/// [`reveal_target`]) so this invariant is unit-testable without going
+/// through the `#[tauri::command]` boundary.
+pub fn resolved_audio_path(meta: &NoteMeta, note_dir: &Path) -> Option<PathBuf> {
+    if meta.audio_deleted {
+        return None;
+    }
+    audio_path(note_dir)
 }
 
 /// Recursively sums file sizes under `path`. Missing paths count as 0.
@@ -1206,6 +1223,47 @@ mod tests {
         let missing = dir.path().join("never-existed");
 
         assert_eq!(audio_path(&missing), None);
+    }
+
+    // --- resolved_audio_path -------------------------------------------------
+    //
+    // Pins the `get_note` invariant: `audioDeleted: true` always wins over
+    // whatever's actually on disk, including the "impossible" case of a
+    // stray `audio.wav` still sitting there (a race with an in-flight
+    // sweep, a manual restore, ...).
+
+    #[test]
+    fn resolved_audio_path_is_none_when_audio_deleted_even_if_a_stray_wav_exists() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let mut meta = store.create_note("Swept but stray wav", "whisper-small", now).unwrap();
+        meta.audio_deleted = true;
+        fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), b"stray wav bytes").unwrap();
+
+        assert_eq!(resolved_audio_path(&meta, &store.note_dir(&meta.id)), None);
+    }
+
+    #[test]
+    fn resolved_audio_path_is_some_when_not_deleted_and_wav_present() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Has audio", "whisper-small", now).unwrap();
+        let expected = store.note_dir(&meta.id).join(AUDIO_FILE);
+        fs::write(&expected, b"real wav bytes").unwrap();
+
+        assert_eq!(resolved_audio_path(&meta, &store.note_dir(&meta.id)), Some(expected));
+    }
+
+    #[test]
+    fn resolved_audio_path_is_none_when_not_deleted_and_wav_missing() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("No audio yet", "whisper-small", now).unwrap();
+
+        assert_eq!(resolved_audio_path(&meta, &store.note_dir(&meta.id)), None);
     }
 
     #[test]
