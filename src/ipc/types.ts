@@ -91,13 +91,18 @@ export interface Transcript {
  * `store::render_note_md`'s output for the same data, rendered fresh on
  * every read — the sole source of a note's markdown rendering (Stage 3 Task
  * 5 retired the frontend's own `noteToMarkdown` generator; every component
- * that renders/exports a note's markdown reads this field).
+ * that renders/exports a note's markdown reads this field). `audioPath` is
+ * the absolute path to `audio.wav` when it exists on disk, `null` otherwise
+ * (never captured, or swept) — fed through `convertFileSrc` to build the
+ * `<audio>` element's `src` in `useAudioPlayer`; `null` drives `PlayerBar`'s
+ * disabled "Audio removed" state.
  */
 export interface NoteWithTranscript {
   meta: NoteMeta
   transcript: Transcript
   summary: SummaryDoc | null
   markdown: string
+  audioPath: string | null
 }
 
 // --- llm.rs --------------------------------------------------------------

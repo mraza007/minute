@@ -518,6 +518,23 @@ pub fn reveal_target(note_dir: &Path) -> PathBuf {
     }
 }
 
+/// The absolute path to a note's `audio.wav`, if it's actually present on
+/// disk — `None` for a note whose audio was never captured, or (once Task
+/// 3's 30-day sweep lands) has since been deleted. Pure — a plain existence
+/// check, no process spawn — mirroring [`reveal_target`]'s shape so both the
+/// "reveal in Finder" path and the `get_note` command's `audioPath` field
+/// (which `PlayerBar` uses to decide between real playback and its honest
+/// "Audio removed" disabled state) agree on what "this note's audio exists"
+/// means.
+pub fn audio_path(note_dir: &Path) -> Option<PathBuf> {
+    let audio = note_dir.join(AUDIO_FILE);
+    if audio.exists() {
+        Some(audio)
+    } else {
+        None
+    }
+}
+
 /// Recursively sums file sizes under `path`. Missing paths count as 0.
 ///
 /// Free function (not a `Store` method) — used by [`storage_stats`], which
@@ -1057,6 +1074,36 @@ mod tests {
         let missing = dir.path().join("never-existed");
 
         assert_eq!(reveal_target(&missing), missing);
+    }
+
+    #[test]
+    fn audio_path_returns_some_when_audio_wav_is_present() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Has audio", "whisper-small", now).unwrap();
+        let expected = store.note_dir(&meta.id).join(AUDIO_FILE);
+        fs::write(&expected, b"fake wav bytes").unwrap();
+
+        assert_eq!(audio_path(&store.note_dir(&meta.id)), Some(expected));
+    }
+
+    #[test]
+    fn audio_path_returns_none_when_audio_wav_is_missing() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("No audio yet", "whisper-small", now).unwrap();
+
+        assert_eq!(audio_path(&store.note_dir(&meta.id)), None);
+    }
+
+    #[test]
+    fn audio_path_on_nonexistent_note_dir_returns_none() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("never-existed");
+
+        assert_eq!(audio_path(&missing), None);
     }
 
     #[test]

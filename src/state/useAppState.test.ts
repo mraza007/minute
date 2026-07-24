@@ -147,7 +147,7 @@ function setupIPC(opts: SetupOpts = {}) {
           const { id } = args as { id: string }
           if (opts.getNote) return opts.getNote(id)
           const match = notes.find(n => n.id === id) ?? notes[0]
-          return { meta: match, transcript: { segments: [] }, summary: null, markdown: '' } satisfies NoteWithTranscript
+          return { meta: match, transcript: { segments: [] }, summary: null, markdown: '', audioPath: null } satisfies NoteWithTranscript
         }
         case 'rename_note': {
           const { id, title } = args as { id: string; title: string }
@@ -647,8 +647,8 @@ describe('useAppState', () => {
     const segmentsB: StoredSegment[] = [{ speaker: 'Speaker 1', start: 5, end: 6, text: 'hello from B' }]
 
     function getNoteFixture(id: string): NoteWithTranscript {
-      if (id === 'note-a') return { meta: noteA, transcript: { segments: segmentsA }, summary: null, markdown: '' }
-      if (id === 'note-b') return { meta: noteB, transcript: { segments: segmentsB }, summary: null, markdown: '' }
+      if (id === 'note-a') return { meta: noteA, transcript: { segments: segmentsA }, summary: null, markdown: '', audioPath: null }
+      if (id === 'note-b') return { meta: noteB, transcript: { segments: segmentsB }, summary: null, markdown: '', audioPath: null }
       throw new Error(`unexpected id ${id}`)
     }
 
@@ -737,6 +737,7 @@ describe('useAppState', () => {
             transcript: { segments: segmentsA },
             summary: null,
             markdown: '',
+            audioPath: null,
           }),
           renameNoteResult: (_id, title) => {
             currentTitle = title
@@ -882,6 +883,7 @@ describe('useAppState', () => {
             transcript: { segments: segmentsA },
             summary: summarized ? noteSummary : null,
             markdown: summarized ? '# with summary' : '# no summary',
+            audioPath: null,
           }),
           listNotesAfter: () => [readyNote],
           onCmd: (cmd, args) => calls.push({ cmd, args }),
@@ -978,6 +980,7 @@ describe('useAppState', () => {
           transcript: { segments: segmentsA },
           summary: { summary: 'x', decisions: [], actionItems: [{ text: 'Write release notes', done: false }], ...overrides },
           markdown: '# note',
+          audioPath: null,
         }
       }
 
@@ -1067,6 +1070,7 @@ describe('useAppState', () => {
               transcript: { segments: segmentsA },
               summary: { summary: 'x', decisions: [], actionItems },
               markdown: '# note',
+              audioPath: null,
             }
           },
           toggleActionItem: (_id, index) => (index === 0 ? pendingA : pendingB),
@@ -1120,6 +1124,7 @@ describe('useAppState', () => {
           transcript: { segments: [] },
           summary: null,
           markdown: '',
+          audioPath: null,
         }),
         onCmd: (cmd, args) => calls.push({ cmd, args }),
       })

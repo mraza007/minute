@@ -33,6 +33,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     selectedTranscript: [],
     selectedSummary: null,
     selectedMarkdown: meta ? `# ${meta.title}` : '',
+    selectedAudioPath: null,
     transcriptLoading: false,
     noteTab: 'transcript',
     setNoteTab: vi.fn(),
@@ -207,6 +208,57 @@ describe('NoteView', () => {
       const meta = noteFixture({ id: 'note-1' })
       render(<NoteView {...makeProps({ meta, selectedMeta: null, transcriptLoading: true })} />)
       expect(screen.getByText(/loading transcript/i)).toBeInTheDocument()
+    })
+  })
+
+  describe('player bar audio wiring', () => {
+    it('shows the disabled "Audio removed" state when the selected note has no audio', () => {
+      const meta = noteFixture()
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedAudioPath: null })} />)
+      expect(screen.getByText('Audio removed')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    })
+
+    it('enables playback controls once selectedAudioPath is present for the selected note', () => {
+      const meta = noteFixture()
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedAudioPath: '/notes/abc/audio.wav' })} />)
+      expect(screen.queryByText('Audio removed')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Play' })).not.toBeDisabled()
+    })
+
+    it('does not leak a stale note’s audioPath into the player while the current note is still loading', () => {
+      const meta = noteFixture({ id: 'note-1' })
+      const staleMeta = noteFixture({ id: 'note-0' })
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: staleMeta,
+            selectedAudioPath: '/notes/note-0/audio.wav',
+            transcriptLoading: true,
+          })}
+        />,
+      )
+      expect(screen.getByText('Audio removed')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    })
+
+    it('makes transcript timestamps inert (not seekable) when there is no audio', () => {
+      const meta = noteFixture()
+      const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'Thanks for making time.' }]
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, selectedAudioPath: null })} />)
+      expect(screen.getByRole('button', { name: 'Play from 00:00' })).toBeDisabled()
+    })
+
+    it('makes transcript timestamps seekable once audio is present', () => {
+      const meta = noteFixture()
+      const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'Thanks for making time.' }]
+      render(
+        <NoteView
+          {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, selectedAudioPath: '/notes/abc/audio.wav' })}
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Play from 00:00' })).not.toBeDisabled()
     })
   })
 

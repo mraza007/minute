@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ModelStatus, NoteMeta, Recommendation, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
 import {
+  findActiveSegmentIndex,
   formatBytes,
   formatMmSs,
   groupLiveSegments,
@@ -150,8 +151,8 @@ describe('storedSegmentsToDisplay', () => {
       { speaker: 'Speaker 1', start: 41, end: 45, text: 'Second segment.' },
     ]
     expect(storedSegmentsToDisplay(segments)).toEqual([
-      { initials: 'S1', speaker: 'Speaker 1', time: '00:00', text: 'Hello there.' },
-      { initials: 'S1', speaker: 'Speaker 1', time: '00:41', text: 'Second segment.' },
+      { initials: 'S1', speaker: 'Speaker 1', time: '00:00', text: 'Hello there.', start: 0, end: 3.2 },
+      { initials: 'S1', speaker: 'Speaker 1', time: '00:41', text: 'Second segment.', start: 41, end: 45 },
     ])
   })
 
@@ -165,6 +166,46 @@ describe('storedSegmentsToDisplay', () => {
 
   it('returns an empty array for an empty transcript', () => {
     expect(storedSegmentsToDisplay([])).toEqual([])
+  })
+})
+
+describe('findActiveSegmentIndex', () => {
+  const segments = [
+    { start: 0, end: 3 },
+    { start: 41, end: 62 },
+    { start: 94, end: 130 },
+  ]
+
+  it('returns -1 for an empty segment list', () => {
+    expect(findActiveSegmentIndex([], 5)).toBe(-1)
+  })
+
+  it('finds the segment containing a time at its exact start', () => {
+    expect(findActiveSegmentIndex(segments, 41)).toBe(1)
+  })
+
+  it('finds the segment containing a time in the middle of its window', () => {
+    expect(findActiveSegmentIndex(segments, 100)).toBe(2)
+  })
+
+  it('returns -1 for a time exactly at a segment end (the window is half-open)', () => {
+    expect(findActiveSegmentIndex(segments, 62)).toBe(-1)
+  })
+
+  it('returns -1 for a time before the first segment starts', () => {
+    expect(findActiveSegmentIndex(segments, -1)).toBe(-1)
+  })
+
+  it('returns -1 for a time in a gap between two segments', () => {
+    expect(findActiveSegmentIndex(segments, 20)).toBe(-1)
+  })
+
+  it('returns -1 for a time after the last segment ends', () => {
+    expect(findActiveSegmentIndex(segments, 500)).toBe(-1)
+  })
+
+  it('finds the last segment when time lands exactly on its start', () => {
+    expect(findActiveSegmentIndex(segments, 94)).toBe(2)
   })
 })
 

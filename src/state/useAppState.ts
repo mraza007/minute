@@ -127,6 +127,7 @@ export function useAppState() {
   const [selectedMeta, setSelectedMeta] = useState<NoteMeta | null>(null)
   const [selectedSummary, setSelectedSummary] = useState<SummaryDoc | null>(null)
   const [selectedMarkdown, setSelectedMarkdown] = useState('')
+  const [selectedAudioPath, setSelectedAudioPath] = useState<string | null>(null)
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const transcriptCache = useRef(new Map<string, NoteWithTranscript>())
   // Bumped on every `loadNoteTranscript` call and captured per in-flight
@@ -179,6 +180,7 @@ export function useAppState() {
           setSelectedTranscript(cached.transcript.segments)
           setSelectedSummary(cached.summary)
           setSelectedMarkdown(cached.markdown)
+          setSelectedAudioPath(cached.audioPath)
           setTranscriptLoading(false)
           return
         }
@@ -194,6 +196,7 @@ export function useAppState() {
           setSelectedTranscript(data.transcript.segments)
           setSelectedSummary(data.summary)
           setSelectedMarkdown(data.markdown)
+          setSelectedAudioPath(data.audioPath)
         })
         .catch(err => {
           if (transcriptRequestId.current !== requestId) return
@@ -214,6 +217,7 @@ export function useAppState() {
       setSelectedTranscript([])
       setSelectedSummary(null)
       setSelectedMarkdown('')
+      setSelectedAudioPath(null)
       return
     }
     loadNoteTranscript(selectedNoteId)
@@ -722,6 +726,7 @@ export function useAppState() {
     selectedMeta,
     selectedSummary,
     selectedMarkdown,
+    selectedAudioPath,
     summaryStatus,
     summaryError,
     transcriptLoading,

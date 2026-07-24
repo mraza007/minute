@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { NoteMeta, StoredSegment, SummaryDoc } from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
-import { formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
+import { findActiveSegmentIndex, formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
+import { useAudioPlayer } from '../state/useAudioPlayer'
 import type { SummaryStatus } from '../state/useAppState'
 import { AiNotesPanel } from './AiNotesPanel'
 import { MarkdownCard } from './MarkdownCard'
@@ -28,6 +29,8 @@ export interface NoteViewProps {
   selectedTranscript: StoredSegment[]
   selectedSummary: SummaryDoc | null
   selectedMarkdown: string
+  /** This note's `audio.wav` path from `get_note`, or `null` if it doesn't exist on disk — same staleness contract as `selectedTranscript`/`selectedSummary`/`selectedMarkdown` (only trusted once `selectedMeta.id` matches `meta.id`). Feeds `useAudioPlayer`; `null` renders PlayerBar's disabled "Audio removed" state. */
+  selectedAudioPath: string | null
   transcriptLoading: boolean
   noteTab: NoteTab
   setNoteTab: (tab: NoteTab) => void
@@ -327,6 +330,7 @@ export function NoteView({
   selectedTranscript,
   selectedSummary,
   selectedMarkdown,
+  selectedAudioPath,
   transcriptLoading,
   noteTab,
   setNoteTab,
@@ -360,6 +364,7 @@ export function NoteView({
   const showTranscriptLoading = transcriptLoading && !transcriptReady
   const summary = transcriptReady ? selectedSummary : null
   const markdown = transcriptReady ? selectedMarkdown : ''
+  const audioPath = transcriptReady ? selectedAudioPath : null
 
   // Both re-derive their full input on every call (a segment-by-segment
   // adapter pass, a UTF-8 byte-length encode) — worth skipping once
@@ -367,6 +372,48 @@ export function NoteView({
   // rest of this sweep (see MarkdownCard/Sidebar/TitleBar).
   const displaySegments = useMemo(() => storedSegmentsToDisplay(segments), [segments])
   const markdownBytes = useMemo(() => new TextEncoder().encode(markdown).length, [markdown])
+
+  // Owns the single `<audio>` element for whichever note is selected —
+  // re-pointed at a fresh src (and reset to 0:00/paused) whenever
+  // `audioPath` changes, torn down entirely when it's `null` (no audio.wav
+  // on disk). Destructured (rather than kept as one `player` object) so the
+  // `useCallback`/`useMemo` dependency arrays below can name exactly the
+  // fields they use — see useAudioPlayer's docs for why
+  // `play`/`pause`/`toggle`/`seek`/`skip`/`cycleRate` are permanently stable
+  // identities, which is what keeps `handleSeekFromTranscript` below (and
+  // therefore TranscriptList's `onSeek` prop) stable too.
+  const { playing, currentTime, duration, rate, play, toggle, seek, skip, cycleRate } = useAudioPlayer(audioPath)
+
+  // The real audio element's duration once its metadata has loaded; before
+  // that (or with no audio at all) falls back to the note's persisted
+  // duration so the total time label doesn't flash "00:00" for the instant
+  // between selecting a note and the browser reporting its real duration.
+  const durationSec = duration > 0 ? duration : (meta?.durationSec ?? 0)
+
+  // Which transcript segment (if any) playback is currently inside —
+  // recomputed on every `currentTime` tick (~4Hz while playing) via a cheap
+  // binary search, but handed to TranscriptList as a plain index rather than
+  // raw `currentTime` so its memo only re-renders on the rarer "crossed into
+  // a different segment" transition — see TranscriptList's own docs. Gated
+  // on `playing` so a paused/at-rest position (e.g. sitting at 0:00 before
+  // playback ever starts) never shows a stale/misleading highlight — only
+  // actual playback does, per the design ("while playing").
+  const activeIndex = useMemo(
+    () => (playing ? findActiveSegmentIndex(segments, currentTime) : -1),
+    [segments, currentTime, playing],
+  )
+
+  // Transcript timestamp click → seek and start playback. `seek`/`play` are
+  // themselves permanently stable, so this is too — required for
+  // TranscriptList's memo to actually hold across NoteView's frequent
+  // re-renders while audio plays.
+  const handleSeekFromTranscript = useCallback(
+    (seconds: number) => {
+      seek(seconds)
+      play()
+    },
+    [seek, play],
+  )
 
   // Curried per-note closures handed down to the memoized MarkdownCard/
   // AiNotesPanel — `useCallback`'d (keyed on `meta`'s id, plus whichever
@@ -502,9 +549,24 @@ export function NoteView({
                 Loading transcript…
               </div>
             ) : (
-              <TranscriptList segments={displaySegments} />
+              <TranscriptList
+                segments={displaySegments}
+                activeIndex={activeIndex}
+                onSeek={handleSeekFromTranscript}
+                seekable={audioPath !== null}
+              />
             )}
-            <PlayerBar durationSec={meta.durationSec} />
+            <PlayerBar
+              audioPath={audioPath}
+              playing={playing}
+              currentTime={currentTime}
+              durationSec={durationSec}
+              rate={rate}
+              onToggle={toggle}
+              onSkip={skip}
+              onSeek={seek}
+              onCycleRate={cycleRate}
+            />
           </div>
         )}
         {noteTab === 'md' && (

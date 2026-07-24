@@ -70,7 +70,12 @@ fn recommended_models(_app: AppHandle) -> Result<Recommendation, String> {
 /// yet); `markdown` is `store::render_note_md`'s output for the same
 /// meta/transcript/summary, rendered fresh on every read rather than read
 /// back off `note.md` — the file and this field are two renderings of the
-/// same source of truth, not two sources of truth.
+/// same source of truth, not two sources of truth. `audioPath` is the
+/// absolute path to `audio.wav` (see `store::audio_path`) when it's actually
+/// present on disk, `None` otherwise — the frontend's `PlayerBar` uses this
+/// (via `convertFileSrc`, over Tauri's asset protocol — never bytes over
+/// IPC) to decide between real playback and its honest "Audio removed"
+/// disabled state, rather than assuming every note has audio.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NoteWithTranscript {
@@ -78,6 +83,7 @@ struct NoteWithTranscript {
   transcript: Transcript,
   summary: Option<SummaryDoc>,
   markdown: String,
+  audio_path: Option<String>,
 }
 
 #[tauri::command]
@@ -91,7 +97,8 @@ fn get_note(state: State<SharedStore>, id: String) -> Result<NoteWithTranscript,
   let (meta, transcript) = store.get_note(&id).map_err(|e| e.to_string())?;
   let summary = store.read_summary(&id).map_err(|e| e.to_string())?;
   let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
-  Ok(NoteWithTranscript { meta, transcript, summary, markdown })
+  let audio_path = store::audio_path(&store.note_dir(&id)).map(|p| p.to_string_lossy().into_owned());
+  Ok(NoteWithTranscript { meta, transcript, summary, markdown, audio_path })
 }
 
 #[tauri::command]

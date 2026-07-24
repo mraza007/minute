@@ -69,6 +69,7 @@ export default function App() {
               selectedTranscript={s.selectedTranscript}
               selectedSummary={s.selectedSummary}
               selectedMarkdown={s.selectedMarkdown}
+              selectedAudioPath={s.selectedAudioPath}
               transcriptLoading={s.transcriptLoading}
               noteTab={s.noteTab}
               setNoteTab={s.setNoteTab}

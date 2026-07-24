@@ -97,6 +97,7 @@ function setupIPC(opts: SetupOpts = {}) {
             transcript: { segments: [] },
             summary: null,
             markdown: `# ${match.title}`,
+            audioPath: null,
           } satisfies NoteWithTranscript
         }
         case 'rename_note': {
@@ -277,6 +278,7 @@ describe('App', () => {
           ? { summary: 'Auto-generated summary of the call.', decisions: [], actionItems: [] }
           : null,
         markdown: '# Auto-summarized note',
+        audioPath: null,
       }),
     })
 

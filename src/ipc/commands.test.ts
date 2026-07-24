@@ -129,6 +129,7 @@ describe('ipc/commands', () => {
       },
       summary: null,
       markdown: '# Client call — Acme',
+      audioPath: '/notes/20260722-120000/audio.wav',
     }
     const calls = captureIPC(() => fixture)
 

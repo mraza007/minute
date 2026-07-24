@@ -24,8 +24,12 @@ export interface ActionItem {
 export interface TranscriptSegment {
   initials: string
   speaker: string
+  /** Formatted `mm:ss` display of `start` — what the timestamp button renders. */
   time: string
   text: string
+  /** Seconds into the recording — what clicking the timestamp seeks playback to, and what the active-segment highlight compares against `currentTime`. */
+  start: number
+  end: number
 }
 
 export interface SttModelInfo {

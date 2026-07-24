@@ -285,5 +285,41 @@ export function storedSegmentsToDisplay(segments: StoredSegment[]): TranscriptSe
     speaker: seg.speaker,
     time: formatMmSs(seg.start),
     text: seg.text,
+    start: seg.start,
+    end: seg.end,
   }))
+}
+
+/**
+ * Binary search over `segments` (assumed sorted ascending by `start`, as
+ * `transcript.json`/`storedSegmentsToDisplay`'s output always is — whisper
+ * emits them in stream order) for the index of the segment whose
+ * `[start, end)` window contains `time` — what `NoteView` uses to derive
+ * `TranscriptList`'s active-segment highlight from `useAudioPlayer`'s
+ * `currentTime`, at up to ~4Hz (native `timeupdate` cadence) while playing.
+ * `-1` when `time` falls before the first segment, after the last, or into a
+ * gap between two segments' windows (whisper segments aren't always
+ * contiguous — silence between them isn't covered by either neighbor).
+ *
+ * Finds the last segment whose `start <= time` (a standard "rightmost
+ * insertion point" binary search), then confirms `time` still falls inside
+ * that segment's window before returning it — a segment whose `end` has
+ * already passed doesn't count as active just because it's the most recent
+ * one that started.
+ */
+export function findActiveSegmentIndex(segments: { start: number; end: number }[], time: number): number {
+  let lo = 0
+  let hi = segments.length - 1
+  let candidate = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (segments[mid].start <= time) {
+      candidate = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  if (candidate === -1) return -1
+  return time < segments[candidate].end ? candidate : -1
 }
