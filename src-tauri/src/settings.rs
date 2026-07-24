@@ -22,24 +22,31 @@ const SETTINGS_TMP_FILE: &str = "settings.json.tmp";
 /// yet" state, distinct from any particular catalog id, so callers that need
 /// a concrete model (e.g. `start_recording`) fall back to a hardcoded
 /// default themselves rather than this module inventing one.
+///
+/// No `encryptLibrary` field (Stage 4 Task 3 removed it — the app never
+/// implemented at-rest encryption of its own; the library only ever
+/// inherited whatever FileVault protection macOS itself provides, so the
+/// toggle was a fake capability). `serde` ignores unknown fields by default
+/// (no `#[serde(deny_unknown_fields)]` here), so an old `settings.json`
+/// still carrying `"encryptLibrary"` from a pre-Task-3 install still parses
+/// fine — the field is just silently dropped on load, then absent from the
+/// next save. See `settings_json_with_a_legacy_encrypt_library_field_still_parses`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub stt_model: Option<String>,
     pub llm_model: Option<String>,
     pub delete_audio_after_30d: bool,
-    pub encrypt_library: bool,
 }
 
 impl Default for Settings {
-    /// Matches the Stage 1 mock's initial toggle states: delete-after-30d
-    /// on, encryption off, no model selected yet.
+    /// Matches the Stage 1 mock's initial toggle state: delete-after-30d on,
+    /// no model selected yet.
     fn default() -> Self {
         Self {
             stt_model: None,
             llm_model: None,
             delete_audio_after_30d: true,
-            encrypt_library: false,
         }
     }
 }
@@ -58,7 +65,6 @@ pub struct SettingsPatch {
     pub stt_model: Option<String>,
     pub llm_model: Option<String>,
     pub delete_audio_after_30d: Option<bool>,
-    pub encrypt_library: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -73,9 +79,6 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.delete_audio_after_30d {
         settings.delete_audio_after_30d = v;
-    }
-    if let Some(v) = patch.encrypt_library {
-        settings.encrypt_library = v;
     }
 }
 
@@ -187,7 +190,6 @@ mod tests {
         assert_eq!(settings.stt_model, None);
         assert_eq!(settings.llm_model, None);
         assert!(settings.delete_audio_after_30d);
-        assert!(!settings.encrypt_library);
     }
 
     #[test]
@@ -197,13 +199,40 @@ mod tests {
             stt_model: Some("whisper-medium".to_string()),
             llm_model: Some("qwen3.5-4b".to_string()),
             delete_audio_after_30d: false,
-            encrypt_library: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
         let loaded = load_settings(dir.path());
 
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn settings_json_with_a_legacy_encrypt_library_field_still_parses() {
+        // A settings.json written by a pre-Task-3 build of the app still has
+        // `"encryptLibrary"` on disk — serde ignores unknown fields by
+        // default (Settings has no `#[serde(deny_unknown_fields)]`), so this
+        // must load cleanly, with the removed field simply dropped, rather
+        // than falling back to defaults or failing to parse.
+        let dir = tempdir().unwrap();
+        let legacy_json = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "llmModel": null,
+            "deleteAudioAfter30d": false,
+            "encryptLibrary": true,
+        });
+        fs::write(settings_path(dir.path()), serde_json::to_string(&legacy_json).unwrap()).unwrap();
+
+        let loaded = load_settings(dir.path());
+
+        assert_eq!(
+            loaded,
+            Settings {
+                stt_model: Some("whisper-medium".to_string()),
+                llm_model: None,
+                delete_audio_after_30d: false,
+            }
+        );
     }
 
     #[test]
@@ -230,7 +259,6 @@ mod tests {
             stt_model: Some("whisper-small".to_string()),
             llm_model: None,
             delete_audio_after_30d: true,
-            encrypt_library: false,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -238,7 +266,7 @@ mod tests {
         assert!(raw.contains("\"sttModel\""));
         assert!(raw.contains("\"llmModel\""));
         assert!(raw.contains("\"deleteAudioAfter30d\""));
-        assert!(raw.contains("\"encryptLibrary\""));
+        assert!(!raw.contains("\"encryptLibrary\""));
     }
 
     #[test]
@@ -268,7 +296,6 @@ mod tests {
             stt_model: Some("whisper-medium".to_string()),
             llm_model: Some("gemma-4-e4b".to_string()),
             delete_audio_after_30d: Some(false),
-            encrypt_library: Some(true),
         };
 
         apply_patch(&mut settings, patch);
@@ -276,7 +303,6 @@ mod tests {
         assert_eq!(settings.stt_model, Some("whisper-medium".to_string()));
         assert_eq!(settings.llm_model, Some("gemma-4-e4b".to_string()));
         assert!(!settings.delete_audio_after_30d);
-        assert!(settings.encrypt_library);
     }
 
     #[test]
@@ -285,13 +311,11 @@ mod tests {
             stt_model: Some("whisper-small".to_string()),
             llm_model: Some("qwen3.5-4b".to_string()),
             delete_audio_after_30d: true,
-            encrypt_library: false,
         };
         let patch = SettingsPatch {
             stt_model: None,
             llm_model: None,
             delete_audio_after_30d: Some(false),
-            encrypt_library: None,
         };
 
         apply_patch(&mut settings, patch);
@@ -299,7 +323,6 @@ mod tests {
         assert_eq!(settings.stt_model, Some("whisper-small".to_string()));
         assert_eq!(settings.llm_model, Some("qwen3.5-4b".to_string()));
         assert!(!settings.delete_audio_after_30d);
-        assert!(!settings.encrypt_library);
     }
 
     #[test]
@@ -308,7 +331,6 @@ mod tests {
             stt_model: Some("whisper-small".to_string()),
             llm_model: None,
             delete_audio_after_30d: true,
-            encrypt_library: false,
         };
         let mut settings = original.clone();
 

@@ -103,6 +103,7 @@ describe('ipc/commands', () => {
         model: 'whisper-small',
         status: 'transcribed',
         speakers: 1,
+        audioDeleted: false,
       },
     ]
     const calls = captureIPC(() => fixture)
@@ -123,6 +124,7 @@ describe('ipc/commands', () => {
         model: 'whisper-small',
         status: 'transcribed',
         speakers: 1,
+        audioDeleted: false,
       },
       transcript: {
         segments: [{ speaker: 'Speaker 1', start: 0, end: 3.2, text: 'Hello there.' }],
@@ -206,6 +208,7 @@ describe('ipc/commands', () => {
       model: 'whisper-small',
       status: 'transcribed',
       speakers: 1,
+      audioDeleted: false,
     }
     const calls = captureIPC(() => meta)
 
@@ -230,7 +233,6 @@ describe('ipc/commands', () => {
       sttModel: 'whisper-small',
       llmModel: null,
       deleteAudioAfter30d: true,
-      encryptLibrary: false,
     }
     const calls = captureIPC(() => settings)
 
@@ -246,7 +248,6 @@ describe('ipc/commands', () => {
       sttModel: 'whisper-medium',
       llmModel: null,
       deleteAudioAfter30d: true,
-      encryptLibrary: false,
     }
     const calls = captureIPC(() => updated)
 

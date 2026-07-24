@@ -14,7 +14,6 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     sttModel: null,
     llmModel: null,
     deleteAudioAfter30d: true,
-    encryptLibrary: false,
     ...overrides,
   }
 }

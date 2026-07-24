@@ -20,8 +20,6 @@ export interface SettingsViewProps {
   noteCount: number
   tDel: boolean
   toggleDel: () => void
-  tEnc: boolean
-  toggleEnc: () => void
 }
 
 const cardStyle: CSSProperties = {
@@ -240,8 +238,6 @@ export function SettingsView({
   noteCount,
   tDel,
   toggleDel,
-  tEnc,
-  toggleEnc,
 }: SettingsViewProps) {
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
@@ -361,8 +357,8 @@ export function SettingsView({
             <div style={{ marginTop: 16 }}>
               <Toggle on={tDel} onToggle={toggleDel} label="Delete original audio 30 days after transcription" />
             </div>
-            <div style={{ marginTop: 10 }}>
-              <Toggle on={tEnc} onToggle={toggleEnc} label="Encrypt note library with FileVault key" />
+            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-faint)' }}>
+              Your library inherits FileVault full-disk encryption.
             </div>
           </div>
         </div>

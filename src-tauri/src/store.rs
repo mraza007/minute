@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use time::{OffsetDateTime, UtcOffset};
+use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
 use crate::llm::SummaryDoc;
@@ -30,6 +30,14 @@ pub struct NoteMeta {
     pub model: String,
     pub status: NoteStatus,
     pub speakers: u32,
+    /// Set `true` once the 30-day audio sweep (see [`sweep_candidates`]/
+    /// [`Store::run_audio_sweep`]) has deleted this note's `audio.wav`.
+    /// `#[serde(default)]` so `meta.json` files written before this field
+    /// existed still parse — they simply default to `false` ("audio has not
+    /// been swept"), which is the correct interpretation: a pre-Task-3 note
+    /// still has its audio.wav sitting on disk untouched.
+    #[serde(default)]
+    pub audio_deleted: bool,
 }
 
 /// One transcript segment, as stored in `transcript.json`.
@@ -261,6 +269,7 @@ impl Store {
             model: model.to_string(),
             status: NoteStatus::Recording,
             speakers: 1,
+            audio_deleted: false,
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -502,6 +511,99 @@ impl Store {
         Ok(())
     }
 
+    /// Runs the 30-day audio sweep: for every note [`sweep_candidates`]
+    /// selects against `now`, deletes `audio.wav` (tolerating one that's
+    /// already missing — not an error, same tolerance `delete_note` and
+    /// friends give already-gone files) and persists `audioDeleted: true`
+    /// via the normal atomic [`Store::write_meta`] path. Returns the number
+    /// of notes actually swept.
+    ///
+    /// Whether to call this at all is entirely the caller's decision (gated
+    /// on `Settings::deleteAudioAfter30d` — see `lib.rs`'s `setup`) — this
+    /// method itself has no opinion on the setting. Deliberately tolerant
+    /// per-note: a single note whose `audio.wav` can't be removed (a
+    /// permissions error, say) or whose `meta.json` can't be re-persisted is
+    /// logged and skipped, rather than aborting the rest of the sweep over
+    /// one bad note.
+    pub fn run_audio_sweep(&self, now: OffsetDateTime) -> Result<usize> {
+        let notes = self.list_notes()?;
+        let candidates = sweep_candidates(&notes, now);
+        let mut swept = 0;
+        for mut meta in notes {
+            if !candidates.contains(&meta.id) {
+                continue;
+            }
+            let audio_path = self.note_dir(&meta.id).join(AUDIO_FILE);
+            if let Err(e) = fs::remove_file(&audio_path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("audio sweep: failed to delete audio.wav for note {}: {e}", meta.id);
+                    continue;
+                }
+            }
+            meta.audio_deleted = true;
+            if let Err(e) = self.write_meta(&meta) {
+                log::warn!("audio sweep: failed to persist audioDeleted for note {}: {e}", meta.id);
+                continue;
+            }
+            swept += 1;
+        }
+        Ok(swept)
+    }
+}
+
+/// Which notes the 30-day audio sweep should delete `audio.wav` for, given
+/// the current instant `now` (injected rather than read internally, for
+/// testability — same shape as [`Store::create_note`]'s `now` parameter). A
+/// note is a candidate iff all three hold:
+///
+/// - its `createdAt` parses as RFC3339 and is *strictly* more than 30×24h
+///   before `now`. The boundary is deliberately exclusive at exactly 30
+///   days: a note doesn't lose its audio the instant it turns 30 days old,
+///   only once it's unambiguously past that mark.
+/// - its `status` is [`NoteStatus::Ready`] or [`NoteStatus::Transcribed`] —
+///   never [`NoteStatus::Recording`], so an in-progress recording's audio is
+///   never touched no matter how stale its `createdAt` looks (a note stuck
+///   at `Recording` for 30+ days would be a bug elsewhere, not a green light
+///   to delete its only copy of the audio).
+/// - it isn't already `audioDeleted` — a previous sweep (or any other path
+///   that ever sets the flag) makes a note permanently ineligible; there's
+///   no "audio.wav reappeared" case to re-detect.
+///
+/// Whether the sweep should run *at all* is the caller's responsibility
+/// (gated on `Settings::deleteAudioAfter30d`) — this function takes no
+/// settings, just notes + now, so its selection rule is unit-testable in
+/// isolation from that.
+///
+/// A note whose `createdAt` fails to parse is skipped (logged via
+/// `log::warn!`) rather than panicking, or — worse — being swept just
+/// because its age couldn't be determined: malformed metadata must never be
+/// the reason real audio gets deleted.
+pub fn sweep_candidates(notes: &[NoteMeta], now: OffsetDateTime) -> Vec<String> {
+    let cutoff = now - Duration::days(30);
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    notes
+        .iter()
+        .filter(|meta| {
+            if meta.audio_deleted {
+                return false;
+            }
+            if !matches!(meta.status, NoteStatus::Ready | NoteStatus::Transcribed) {
+                return false;
+            }
+            match OffsetDateTime::parse(&meta.created_at, rfc3339) {
+                Ok(created) => created < cutoff,
+                Err(e) => {
+                    log::warn!(
+                        "audio sweep: skipping note {} — unparseable createdAt {:?} ({e})",
+                        meta.id,
+                        meta.created_at
+                    );
+                    false
+                }
+            }
+        })
+        .map(|meta| meta.id.clone())
+        .collect()
 }
 
 /// The path `reveal_note` should hand to Finder for a given note directory:
@@ -1107,6 +1209,197 @@ mod tests {
     }
 
     #[test]
+    fn note_meta_without_audio_deleted_field_parses_as_false_default() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        // Simulate a pre-Task-3 meta.json: written back without the
+        // `audioDeleted` field at all (not even `false` explicitly) — must
+        // still parse, defaulting to `false`.
+        let legacy_json = serde_json::json!({
+            "id": meta.id,
+            "title": meta.title,
+            "createdAt": meta.created_at,
+            "durationSec": meta.duration_sec,
+            "model": meta.model,
+            "status": "recording",
+            "speakers": meta.speakers,
+        });
+        fs::write(store.meta_path(&meta.id), serde_json::to_string(&legacy_json).unwrap()).unwrap();
+
+        let (read_back, _) = store.get_note(&meta.id).unwrap();
+        assert!(!read_back.audio_deleted);
+    }
+
+    // --- sweep_candidates ---------------------------------------------------
+
+    fn sweep_meta(id: &str, created_at: &str, status: NoteStatus, audio_deleted: bool) -> NoteMeta {
+        NoteMeta {
+            id: id.to_string(),
+            title: "Note".to_string(),
+            created_at: created_at.to_string(),
+            duration_sec: 60.0,
+            model: "whisper-small".to_string(),
+            status,
+            speakers: 1,
+            audio_deleted,
+        }
+    }
+
+    fn rfc3339(dt: OffsetDateTime) -> String {
+        dt.format(&time::format_description::well_known::Rfc3339).unwrap()
+    }
+
+    #[test]
+    fn sweep_candidates_selects_a_note_strictly_older_than_30_days() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let just_over_30_days = now - Duration::days(30) - Duration::seconds(1);
+        let meta = sweep_meta("old", &rfc3339(just_over_30_days), NoteStatus::Ready, false);
+
+        assert_eq!(sweep_candidates(&[meta], now), vec!["old".to_string()]);
+    }
+
+    #[test]
+    fn sweep_candidates_excludes_a_note_exactly_30_days_old() {
+        // The boundary is deliberately exclusive: exactly 30*24h old is NOT
+        // yet swept, only strictly older than that.
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let exactly_30_days = now - Duration::days(30);
+        let meta = sweep_meta("boundary", &rfc3339(exactly_30_days), NoteStatus::Ready, false);
+
+        assert!(sweep_candidates(&[meta], now).is_empty());
+    }
+
+    #[test]
+    fn sweep_candidates_excludes_a_note_younger_than_30_days() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let recent = now - Duration::days(1);
+        let meta = sweep_meta("recent", &rfc3339(recent), NoteStatus::Ready, false);
+
+        assert!(sweep_candidates(&[meta], now).is_empty());
+    }
+
+    #[test]
+    fn sweep_candidates_excludes_recording_status_no_matter_how_old() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(365);
+        let meta = sweep_meta("still-recording", &rfc3339(ancient), NoteStatus::Recording, false);
+
+        assert!(sweep_candidates(&[meta], now).is_empty());
+    }
+
+    #[test]
+    fn sweep_candidates_includes_transcribed_status_not_just_ready() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(60);
+        let meta = sweep_meta("transcribed-old", &rfc3339(ancient), NoteStatus::Transcribed, false);
+
+        assert_eq!(sweep_candidates(&[meta], now), vec!["transcribed-old".to_string()]);
+    }
+
+    #[test]
+    fn sweep_candidates_excludes_notes_already_audio_deleted() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(60);
+        let meta = sweep_meta("already-swept", &rfc3339(ancient), NoteStatus::Ready, true);
+
+        assert!(sweep_candidates(&[meta], now).is_empty());
+    }
+
+    #[test]
+    fn sweep_candidates_skips_a_note_with_malformed_created_at_without_panicking() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let meta = sweep_meta("corrupt", "not-a-real-timestamp", NoteStatus::Ready, false);
+
+        assert!(sweep_candidates(&[meta], now).is_empty());
+    }
+
+    #[test]
+    fn sweep_candidates_only_returns_the_matching_ids_out_of_a_mixed_set() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(60);
+        let recent = now - Duration::days(1);
+        let notes = vec![
+            sweep_meta("eligible", &rfc3339(ancient), NoteStatus::Ready, false),
+            sweep_meta("too-young", &rfc3339(recent), NoteStatus::Ready, false),
+            sweep_meta("recording", &rfc3339(ancient), NoteStatus::Recording, false),
+            sweep_meta("already-deleted", &rfc3339(ancient), NoteStatus::Transcribed, true),
+        ];
+
+        assert_eq!(sweep_candidates(&notes, now), vec!["eligible".to_string()]);
+    }
+
+    // --- run_audio_sweep (fs) ------------------------------------------------
+
+    #[test]
+    fn run_audio_sweep_deletes_old_audio_sets_the_flag_and_leaves_the_transcript_intact() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store.create_note("Old note", "whisper-small", now - Duration::days(40)).unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
+        store
+            .append_segment(&old.id, StoredSegment { speaker: "Speaker 1".into(), start: 0.0, end: 1.0, text: "hi".into() })
+            .unwrap();
+
+        let recent = store.create_note("Recent note", "whisper-small", now - Duration::days(1)).unwrap();
+        store.finalize_note(&recent.id, 60.0, 1).unwrap();
+        fs::write(store.note_dir(&recent.id).join(AUDIO_FILE), b"recent wav bytes").unwrap();
+
+        let swept = store.run_audio_sweep(now).unwrap();
+
+        assert_eq!(swept, 1);
+        assert!(!store.note_dir(&old.id).join(AUDIO_FILE).exists());
+        let (old_meta, old_transcript) = store.get_note(&old.id).unwrap();
+        assert!(old_meta.audio_deleted);
+        assert_eq!(old_transcript.segments.len(), 1);
+        assert_eq!(old_transcript.segments[0].text, "hi");
+
+        assert!(store.note_dir(&recent.id).join(AUDIO_FILE).exists());
+        let (recent_meta, _) = store.get_note(&recent.id).unwrap();
+        assert!(!recent_meta.audio_deleted);
+    }
+
+    #[test]
+    fn run_audio_sweep_tolerates_an_already_missing_audio_wav() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store.create_note("No audio", "whisper-small", now - Duration::days(40)).unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        // Deliberately no audio.wav written for this note.
+
+        let swept = store.run_audio_sweep(now).unwrap();
+
+        assert_eq!(swept, 1);
+        let (meta, _) = store.get_note(&old.id).unwrap();
+        assert!(meta.audio_deleted);
+    }
+
+    #[test]
+    fn run_audio_sweep_never_touches_a_still_recording_note() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        // create_note leaves status at Recording; never finalized.
+        let recording = store.create_note("Still recording", "whisper-small", now - Duration::days(90)).unwrap();
+        fs::write(store.note_dir(&recording.id).join(AUDIO_FILE), b"live wav bytes").unwrap();
+
+        let swept = store.run_audio_sweep(now).unwrap();
+
+        assert_eq!(swept, 0);
+        assert!(store.note_dir(&recording.id).join(AUDIO_FILE).exists());
+        let (meta, _) = store.get_note(&recording.id).unwrap();
+        assert!(!meta.audio_deleted);
+    }
+
+    #[test]
     fn note_dir_stats_on_vanished_dir_returns_zero() {
         // storage_stats runs lock-free and can race a concurrent
         // delete_note between listing notes/ and walking a given note's
@@ -1358,6 +1651,7 @@ mod tests {
             model: "whisper-small".to_string(),
             status: NoteStatus::Transcribed,
             speakers: 4,
+            audio_deleted: false,
         };
         overrides(&mut meta);
         meta

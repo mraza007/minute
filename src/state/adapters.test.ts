@@ -24,6 +24,7 @@ function meta(overrides: Partial<NoteMeta> = {}): NoteMeta {
     model: 'whisper-small',
     status: 'transcribed',
     speakers: 1,
+    audioDeleted: false,
     ...overrides,
   }
 }

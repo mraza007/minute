@@ -28,7 +28,6 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     sttModel: null,
     llmModel: null,
     deleteAudioAfter30d: true,
-    encryptLibrary: false,
     ...overrides,
   }
 }
@@ -74,6 +73,7 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
     model: 'whisper-small',
     status: 'transcribed',
     speakers: 2,
+    audioDeleted: false,
     ...overrides,
   }
 }
@@ -271,25 +271,21 @@ describe('useAppState', () => {
     expect(result.current.sel).toBe(3)
   })
 
-  it('toggleDel and toggleEnc flip local state', async () => {
+  it('toggleDel flips local state', async () => {
     setupIPC()
     const result = await loaded()
     expect(result.current.tDel).toBe(true)
     act(() => result.current.toggleDel())
     expect(result.current.tDel).toBe(false)
-    expect(result.current.tEnc).toBe(false)
-    act(() => result.current.toggleEnc())
-    expect(result.current.tEnc).toBe(true)
   })
 
-  it('initializes tDel/tEnc from persisted settings rather than the hardcoded default', async () => {
-    setupIPC({ settings: settingsFixture({ deleteAudioAfter30d: false, encryptLibrary: true }) })
+  it('initializes tDel from persisted settings rather than the hardcoded default', async () => {
+    setupIPC({ settings: settingsFixture({ deleteAudioAfter30d: false }) })
     const result = await loaded()
     expect(result.current.tDel).toBe(false)
-    expect(result.current.tEnc).toBe(true)
   })
 
-  it('toggleDel/toggleEnc persist the flipped value via set_settings', async () => {
+  it('toggleDel persists the flipped value via set_settings', async () => {
     const calls: Array<{ cmd: string; args: unknown }> = []
     setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
     const result = await loaded()
@@ -298,9 +294,6 @@ describe('useAppState', () => {
     expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.deleteAudioAfter30d === false)).toBe(
       true,
     )
-
-    act(() => result.current.toggleEnc())
-    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.encryptLibrary === true)).toBe(true)
   })
 
   it('setSttModel/setLlmModel persist the selection via set_settings', async () => {

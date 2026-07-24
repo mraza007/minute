@@ -11,7 +11,6 @@ const DEFAULT_SETTINGS: Settings = {
   sttModel: null,
   llmModel: null,
   deleteAudioAfter30d: true,
-  encryptLibrary: false,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

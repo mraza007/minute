@@ -115,8 +115,6 @@ export default function App() {
               noteCount={s.notes.length}
               tDel={s.tDel}
               toggleDel={s.toggleDel}
-              tEnc={s.tEnc}
-              toggleEnc={s.toggleEnc}
             />
           )}
         </div>

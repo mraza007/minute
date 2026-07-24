@@ -59,7 +59,14 @@ export interface Recommendation {
 /** `store::NoteStatus` — `#[serde(rename_all = "lowercase")]`. */
 export type NoteStatus = 'recording' | 'transcribed' | 'ready'
 
-/** `store::NoteMeta` — `#[serde(rename_all = "camelCase")]`. */
+/**
+ * `store::NoteMeta` — `#[serde(rename_all = "camelCase")]`. `audioDeleted`
+ * is `#[serde(default)]` on the Rust side (old `meta.json` files without it
+ * parse as `false`) — set `true` once the 30-day sweep has deleted this
+ * note's `audio.wav`; `get_note`'s `audioPath` is `null` whenever this is
+ * `true`, regardless of what's actually on disk (see `NoteWithTranscript`'s
+ * docs).
+ */
 export interface NoteMeta {
   id: string
   title: string
@@ -68,6 +75,7 @@ export interface NoteMeta {
   model: string
   status: NoteStatus
   speakers: number
+  audioDeleted: boolean
 }
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */
@@ -92,10 +100,13 @@ export interface Transcript {
  * every read — the sole source of a note's markdown rendering (Stage 3 Task
  * 5 retired the frontend's own `noteToMarkdown` generator; every component
  * that renders/exports a note's markdown reads this field). `audioPath` is
- * the absolute path to `audio.wav` when it exists on disk, `null` otherwise
- * (never captured, or swept) — fed through `convertFileSrc` to build the
- * `<audio>` element's `src` in `useAudioPlayer`; `null` drives `PlayerBar`'s
- * disabled "Audio removed" state.
+ * the absolute path to `audio.wav` when it exists on disk AND
+ * `meta.audioDeleted` is `false`, `null` otherwise (never captured, or swept
+ * — the backend checks `audioDeleted` explicitly rather than just file
+ * existence, so a stray leftover `audio.wav` can never resurrect playback
+ * for a note the sweep already marked swept) — fed through `convertFileSrc`
+ * to build the `<audio>` element's `src` in `useAudioPlayer`; `null` drives
+ * `PlayerBar`'s disabled "Audio removed" state.
  */
 export interface NoteWithTranscript {
   meta: NoteMeta
@@ -129,12 +140,18 @@ export interface StorageStats {
 
 // --- settings.rs -------------------------------------------------------
 
-/** `settings::Settings` — `#[serde(rename_all = "camelCase")]`. */
+/**
+ * `settings::Settings` — `#[serde(rename_all = "camelCase")]`. No
+ * `encryptLibrary` (Stage 4 Task 3 removed the toggle — the app never
+ * implemented at-rest encryption of its own; the library only ever
+ * inherited whatever FileVault protection macOS itself provides, so the
+ * toggle was a fake capability. Settings.tsx now shows a passive line about
+ * that instead).
+ */
 export interface Settings {
   sttModel: string | null
   llmModel: string | null
   deleteAudioAfter30d: boolean
-  encryptLibrary: boolean
 }
 
 /**
@@ -147,7 +164,6 @@ export interface SettingsPatch {
   sttModel?: string
   llmModel?: string
   deleteAudioAfter30d?: boolean
-  encryptLibrary?: boolean
 }
 
 // --- events ----------------------------------------------------------------

@@ -8,7 +8,7 @@ import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendatio
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 const storage: StorageStats = { modelsBytes: 500_000_000, audioBytes: 200_000_000, notesBytes: 100_000_000 }
-const settings: Settings = { sttModel: null, llmModel: null, deleteAudioAfter30d: true, encryptLibrary: false }
+const settings: Settings = { sttModel: null, llmModel: null, deleteAudioAfter30d: true }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -51,6 +51,7 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
     model: 'whisper-small',
     status: 'transcribed',
     speakers: 4,
+    audioDeleted: false,
     ...overrides,
   }
 }

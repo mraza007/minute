@@ -60,8 +60,6 @@ const base = {
   noteCount: 14,
   tDel: true,
   toggleDel: vi.fn(),
-  tEnc: false,
-  toggleEnc: vi.fn(),
 }
 
 describe('SettingsView', () => {
@@ -238,21 +236,22 @@ describe('SettingsView', () => {
     expect(screen.getByText('14 notes')).toBeInTheDocument()
   })
 
-  it('wires the storage toggles to their handlers', () => {
+  it('wires the delete-audio toggle to its handler', () => {
     const toggleDel = vi.fn()
-    const toggleEnc = vi.fn()
-    render(<SettingsView {...base} toggleDel={toggleDel} toggleEnc={toggleEnc} />)
+    render(<SettingsView {...base} toggleDel={toggleDel} />)
 
     fireEvent.click(screen.getByRole('switch', { name: /delete original audio 30 days after transcription/i }))
     expect(toggleDel).toHaveBeenCalledTimes(1)
-
-    fireEvent.click(screen.getByRole('switch', { name: /encrypt note library with filevault key/i }))
-    expect(toggleEnc).toHaveBeenCalledTimes(1)
   })
 
   it('reflects toggle state via aria-checked', () => {
-    render(<SettingsView {...base} tDel={true} tEnc={false} />)
+    render(<SettingsView {...base} tDel={true} />)
     expect(screen.getByRole('switch', { name: /delete original audio/i })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('switch', { name: /encrypt note library/i })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('shows a passive FileVault line instead of an encryption toggle', () => {
+    render(<SettingsView {...base} />)
+    expect(screen.getByText('Your library inherits FileVault full-disk encryption.')).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /encrypt/i })).not.toBeInTheDocument()
   })
 })

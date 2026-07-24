@@ -72,10 +72,15 @@ fn recommended_models(_app: AppHandle) -> Result<Recommendation, String> {
 /// back off `note.md` — the file and this field are two renderings of the
 /// same source of truth, not two sources of truth. `audioPath` is the
 /// absolute path to `audio.wav` (see `store::audio_path`) when it's actually
-/// present on disk, `None` otherwise — the frontend's `PlayerBar` uses this
-/// (via `convertFileSrc`, over Tauri's asset protocol — never bytes over
-/// IPC) to decide between real playback and its honest "Audio removed"
-/// disabled state, rather than assuming every note has audio.
+/// present on disk AND `meta.audioDeleted` is false, `None` otherwise — the
+/// frontend's `PlayerBar` uses this (via `convertFileSrc`, over Tauri's
+/// asset protocol — never bytes over IPC) to decide between real playback
+/// and its honest "Audio removed" disabled state, rather than assuming
+/// every note has audio. `meta.audioDeleted` is checked explicitly (not just
+/// "does audio.wav exist") so a stray/leftover `audio.wav` from a race with
+/// the sweep can never resurrect playback for a note the sweep has already
+/// marked swept — `audioDeleted` is the single source of truth once it's
+/// `true`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NoteWithTranscript {
@@ -97,7 +102,11 @@ fn get_note(state: State<SharedStore>, id: String) -> Result<NoteWithTranscript,
   let (meta, transcript) = store.get_note(&id).map_err(|e| e.to_string())?;
   let summary = store.read_summary(&id).map_err(|e| e.to_string())?;
   let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
-  let audio_path = store::audio_path(&store.note_dir(&id)).map(|p| p.to_string_lossy().into_owned());
+  let audio_path = if meta.audio_deleted {
+    None
+  } else {
+    store::audio_path(&store.note_dir(&id)).map(|p| p.to_string_lossy().into_owned())
+  };
   Ok(NoteWithTranscript { meta, transcript, summary, markdown, audio_path })
 }
 
@@ -306,6 +315,12 @@ pub fn run() {
       // this to resolve a default model when the frontend doesn't pass one
       // explicitly.
       let shared_settings: SharedSettings = settings::open_shared(&app_data_dir);
+      // Read before `shared_settings` is moved into `app.manage` below —
+      // this is the one-shot decision the background sweep thread further
+      // down needs; it doesn't hold onto `shared_settings` itself (a toggle
+      // flipped after launch only affects the *next* launch's sweep, not a
+      // currently-running one).
+      let sweep_enabled = settings::lock_settings(&shared_settings).delete_audio_after_30d;
       app.manage(shared_settings);
 
       // A single shared handle: Tauri commands and the recording/
@@ -314,6 +329,29 @@ pub fn run() {
       // concurrency contract on `store::Store`. `open_shared` is the only
       // way to obtain one; `Store::new` itself is private to `store.rs`.
       let shared_store: SharedStore = store::open_shared(app_data_dir);
+
+      // 30-day audio sweep (Task 3): if the user has opted into
+      // `deleteAudioAfter30d`, walk the note library once at launch and
+      // delete `audio.wav` for anything `store::sweep_candidates` selects —
+      // see that function's docs for the exact eligibility rule
+      // (createdAt strictly >30 days old, status ready/transcribed, not
+      // already swept). Runs on a detached background thread — never the
+      // Tauri event-loop thread — so a large library's directory walk never
+      // delays startup. Deliberately fire-and-forget: no event is emitted,
+      // nothing in the UI waits on it; the next `get_note`/`list_notes` a
+      // screen happens to make just reflects whatever the sweep has
+      // finished by then. `log::info!` reports the swept count for
+      // visibility; a failure (e.g. the notes dir vanished) is
+      // `log::warn!`'d rather than surfaced to the user — this is
+      // best-effort housekeeping, not a user-facing operation.
+      if sweep_enabled {
+        let sweep_store = shared_store.clone();
+        std::thread::spawn(move || match lock_store(&sweep_store).run_audio_sweep(time::OffsetDateTime::now_utc()) {
+          Ok(count) => log::info!("audio sweep: deleted audio.wav for {count} note(s)"),
+          Err(e) => log::warn!("audio sweep failed: {e}"),
+        });
+      }
+
       app.manage(shared_store);
 
       // Managed state guarding the single loaded summarization LLM — see

@@ -12,6 +12,7 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
     model: 'whisper-small',
     status: 'transcribed',
     speakers: 4,
+    audioDeleted: false,
     ...overrides,
   }
 }

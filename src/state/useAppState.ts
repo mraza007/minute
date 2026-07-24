@@ -80,11 +80,14 @@ export function useAppState() {
   // one has resolved — see `togglePause`'s docs.
   const pauseInFlight = useRef(false)
 
-  // Settings-backed storage/privacy toggles — seeded from `get_settings` in
-  // the initial load effect below; `toggleDel`/`toggleEnc` further down
-  // flip these optimistically and persist through `set_settings`.
+  // Settings-backed storage/privacy toggle — seeded from `get_settings` in
+  // the initial load effect below; `toggleDel` further down flips this
+  // optimistically and persists through `set_settings`. There used to be a
+  // second one (`tEnc`/`toggleEnc`, "Encrypt note library") — Stage 4 Task 3
+  // removed it as a fake capability (the app never implemented at-rest
+  // encryption of its own); Settings.tsx now shows a passive FileVault line
+  // in its place instead of a toggle.
   const [tDel, setTDel] = useState(true)
-  const [tEnc, setTEnc] = useState(false)
 
   // Per-note summarization status/error, driven entirely by `summary-status`
   // events (registered at app-mount level below, alongside the recording
@@ -311,7 +314,6 @@ export function useAppState() {
         setHardware(loadedHardware)
         setStorage(loadedStorage)
         setTDel(loadedSettings.deleteAudioAfter30d)
-        setTEnc(loadedSettings.encryptLibrary)
         const hasInstalledStt = loadedModels.some(m => m.kind === 'stt' && m.state === 'installed')
         setView(hasInstalledStt ? 'notes' : 'onboarding')
         setLoaded(true)
@@ -654,14 +656,6 @@ export function useAppState() {
     })
   }, [reportError])
 
-  const toggleEnc = useCallback(() => {
-    setTEnc(next => {
-      const flipped = !next
-      ipc.setSettings({ encryptLibrary: flipped }).catch(reportError)
-      return flipped
-    })
-  }, [reportError])
-
   /**
    * Persists the recommended pair as the user's explicit selections for
    * whichever of the two actually finished installing during onboarding
@@ -731,7 +725,6 @@ export function useAppState() {
     summaryError,
     transcriptLoading,
     tDel,
-    tEnc,
     noteTab,
     sidebarNotes,
     statsLine,
@@ -747,7 +740,6 @@ export function useAppState() {
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,
     toggleDel,
-    toggleEnc,
     downloadModel: modelManager.downloadModel,
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,
