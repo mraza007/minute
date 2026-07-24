@@ -119,7 +119,10 @@ fn get_settings(state: State<SharedSettings>) -> Settings {
 
 /// Merges `patch` into the current settings (only the fields it sets are
 /// changed — see `settings::apply_patch`), persists the result to
-/// `settings.json`, and returns the updated settings.
+/// `settings.json`, and returns the updated settings. All the actual logic
+/// (including keeping the shared in-memory settings consistent with disk if
+/// the save fails) lives in `settings::apply_and_save` — this command is
+/// just the thin AppHandle-resolving wrapper around it.
 #[tauri::command]
 fn set_settings(
   app: AppHandle,
@@ -130,10 +133,7 @@ fn set_settings(
     .path()
     .app_data_dir()
     .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-  let mut guard = settings::lock_settings(&state);
-  settings::apply_patch(&mut guard, patch);
-  settings::save_settings(&root, &guard).map_err(|e| e.to_string())?;
-  Ok(guard.clone())
+  settings::apply_and_save(&root, &state, patch).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

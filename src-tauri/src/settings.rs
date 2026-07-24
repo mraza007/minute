@@ -155,6 +155,27 @@ pub(crate) fn open_shared(root: &Path) -> SharedSettings {
     Arc::new(Mutex::new(load_settings(root)))
 }
 
+/// Applies `patch` and persists the result — the `set_settings` command's
+/// actual logic, factored out here (rather than left inline in `lib.rs`) so
+/// it's unit-testable without a running Tauri app, including the failure
+/// path a real `AppHandle`-based test can't easily force.
+///
+/// Patches a *local clone* of the shared settings first, saves that clone to
+/// disk, and only writes it back into the shared guard once the save has
+/// actually succeeded. If `save_settings` fails (a disk error, an
+/// unwritable/vanished app-data root, ...), the shared in-memory settings
+/// are left exactly as they were before this call — never left holding a
+/// patch that didn't actually make it to disk, which would otherwise let
+/// memory and disk permanently disagree about what's persisted.
+pub fn apply_and_save(root: &Path, state: &SharedSettings, patch: SettingsPatch) -> Result<Settings> {
+    let mut guard = lock_settings(state);
+    let mut candidate = guard.clone();
+    apply_patch(&mut candidate, patch);
+    save_settings(root, &candidate)?;
+    *guard = candidate.clone();
+    Ok(candidate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +362,48 @@ mod tests {
         let dir = tempdir().unwrap();
         let shared = open_shared(dir.path());
         assert_eq!(*lock_settings(&shared), Settings::default());
+    }
+
+    #[test]
+    fn apply_and_save_commits_the_patch_to_both_disk_and_shared_state_on_success() {
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        let patch = SettingsPatch {
+            stt_model: Some("whisper-medium".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+
+        assert_eq!(returned.stt_model, Some("whisper-medium".to_string()));
+        assert_eq!(*lock_settings(&shared), returned);
+        assert_eq!(load_settings(dir.path()), returned);
+    }
+
+    #[test]
+    fn apply_and_save_leaves_shared_state_unchanged_when_the_save_fails() {
+        let dir = tempdir().unwrap();
+        // A file where the settings root is expected to be a directory —
+        // `save_settings`'s `fs::create_dir_all` (and thus the whole call)
+        // fails against this, forcing the failure path deterministically.
+        let root = dir.path().join("not-a-dir");
+        fs::write(&root, b"not a directory").unwrap();
+
+        let original = Settings {
+            stt_model: Some("whisper-small".to_string()),
+            ..Settings::default()
+        };
+        let shared: SharedSettings = Arc::new(Mutex::new(original.clone()));
+        let patch = SettingsPatch {
+            stt_model: Some("whisper-medium".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        let result = apply_and_save(&root, &shared, patch);
+
+        assert!(result.is_err());
+        // The in-memory settings must be exactly what they were before the
+        // failed call — not the patched candidate that never made it to disk.
+        assert_eq!(*lock_settings(&shared), original);
     }
 }
