@@ -27,7 +27,7 @@ use tokio::io::AsyncWriteExt;
 use crate::audio::{self, SharedRecorderState};
 use crate::catalog::{self, CatalogEntry};
 use crate::error::{MinuteError, Result};
-use crate::llm::SummarizeBusy;
+use crate::llm::LlmBusy;
 
 /// Where a target model file's in-progress download lives: `<target>.part`.
 pub fn part_path(target: &Path) -> PathBuf {
@@ -481,19 +481,25 @@ fn remove_file_tolerant(path: &Path) -> Result<()> {
 
 /// Whether `delete_model` should refuse to run, and why — an active
 /// download for the model being deleted takes priority over an active
-/// recording or summarization (both being true is still just "cancel the
+/// recording or LLM generation (both being true is still just "cancel the
 /// download first"; that's the more specific, actionable message). Pure so
 /// the guard combination is unit-testable without a running Tauri app or
 /// real audio hardware.
-fn delete_model_blocked(downloading: bool, recording: bool, summarizing: bool) -> Option<&'static str> {
+///
+/// `generating` covers *either* an in-flight summarize or an in-flight ask
+/// — both share the one [`LlmBusy`] flag (see that type's docs), so this
+/// guard can't (and doesn't need to) tell which one is actually running;
+/// the message stays honest about that by not claiming it's specifically a
+/// summary.
+fn delete_model_blocked(downloading: bool, recording: bool, generating: bool) -> Option<&'static str> {
     if downloading {
         return Some("model is downloading — cancel first");
     }
     if recording {
         return Some("cannot remove models while recording");
     }
-    if summarizing {
-        return Some("cannot remove models while a summary is generating");
+    if generating {
+        return Some("cannot remove models while the assistant is generating");
     }
     None
 }
@@ -513,23 +519,23 @@ fn delete_model_blocked(downloading: bool, recording: bool, summarizing: bool) -
 /// recording, so removing it out from under a running recording is unsafe
 /// regardless of which model id the frontend thinks it's deleting.
 ///
-/// Also refuses while *any* summarization is in flight (same
-/// conservative, not-just-the-model-in-use shape as the recording check,
-/// and the same global-not-per-note tradeoff as `toggle_action_item`'s busy
-/// guard in `lib.rs`) — the summarize worker holds a loaded LLM file from
-/// disk for the duration via `llm::LlmEngineState`.
+/// Also refuses while *any* LLM generation (a summarize or an ask) is in
+/// flight (same conservative, not-just-the-model-in-use shape as the
+/// recording check, and the same global-not-per-note tradeoff as
+/// `toggle_action_item`'s busy guard in `lib.rs`) — the worker holds a
+/// loaded LLM file from disk for the duration via `llm::LlmEngineState`.
 #[tauri::command]
 pub fn delete_model(
     app: AppHandle,
     registry: State<'_, DownloadRegistry>,
     recorder: State<'_, SharedRecorderState>,
-    summarize_busy: State<'_, SummarizeBusy>,
+    llm_busy: State<'_, LlmBusy>,
     id: String,
 ) -> std::result::Result<(), String> {
     if let Some(msg) = delete_model_blocked(
         registry_is_active(&registry, &id),
         audio::is_recording_active(&recorder),
-        summarize_busy.load(Ordering::SeqCst),
+        llm_busy.load(Ordering::SeqCst),
     ) {
         return Err(msg.to_string());
     }
@@ -789,10 +795,10 @@ mod tests {
     }
 
     #[test]
-    fn delete_model_blocked_by_active_summarization() {
+    fn delete_model_blocked_by_active_generation() {
         assert_eq!(
             delete_model_blocked(false, false, true),
-            Some("cannot remove models while a summary is generating")
+            Some("cannot remove models while the assistant is generating")
         );
     }
 
@@ -805,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_model_blocked_prioritizes_recording_over_summarizing() {
+    fn delete_model_blocked_prioritizes_recording_over_generating() {
         assert_eq!(
             delete_model_blocked(false, true, true),
             Some("cannot remove models while recording")

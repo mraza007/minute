@@ -46,12 +46,16 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     summaryError: undefined,
     llmInstalled: false,
     llmModelName: '',
+    askHistory: [],
+    askStatus: 'idle',
+    llmBusy: false,
     onRename: vi.fn(),
     onDelete: vi.fn(),
     onReveal: vi.fn(),
     onCopyError: vi.fn(),
     onToggleActionItem: vi.fn(),
     onRegenerateSummary: vi.fn(),
+    onAsk: vi.fn(),
     onGoSettings: vi.fn(),
     ...overrides,
   }
@@ -413,8 +417,58 @@ describe('NoteView', () => {
       const onGoSettings = vi.fn()
       const meta = noteFixture()
       render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedSummary: null, llmInstalled: false, onGoSettings })} />)
-      fireEvent.click(screen.getByRole('button', { name: 'Download a summary model' }))
+      // Two links share this name — the summary placeholder's and the ask
+      // section's own no-LLM placeholder — both call the same `onGoSettings`.
+      const links = screen.getAllByRole('button', { name: 'Download a summary model' })
+      fireEvent.click(links[0])
       expect(onGoSettings).toHaveBeenCalledTimes(1)
+    })
+
+    it('passes askHistory/askStatus/llmBusy through to the panel', () => {
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            llmInstalled: true,
+            askHistory: [{ question: 'What did they decide?', answer: 'They locked pricing.' }],
+            askStatus: 'idle',
+            llmBusy: false,
+          })}
+        />,
+      )
+      expect(screen.getByText('What did they decide?')).toBeInTheDocument()
+      expect(screen.getByText('They locked pricing.')).toBeInTheDocument()
+    })
+
+    it('submitting a question in the ask input calls onAsk with the note id and question', () => {
+      const onAsk = vi.fn()
+      const meta = noteFixture()
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, llmInstalled: true, onAsk })} />)
+
+      const input = screen.getByPlaceholderText('Ask about this meeting…')
+      fireEvent.change(input, { target: { value: 'What did they discuss?' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(onAsk).toHaveBeenCalledWith(meta.id, 'What did they discuss?')
+    })
+
+    it('clicking a citation in an ask answer seeks/plays via the same audio player TranscriptList uses (no throw, with audio present)', () => {
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            llmInstalled: true,
+            selectedAudioPath: '/notes/abc/audio.wav',
+            askHistory: [{ question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34].' }],
+          })}
+        />,
+      )
+      const citation = screen.getByRole('button', { name: '[01:34]' })
+      expect(() => fireEvent.click(citation)).not.toThrow()
     })
 
     it('passes summaryError through to the panel error card', () => {

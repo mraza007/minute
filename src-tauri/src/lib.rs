@@ -9,7 +9,7 @@ mod settings;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
-use llm::{SharedLlmEngine, SummarizeBusy, SummaryDoc};
+use llm::{LlmBusy, SharedLlmEngine, SummaryDoc};
 use settings::{Settings, SettingsPatch, SharedSettings};
 use std::sync::atomic::Ordering;
 use store::{lock_store, render_note_md, NoteMeta, SearchHit, SharedStore, StorageStats, Transcript};
@@ -127,24 +127,25 @@ fn rename_note(state: State<SharedStore>, id: String, title: String) -> Result<N
 /// `summarize_note` itself (the command that produces the summary in the
 /// first place) is Task 4.
 ///
-/// Refuses while *any* summarization is in flight (a plain load of
-/// [`SummarizeBusy`], same cheap fast-path shape as `summarize_note`'s own
-/// pre-check) — a regenerate overwrites the displayed summary's
-/// `actionItems` array wholesale when it completes, and a toggle that lands
-/// after that overwrite would patch the wrong item by index against the new
-/// array. This is a conservative *global* check (busy from summarizing any
-/// note blocks toggling on every note), not per-note, by design: `busy` has
-/// no note id attached to it (see [`SummarizeBusy`]'s docs), and the race it
-/// guards against is rare enough that "toggling on some other note briefly
-/// blocked" is an acceptable trade for not threading note-scoped busy
-/// tracking through the store. The frontend's own checkbox-disable-while-
-/// running (`AiNotesPanel`) is the primary defense for the common case; this
-/// is the cheap backend backstop for anything that slips past it (a toggle
-/// already in flight when Regenerate is clicked, a stale UI, ...).
+/// Refuses while *any* LLM generation (a summarize or an ask) is in flight
+/// (a plain load of [`LlmBusy`], same cheap fast-path shape as
+/// `summarize_note`'s own pre-check) — a regenerate overwrites the displayed
+/// summary's `actionItems` array wholesale when it completes, and a toggle
+/// that lands after that overwrite would patch the wrong item by index
+/// against the new array. This is a conservative *global* check (busy from
+/// generating anything, for any note, blocks toggling on every note), not
+/// per-note, by design: `busy` has no note id (or flow) attached to it (see
+/// [`LlmBusy`]'s docs), and the race it guards against is rare enough that
+/// "toggling briefly blocked while an unrelated ask is answering" is an
+/// acceptable trade for not threading note/flow-scoped busy tracking
+/// through the store. The frontend's own checkbox-disable-while-running
+/// (`AiNotesPanel`) is the primary defense for the common case; this is the
+/// cheap backend backstop for anything that slips past it (a toggle already
+/// in flight when Regenerate is clicked, a stale UI, ...).
 #[tauri::command]
 fn toggle_action_item(
   state: State<SharedStore>,
-  busy: State<SummarizeBusy>,
+  busy: State<LlmBusy>,
   id: String,
   index: usize,
   done: bool,
@@ -157,14 +158,16 @@ fn toggle_action_item(
     .map_err(|e| e.to_string())
 }
 
-/// Whether `toggle_action_item` should refuse to run because a
-/// summarization is in flight — see the command's docs for why this is a
-/// conservative *global* (not per-note) check. Pure, mirroring
+/// Whether `toggle_action_item` should refuse to run because an LLM
+/// generation is in flight — see the command's docs for why this is a
+/// conservative *global* (not per-note/per-flow) check. The message stays
+/// honest about not knowing which flow is actually running (it could be an
+/// ask, not a regenerate) rather than assuming "summary". Pure, mirroring
 /// `download::delete_model_blocked`, so the guard is unit-testable without a
 /// running Tauri app.
-fn toggle_action_item_blocked(summarizing: bool) -> Option<&'static str> {
-  if summarizing {
-    return Some("summary is being regenerated");
+fn toggle_action_item_blocked(generating: bool) -> Option<&'static str> {
+  if generating {
+    return Some("the assistant is generating — try again in a moment");
   }
   None
 }
@@ -174,15 +177,15 @@ mod tests {
   use super::*;
 
   #[test]
-  fn toggle_action_item_blocked_while_summarizing() {
+  fn toggle_action_item_blocked_while_generating() {
     assert_eq!(
       toggle_action_item_blocked(true),
-      Some("summary is being regenerated")
+      Some("the assistant is generating — try again in a moment")
     );
   }
 
   #[test]
-  fn toggle_action_item_blocked_allows_when_not_summarizing() {
+  fn toggle_action_item_blocked_allows_when_not_generating() {
     assert_eq!(toggle_action_item_blocked(false), None);
   }
 }
@@ -266,8 +269,8 @@ fn finalize_active_recording_on_exit(app: &AppHandle) {
   let recorder = app.state::<audio::SharedRecorderState>();
   let settings = app.state::<SharedSettings>();
   let engine = app.state::<SharedLlmEngine>();
-  let summarize_busy = app.state::<SummarizeBusy>();
-  match audio::stop_recording(app.clone(), store, recorder, settings, engine, summarize_busy) {
+  let llm_busy = app.state::<LlmBusy>();
+  match audio::stop_recording(app.clone(), store, recorder, settings, engine, llm_busy) {
     Ok(meta) => log::info!("finalized in-progress recording {} on app close", meta.id),
     Err(e) if e == "no active recording" => {}
     Err(e) => log::warn!("failed to finalize in-progress recording on app close: {e}"),
@@ -287,6 +290,7 @@ pub fn run() {
       rename_note,
       toggle_action_item,
       llm::summarize_note,
+      llm::ask_note,
       delete_note,
       storage_stats,
       reveal_note,
@@ -364,12 +368,13 @@ pub fn run() {
       let llm_engine: SharedLlmEngine = llm::open_shared();
       app.manage(llm_engine);
 
-      // Single-summarization-at-a-time gate, deliberately a separate atomic
-      // from `llm_engine`'s mutex (see `llm::LlmEngineState`'s concurrency
-      // note) — checking or claiming it never blocks on a long-running
-      // generation.
-      let summarize_busy: SummarizeBusy = llm::open_busy_flag();
-      app.manage(summarize_busy);
+      // Single-generation-at-a-time gate, app-wide (a summarize and an ask
+      // share it — see `llm::LlmBusy`'s docs), deliberately a separate
+      // atomic from `llm_engine`'s mutex (see `llm::LlmEngineState`'s
+      // concurrency note) — checking or claiming it never blocks on a
+      // long-running generation.
+      let llm_busy: LlmBusy = llm::open_busy_flag();
+      app.manage(llm_busy);
 
       // Tracks in-flight model downloads so `cancel_download` can signal
       // them and `list_models` can report `Downloading` state — see

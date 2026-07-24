@@ -341,6 +341,44 @@ export function splitHighlight(text: string, query: string): HighlightSegment[] 
   return segments
 }
 
+/** One piece of `splitAnswerCitations`'s output — a slice of an ask-your-notes answer, tagged with the seek target if it's a `[mm:ss]` citation. */
+export interface AnswerPart {
+  text: string
+  citationSeconds?: number
+}
+
+const CITATION_RE = /\[(\d{1,2}):(\d{2})\]/g
+
+/**
+ * Splits an ask-your-notes answer into plain-text and citation parts around
+ * every inline `[mm:ss]` timestamp citation the model was instructed to emit
+ * (see `llm::build_ask_prompt`) — `AiNotesPanel` renders each citation part
+ * as a clickable seek button (`onSeekCitation(citationSeconds)`) and
+ * everything else as plain text, same split-around-matches shape as
+ * `splitHighlight` above. `mm` is 1-2 digits, `ss` exactly 2 (matches
+ * `format_mm_ss`'s zero-padded backend output); `mm * 60 + ss` doesn't
+ * assume `mm < 60`, so a genuine hour-plus citation (`mm` > 59) still parses
+ * to the right number of seconds. No citations at all returns the whole
+ * answer as a single plain part — a bare `[see above]`-style bracket with no
+ * digits/colon inside never matches `CITATION_RE`, so it's left as plain
+ * text rather than mistaken for a citation.
+ */
+export function splitAnswerCitations(answer: string): AnswerPart[] {
+  const parts: AnswerPart[] = []
+  let lastIndex = 0
+  for (const match of answer.matchAll(CITATION_RE)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) parts.push({ text: answer.slice(lastIndex, index) })
+    const mm = Number(match[1])
+    const ss = Number(match[2])
+    parts.push({ text: match[0], citationSeconds: mm * 60 + ss })
+    lastIndex = index + match[0].length
+  }
+  if (lastIndex < answer.length) parts.push({ text: answer.slice(lastIndex) })
+  if (parts.length === 0) parts.push({ text: answer })
+  return parts
+}
+
 export function findActiveSegmentIndex(segments: { start: number; end: number }[], time: number): number {
   let lo = 0
   let hi = segments.length - 1

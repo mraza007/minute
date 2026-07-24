@@ -106,3 +106,12 @@ export const summarizeNote = (id: string): Promise<void> => invokeCmd('summarize
  */
 export const toggleActionItem = (id: string, index: number, done: boolean): Promise<SummaryDoc> =>
   invokeCmd('toggle_action_item', { id, index, done })
+
+/**
+ * Asks `question` about note `id`'s transcript. Resolves once the worker
+ * has been queued, not once the answer is ready — listen for `ask-status`/
+ * `ask-answer` events (`onAskStatus`/`onAskAnswer`) for progress and the
+ * result. The answer is never persisted (session-only — see
+ * `AskAnswerEvent`'s docs).
+ */
+export const askNote = (id: string, question: string): Promise<void> => invokeCmd('ask_note', { id, question })

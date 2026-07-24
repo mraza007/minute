@@ -1,49 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
-import { onRecordingState, onSttStatus, onSummaryStatus, onTranscriptSegment } from '../ipc/events'
-import type { Hardware, NoteMeta, NoteWithTranscript, StorageStats, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
+import { onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
+import type { Hardware, NoteMeta, StorageStats, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { useModelManager } from './useModelManager'
+import { useNoteDetail } from './useNoteDetail'
 import { useTauriEvent } from './useTauriEvent'
+
+// `SummaryEventState`/`SummaryStatus` moved to `useNoteDetail.ts` (Stage 4
+// Task 5's extraction of this hook's note-detail slice) — re-exported here
+// unchanged so existing imports (`NoteView` imports `SummaryStatus` from
+// this module) don't have to churn.
+export type { SummaryEventState, SummaryStatus } from './useNoteDetail'
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000
-
-/**
- * Per-note summarization lifecycle as tracked in `summaryStatus`/
- * `summaryError` below — mirrors the wire event's `state` field
- * (`SummaryStatusEvent['state']`) exactly, including `'done'`, since that's
- * a real, meaningful transition worth remembering per note (e.g. so a
- * background summarization for a non-selected note is still known to have
- * finished if the user switches to it later).
- */
-export type SummaryEventState = 'running' | 'done' | 'error'
-
-/**
- * The AI notes panel's (and NoteView's status pill's) simplified view of a
- * note's summarization state — `'idle'` covers both "no `summary-status`
- * event seen this session" and "the last one was `'done'`", since `'done'`
- * itself carries no special UI once it's landed (the panel just renders the
- * real summary/decisions/action items normally at that point). Callers
- * collapse `summaryStatus[id]` (a `SummaryEventState | undefined`) down to
- * this before handing it to `NoteView`/`AiNotesPanel` — see `App.tsx`.
- */
-export type SummaryStatus = 'idle' | 'running' | 'error'
-
-/**
- * How many notes' `get_note` responses (transcript + summary + markdown)
- * `transcriptCache` keeps resident at once — carried debt flagged in the
- * Stage 3 plan. A plain re-insert-on-access `Map` (insertion order doubles
- * as recency order) with oldest-evict-on-overflow: `cacheGet` moves a hit to
- * the end, `cacheSet` does the same and then drops the first (oldest) entry
- * once the map exceeds this cap. Cheap and good enough at note-library
- * scale — no need for a dedicated LRU data structure.
- */
-const TRANSCRIPT_CACHE_CAP = 20
 
 /** Debounce window (ms) between a keystroke in the sidebar search input and the `search_notes` call it triggers — same value the ⌘K palette (`SearchPalette`) debounces its own input at. */
 const SIDEBAR_SEARCH_DEBOUNCE_MS = 150
@@ -127,18 +102,6 @@ export function useAppState() {
 
   useEffect(() => () => clearTimeout(sidebarSearchTimeout.current), [])
 
-  // Per-note summarization status/error, driven entirely by `summary-status`
-  // events (registered at app-mount level below, alongside the recording
-  // listeners — an auto-triggered summarization must not be missed just
-  // because NoteView isn't mounted to see it land). Keyed by note id rather
-  // than tracking only "the selected note" so a background summarization
-  // (e.g. for a note the user has since navigated away from) still updates
-  // correctly once its note is reselected. `summaryError` only ever holds
-  // entries for notes currently in `'error'` state — cleared once a later
-  // `running`/`done` event supersedes it.
-  const [summaryStatus, setSummaryStatus] = useState<Record<string, SummaryEventState>>({})
-  const [summaryError, setSummaryError] = useState<Record<string, string>>({})
-
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Stable identity (only refs/setState in its closure) — required so that
@@ -153,104 +116,20 @@ export function useAppState() {
 
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
 
-  // --- Note detail: real transcript loading for the selected note --------
-  //
-  // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
-  // back NoteView's Transcript/Markdown tabs and the AI notes panel once a
-  // note is actually selected — fetched via `get_note` (the notes list
-  // itself only carries `NoteMeta`, no segments/summary/markdown). Cached
-  // per id in `transcriptCache` (LRU-capped — see `cacheGet`/`cacheSet`) so
-  // re-selecting an already-viewed note is instant and doesn't re-hit the
-  // backend; `renameNote`/`deleteNote`/the `summary-status` 'done' handler
-  // below invalidate a note's cache entry since its on-disk content just
-  // changed out from under whatever's cached.
-  const [selectedTranscript, setSelectedTranscript] = useState<StoredSegment[]>([])
-  const [selectedMeta, setSelectedMeta] = useState<NoteMeta | null>(null)
-  const [selectedSummary, setSelectedSummary] = useState<SummaryDoc | null>(null)
-  const [selectedMarkdown, setSelectedMarkdown] = useState('')
-  const [selectedAudioPath, setSelectedAudioPath] = useState<string | null>(null)
-  const [transcriptLoading, setTranscriptLoading] = useState(false)
-  const transcriptCache = useRef(new Map<string, NoteWithTranscript>())
-  // Bumped on every `loadNoteTranscript` call and captured per in-flight
-  // request — guards against an out-of-order resolution (e.g. quickly
-  // selecting note A then B) clobbering newer state with a stale response.
-  const transcriptRequestId = useRef(0)
-
-  /**
-   * Reads a cache entry, marking it most-recently-used (moves it to the end
-   * of the map) — see `TRANSCRIPT_CACHE_CAP`'s docs. `undefined` on a miss,
-   * same as `Map.get`. `useCallback` with no deps — only touches the
-   * `transcriptCache` ref (stable by construction) and the module-level
-   * `TRANSCRIPT_CACHE_CAP` constant, so it has a permanently stable identity
-   * — required for `loadNoteTranscript`/`toggleActionItem` below to have
-   * stable identities of their own in turn.
-   */
-  const cacheGet = useCallback((id: string): NoteWithTranscript | undefined => {
-    const entry = transcriptCache.current.get(id)
-    if (entry) {
-      transcriptCache.current.delete(id)
-      transcriptCache.current.set(id, entry)
-    }
-    return entry
-  }, [])
-
-  /** Writes a cache entry as most-recently-used, evicting the single oldest entry if this pushes the map over `TRANSCRIPT_CACHE_CAP`. Same stable-identity rationale as `cacheGet`. */
-  const cacheSet = useCallback((id: string, data: NoteWithTranscript) => {
-    transcriptCache.current.delete(id)
-    transcriptCache.current.set(id, data)
-    if (transcriptCache.current.size > TRANSCRIPT_CACHE_CAP) {
-      const oldestId = transcriptCache.current.keys().next().value
-      if (oldestId !== undefined) transcriptCache.current.delete(oldestId)
-    }
-  }, [])
-
-  /**
-   * `useCallback` (deps: `cacheGet`, `cacheSet`, `reportError` — all three
-   * permanently stable) so this itself has a stable identity: `renameNote`/
-   * `toggleActionItem`/the `summary-status` 'done' handler below all call
-   * it, and several of those are themselves memoized for
-   * MarkdownCard/AiNotesPanel's benefit — a fresh `loadNoteTranscript` every
-   * render would ripple through and bust all of that.
-   */
-  const loadNoteTranscript = useCallback(
-    (id: string, opts: { force?: boolean } = {}) => {
-      if (!opts.force) {
-        const cached = cacheGet(id)
-        if (cached) {
-          setSelectedMeta(cached.meta)
-          setSelectedTranscript(cached.transcript.segments)
-          setSelectedSummary(cached.summary)
-          setSelectedMarkdown(cached.markdown)
-          setSelectedAudioPath(cached.audioPath)
-          setTranscriptLoading(false)
-          return
-        }
-      }
-      const requestId = ++transcriptRequestId.current
-      setTranscriptLoading(true)
-      ipc
-        .getNote(id)
-        .then(data => {
-          cacheSet(id, data)
-          if (transcriptRequestId.current !== requestId) return
-          setSelectedMeta(data.meta)
-          setSelectedTranscript(data.transcript.segments)
-          setSelectedSummary(data.summary)
-          setSelectedMarkdown(data.markdown)
-          setSelectedAudioPath(data.audioPath)
-        })
-        .catch(err => {
-          if (transcriptRequestId.current !== requestId) return
-          reportError(err)
-        })
-        .finally(() => {
-          if (transcriptRequestId.current === requestId) setTranscriptLoading(false)
-        })
-    },
-    [cacheGet, cacheSet, reportError],
-  )
-
   const selectedNoteId = notes[sel]?.id ?? null
+
+  /**
+   * The selected note's transcript/summary/markdown/audio-path (LRU-cached),
+   * summarization lifecycle, and ask-your-notes session state — see
+   * `useNoteDetail`'s own docs for why this extraction exists and why
+   * `selectedNoteId`/`reportError`/`refreshNotes` are threaded in rather
+   * than this hook reaching for shared context.
+   */
+  const refreshNotes = useCallback(() => {
+    ipc.listNotes().then(setNotes).catch(reportError)
+  }, [reportError])
+  const noteDetail = useNoteDetail({ selectedNoteId, reportError, refreshNotes })
+  const { loadNoteTranscript, invalidateNoteCache } = noteDetail
 
   // Invalidates a still-pending seek the instant it's no longer for the
   // note currently on screen — covers every way `sel` can change
@@ -385,18 +264,6 @@ export function useAppState() {
     }, SIDEBAR_SEARCH_DEBOUNCE_MS)
   }, [])
 
-  useEffect(() => {
-    if (!selectedNoteId) {
-      setSelectedMeta(null)
-      setSelectedTranscript([])
-      setSelectedSummary(null)
-      setSelectedMarkdown('')
-      setSelectedAudioPath(null)
-      return
-    }
-    loadNoteTranscript(selectedNoteId)
-  }, [selectedNoteId, loadNoteTranscript])
-
   /**
    * Header pencil → inline-edit commit: renames on disk, refreshes the notes
    * list, and (if still selected) reloads this note's transcript with its
@@ -409,7 +276,7 @@ export function useAppState() {
       ipc
         .renameNote(id, title)
         .then(() => {
-          transcriptCache.current.delete(id)
+          invalidateNoteCache(id)
           return ipc.listNotes()
         })
         .then(freshNotes => {
@@ -418,7 +285,7 @@ export function useAppState() {
         })
         .catch(reportError)
     },
-    [selectedNoteId, loadNoteTranscript, reportError],
+    [selectedNoteId, loadNoteTranscript, invalidateNoteCache, reportError],
   )
 
   /**
@@ -434,7 +301,7 @@ export function useAppState() {
       ipc
         .deleteNote(id)
         .then(() => {
-          transcriptCache.current.delete(id)
+          invalidateNoteCache(id)
           return ipc.listNotes()
         })
         .then(freshNotes => {
@@ -443,7 +310,7 @@ export function useAppState() {
         })
         .catch(reportError)
     },
-    [reportError],
+    [invalidateNoteCache, reportError],
   )
 
   /**
@@ -539,48 +406,6 @@ export function useAppState() {
     [],
   )
 
-  // Registered unconditionally at app-mount level (not gated on a note
-  // being selected, or on `view === 'notes'`) — same rationale as the
-  // recording listeners above: `stop_recording` auto-triggers
-  // summarization in the background, so the `running`/`done`/`error`
-  // sequence for it must land even if the user has navigated to Settings
-  // or a different note in the meantime. References `selectedNoteId`
-  // directly rather than through a ref — safe because `useTauriEvent`
-  // refreshes its callback closure on every render (see its docs), so this
-  // always sees the latest selection without needing one.
-  useTauriEvent(
-    onSummaryStatus,
-    payload => {
-      setSummaryStatus(prev => ({ ...prev, [payload.noteId]: payload.state }))
-
-      if (payload.state === 'error') {
-        setSummaryError(prev => ({ ...prev, [payload.noteId]: payload.error ?? 'Summarization failed' }))
-        return
-      }
-      // 'running' or 'done' supersedes any previous error for this note.
-      setSummaryError(prev => {
-        if (!(payload.noteId in prev)) return prev
-        const next = { ...prev }
-        delete next[payload.noteId]
-        return next
-      })
-
-      if (payload.state === 'done') {
-        // The note's summary/markdown/status just changed on disk —
-        // invalidate its cache entry, refetch it if it's the one currently
-        // on screen (so the AI notes panel picks up the real summary
-        // without a manual reselect), and refresh the notes list so its
-        // status flips transcribed -> ready in the sidebar/header pill.
-        transcriptCache.current.delete(payload.noteId)
-        if (payload.noteId === selectedNoteId) {
-          loadNoteTranscript(payload.noteId, { force: true })
-        }
-        ipc.listNotes().then(setNotes).catch(reportError)
-      }
-    },
-    [],
-  )
-
   const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
 
   const statsLine = useMemo(() => {
@@ -604,95 +429,6 @@ export function useAppState() {
   const llmInstalled = useMemo(
     () => modelManager.llmModel !== null && modelManager.models.some(m => m.kind === 'llm' && m.id === modelManager.llmModel && m.state === 'installed'),
     [modelManager.models, modelManager.llmModel],
-  )
-
-  /**
-   * Regenerate button / auto-trigger retry: (re)triggers summarization for
-   * `id` via `summarize_note`. Resolves once the backend has *queued* the
-   * worker, not once it finishes — `summary-status` events (see the
-   * listener above) are what actually drive `summaryStatus`/`summaryError`
-   * and the eventual cache refresh. Still worth its own `.catch` here
-   * (rather than relying solely on the event stream): `summarize_note`
-   * rejects synchronously — with no `summary-status` event at all — when
-   * the engine is already busy with another note, so that failure would
-   * otherwise go unsurfaced.
-   *
-   * `useCallback` with no deps — only closes over stable setters and the
-   * module-level `messageOf` — so this has a permanently stable identity;
-   * NoteView passes it straight through (curried per-note) to AiNotesPanel's
-   * `onRegenerate`.
-   */
-  const regenerateSummary = useCallback((id: string) => {
-    ipc.summarizeNote(id).catch(err => {
-      setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
-      setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
-    })
-  }, [])
-
-  /**
-   * AI notes panel checkbox click: flips one action item's `done` state.
-   * Optimistic — updates the cached `SummaryDoc` (and, if `id` is the
-   * selected note, `selectedSummary`) immediately, then confirms via
-   * `toggle_action_item`. On success the cache entry is dropped and (if
-   * selected) force-refetched rather than merged from the command's
-   * response — `toggle_action_item` only returns the updated `SummaryDoc`,
-   * not a fresh `markdown` rendering, and `note.md`'s checkbox did change
-   * server-side, so a full refetch is what keeps the Markdown tab honest.
-   * On failure, reverts the optimistic edit and reports the error.
-   *
-   * `useCallback` (deps: `selectedNoteId`, `cacheGet`, `cacheSet`,
-   * `loadNoteTranscript`, `reportError`) — `cacheGet`/`cacheSet`/
-   * `loadNoteTranscript` are each independently stable (see their own docs
-   * above), so this only actually gets a fresh identity when the selected
-   * note changes, same as `renameNote`. NoteView passes it straight through
-   * (curried per-note) to AiNotesPanel's `onToggleAction`.
-   */
-  const toggleActionItem = useCallback(
-    (id: string, index: number, done: boolean) => {
-      const before = cacheGet(id)
-      const previousDone = before?.summary?.actionItems[index]?.done
-      if (before?.summary) {
-        const optimisticSummary: SummaryDoc = {
-          ...before.summary,
-          actionItems: before.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
-        }
-        cacheSet(id, { ...before, summary: optimisticSummary })
-        if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
-      }
-
-      ipc
-        .toggleActionItem(id, index, done)
-        .then(() => {
-          transcriptCache.current.delete(id)
-          if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
-        })
-        .catch(err => {
-          // Scoped revert: flip only *this* toggle's field back, applied
-          // against whatever the cache holds right now — not the
-          // full-document snapshot captured when this call started. A
-          // second, unrelated toggle (or a confirmed refetch) may have
-          // landed in between; reverting off the stale snapshot would
-          // clobber that change instead of just undoing this one. If the
-          // cache entry (or this specific action item within it) isn't
-          // there anymore — evicted, or replaced wholesale by a
-          // `summary-status` 'done' refresh — there's nothing safe to patch
-          // in place, so fall back to a plain forced refetch instead.
-          const current = cacheGet(id)
-          const currentItem = current?.summary?.actionItems[index]
-          if (current?.summary && currentItem && previousDone !== undefined) {
-            const revertedSummary: SummaryDoc = {
-              ...current.summary,
-              actionItems: current.summary.actionItems.map((item, i) => (i === index ? { ...item, done: previousDone } : item)),
-            }
-            cacheSet(id, { ...current, summary: revertedSummary })
-            if (id === selectedNoteId) setSelectedSummary(revertedSummary)
-          } else if (id === selectedNoteId) {
-            loadNoteTranscript(id, { force: true })
-          }
-          reportError(err)
-        })
-    },
-    [selectedNoteId, cacheGet, cacheSet, loadNoteTranscript, reportError],
   )
 
   /**
@@ -786,7 +522,7 @@ export function useAppState() {
           .then(([freshNotes, freshStorage]) => {
             setNotes(freshNotes)
             setStorage(freshStorage)
-            transcriptCache.current.delete(newNote.id)
+            invalidateNoteCache(newNote.id)
             const idx = freshNotes.findIndex(n => n.id === newNote.id)
             setSel(idx >= 0 ? idx : 0)
           })
@@ -805,7 +541,7 @@ export function useAppState() {
         setStopping(false)
         reportError(err)
       })
-  }, [reportError])
+  }, [reportError, invalidateNoteCache])
 
   // `useCallback` (stable identity, no deps beyond the setter) — passed
   // straight through to the memoized Sidebar/TitleBar as `onGoNotes`/
@@ -887,14 +623,27 @@ export function useAppState() {
     sttError,
     sttStatusNoteId,
     liveSegments,
-    selectedTranscript,
-    selectedMeta,
-    selectedSummary,
-    selectedMarkdown,
-    selectedAudioPath,
-    summaryStatus,
-    summaryError,
-    transcriptLoading,
+    // `useNoteDetail`'s slice — handed through by name (not a blanket
+    // `...noteDetail` spread) so this hook's return shape stays exactly what
+    // it was before that extraction, plus the new ask-your-notes fields
+    // (`askHistory`/`askStatus`/`askQuestion`/`llmBusy`) it now also owns —
+    // `loadNoteTranscript`/`invalidateNoteCache` are `useNoteDetail`'s own
+    // internal seam (used above by `renameNote`/`deleteNote`/`stopRec`), not
+    // part of this hook's public surface.
+    selectedTranscript: noteDetail.selectedTranscript,
+    selectedMeta: noteDetail.selectedMeta,
+    selectedSummary: noteDetail.selectedSummary,
+    selectedMarkdown: noteDetail.selectedMarkdown,
+    selectedAudioPath: noteDetail.selectedAudioPath,
+    summaryStatus: noteDetail.summaryStatus,
+    summaryError: noteDetail.summaryError,
+    transcriptLoading: noteDetail.transcriptLoading,
+    regenerateSummary: noteDetail.regenerateSummary,
+    toggleActionItem: noteDetail.toggleActionItem,
+    askHistory: noteDetail.askHistory,
+    askStatus: noteDetail.askStatus,
+    askQuestion: noteDetail.askQuestion,
+    llmBusy: noteDetail.llmBusy,
     tDel,
     noteTab,
     sidebarNotes,
@@ -929,8 +678,6 @@ export function useAppState() {
     renameNote,
     deleteNote,
     revealNote,
-    regenerateSummary,
-    toggleActionItem,
     reportError,
   }
 }

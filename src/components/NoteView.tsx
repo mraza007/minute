@@ -4,6 +4,7 @@ import type { NoteTab, SttStatus } from '../types'
 import { findActiveSegmentIndex, formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
 import { useAudioPlayer } from '../state/useAudioPlayer'
 import type { SummaryStatus } from '../state/useAppState'
+import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
 import { AiNotesPanel } from './AiNotesPanel'
 import { MarkdownCard } from './MarkdownCard'
 import { PlayerBar } from './PlayerBar'
@@ -54,12 +55,19 @@ export interface NoteViewProps {
   summaryError?: string
   llmInstalled: boolean
   llmModelName: string
+  /** This note's ask-your-notes session history (newest first) — from `useNoteDetail`'s `askHistory`, already scoped to whichever note is selected. */
+  askHistory: AskHistoryEntry[]
+  /** This note's ask lifecycle — `'idle'` if no `ask-status` event has been seen for it this session. */
+  askStatus: AskStatus
+  /** Whether any LLM generation (a summarize or an ask, for any note) is in flight app-wide — see `useNoteDetail`'s `llmBusy` docs. */
+  llmBusy: boolean
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
   onReveal: (id: string) => void
   onCopyError: (err: unknown) => void
   onToggleActionItem: (id: string, index: number, done: boolean) => void
   onRegenerateSummary: (id: string) => void
+  onAsk: (id: string, question: string) => void
   onGoSettings: () => void
 }
 
@@ -355,12 +363,16 @@ export function NoteView({
   summaryError,
   llmInstalled,
   llmModelName,
+  askHistory,
+  askStatus,
+  llmBusy,
   onRename,
   onDelete,
   onReveal,
   onCopyError,
   onToggleActionItem,
   onRegenerateSummary,
+  onAsk,
   onGoSettings,
 }: NoteViewProps) {
   const transcriptTabRef = useRef<HTMLButtonElement>(null)
@@ -468,6 +480,12 @@ export function NoteView({
   const handleRegenerate = useCallback(() => {
     if (noteId) onRegenerateSummary(noteId)
   }, [noteId, onRegenerateSummary])
+  const handleAsk = useCallback(
+    (question: string) => {
+      if (noteId) onAsk(noteId, question)
+    },
+    [noteId, onAsk],
+  )
   const handleCopy = useCallback(() => {
     if (!navigator.clipboard) {
       onCopyError(new Error('Clipboard unavailable'))
@@ -617,6 +635,16 @@ export function NoteView({
         error={summaryError}
         modelName={llmModelName}
         llmInstalled={llmInstalled}
+        askHistory={askHistory}
+        askStatus={askStatus}
+        llmBusy={llmBusy}
+        onAsk={handleAsk}
+        // Citation click → seek target — the exact same seek-then-play
+        // callback TranscriptList's own `onSeek` uses (see
+        // `handleSeekFromTranscript` above), reused rather than a second
+        // `useAudioPlayer`-backed closure: both are "jump playback to this
+        // timestamp and start playing" for the note currently on screen.
+        onSeekCitation={handleSeekFromTranscript}
         onToggleAction={handleToggleAction}
         onRegenerate={handleRegenerate}
         onCopy={handleCopy}

@@ -7,6 +7,8 @@
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
+  AskAnswerEvent,
+  AskStatusEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
   RecordingStateEvent,
@@ -46,4 +48,12 @@ export function onSttStatus(cb: (payload: SttStatusEvent) => void): Promise<Unli
 
 export function onSummaryStatus(cb: (payload: SummaryStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SummaryStatusEvent>('summary-status', (event) => cb(event.payload))
+}
+
+export function onAskStatus(cb: (payload: AskStatusEvent) => void): Promise<UnlistenFn> {
+  return listen<AskStatusEvent>('ask-status', (event) => cb(event.payload))
+}
+
+export function onAskAnswer(cb: (payload: AskAnswerEvent) => void): Promise<UnlistenFn> {
+  return listen<AskAnswerEvent>('ask-answer', (event) => cb(event.payload))
 }

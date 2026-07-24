@@ -242,3 +242,30 @@ export interface SummaryStatusEvent {
   state: 'running' | 'done' | 'error'
   error: string | null
 }
+
+/**
+ * `llm.rs::AskStatusPayload` — event `ask-status`. Ask-your-notes'
+ * lifecycle counterpart to `SummaryStatusEvent`: `running` while the worker
+ * is generating, `done` once the answer has already gone out via a separate
+ * `ask-answer` event (emitted first — see that event's docs), `error`
+ * otherwise (no LLM installed, empty/missing transcript, model failure).
+ */
+export interface AskStatusEvent {
+  noteId: string
+  state: 'running' | 'done' | 'error'
+  error: string | null
+}
+
+/**
+ * `llm.rs::AskAnswerPayload` — event `ask-answer`. The actual answer to a
+ * question, carried in its own event rather than folded into
+ * `AskStatusEvent` — `question` rides along so a listener can match the
+ * answer back to what was asked. Session-only: never persisted anywhere on
+ * the backend (no `ask.json`, no note field) — a fresh app launch has no
+ * memory of any previous question.
+ */
+export interface AskAnswerEvent {
+  noteId: string
+  question: string
+  answer: string
+}

@@ -21,11 +21,16 @@ function baseProps(overrides: Partial<AiNotesPanelProps> = {}): AiNotesPanelProp
     error: undefined,
     modelName: 'Qwen3.5-4B',
     llmInstalled: true,
+    askHistory: [],
+    askStatus: 'idle',
+    llmBusy: false,
     onToggleAction: vi.fn(),
     onRegenerate: vi.fn(),
     onCopy: vi.fn(),
     onExport: vi.fn(),
     onGoSettings: vi.fn(),
+    onAsk: vi.fn(),
+    onSeekCitation: vi.fn(),
     ...overrides,
   }
 }
@@ -172,8 +177,12 @@ describe('AiNotesPanel', () => {
       render(<AiNotesPanel {...baseProps({ summary: null, status: 'idle', llmInstalled: false, onGoSettings })} />)
 
       expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
-      const link = screen.getByRole('button', { name: 'Download a summary model' })
-      fireEvent.click(link)
+      // Two links share this name — the summary placeholder's, and the ask
+      // section's own no-LLM placeholder (see the "ask your notes" describe
+      // block below) — both call the same `onGoSettings`.
+      const links = screen.getAllByRole('button', { name: 'Download a summary model' })
+      expect(links).toHaveLength(2)
+      fireEvent.click(links[0])
       expect(onGoSettings).toHaveBeenCalledTimes(1)
     })
 
@@ -185,6 +194,143 @@ describe('AiNotesPanel', () => {
     it('shows nothing action/summary-shaped when status is error (the error card owns that state)', () => {
       render(<AiNotesPanel {...baseProps({ summary: null, status: 'error', error: 'boom', llmInstalled: true })} />)
       expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
+    })
+  })
+
+  describe('ask your notes', () => {
+    it('shows the section header and an input with the right placeholder', () => {
+      render(<AiNotesPanel {...baseProps()} />)
+      expect(screen.getByText('ASK YOUR NOTES')).toBeInTheDocument()
+      expect(screen.getByPlaceholderText('Ask about this meeting…')).toBeInTheDocument()
+    })
+
+    it('shows the no-LLM placeholder instead of the input when no LLM is installed', () => {
+      render(<AiNotesPanel {...baseProps({ llmInstalled: false })} />)
+      expect(screen.getByText('ASK YOUR NOTES')).toBeInTheDocument()
+      expect(screen.getByText('Ask questions about this meeting on-device once a summary model is installed.')).toBeInTheDocument()
+      expect(screen.queryByPlaceholderText('Ask about this meeting…')).not.toBeInTheDocument()
+    })
+
+    it('submits the trimmed question and clears the input on Enter', () => {
+      const onAsk = vi.fn()
+      render(<AiNotesPanel {...baseProps({ onAsk })} />)
+      const input = screen.getByPlaceholderText('Ask about this meeting…')
+
+      fireEvent.change(input, { target: { value: '  What did they decide?  ' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(onAsk).toHaveBeenCalledWith('What did they decide?')
+      expect(input).toHaveValue('')
+    })
+
+    it('does not submit a blank/whitespace-only question', () => {
+      const onAsk = vi.fn()
+      render(<AiNotesPanel {...baseProps({ onAsk })} />)
+      const input = screen.getByPlaceholderText('Ask about this meeting…')
+
+      fireEvent.change(input, { target: { value: '   ' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(onAsk).not.toHaveBeenCalled()
+    })
+
+    it('disables the input and shows a spinner while askStatus is running', () => {
+      render(<AiNotesPanel {...baseProps({ askStatus: 'running' })} />)
+      expect(screen.getByPlaceholderText('Ask about this meeting…')).toBeDisabled()
+    })
+
+    it('disables the input (without the "answering" spinner) while llmBusy is true for a different flow', () => {
+      render(<AiNotesPanel {...baseProps({ askStatus: 'idle', llmBusy: true })} />)
+      expect(screen.getByPlaceholderText('Ask about this meeting…')).toBeDisabled()
+      expect(screen.getByText('Waiting for the current generation…')).toBeInTheDocument()
+    })
+
+    it('does not show the "waiting" hint while this note\'s own ask is the one running', () => {
+      render(<AiNotesPanel {...baseProps({ askStatus: 'running', llmBusy: true })} />)
+      expect(screen.queryByText('Waiting for the current generation…')).not.toBeInTheDocument()
+    })
+
+    it('leaves the input enabled and shows no hint when idle and nothing is busy', () => {
+      render(<AiNotesPanel {...baseProps({ askStatus: 'idle', llmBusy: false })} />)
+      expect(screen.getByPlaceholderText('Ask about this meeting…')).not.toBeDisabled()
+      expect(screen.queryByText('Waiting for the current generation…')).not.toBeInTheDocument()
+    })
+
+    it('announces "Answering…" via the persistent status span while askStatus is running', () => {
+      render(<AiNotesPanel {...baseProps({ askStatus: 'running' })} />)
+      expect(screen.getByRole('status')).toHaveTextContent('Answering…')
+    })
+
+    it('renders history newest-first with the question and plain-text answer', () => {
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [
+              { question: 'What did they decide about the rollout?', answer: 'A phased EU-first rollout.' },
+              { question: 'Who owns the FAQ doc?', answer: 'Speaker 3, due Friday.' },
+            ],
+          })}
+        />,
+      )
+      const questions = screen.getAllByText(/What did they decide|Who owns the FAQ/)
+      expect(questions[0]).toHaveTextContent('What did they decide about the rollout?')
+      expect(questions[1]).toHaveTextContent('Who owns the FAQ doc?')
+      expect(screen.getByText('A phased EU-first rollout.')).toBeInTheDocument()
+      expect(screen.getByText('Speaker 3, due Friday.')).toBeInTheDocument()
+    })
+
+    it('renders [mm:ss] citations as clickable buttons that call onSeekCitation with the right seconds', () => {
+      const onSeekCitation = vi.fn()
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [{ question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
+            onSeekCitation,
+          })}
+        />,
+      )
+      const citation = screen.getByRole('button', { name: '[01:34]' })
+      fireEvent.click(citation)
+      expect(onSeekCitation).toHaveBeenCalledWith(94)
+    })
+
+    it('renders an answer with no citations as plain text with no extra buttons', () => {
+      render(<AiNotesPanel {...baseProps({ askHistory: [{ question: 'What happened?', answer: "The transcript doesn't cover that." }] })} />)
+      expect(screen.getByText("The transcript doesn't cover that.")).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^\[\d{1,2}:\d{2}\]$/ })).not.toBeInTheDocument()
+    })
+
+    it('shows an inline error and a Retry button for a failed entry, which re-asks the same question', () => {
+      const onAsk = vi.fn()
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [{ question: 'What did they discuss?', error: 'The transcript doesn\'t cover that.' }],
+            onAsk,
+          })}
+        />,
+      )
+      expect(screen.getByRole('alert')).toHaveTextContent("The transcript doesn't cover that.")
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(onAsk).toHaveBeenCalledWith('What did they discuss?')
+    })
+
+    it('disables the Retry button while busy', () => {
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [{ question: 'What did they discuss?', error: 'boom' }],
+            llmBusy: true,
+          })}
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled()
+    })
+
+    it('renders no history cards when askHistory is empty', () => {
+      render(<AiNotesPanel {...baseProps({ askHistory: [] })} />)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
     })
   })
 })

@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
-use crate::llm::{self, SharedLlmEngine, SummarizeBusy};
+use crate::llm::{self, LlmBusy, SharedLlmEngine};
 use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, NoteMeta, SharedStore};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
@@ -678,23 +678,24 @@ pub async fn start_recording(
     store: State<'_, SharedStore>,
     recorder: State<'_, SharedRecorderState>,
     settings: State<'_, SharedSettings>,
-    summarize_busy: State<'_, SummarizeBusy>,
+    llm_busy: State<'_, LlmBusy>,
     model_id: Option<String>,
 ) -> std::result::Result<String, String> {
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
     }
 
-    // Observability only — not a guard. Starting a recording while a
-    // summarization is in flight keeps both a whisper `WhisperContext` (this
-    // recording's live transcription) and the LLM's Metal context (the
-    // in-flight summarize) resident in GPU memory at once; no coordination
-    // or backoff exists for that today (see the design doc's Known debt).
-    // This is just a log line so that shows up during a smoke pass rather
-    // than only being discoverable by watching Activity Monitor.
-    if summarize_busy.load(Ordering::SeqCst) {
+    // Observability only — not a guard. Starting a recording while an LLM
+    // generation (a summarize or an ask) is in flight keeps both a whisper
+    // `WhisperContext` (this recording's live transcription) and the LLM's
+    // Metal context (the in-flight generation) resident in GPU memory at
+    // once; no coordination or backoff exists for that today (see the
+    // design doc's Known debt). This is just a log line so that shows up
+    // during a smoke pass rather than only being discoverable by watching
+    // Activity Monitor.
+    if llm_busy.load(Ordering::SeqCst) {
         log::info!(
-            "start_recording: a summarization is in flight — both the whisper and LLM Metal \
+            "start_recording: an LLM generation is in flight — both the whisper and LLM Metal \
              contexts will be resident at once (no coordination; see Known debt)"
         );
     }
@@ -886,7 +887,7 @@ pub fn stop_recording(
     recorder: State<SharedRecorderState>,
     settings: State<SharedSettings>,
     engine: State<SharedLlmEngine>,
-    summarize_busy: State<SummarizeBusy>,
+    llm_busy: State<LlmBusy>,
 ) -> std::result::Result<NoteMeta, String> {
     let active = lock_recorder_state(&recorder)
         .active
@@ -953,7 +954,7 @@ pub fn stop_recording(
 
     emit_recording_state(&app, &note_id, "stopped", duration_sec);
 
-    auto_trigger_summarize(&app, &store, &settings, &engine, &summarize_busy, &note_id);
+    auto_trigger_summarize(&app, &store, &settings, &engine, &llm_busy, &note_id);
 
     Ok(meta)
 }
@@ -983,7 +984,7 @@ fn auto_trigger_summarize(
     store: &State<SharedStore>,
     settings: &State<SharedSettings>,
     engine: &State<SharedLlmEngine>,
-    busy: &State<SummarizeBusy>,
+    busy: &State<LlmBusy>,
     note_id: &str,
 ) {
     let models_root = match app.path().app_data_dir() {

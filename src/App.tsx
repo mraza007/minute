@@ -113,12 +113,16 @@ export default function App() {
               summaryError={selectedNoteMeta ? s.summaryError[selectedNoteMeta.id] : undefined}
               llmInstalled={s.llmInstalled}
               llmModelName={s.llmModelDisplayName}
+              askHistory={s.askHistory}
+              askStatus={s.askStatus}
+              llmBusy={s.llmBusy}
               onRename={s.renameNote}
               onDelete={s.deleteNote}
               onReveal={s.revealNote}
               onCopyError={s.reportError}
               onToggleActionItem={s.toggleActionItem}
               onRegenerateSummary={s.regenerateSummary}
+              onAsk={s.askQuestion}
               onGoSettings={s.goSettings}
             />
           )}

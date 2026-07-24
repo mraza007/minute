@@ -12,6 +12,7 @@ import {
   pickInitialLlmModel,
   pickInitialSttModel,
   speakerInitials,
+  splitAnswerCitations,
   splitHighlight,
   storedSegmentsToDisplay,
 } from './adapters'
@@ -476,5 +477,68 @@ describe('splitHighlight', () => {
       { text: 'Roadmap', match: true },
       { text: ' review', match: false },
     ])
+  })
+})
+
+describe('splitAnswerCitations', () => {
+  it('returns the whole answer as a single plain part when there are no citations', () => {
+    expect(splitAnswerCitations('The transcript doesn\'t cover that.')).toEqual([
+      { text: 'The transcript doesn\'t cover that.' },
+    ])
+  })
+
+  it('splits out a single citation in the middle into before/citation/after parts', () => {
+    expect(splitAnswerCitations('Pricing was locked at [00:32] during the call.')).toEqual([
+      { text: 'Pricing was locked at ' },
+      { text: '[00:32]', citationSeconds: 32 },
+      { text: ' during the call.' },
+    ])
+  })
+
+  it('computes citationSeconds as mm * 60 + ss', () => {
+    expect(splitAnswerCitations('See [01:34].')).toEqual([
+      { text: 'See ' },
+      { text: '[01:34]', citationSeconds: 94 },
+      { text: '.' },
+    ])
+  })
+
+  it('handles a citation at the very start with no before part', () => {
+    expect(splitAnswerCitations('[00:08] Engineering finished the last blocker.')).toEqual([
+      { text: '[00:08]', citationSeconds: 8 },
+      { text: ' Engineering finished the last blocker.' },
+    ])
+  })
+
+  it('handles a citation at the very end with no after part', () => {
+    expect(splitAnswerCitations('They agreed to ship by Friday [00:41]')).toEqual([
+      { text: 'They agreed to ship by Friday ' },
+      { text: '[00:41]', citationSeconds: 41 },
+    ])
+  })
+
+  it('handles multiple citations back to back', () => {
+    expect(splitAnswerCitations('Rollout starts in the EU [00:40][00:56].')).toEqual([
+      { text: 'Rollout starts in the EU ' },
+      { text: '[00:40]', citationSeconds: 40 },
+      { text: '[00:56]', citationSeconds: 56 },
+      { text: '.' },
+    ])
+  })
+
+  it('parses a 3-digit-minute-shaped citation using mm up to 2 digits (does not require mm < 60)', () => {
+    expect(splitAnswerCitations('At [90:05] they wrapped up.')).toEqual([
+      { text: 'At ' },
+      { text: '[90:05]', citationSeconds: 5405 },
+      { text: ' they wrapped up.' },
+    ])
+  })
+
+  it('does not treat a non-timestamp bracket as a citation', () => {
+    expect(splitAnswerCitations('See [above] for details.')).toEqual([{ text: 'See [above] for details.' }])
+  })
+
+  it('an empty answer returns a single empty plain part', () => {
+    expect(splitAnswerCitations('')).toEqual([{ text: '' }])
   })
 })
