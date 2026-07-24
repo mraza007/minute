@@ -852,4 +852,56 @@ mod tests {
         let state = catalog::install_state(&entry, &models_root);
         assert_eq!(state, catalog::InstallState::Installed);
     }
+
+    /// Downloads the real Qwen3.5-4B LLM (~2.5 GB) into the actual app data
+    /// dir — Stage 3 Task 1's model-support proof needs the real GGUF on
+    /// disk before `llm::tests::real_llm_loads_and_generates` can load it.
+    /// Skips the network round-trip entirely (just logs and returns) if the
+    /// model is already installed with a matching size, same as re-running
+    /// `real_download_of_whisper_small` would do implicitly via
+    /// `execute_download`'s own resume/skip logic — except this check avoids
+    /// even opening a connection. Run manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml -- --ignored \
+    ///     real_download_of_qwen3_5_4b
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_download_of_qwen3_5_4b_verifies_checksum_and_marks_installed() {
+        let catalog = catalog::load_catalog().unwrap();
+        let entry = catalog
+            .iter()
+            .find(|e| e.id == "qwen3.5-4b")
+            .expect("catalog must contain qwen3.5-4b")
+            .clone();
+
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let models_root = PathBuf::from(home).join("Library/Application Support/dev.minute.app");
+
+        if catalog::install_state(&entry, &models_root) == catalog::InstallState::Installed {
+            eprintln!("qwen3.5-4b already installed at the expected size — skipping download");
+            return;
+        }
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let start = Instant::now();
+        let result = runtime.block_on(execute_download(
+            &entry,
+            &models_root,
+            &cancel_flag,
+            |downloaded, total| {
+                eprintln!("progress: {downloaded}/{total}");
+            },
+        ));
+        let elapsed = start.elapsed();
+
+        result.expect("real download should succeed");
+        eprintln!("qwen3.5-4b download took {elapsed:?}");
+
+        let state = catalog::install_state(&entry, &models_root);
+        assert_eq!(state, catalog::InstallState::Installed);
+    }
 }

@@ -24,6 +24,7 @@ log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 whisper-rs = { version = "0.16.0", features = ["metal", "log_backend"] }
+llama-cpp-2 = { version = "0.1.152", features = ["metal"] }
 cpal = "0.17.1"
 hound = "3.5.1"
 sha2 = "0.10.9"

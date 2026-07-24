@@ -4,6 +4,7 @@ mod audio;
 mod stt;
 mod download;
 mod error;
+mod llm;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
