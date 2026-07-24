@@ -72,6 +72,12 @@ export function PlayerBar({ audioPath, playing, currentTime, durationSec, rate, 
     } else if (e.key === 'ArrowRight') {
       e.preventDefault()
       onSeek(currentTime + ARROW_KEY_SEEK_SECONDS)
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      onSeek(0)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      onSeek(durationSec)
     }
   }
 
@@ -160,8 +166,8 @@ export function PlayerBar({ audioPath, playing, currentTime, durationSec, rate, 
           aria-label="Seek"
           aria-disabled={disabled}
           aria-valuemin={0}
-          aria-valuemax={durationSec}
-          aria-valuenow={currentTime}
+          aria-valuemax={Math.round(durationSec)}
+          aria-valuenow={Math.round(currentTime)}
           aria-valuetext={formatMmSs(currentTime)}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}

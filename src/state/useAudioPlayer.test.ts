@@ -1,3 +1,9 @@
+/// <reference types="node" />
+// Only this file needs Node's ambient `process` global (to assert no
+// unhandled promise rejection below) — `@types/node` is already a
+// devDependency, just not in tsconfig.app.json's `types` list (deliberately
+// narrow, so browser/renderer code doesn't get Node globals in scope); a
+// file-scoped triple-slash reference opts in here without widening that.
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAudioPlayer, type AudioElementLike } from './useAudioPlayer'
@@ -10,14 +16,24 @@ import { useAudioPlayer, type AudioElementLike } from './useAudioPlayer'
 class FakeAudio implements AudioElementLike {
   src = ''
   currentTime = 0
-  duration = 0
+  // Matches real `HTMLMediaElement`: `duration` is `NaN` until metadata has
+  // loaded, not `0` — the CRITICAL bug this file pins (a seek before
+  // metadata loads must queue, not clamp against a not-yet-known duration)
+  // only reproduces with this starting value.
+  duration = NaN
   paused = true
   playbackRate = 1
+  /** Test hook: when set, the next `play()` call returns a rejected promise (e.g. simulating a real WebKit AbortError) instead of actually starting playback. */
+  playRejection: unknown = null
   private listeners = new Map<string, Set<() => void>>()
 
-  play() {
+  play(): Promise<void> {
+    if (this.playRejection !== null) {
+      return Promise.reject(this.playRejection)
+    }
     this.paused = false
     this.dispatch('play')
+    return Promise.resolve()
   }
 
   pause() {
@@ -186,6 +202,98 @@ describe('useAudioPlayer', () => {
     expect(created[0].currentTime).toBe(100)
   })
 
+  it('queues a seek requested before metadata has loaded, applying it (clamped) once loadedmetadata fires', () => {
+    const { created, createAudio } = harness()
+    const { result } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
+    expect(Number.isFinite(created[0].duration)).toBe(false) // metadata not loaded yet
+
+    act(() => result.current.seek(94))
+    // Not applied yet — nothing to clamp against.
+    expect(created[0].currentTime).toBe(0)
+    expect(result.current.currentTime).toBe(0)
+
+    act(() => created[0].loadMetadata(200))
+
+    expect(created[0].currentTime).toBe(94)
+    expect(result.current.currentTime).toBe(94)
+  })
+
+  it('clamps a queued seek against the duration once it becomes known', () => {
+    const { created, createAudio } = harness()
+    const { result } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
+
+    act(() => result.current.seek(999))
+    act(() => created[0].loadMetadata(100))
+
+    expect(created[0].currentTime).toBe(100)
+    expect(result.current.currentTime).toBe(100)
+  })
+
+  it('discards a queued seek when audioPath changes before metadata loads (does not leak onto the next note)', () => {
+    const { created, createAudio } = harness()
+    const { result, rerender } = renderHook(({ path }) => useAudioPlayer(path, createAudio), {
+      initialProps: { path: '/a.wav' },
+    })
+
+    act(() => result.current.seek(94)) // queued — /a.wav's metadata never loads
+
+    rerender({ path: '/b.wav' })
+    act(() => created[0].loadMetadata(200)) // /b.wav's metadata loads
+
+    // The stale seek for /a.wav must not land on /b.wav.
+    expect(created[0].currentTime).toBe(0)
+    expect(result.current.currentTime).toBe(0)
+  })
+
+  it('skip() also queues before metadata loads, applying once it is known', () => {
+    const { created, createAudio } = harness()
+    const { result } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
+
+    act(() => result.current.skip(15)) // currentTime is 0 pre-metadata, so this queues seek(15)
+    expect(created[0].currentTime).toBe(0)
+
+    act(() => created[0].loadMetadata(200))
+
+    expect(created[0].currentTime).toBe(15)
+    expect(result.current.currentTime).toBe(15)
+  })
+
+  it('swallows a rejected play() promise (e.g. an interrupted-play AbortError) without an unhandled rejection', async () => {
+    const { created, createAudio } = harness()
+    const { result } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
+    created[0].playRejection = new Error('AbortError: the play() request was interrupted')
+
+    const onUnhandledRejection = vi.fn()
+    process.on('unhandledRejection', onUnhandledRejection)
+    try {
+      act(() => result.current.play())
+      // Flush microtasks so the rejection (and our .catch) actually run.
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+    }
+
+    expect(onUnhandledRejection).not.toHaveBeenCalled()
+  })
+
+  it('keeps the playback rate when switching to a different note (deliberate — a session preference, not per-note)', () => {
+    const { created, createAudio } = harness()
+    const { result, rerender } = renderHook(({ path }) => useAudioPlayer(path, createAudio), {
+      initialProps: { path: '/a.wav' },
+    })
+
+    act(() => result.current.cycleRate())
+    expect(result.current.rate).toBe(1.25)
+
+    rerender({ path: '/b.wav' })
+
+    expect(result.current.rate).toBe(1.25)
+    expect(created[0].playbackRate).toBe(1.25) // applied to the (reused) element for the new note too
+  })
+
   it('skip() applies a relative delta clamped to [0, duration]', () => {
     const { created, createAudio } = harness()
     const { result } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
@@ -279,7 +387,13 @@ describe('useAudioPlayer', () => {
     const { rerender } = renderHook(({ path }) => useAudioPlayer(path, createAudio), {
       initialProps: { path: '/a.wav' },
     })
-    act(() => created[0].play())
+    // Block body — `created[0].play()` now returns a promise; a concise-body
+    // arrow would hand that back to `act()` and switch it into async mode
+    // without being awaited, which then throws off `rerender`'s own
+    // (implicit, synchronous) `act()` flush below.
+    act(() => {
+      created[0].play()
+    })
     expect(created[0].paused).toBe(false)
 
     rerender({ path: '/b.wav' })

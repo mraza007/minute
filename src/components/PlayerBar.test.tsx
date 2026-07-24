@@ -109,6 +109,24 @@ describe('PlayerBar', () => {
       expect(onSeek).toHaveBeenCalledWith(25)
     })
 
+    it('Home seeks to 0, End seeks to the full duration', () => {
+      const onSeek = vi.fn()
+      render(<PlayerBar {...makeProps({ currentTime: 30, durationSec: 200, onSeek })} />)
+      const slider = screen.getByRole('slider', { name: 'Seek' })
+      fireEvent.keyDown(slider, { key: 'Home' })
+      expect(onSeek).toHaveBeenCalledWith(0)
+      fireEvent.keyDown(slider, { key: 'End' })
+      expect(onSeek).toHaveBeenCalledWith(200)
+    })
+
+    it('rounds aria-valuenow/aria-valuemax to whole seconds while aria-valuetext stays mm:ss', () => {
+      render(<PlayerBar {...makeProps({ currentTime: 90.6, durationSec: 200.4 })} />)
+      const slider = screen.getByRole('slider', { name: 'Seek' })
+      expect(slider).toHaveAttribute('aria-valuenow', '91')
+      expect(slider).toHaveAttribute('aria-valuemax', '200')
+      expect(slider).toHaveAttribute('aria-valuetext', '01:30')
+    })
+
     it('is not focusable and ignores interaction when disabled (no audio)', () => {
       const onSeek = vi.fn()
       render(<PlayerBar {...makeProps({ audioPath: null, onSeek })} />)

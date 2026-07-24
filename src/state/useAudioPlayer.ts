@@ -74,7 +74,18 @@ function defaultCreateAudio(): AudioElementLike {
  */
 export function useAudioPlayer(audioPath: string | null, createAudio: () => AudioElementLike = defaultCreateAudio): AudioPlayerControls {
   const audioRef = useRef<AudioElementLike | null>(null)
+  // Deliberately *not* reset per `audioPath` (unlike currentTime/duration/
+  // playing, which are) — the chosen speed is a session-level preference,
+  // not something tied to one note; switching notes mid-listen at 1.5x
+  // should keep playing the next one at 1.5x too.
   const rateRef = useRef<PlaybackRate>(1)
+  // A `seek`/`skip` requested before the element's metadata has loaded
+  // (`audio.duration` is still `NaN`) — clamping against a not-yet-known
+  // duration would silently floor it to 0 instead of honoring the request.
+  // Recorded here and applied for real once `loadedmetadata` reports the
+  // real duration; cleared whenever `audioPath` changes so a pending seek
+  // for an abandoned note never lands on the next one.
+  const pendingSeekRef = useRef<number | null>(null)
 
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -85,6 +96,7 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
     setPlaying(false)
     setCurrentTime(0)
     setDuration(0)
+    pendingSeekRef.current = null
 
     if (!audioPath) {
       // No audio for this note — tear down any previously loaded element's
@@ -95,11 +107,22 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
 
     if (!audioRef.current) audioRef.current = createAudio()
     const audio = audioRef.current
-    audio.playbackRate = rateRef.current
+    audio.playbackRate = rateRef.current // carries the chosen rate over from the previous note — see `rateRef`'s docs.
     audio.src = convertFileSrc(audioPath)
 
     const onTimeUpdate = () => setCurrentTime(audio.currentTime)
-    const onLoadedMetadata = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0)
+    const onLoadedMetadata = () => {
+      const dur = Number.isFinite(audio.duration) ? audio.duration : 0
+      setDuration(dur)
+      // A timestamp click (or skip) that arrived before metadata was ready
+      // gets applied now, clamped against the duration we only just learned.
+      if (pendingSeekRef.current !== null) {
+        const clamped = Math.min(Math.max(pendingSeekRef.current, 0), dur)
+        pendingSeekRef.current = null
+        audio.currentTime = clamped
+        setCurrentTime(clamped)
+      }
+    }
     const onPlay = () => setPlaying(true)
     const onPause = () => setPlaying(false)
     const onEnded = () => setPlaying(false)
@@ -150,8 +173,21 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
     }
   }, [])
 
+  // play() returns a promise that real WebKit/Chromium reject with an
+  // AbortError when something (a pause() call, a src change) interrupts
+  // playback before it actually starts — routine now that unmount/note-
+  // switch cleanup pauses on the way out (a quick "click a timestamp, then
+  // immediately switch notes" is exactly that sequence). There's nothing
+  // useful to do with that rejection here — swallow it rather than letting
+  // it surface as an unhandled promise rejection.
   const play = useCallback(() => {
-    audioRef.current?.play()
+    const audio = audioRef.current
+    if (!audio) return
+    // `Promise.resolve(...)` normalizes `play()`'s `void | Promise<void>`
+    // return into something always safe to `.catch` — a no-op wrapper
+    // around the `void` case, the real rejection-swallow for the `Promise`
+    // case (see the docs above `play`/`toggle` for why that's expected).
+    Promise.resolve(audio.play()).catch(() => {})
   }, [])
 
   const pause = useCallback(() => {
@@ -161,15 +197,23 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
   const toggle = useCallback(() => {
     const audio = audioRef.current
     if (!audio) return
-    if (audio.paused) audio.play()
+    if (audio.paused) Promise.resolve(audio.play()).catch(() => {}) // see `play`'s docs above
     else audio.pause()
   }, [])
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current
     if (!audio) return
-    const max = Number.isFinite(audio.duration) ? audio.duration : 0
-    const clamped = Math.min(Math.max(seconds, 0), max)
+    if (!Number.isFinite(audio.duration)) {
+      // Metadata not loaded yet — the real duration to clamp against isn't
+      // known. Queue it (lower-bounded) rather than clamping to 0, which
+      // would silently strand the seek at the start; `onLoadedMetadata`
+      // above applies it for real once the duration is known.
+      pendingSeekRef.current = Math.max(seconds, 0)
+      return
+    }
+    pendingSeekRef.current = null
+    const clamped = Math.min(Math.max(seconds, 0), audio.duration)
     audio.currentTime = clamped
     setCurrentTime(clamped)
   }, [])
