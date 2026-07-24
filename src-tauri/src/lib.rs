@@ -11,6 +11,7 @@ use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
 use llm::{SharedLlmEngine, SummarizeBusy, SummaryDoc};
 use settings::{Settings, SettingsPatch, SharedSettings};
+use std::sync::atomic::Ordering;
 use store::{lock_store, render_note_md, NoteMeta, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
@@ -105,16 +106,65 @@ fn rename_note(state: State<SharedStore>, id: String, title: String) -> Result<N
 /// `store::Store::toggle_action_item`), also re-rendering `note.md`.
 /// `summarize_note` itself (the command that produces the summary in the
 /// first place) is Task 4.
+///
+/// Refuses while *any* summarization is in flight (a plain load of
+/// [`SummarizeBusy`], same cheap fast-path shape as `summarize_note`'s own
+/// pre-check) — a regenerate overwrites the displayed summary's
+/// `actionItems` array wholesale when it completes, and a toggle that lands
+/// after that overwrite would patch the wrong item by index against the new
+/// array. This is a conservative *global* check (busy from summarizing any
+/// note blocks toggling on every note), not per-note, by design: `busy` has
+/// no note id attached to it (see [`SummarizeBusy`]'s docs), and the race it
+/// guards against is rare enough that "toggling on some other note briefly
+/// blocked" is an acceptable trade for not threading note-scoped busy
+/// tracking through the store. The frontend's own checkbox-disable-while-
+/// running (`AiNotesPanel`) is the primary defense for the common case; this
+/// is the cheap backend backstop for anything that slips past it (a toggle
+/// already in flight when Regenerate is clicked, a stale UI, ...).
 #[tauri::command]
 fn toggle_action_item(
   state: State<SharedStore>,
+  busy: State<SummarizeBusy>,
   id: String,
   index: usize,
   done: bool,
 ) -> Result<SummaryDoc, String> {
+  if let Some(msg) = toggle_action_item_blocked(busy.load(Ordering::SeqCst)) {
+    return Err(msg.to_string());
+  }
   lock_store(&state)
     .toggle_action_item(&id, index, done)
     .map_err(|e| e.to_string())
+}
+
+/// Whether `toggle_action_item` should refuse to run because a
+/// summarization is in flight — see the command's docs for why this is a
+/// conservative *global* (not per-note) check. Pure, mirroring
+/// `download::delete_model_blocked`, so the guard is unit-testable without a
+/// running Tauri app.
+fn toggle_action_item_blocked(summarizing: bool) -> Option<&'static str> {
+  if summarizing {
+    return Some("summary is being regenerated");
+  }
+  None
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn toggle_action_item_blocked_while_summarizing() {
+    assert_eq!(
+      toggle_action_item_blocked(true),
+      Some("summary is being regenerated")
+    );
+  }
+
+  #[test]
+  fn toggle_action_item_blocked_allows_when_not_summarizing() {
+    assert_eq!(toggle_action_item_blocked(false), None);
+  }
 }
 
 #[tauri::command]

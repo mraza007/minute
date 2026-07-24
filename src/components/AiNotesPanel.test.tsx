@@ -67,6 +67,20 @@ describe('AiNotesPanel', () => {
       expect(onToggleAction).toHaveBeenCalledWith(1, true)
     })
 
+    it('disables the action item checkboxes while status is running', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'running' })} />)
+      for (const checkbox of screen.getAllByRole('checkbox')) {
+        expect(checkbox).toBeDisabled()
+      }
+    })
+
+    it('leaves the action item checkboxes enabled when not running', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'idle' })} />)
+      for (const checkbox of screen.getAllByRole('checkbox')) {
+        expect(checkbox).not.toBeDisabled()
+      }
+    })
+
     it('renders a done action item with line-through styling', () => {
       render(<AiNotesPanel {...baseProps()} />)
       const doneText = screen.getByText(summaryFixture().actionItems[0].text)

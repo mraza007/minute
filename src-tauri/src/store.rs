@@ -359,11 +359,8 @@ impl Store {
     /// Also (re)renders `note.md` — see [`Store::write_note_md`] — so the
     /// on-disk markdown reflects the new summary immediately.
     ///
-    /// Not yet called from any command — `summarize_note` (Task 4,
-    /// `docs/plans/2026-07-23-stage3-summaries.md`) is the real caller; the
-    /// `#[allow(dead_code)]` mirrors `llm::LlmEngine`'s same
-    /// not-wired-in-yet situation.
-    #[allow(dead_code)]
+    /// Called from `llm::run_summarize`'s success path, on the summarize
+    /// worker thread.
     pub fn write_summary_and_finalize(&self, id: &str, summary: &SummaryDoc) -> Result<NoteMeta> {
         self.write_summary(id, summary)?;
         let mut meta = self.read_meta(id)?;

@@ -152,19 +152,41 @@ function DecisionsCard({ decisions }: { decisions: string[] }) {
 function ActionItemsCard({
   items,
   onToggleAction,
+  disabled,
 }: {
   items: SummaryDoc['actionItems']
   onToggleAction: (index: number, done: boolean) => void
+  // True while status === 'running' — a regenerate in flight over this same
+  // note is about to overwrite `items` wholesale, and a toggle that lands on
+  // the old (still-displayed) array after the worker's write patches the
+  // wrong item by index against the new one. Disabling here is the cheap,
+  // always-available half of the guard; `toggle_action_item` also rejects
+  // server-side while `SummarizeBusy` is claimed as the authoritative check.
+  disabled: boolean
 }) {
   return (
     <div style={cardStyle}>
       <div style={labelStyle}>ACTION ITEMS</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
         {items.map((item, i) => (
-          <label key={i} style={{ display: 'flex', gap: 9, alignItems: 'flex-start', fontSize: 13, lineHeight: 1.5, cursor: 'pointer' }}>
+          <label
+            key={i}
+            aria-disabled={disabled}
+            style={{
+              display: 'flex',
+              gap: 9,
+              alignItems: 'flex-start',
+              fontSize: 13,
+              lineHeight: 1.5,
+              cursor: disabled ? 'default' : 'pointer',
+              opacity: disabled ? 0.5 : 1,
+            }}
+          >
             <input
               type="checkbox"
               checked={item.done}
+              disabled={disabled}
+              aria-disabled={disabled}
               onChange={e => onToggleAction(i, e.target.checked)}
               style={{ marginTop: 3 }}
             />
@@ -253,7 +275,9 @@ export function AiNotesPanel({
           <>
             <SummaryCard text={summary.summary} />
             {summary.decisions.length > 0 && <DecisionsCard decisions={summary.decisions} />}
-            {summary.actionItems.length > 0 && <ActionItemsCard items={summary.actionItems} onToggleAction={onToggleAction} />}
+            {summary.actionItems.length > 0 && (
+              <ActionItemsCard items={summary.actionItems} onToggleAction={onToggleAction} disabled={summarizing} />
+            )}
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={onCopy} className="btn-light" style={btnStyle}>
                 Copy

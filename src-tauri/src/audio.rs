@@ -678,10 +678,25 @@ pub async fn start_recording(
     store: State<'_, SharedStore>,
     recorder: State<'_, SharedRecorderState>,
     settings: State<'_, SharedSettings>,
+    summarize_busy: State<'_, SummarizeBusy>,
     model_id: Option<String>,
 ) -> std::result::Result<String, String> {
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
+    }
+
+    // Observability only — not a guard. Starting a recording while a
+    // summarization is in flight keeps both a whisper `WhisperContext` (this
+    // recording's live transcription) and the LLM's Metal context (the
+    // in-flight summarize) resident in GPU memory at once; no coordination
+    // or backoff exists for that today (see the design doc's Known debt).
+    // This is just a log line so that shows up during a smoke pass rather
+    // than only being discoverable by watching Activity Monitor.
+    if summarize_busy.load(Ordering::SeqCst) {
+        log::info!(
+            "start_recording: a summarization is in flight — both the whisper and LLM Metal \
+             contexts will be resident at once (no coordination; see Known debt)"
+        );
     }
 
     let model_id = settings::resolve_stt_model(model_id, &settings::lock_settings(&settings));
