@@ -802,43 +802,63 @@ pub fn resolved_audio_path(meta: &NoteMeta, note_dir: &Path) -> Option<PathBuf> 
 /// position in a `Vec<char>`, not a byte offset, there is no byte boundary
 /// to straddle in the first place.
 ///
-/// The match position is found in *lowercased* char-space (`haystack`
-/// lowercased once, compared against `needle_lower`), then the snippet is
-/// sliced from that same char-index window against the *original* (not
-/// lowercased) haystack's chars — preserving real casing/diacritics in what
-/// actually gets displayed — provided lowercasing didn't change this
-/// haystack's char *count*. It can, for a handful of Unicode special-casing
-/// characters (e.g. Turkish `İ` lowercasing to a two-char `i` + combining
-/// dot), in which case the original and lowercased strings no longer line
-/// up char-for-char and this falls back to slicing the *lowercased* chars
-/// instead — a snippet in the wrong case beats an out-of-bounds slice or a
-/// silently misaligned one.
+/// The returned snippet is *always* sliced from the original (not
+/// lowercased) `haystack` — never a lowercased copy of it, under any
+/// circumstance — so casing/diacritics in what's actually displayed are
+/// always exactly what was typed. This matters because a char's lowercase
+/// mapping isn't always 1:1: Turkish `İ` (U+0130) lowercases to *two* chars
+/// (`i` + a combining dot above), so a naive "lowercase the whole haystack,
+/// slice the same char-index window out of both copies" approach silently
+/// misaligns (or has to fall back to the lowercased copy) the moment one of
+/// those appears anywhere in the string, not just at the match itself.
+///
+/// Instead, `haystack` is lowercased char-by-char (`char::to_lowercase()` —
+/// the same unconditional Unicode mapping `str::to_lowercase()` itself
+/// applies internally), building `lowered_chars` alongside a parallel
+/// `orig_index_of_lowered` that records, for every char *produced*, which
+/// original char index it came from (a char whose mapping expands to N
+/// chars simply appears N times, once per produced char — pointing at the
+/// same original index each time). The match is found by plain char
+/// comparison in that lowered sequence (`needle_lower` is already
+/// lowercased, so no further case folding happens here), and only the
+/// match's first/last lowered-char positions are ever mapped back through
+/// `orig_index_of_lowered` — to a single original char span, which is what
+/// actually gets windowed and sliced. The window and the slice never touch
+/// `lowered_chars` again after that, so there's nothing left to misalign.
 fn find_snippet(haystack: &str, needle_lower: &str) -> Option<String> {
     let needle_chars: Vec<char> = needle_lower.chars().collect();
     if needle_chars.is_empty() {
         return None;
     }
 
-    let haystack_lower = haystack.to_lowercase();
-    let lower_chars: Vec<char> = haystack_lower.chars().collect();
-    if needle_chars.len() > lower_chars.len() {
+    let orig_chars: Vec<char> = haystack.chars().collect();
+    let mut lowered_chars: Vec<char> = Vec::with_capacity(orig_chars.len());
+    let mut orig_index_of_lowered: Vec<usize> = Vec::with_capacity(orig_chars.len());
+    for (orig_idx, c) in orig_chars.iter().enumerate() {
+        for lc in c.to_lowercase() {
+            lowered_chars.push(lc);
+            orig_index_of_lowered.push(orig_idx);
+        }
+    }
+
+    if needle_chars.len() > lowered_chars.len() {
         return None;
     }
 
-    let match_start = (0..=lower_chars.len() - needle_chars.len())
-        .find(|&start| lower_chars[start..start + needle_chars.len()] == needle_chars[..])?;
-    let match_end = match_start + needle_chars.len();
+    let lowered_match_start = (0..=lowered_chars.len() - needle_chars.len())
+        .find(|&start| lowered_chars[start..start + needle_chars.len()] == needle_chars[..])?;
+    let lowered_match_end = lowered_match_start + needle_chars.len(); // exclusive, in lowered-char space
 
-    let original_chars: Vec<char> = haystack.chars().collect();
-    let source_chars = if original_chars.len() == lower_chars.len() {
-        &original_chars
-    } else {
-        &lower_chars
-    };
+    // Map the matched lowered-char span back to a single original-char span
+    // — the original char that produced the match's first lowered char,
+    // through the original char that produced its last one (inclusive),
+    // made exclusive again with `+ 1`.
+    let orig_match_start = orig_index_of_lowered[lowered_match_start];
+    let orig_match_end = orig_index_of_lowered[lowered_match_end - 1] + 1;
 
-    let snippet_start = match_start.saturating_sub(SEARCH_SNIPPET_RADIUS);
-    let snippet_end = (match_end + SEARCH_SNIPPET_RADIUS).min(source_chars.len());
-    Some(source_chars[snippet_start..snippet_end].iter().collect())
+    let snippet_start = orig_match_start.saturating_sub(SEARCH_SNIPPET_RADIUS);
+    let snippet_end = (orig_match_end + SEARCH_SNIPPET_RADIUS).min(orig_chars.len());
+    Some(orig_chars[snippet_start..snippet_end].iter().collect())
 }
 
 /// Recursively sums file sizes under `path`. Missing paths count as 0.
@@ -2135,6 +2155,56 @@ mod tests {
     #[test]
     fn find_snippet_needle_longer_than_haystack_returns_none() {
         assert_eq!(find_snippet("hi", "hello there"), None);
+    }
+
+    #[test]
+    fn find_snippet_turkish_capital_i_with_dot_preserves_original_casing_and_does_not_panic() {
+        // U+0130 (LATIN CAPITAL LETTER I WITH DOT ABOVE) lowercases to a
+        // *two*-char sequence ('i' + a combining dot above) — the char
+        // count of the lowercased haystack no longer matches the original,
+        // which is exactly the case that broke a naive "slice a lowercased
+        // copy" implementation. The snippet must still come back in the
+        // *original* casing, not lowercased.
+        let haystack = "MEETING İ NOTES";
+        let snippet = find_snippet(haystack, "meeting").unwrap();
+        assert_eq!(snippet, "MEETING İ NOTES");
+        assert!(snippet.starts_with("MEETING"));
+        assert!(!snippet.starts_with("meeting"));
+    }
+
+    #[test]
+    fn find_snippet_turkish_capital_i_with_dot_matches_a_query_after_it_too() {
+        // Same haystack, but the match falls *after* the char whose
+        // lowercase mapping expands to two chars — pins that the original-
+        // index mapping still lines up correctly past that point, not just
+        // for text preceding it.
+        let haystack = "MEETING İ NOTES";
+        let snippet = find_snippet(haystack, "notes").unwrap();
+        assert_eq!(snippet, "MEETING İ NOTES");
+        assert!(snippet.ends_with("NOTES"));
+    }
+
+    #[test]
+    fn find_snippet_german_eszett_matches_itself_case_insensitively_without_panicking() {
+        // 'ß' (U+00DF) lowercases to itself (already lowercase) — searching
+        // with the actual eszett should find it and preserve original
+        // casing around it.
+        let haystack = "Wir treffen uns in der Straße heute";
+        let snippet = find_snippet(haystack, "straße").unwrap();
+        assert!(snippet.contains("Straße"));
+    }
+
+    #[test]
+    fn find_snippet_german_eszett_vs_double_s_spelling_does_not_panic_either_way() {
+        // 'ß' does NOT expand to "ss" under `to_lowercase()` (that's an
+        // uppercasing convention, not a lowercasing one) — so a
+        // double-s-spelled query against an eszett-spelled haystack (and
+        // vice versa) is expected to come back with no match, not a panic
+        // or a mangled snippet.
+        assert_eq!(find_snippet("Wir treffen uns in der Straße heute", "strasse"), None);
+        assert_eq!(find_snippet("Wir treffen uns in der Strasse heute", "straße"), None);
+        // The double-s spelling on both sides still matches normally.
+        assert!(find_snippet("Wir treffen uns in der Strasse heute", "strasse").is_some());
     }
 
     // --- search_notes -----------------------------------------------------

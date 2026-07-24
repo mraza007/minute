@@ -100,7 +100,13 @@ export function useAppState() {
   // from `sel`/`selectedNoteId` because note *selection* is synchronous (an
   // index into the already-loaded `notes` list) while a note's `audioPath`
   // only becomes known once its `get_note` fetch resolves; NoteView applies
-  // the pending seek itself once that's ready, via `clearPendingSeek`.
+  // the pending seek itself once that's ready, via `clearPendingSeek`. Two
+  // effects further down (once `selectedNoteId`/`view` are in scope)
+  // invalidate a still-unapplied `pendingSeek` the instant it's no longer
+  // for "the note currently on screen, still in the notes view" — without
+  // that, a transcript hit whose target note the user wanders away from
+  // before it's ever applied would stay armed and go off as a surprise
+  // seek+autoplay whenever that note is later reselected normally.
   const [searchOpen, setSearchOpen] = useState(false)
   const [pendingSeek, setPendingSeek] = useState<{ noteId: string; seconds: number } | null>(null)
 
@@ -246,6 +252,35 @@ export function useAppState() {
 
   const selectedNoteId = notes[sel]?.id ?? null
 
+  // Invalidates a still-pending seek the instant it's no longer for the
+  // note currently on screen — covers every way `sel` can change
+  // (`selectNoteById`, the search palette's own `requestSeek`,
+  // `stopRec`/`deleteNote`'s index adjustments, ...) from one place, rather
+  // than threading a "clear pendingSeek if it doesn't match" check through
+  // each of those individually. `requestSeek` itself is not a special case
+  // here: it sets `sel` and `pendingSeek` together in the same synchronous
+  // call, so by the time this effect runs after that render, `selectedNoteId`
+  // already equals the fresh `pendingSeek.noteId` and nothing is cleared.
+  // The functional update returns `prev` itself (same reference) when
+  // nothing needs to change, which is a documented React bail-out — safe to
+  // run on every `selectedNoteId` change without an extra re-render when
+  // there's nothing to invalidate.
+  useEffect(() => {
+    setPendingSeek(prev => (prev && prev.noteId !== selectedNoteId ? null : prev))
+  }, [selectedNoteId])
+
+  // Invalidates a still-pending seek the instant the user navigates away
+  // from the notes view entirely (Settings, or back to a live recording) —
+  // even if the target note's `sel` never actually changes underneath it
+  // (NoteView, and the effect that applies `pendingSeek`, aren't mounted at
+  // all outside the notes view — see App.tsx). Without this, going to
+  // Settings and back to Notes on the very note a stale `pendingSeek`
+  // targets would apply it the moment NoteView remounts, even though the
+  // user never touched search again.
+  useEffect(() => {
+    if (view !== 'notes') setPendingSeek(null)
+  }, [view])
+
   /**
    * Selects a note by id rather than list index — what the ⌘K search
    * palette (and `requestSeek` below) use, since a search hit only carries
@@ -282,10 +317,15 @@ export function useAppState() {
   )
 
   /**
-   * Clears `pendingSeek` once NoteView has applied it (or determined
-   * there's nothing to apply it to — e.g. the note's audio has since been
-   * swept). `useCallback` with no deps — a permanently stable identity so
-   * it can be handed to NoteView without defeating memoization.
+   * Clears `pendingSeek` once NoteView has actually applied it — the *only*
+   * path that fires this is a successful apply (matching note, audio
+   * ready); NoteView never calls it for a mismatch, since there's nothing
+   * to signal in that case. A pending seek that never gets applied at all
+   * (the target note is abandoned before its audio loads, or the user
+   * leaves the notes view) is invalidated separately, by the two effects
+   * above `selectedNoteId`/`view` react to — not by this function.
+   * `useCallback` with no deps — a permanently stable identity so it can be
+   * handed to NoteView without defeating memoization.
    */
   const clearPendingSeek = useCallback(() => setPendingSeek(null), [])
 
@@ -871,7 +911,6 @@ export function useAppState() {
     startRec,
     stopRec,
     togglePause,
-    selectNote: setSel,
     setNoteTab,
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,

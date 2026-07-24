@@ -307,4 +307,49 @@ describe('App', () => {
     expect(screen.getByText('Ready')).toBeInTheDocument()
     expect(screen.queryByText('Summarizing…')).not.toBeInTheDocument()
   })
+
+  describe('⌘K / ⌘F search palette shortcut', () => {
+    it('⌘K opens the search palette', async () => {
+      setupIPC()
+      render(<App />)
+      await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+      expect(screen.queryByRole('dialog', { name: 'Search notes' })).not.toBeInTheDocument()
+
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+
+      expect(screen.getByRole('dialog', { name: 'Search notes' })).toBeInTheDocument()
+    })
+
+    it('a second ⌘K while the palette is already open toggles it closed', async () => {
+      setupIPC()
+      render(<App />)
+      await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+      expect(screen.getByRole('dialog', { name: 'Search notes' })).toBeInTheDocument()
+
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+      expect(screen.queryByRole('dialog', { name: 'Search notes' })).not.toBeInTheDocument()
+    })
+
+    it('⌘F also opens the search palette', async () => {
+      setupIPC()
+      render(<App />)
+      await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+
+      fireEvent.keyDown(window, { key: 'f', metaKey: true })
+
+      expect(screen.getByRole('dialog', { name: 'Search notes' })).toBeInTheDocument()
+    })
+
+    it('plain "k" (no ⌘) does nothing', async () => {
+      setupIPC()
+      render(<App />)
+      await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+
+      fireEvent.keyDown(window, { key: 'k', metaKey: false })
+
+      expect(screen.queryByRole('dialog', { name: 'Search notes' })).not.toBeInTheDocument()
+    })
+  })
 })

@@ -271,11 +271,18 @@ describe('useAppState', () => {
     expect(result.current.view).toBe('notes')
   })
 
-  it('selectNote updates sel', async () => {
-    setupIPC()
+  it('selectNoteById updates sel/selectedNoteId to the matching note', async () => {
+    const notes = [
+      noteFixture({ id: 'note-0' }),
+      noteFixture({ id: 'note-1' }),
+      noteFixture({ id: 'note-2' }),
+      noteFixture({ id: 'note-3' }),
+    ]
+    setupIPC({ notes })
     const result = await loaded()
-    act(() => result.current.selectNote(3))
+    act(() => result.current.selectNoteById('note-3'))
     expect(result.current.sel).toBe(3)
+    expect(result.current.selectedNoteId).toBe('note-3')
   })
 
   it('toggleDel flips local state', async () => {
@@ -688,7 +695,7 @@ describe('useAppState', () => {
       const result = await loaded()
       await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
 
-      act(() => result.current.selectNote(1))
+      act(() => result.current.selectNoteById('note-b'))
       await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
       expect(result.current.selectedTranscript).toEqual(segmentsB)
       expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2)
@@ -717,7 +724,7 @@ describe('useAppState', () => {
       const result = await loaded()
       expect(result.current.transcriptLoading).toBe(true) // note-a's fetch is in flight
 
-      act(() => result.current.selectNote(1)) // switch to note-b before note-a resolves
+      act(() => result.current.selectNoteById('note-b')) // switch to note-b before note-a resolves
 
       await act(async () => {
         resolveB({
@@ -755,10 +762,10 @@ describe('useAppState', () => {
       const result = await loaded()
       await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
 
-      act(() => result.current.selectNote(1))
+      act(() => result.current.selectNoteById('note-b'))
       await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
 
-      act(() => result.current.selectNote(0))
+      act(() => result.current.selectNoteById('note-a'))
       await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
 
       expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2)
@@ -852,7 +859,7 @@ describe('useAppState', () => {
           listNotesAfter: () => [noteA],
         })
         const result = await loaded()
-        act(() => result.current.selectNote(1))
+        act(() => result.current.selectNoteById('note-b'))
         await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
 
         act(() => result.current.deleteNote('note-b'))
@@ -1189,7 +1196,7 @@ describe('useAppState', () => {
       // Select every other note in order: 21 distinct notes viewed in total
       // (note-0 from the initial selection, plus note-1..note-20 here).
       for (let i = 1; i < 21; i++) {
-        act(() => result.current.selectNote(i))
+        act(() => result.current.selectNoteById(`note-${i}`))
         // eslint-disable-next-line no-await-in-loop
         await waitFor(() => expect(result.current.selectedMeta?.id).toBe(`note-${i}`))
       }
@@ -1197,13 +1204,13 @@ describe('useAppState', () => {
 
       // note-0 was the oldest entry and is now past the 20-entry cap —
       // reselecting it must refetch rather than serve from cache.
-      act(() => result.current.selectNote(0))
+      act(() => result.current.selectNoteById('note-0'))
       await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-0'))
       expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(22)
 
       // note-20 (recently viewed, well within the cap) must still be served
       // from cache — no extra fetch.
-      act(() => result.current.selectNote(20))
+      act(() => result.current.selectNoteById('note-20'))
       await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-20'))
       expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(22)
     })
@@ -1342,6 +1349,77 @@ describe('useAppState', () => {
 
       act(() => result.current.clearPendingSeek())
       expect(result.current.pendingSeek).toBeNull()
+    })
+
+    describe('invalidation (stale seeks must not fire late)', () => {
+      it('regression: the direct search-hit flow still leaves a matching pendingSeek in place (requestSeek selecting its own target does not self-invalidate)', async () => {
+        const notes = [noteFixture({ id: 'note-a' }), noteFixture({ id: 'note-b' })]
+        setupIPC({ notes })
+        const result = await loaded()
+
+        act(() => result.current.requestSeek('note-b', 42))
+
+        expect(result.current.selectedNoteId).toBe('note-b')
+        expect(result.current.pendingSeek).toEqual({ noteId: 'note-b', seconds: 42 })
+      })
+
+      it('selecting a different note clears a pending seek for the note just navigated away from', async () => {
+        const notes = [noteFixture({ id: 'note-a' }), noteFixture({ id: 'note-b' }), noteFixture({ id: 'note-c' })]
+        setupIPC({ notes })
+        const result = await loaded()
+
+        act(() => result.current.requestSeek('note-b', 42))
+        expect(result.current.pendingSeek).toEqual({ noteId: 'note-b', seconds: 42 })
+
+        act(() => result.current.selectNoteById('note-c'))
+        expect(result.current.pendingSeek).toBeNull()
+      })
+
+      it('navigate-away-then-reopen: reselecting the original pending note after navigating away does not resurrect the seek', async () => {
+        const notes = [noteFixture({ id: 'note-a' }), noteFixture({ id: 'note-b' }), noteFixture({ id: 'note-c' })]
+        setupIPC({ notes })
+        const result = await loaded()
+
+        // A transcript hit for note-b arms a pending seek...
+        act(() => result.current.requestSeek('note-b', 42))
+        expect(result.current.pendingSeek).toEqual({ noteId: 'note-b', seconds: 42 })
+
+        // ...but the user wanders off to a different note before it's ever
+        // applied (note-b's audio never actually loaded in this scenario).
+        act(() => result.current.selectNoteById('note-c'))
+        expect(result.current.pendingSeek).toBeNull()
+
+        // Minutes later, opening note-b again normally must NOT resurrect
+        // the old seek request — there is nothing left to reapply.
+        act(() => result.current.selectNoteById('note-b'))
+        expect(result.current.selectedNoteId).toBe('note-b')
+        expect(result.current.pendingSeek).toBeNull()
+      })
+
+      it('navigating to Settings clears a pending seek even though the selected note itself never changes', async () => {
+        const notes = [noteFixture({ id: 'note-a' })]
+        setupIPC({ notes })
+        const result = await loaded()
+
+        act(() => result.current.requestSeek('note-a', 15))
+        expect(result.current.pendingSeek).toEqual({ noteId: 'note-a', seconds: 15 })
+
+        act(() => result.current.goSettings())
+        expect(result.current.pendingSeek).toBeNull()
+      })
+
+      it('navigating to Settings and back to Notes on the same note does not resurrect the seek', async () => {
+        const notes = [noteFixture({ id: 'note-a' })]
+        setupIPC({ notes })
+        const result = await loaded()
+
+        act(() => result.current.requestSeek('note-a', 15))
+        act(() => result.current.goSettings())
+        act(() => result.current.goNotes())
+
+        expect(result.current.selectedNoteId).toBe('note-a')
+        expect(result.current.pendingSeek).toBeNull()
+      })
     })
   })
 
