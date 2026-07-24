@@ -127,11 +127,9 @@ function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload,
       >
         {confirming ? 'Confirm removal?' : 'Remove'}
       </button>
-      {confirming && (
-        <span role="status" className="visually-hidden">
-          Press again to confirm removal
-        </span>
-      )}
+      <span role="status" className="visually-hidden">
+        {confirming ? 'Press again to confirm removal' : ''}
+      </span>
     </>
   )
 }

@@ -17,8 +17,11 @@ describe('PlayerBar', () => {
     expect(screen.getByText('1.5×')).toBeInTheDocument()
   })
 
-  it('renders the Play button', () => {
+  it('renders the Play button, disabled and consistent with its not-yet-implemented siblings', () => {
     render(<PlayerBar durationSec={120} />)
-    expect(screen.getByTitle('Play')).toBeInTheDocument()
+    const playButton = screen.getByRole('button', { name: 'Play' })
+    expect(playButton).toBeInTheDocument()
+    expect(playButton).toBeDisabled()
+    expect(playButton).toHaveAttribute('title', 'Play — playback arrives in a later update.')
   })
 })

@@ -47,9 +47,11 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
           </svg>
         </button>
         <button
+          disabled
+          aria-disabled="true"
           className="btn-dark"
           aria-label="Play"
-          title="Play"
+          title="Play — playback arrives in a later update."
           style={{
             width: 36,
             height: 36,
@@ -57,7 +59,8 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             borderRadius: '50%',
             background: 'var(--ink)',
             color: '#fff',
-            cursor: 'pointer',
+            cursor: 'default',
+            opacity: 0.5,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',

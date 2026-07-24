@@ -18,11 +18,21 @@ interface RecordingViewProps {
   modelName: string
 }
 
-function TranscribingIndicator() {
+// Persistent `role="status"` container — always mounted for the whole
+// recording view (LiveTranscriptBody renders it unconditionally below), with
+// only its `active` prop toggling the visible dot+text in and out. A
+// role="status" node that gets conditionally mounted/unmounted with its
+// announcement text already inside is commonly missed by screen readers, so
+// this stays in the tree the entire time and only its content changes.
+function TranscribingIndicator({ active }: { active: boolean }) {
   return (
     <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-text)', fontSize: 13, fontWeight: 600 }}>
-      <span className="blink-dot" style={{ width: 8, height: 16, borderRadius: 3, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
-      transcribing…
+      {active && (
+        <>
+          <span className="blink-dot" style={{ width: 8, height: 16, borderRadius: 3, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
+          transcribing…
+        </>
+      )}
     </div>
   )
 }
@@ -63,15 +73,12 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
   sttError: string | null
   modelName: string
 }) {
-  if (liveSegments.length === 0) {
-    if (sttStatus === 'loading') {
-      return <div style={{ fontSize: 13, color: 'var(--ink-faint)' }}>Loading {modelName}…</div>
-    }
-    if (sttStatus === 'error') {
-      return <SttErrorRow sttError={sttError} />
-    }
-    return <TranscribingIndicator />
-  }
+  // "Loading {model}…" only ever applies to the empty-list case; the error
+  // row (its own role="alert", unaffected by this rework) takes over from
+  // the transcribing indicator either way once sttStatus is 'error'.
+  const showLoadingHint = liveSegments.length === 0 && sttStatus === 'loading'
+  const showError = sttStatus === 'error'
+  const showTranscribing = !showLoadingHint && !showError
 
   return (
     <>
@@ -84,7 +91,9 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
           <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--ink-body)', textWrap: 'pretty' }}>{group.text}</div>
         </div>
       ))}
-      {sttStatus === 'error' ? <SttErrorRow sttError={sttError} /> : <TranscribingIndicator />}
+      {showLoadingHint && <div style={{ fontSize: 13, color: 'var(--ink-faint)' }}>Loading {modelName}…</div>}
+      {showError && <SttErrorRow sttError={sttError} />}
+      <TranscribingIndicator active={showTranscribing} />
     </>
   )
 })

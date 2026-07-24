@@ -32,11 +32,17 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
           boxSizing: 'border-box',
           borderRadius: 999,
           background: on ? 'var(--accent)' : '#d8d4cf',
-          border: on ? 'none' : '1px solid var(--control-border)',
+          // Constant 1px border in both states (transparent when on, over
+          // the accent fill) — a none↔1px border toggle shifts the
+          // absolutely-positioned knob's padding-edge origin by 1px between
+          // states, since `top`/`left` below are relative to the padding
+          // box, not the border box. Keeping the border width fixed and
+          // only swapping its color keeps that geometry identical.
+          border: on ? '1px solid transparent' : '1px solid var(--control-border)',
           position: 'relative',
           flex: 'none',
           display: 'inline-block',
-          transition: 'background .18s',
+          transition: 'background .18s, border-color .18s',
         }}
       >
         <span

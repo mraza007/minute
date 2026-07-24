@@ -134,58 +134,77 @@ export function useAppState() {
   // selecting note A then B) clobbering newer state with a stale response.
   const transcriptRequestId = useRef(0)
 
-  /** Reads a cache entry, marking it most-recently-used (moves it to the end of the map) — see `TRANSCRIPT_CACHE_CAP`'s docs. `undefined` on a miss, same as `Map.get`. */
-  function cacheGet(id: string): NoteWithTranscript | undefined {
+  /**
+   * Reads a cache entry, marking it most-recently-used (moves it to the end
+   * of the map) — see `TRANSCRIPT_CACHE_CAP`'s docs. `undefined` on a miss,
+   * same as `Map.get`. `useCallback` with no deps — only touches the
+   * `transcriptCache` ref (stable by construction) and the module-level
+   * `TRANSCRIPT_CACHE_CAP` constant, so it has a permanently stable identity
+   * — required for `loadNoteTranscript`/`toggleActionItem` below to have
+   * stable identities of their own in turn.
+   */
+  const cacheGet = useCallback((id: string): NoteWithTranscript | undefined => {
     const entry = transcriptCache.current.get(id)
     if (entry) {
       transcriptCache.current.delete(id)
       transcriptCache.current.set(id, entry)
     }
     return entry
-  }
+  }, [])
 
-  /** Writes a cache entry as most-recently-used, evicting the single oldest entry if this pushes the map over `TRANSCRIPT_CACHE_CAP`. */
-  function cacheSet(id: string, data: NoteWithTranscript) {
+  /** Writes a cache entry as most-recently-used, evicting the single oldest entry if this pushes the map over `TRANSCRIPT_CACHE_CAP`. Same stable-identity rationale as `cacheGet`. */
+  const cacheSet = useCallback((id: string, data: NoteWithTranscript) => {
     transcriptCache.current.delete(id)
     transcriptCache.current.set(id, data)
     if (transcriptCache.current.size > TRANSCRIPT_CACHE_CAP) {
       const oldestId = transcriptCache.current.keys().next().value
       if (oldestId !== undefined) transcriptCache.current.delete(oldestId)
     }
-  }
+  }, [])
 
-  function loadNoteTranscript(id: string, opts: { force?: boolean } = {}) {
-    if (!opts.force) {
-      const cached = cacheGet(id)
-      if (cached) {
-        setSelectedMeta(cached.meta)
-        setSelectedTranscript(cached.transcript.segments)
-        setSelectedSummary(cached.summary)
-        setSelectedMarkdown(cached.markdown)
-        setTranscriptLoading(false)
-        return
+  /**
+   * `useCallback` (deps: `cacheGet`, `cacheSet`, `reportError` — all three
+   * permanently stable) so this itself has a stable identity: `renameNote`/
+   * `toggleActionItem`/the `summary-status` 'done' handler below all call
+   * it, and several of those are themselves memoized for
+   * MarkdownCard/AiNotesPanel's benefit — a fresh `loadNoteTranscript` every
+   * render would ripple through and bust all of that.
+   */
+  const loadNoteTranscript = useCallback(
+    (id: string, opts: { force?: boolean } = {}) => {
+      if (!opts.force) {
+        const cached = cacheGet(id)
+        if (cached) {
+          setSelectedMeta(cached.meta)
+          setSelectedTranscript(cached.transcript.segments)
+          setSelectedSummary(cached.summary)
+          setSelectedMarkdown(cached.markdown)
+          setTranscriptLoading(false)
+          return
+        }
       }
-    }
-    const requestId = ++transcriptRequestId.current
-    setTranscriptLoading(true)
-    ipc
-      .getNote(id)
-      .then(data => {
-        cacheSet(id, data)
-        if (transcriptRequestId.current !== requestId) return
-        setSelectedMeta(data.meta)
-        setSelectedTranscript(data.transcript.segments)
-        setSelectedSummary(data.summary)
-        setSelectedMarkdown(data.markdown)
-      })
-      .catch(err => {
-        if (transcriptRequestId.current !== requestId) return
-        reportError(err)
-      })
-      .finally(() => {
-        if (transcriptRequestId.current === requestId) setTranscriptLoading(false)
-      })
-  }
+      const requestId = ++transcriptRequestId.current
+      setTranscriptLoading(true)
+      ipc
+        .getNote(id)
+        .then(data => {
+          cacheSet(id, data)
+          if (transcriptRequestId.current !== requestId) return
+          setSelectedMeta(data.meta)
+          setSelectedTranscript(data.transcript.segments)
+          setSelectedSummary(data.summary)
+          setSelectedMarkdown(data.markdown)
+        })
+        .catch(err => {
+          if (transcriptRequestId.current !== requestId) return
+          reportError(err)
+        })
+        .finally(() => {
+          if (transcriptRequestId.current === requestId) setTranscriptLoading(false)
+        })
+    },
+    [cacheGet, cacheSet, reportError],
+  )
 
   const selectedNoteId = notes[sel]?.id ?? null
 
@@ -198,43 +217,69 @@ export function useAppState() {
       return
     }
     loadNoteTranscript(selectedNoteId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNoteId])
+  }, [selectedNoteId, loadNoteTranscript])
 
-  /** Header pencil → inline-edit commit: renames on disk, refreshes the notes list, and (if still selected) reloads this note's transcript with its fresh title. */
-  function renameNote(id: string, title: string) {
-    ipc
-      .renameNote(id, title)
-      .then(() => {
-        transcriptCache.current.delete(id)
-        return ipc.listNotes()
-      })
-      .then(freshNotes => {
-        setNotes(freshNotes)
-        if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
-      })
-      .catch(reportError)
-  }
+  /**
+   * Header pencil → inline-edit commit: renames on disk, refreshes the notes
+   * list, and (if still selected) reloads this note's transcript with its
+   * fresh title. `useCallback` (deps: `selectedNoteId`, `loadNoteTranscript`,
+   * `reportError`) — same stable-identity rationale as `startRec`/
+   * `togglePause`/`stopRec` above.
+   */
+  const renameNote = useCallback(
+    (id: string, title: string) => {
+      ipc
+        .renameNote(id, title)
+        .then(() => {
+          transcriptCache.current.delete(id)
+          return ipc.listNotes()
+        })
+        .then(freshNotes => {
+          setNotes(freshNotes)
+          if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
+        })
+        .catch(reportError)
+    },
+    [selectedNoteId, loadNoteTranscript, reportError],
+  )
 
-  /** Header trash (after 4s-arm confirm) → deletes on disk, refreshes the notes list, and clamps the selection onto whatever note now sits at the same index (i.e. "the next note"). */
-  function deleteNote(id: string) {
-    ipc
-      .deleteNote(id)
-      .then(() => {
-        transcriptCache.current.delete(id)
-        return ipc.listNotes()
-      })
-      .then(freshNotes => {
-        setNotes(freshNotes)
-        setSel(prevSel => Math.min(prevSel, Math.max(freshNotes.length - 1, 0)))
-      })
-      .catch(reportError)
-  }
+  /**
+   * Header trash (after 4s-arm confirm) → deletes on disk, refreshes the
+   * notes list, and clamps the selection onto whatever note now sits at the
+   * same index (i.e. "the next note"). `useCallback` (deps: `reportError`
+   * only) — doesn't close over `selectedNoteId`/`sel` at all (the post-delete
+   * selection is derived functionally off the fresh list), so this has a
+   * permanently stable identity.
+   */
+  const deleteNote = useCallback(
+    (id: string) => {
+      ipc
+        .deleteNote(id)
+        .then(() => {
+          transcriptCache.current.delete(id)
+          return ipc.listNotes()
+        })
+        .then(freshNotes => {
+          setNotes(freshNotes)
+          setSel(prevSel => Math.min(prevSel, Math.max(freshNotes.length - 1, 0)))
+        })
+        .catch(reportError)
+    },
+    [reportError],
+  )
 
-  /** Markdown card "Reveal in Finder" → reveals the note's audio.wav (or its folder) in Finder. */
-  function revealNote(id: string) {
-    ipc.revealNote(id).catch(reportError)
-  }
+  /**
+   * Markdown card "Reveal in Finder" → reveals the note's audio.wav (or its
+   * folder) in Finder. `useCallback` (deps: `reportError` only) — closes
+   * over nothing else, so this has a permanently stable identity; passed
+   * straight through to MarkdownCard as `onReveal`.
+   */
+  const revealNote = useCallback(
+    (id: string) => {
+      ipc.revealNote(id).catch(reportError)
+    },
+    [reportError],
+  )
 
   // Model catalog, downloads, and the transcription-model selection are
   // split into their own hook — see useModelManager.ts. It also re-gates
@@ -394,13 +439,18 @@ export function useAppState() {
    * rejects synchronously — with no `summary-status` event at all — when
    * the engine is already busy with another note, so that failure would
    * otherwise go unsurfaced.
+   *
+   * `useCallback` with no deps — only closes over stable setters and the
+   * module-level `messageOf` — so this has a permanently stable identity;
+   * NoteView passes it straight through (curried per-note) to AiNotesPanel's
+   * `onRegenerate`.
    */
-  function regenerateSummary(id: string) {
+  const regenerateSummary = useCallback((id: string) => {
     ipc.summarizeNote(id).catch(err => {
       setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
       setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
     })
-  }
+  }, [])
 
   /**
    * AI notes panel checkbox click: flips one action item's `done` state.
@@ -412,51 +462,61 @@ export function useAppState() {
    * not a fresh `markdown` rendering, and `note.md`'s checkbox did change
    * server-side, so a full refetch is what keeps the Markdown tab honest.
    * On failure, reverts the optimistic edit and reports the error.
+   *
+   * `useCallback` (deps: `selectedNoteId`, `cacheGet`, `cacheSet`,
+   * `loadNoteTranscript`, `reportError`) — `cacheGet`/`cacheSet`/
+   * `loadNoteTranscript` are each independently stable (see their own docs
+   * above), so this only actually gets a fresh identity when the selected
+   * note changes, same as `renameNote`. NoteView passes it straight through
+   * (curried per-note) to AiNotesPanel's `onToggleAction`.
    */
-  function toggleActionItem(id: string, index: number, done: boolean) {
-    const before = cacheGet(id)
-    const previousDone = before?.summary?.actionItems[index]?.done
-    if (before?.summary) {
-      const optimisticSummary: SummaryDoc = {
-        ...before.summary,
-        actionItems: before.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
-      }
-      cacheSet(id, { ...before, summary: optimisticSummary })
-      if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
-    }
-
-    ipc
-      .toggleActionItem(id, index, done)
-      .then(() => {
-        transcriptCache.current.delete(id)
-        if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
-      })
-      .catch(err => {
-        // Scoped revert: flip only *this* toggle's field back, applied
-        // against whatever the cache holds right now — not the
-        // full-document snapshot captured when this call started. A
-        // second, unrelated toggle (or a confirmed refetch) may have
-        // landed in between; reverting off the stale snapshot would
-        // clobber that change instead of just undoing this one. If the
-        // cache entry (or this specific action item within it) isn't
-        // there anymore — evicted, or replaced wholesale by a
-        // `summary-status` 'done' refresh — there's nothing safe to patch
-        // in place, so fall back to a plain forced refetch instead.
-        const current = cacheGet(id)
-        const currentItem = current?.summary?.actionItems[index]
-        if (current?.summary && currentItem && previousDone !== undefined) {
-          const revertedSummary: SummaryDoc = {
-            ...current.summary,
-            actionItems: current.summary.actionItems.map((item, i) => (i === index ? { ...item, done: previousDone } : item)),
-          }
-          cacheSet(id, { ...current, summary: revertedSummary })
-          if (id === selectedNoteId) setSelectedSummary(revertedSummary)
-        } else if (id === selectedNoteId) {
-          loadNoteTranscript(id, { force: true })
+  const toggleActionItem = useCallback(
+    (id: string, index: number, done: boolean) => {
+      const before = cacheGet(id)
+      const previousDone = before?.summary?.actionItems[index]?.done
+      if (before?.summary) {
+        const optimisticSummary: SummaryDoc = {
+          ...before.summary,
+          actionItems: before.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
         }
-        reportError(err)
-      })
-  }
+        cacheSet(id, { ...before, summary: optimisticSummary })
+        if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
+      }
+
+      ipc
+        .toggleActionItem(id, index, done)
+        .then(() => {
+          transcriptCache.current.delete(id)
+          if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
+        })
+        .catch(err => {
+          // Scoped revert: flip only *this* toggle's field back, applied
+          // against whatever the cache holds right now — not the
+          // full-document snapshot captured when this call started. A
+          // second, unrelated toggle (or a confirmed refetch) may have
+          // landed in between; reverting off the stale snapshot would
+          // clobber that change instead of just undoing this one. If the
+          // cache entry (or this specific action item within it) isn't
+          // there anymore — evicted, or replaced wholesale by a
+          // `summary-status` 'done' refresh — there's nothing safe to patch
+          // in place, so fall back to a plain forced refetch instead.
+          const current = cacheGet(id)
+          const currentItem = current?.summary?.actionItems[index]
+          if (current?.summary && currentItem && previousDone !== undefined) {
+            const revertedSummary: SummaryDoc = {
+              ...current.summary,
+              actionItems: current.summary.actionItems.map((item, i) => (i === index ? { ...item, done: previousDone } : item)),
+            }
+            cacheSet(id, { ...current, summary: revertedSummary })
+            if (id === selectedNoteId) setSelectedSummary(revertedSummary)
+          } else if (id === selectedNoteId) {
+            loadNoteTranscript(id, { force: true })
+          }
+          reportError(err)
+        })
+    },
+    [selectedNoteId, cacheGet, cacheSet, loadNoteTranscript, reportError],
+  )
 
   /**
    * Starts a new recording with the currently selected STT model.
@@ -598,6 +658,34 @@ export function useAppState() {
     })
   }, [reportError])
 
+  /**
+   * Persists the recommended pair as the user's explicit selections for
+   * whichever of the two actually finished installing during onboarding
+   * (the STT one always did, by construction — "Start using Minute" is
+   * disabled otherwise; the LLM one is optional) — `modelManager.sttModel`/
+   * `llmModel` are already set to these in-memory (via the re-gate effect
+   * reacting to the download completing), but that reassignment doesn't
+   * itself write through to settings.json, so this call is what actually
+   * persists the pick once the user commits to it.
+   *
+   * `useCallback` (deps: `modelManager.recommendation`, `modelManager.models`,
+   * `modelManager.setSttModel`, `modelManager.setLlmModel`) — the latter two
+   * are themselves permanently stable (see useModelManager), so this only
+   * gets a fresh identity when the recommendation or model catalog actually
+   * changes.
+   */
+  const { recommendation: modelRecommendation, models: modelCatalog, setSttModel: setSttModelOnComplete, setLlmModel: setLlmModelOnComplete } = modelManager
+  const completeOnboarding = useCallback(() => {
+    const rec = modelRecommendation
+    if (rec) {
+      const sttInstalled = modelCatalog.find(m => m.kind === 'stt' && m.id === rec.stt && m.state === 'installed')
+      if (sttInstalled) setSttModelOnComplete(sttInstalled.id)
+      const llmInstalledEntry = modelCatalog.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
+      if (llmInstalledEntry) setLlmModelOnComplete(llmInstalledEntry.id)
+    }
+    setView('notes')
+  }, [modelRecommendation, modelCatalog, setSttModelOnComplete, setLlmModelOnComplete])
+
   return {
     view,
     // Derived from backend truth (a recording is active iff the backend
@@ -658,24 +746,7 @@ export function useAppState() {
     downloadModel: modelManager.downloadModel,
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,
-    // Persists the recommended pair as the user's explicit selections for
-    // whichever of the two actually finished installing during onboarding
-    // (the STT one always did, by construction — "Start using Minute" is
-    // disabled otherwise; the LLM one is optional) — `modelManager.sttModel`/
-    // `llmModel` are already set to these in-memory (via the re-gate effect
-    // reacting to the download completing), but that reassignment doesn't
-    // itself write through to settings.json, so this call is what actually
-    // persists the pick once the user commits to it.
-    completeOnboarding: () => {
-      const rec = modelManager.recommendation
-      if (rec) {
-        const sttInstalled = modelManager.models.find(m => m.kind === 'stt' && m.id === rec.stt && m.state === 'installed')
-        if (sttInstalled) modelManager.setSttModel(sttInstalled.id)
-        const llmInstalledEntry = modelManager.models.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
-        if (llmInstalledEntry) modelManager.setLlmModel(llmInstalledEntry.id)
-      }
-      setView('notes')
-    },
+    completeOnboarding,
     renameNote,
     deleteNote,
     revealNote,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { NoteMeta, StoredSegment, SummaryDoc } from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
 import { formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
@@ -88,6 +88,15 @@ const pillBaseStyle = {
  * status, else no pill at all (still recording). The finalizing check is
  * keyed off `sttStatusNoteId` matching this note specifically — not just
  * "any recording is finalizing" — so it never applies to the wrong note.
+ *
+ * The outer `role="status"` wrapper is *always* mounted (present the whole
+ * time the note header renders) — only what's inside it changes between
+ * renders. A `role="status"` element that instead gets conditionally
+ * mounted/unmounted with its announcement text already inside is commonly
+ * missed by screen readers (they reliably pick up *mutations* to an
+ * already-present live region, not a whole new subtree appearing with
+ * content baked in); keeping one stable wrapper here and only swapping its
+ * children is what makes each of these state changes reliably announced.
  */
 function StatusPill({
   meta,
@@ -102,9 +111,11 @@ function StatusPill({
 }) {
   const finalizing = sttStatusNoteId === meta.id && sttStatus === 'finalizing'
 
+  let content: ReactNode = null
+
   if (finalizing) {
-    return (
-      <span role="status" style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
+    content = (
+      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
           className="spin"
           style={{
@@ -120,11 +131,9 @@ function StatusPill({
         Finalizing transcript…
       </span>
     )
-  }
-
-  if (summaryStatus === 'running') {
-    return (
-      <span role="status" style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
+  } else if (summaryStatus === 'running') {
+    content = (
+      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
           className="spin"
           style={{
@@ -140,19 +149,15 @@ function StatusPill({
         Summarizing…
       </span>
     )
-  }
-
-  if (meta.status === 'ready') {
-    return (
+  } else if (meta.status === 'ready') {
+    content = (
       <span style={{ ...pillBaseStyle, background: 'var(--ok-tint)', border: '1px solid var(--ok-text)', color: 'var(--ok-text)' }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
         Ready
       </span>
     )
-  }
-
-  if (meta.status === 'transcribed') {
-    return (
+  } else if (meta.status === 'transcribed') {
+    content = (
       <span style={{ ...pillBaseStyle, background: 'var(--ok-tint)', border: '1px solid var(--ok-text)', color: 'var(--ok-text)' }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
         Transcribed
@@ -160,7 +165,7 @@ function StatusPill({
     )
   }
 
-  return null
+  return <span role="status">{content}</span>
 }
 
 function slugify(title: string): string {
@@ -205,7 +210,7 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
             width: 32,
             height: 32,
             border: 'none',
-            borderRadius: 8,
+            borderRadius: 'var(--radius-sm)',
             background: 'transparent',
             color: 'var(--ink-muted)',
             cursor: 'pointer',
@@ -293,7 +298,7 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
           width: 32,
           height: 32,
           border: 'none',
-          borderRadius: 8,
+          borderRadius: 'var(--radius-sm)',
           background: confirming ? 'rgba(224,68,48,.12)' : 'transparent',
           color: confirming ? 'var(--accent-text)' : 'var(--ink-muted)',
           cursor: 'pointer',
@@ -309,11 +314,9 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
           <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
         </svg>
       </button>
-      {confirming && (
-        <span role="status" className="visually-hidden">
-          Press again to confirm deletion
-        </span>
-      )}
+      <span role="status" className="visually-hidden">
+        {confirming ? 'Press again to confirm deletion' : ''}
+      </span>
     </>
   )
 }
@@ -364,6 +367,37 @@ export function NoteView({
   // rest of this sweep (see MarkdownCard/Sidebar/TitleBar).
   const displaySegments = useMemo(() => storedSegmentsToDisplay(segments), [segments])
   const markdownBytes = useMemo(() => new TextEncoder().encode(markdown).length, [markdown])
+
+  // Curried per-note closures handed down to the memoized MarkdownCard/
+  // AiNotesPanel — `useCallback`'d (keyed on `meta`'s id, plus whichever
+  // handler prop each one actually calls) so their identity only changes
+  // when the note being viewed changes (or the underlying handler itself
+  // does), not on every NoteView re-render. A plain arrow literal here would
+  // be a fresh function every render and defeat those components' memo no
+  // matter how stable `onReveal`/`onToggleActionItem`/etc. are upstream in
+  // useAppState. Also computed ahead of the `!meta` early return below (same
+  // reason as `displaySegments`/`markdownBytes` above) — meaningless but
+  // harmless while `meta` is `null`.
+  const noteId = meta?.id ?? null
+  const handleReveal = useCallback(() => {
+    if (noteId) onReveal(noteId)
+  }, [noteId, onReveal])
+  const handleToggleAction = useCallback(
+    (index: number, done: boolean) => {
+      if (noteId) onToggleActionItem(noteId, index, done)
+    },
+    [noteId, onToggleActionItem],
+  )
+  const handleRegenerate = useCallback(() => {
+    if (noteId) onRegenerateSummary(noteId)
+  }, [noteId, onRegenerateSummary])
+  const handleCopy = useCallback(() => {
+    if (!navigator.clipboard) {
+      onCopyError(new Error('Clipboard unavailable'))
+      return
+    }
+    navigator.clipboard.writeText(markdown).catch(err => onCopyError(err))
+  }, [markdown, onCopyError])
 
   if (!meta) {
     return <EmptyNotesArea />
@@ -479,7 +513,7 @@ export function NoteView({
               filename={`${slugify(meta.title)}.md`}
               subtitle={`${formatBytes(markdownBytes)} · saved locally`}
               markdown={markdown}
-              onReveal={() => onReveal(meta.id)}
+              onReveal={handleReveal}
               onCopyError={onCopyError}
             />
           </div>
@@ -491,20 +525,17 @@ export function NoteView({
         error={summaryError}
         modelName={llmModelName}
         llmInstalled={llmInstalled}
-        onToggleAction={(index, done) => onToggleActionItem(meta.id, index, done)}
-        onRegenerate={() => onRegenerateSummary(meta.id)}
-        onCopy={() => {
-          if (!navigator.clipboard) {
-            onCopyError(new Error('Clipboard unavailable'))
-            return
-          }
-          navigator.clipboard.writeText(markdown).catch(err => onCopyError(err))
-        }}
+        onToggleAction={handleToggleAction}
+        onRegenerate={handleRegenerate}
+        onCopy={handleCopy}
         // Export .md reveals via the shared reveal command (audio.wav if
         // present, else the note directory containing note.md) rather than
         // a dedicated "reveal note.md specifically" command — a deliberate
         // simplification, not an oversight (see Stage 3 Task 5's plan doc).
-        onExport={() => onReveal(meta.id)}
+        // Same closure as MarkdownCard's `onReveal` above (both just reveal
+        // this note) — reused rather than a second `useCallback` so they
+        // share one stable identity instead of two.
+        onExport={handleReveal}
         onGoSettings={onGoSettings}
       />
     </main>

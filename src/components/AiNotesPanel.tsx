@@ -91,7 +91,6 @@ function Spinner({ color }: { color: string }) {
 function SummarizingBanner({ modelName }: { modelName: string }) {
   return (
     <div
-      role="status"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -281,6 +280,16 @@ export const AiNotesPanel = memo(function AiNotesPanel({
         <h2 style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>AI notes</h2>
         <div style={{ fontSize: 11, color: 'var(--ink-faint)' }}>generated locally</div>
       </div>
+      {/* Persistent `role="status"` announcer — always mounted, text toggles
+          between '' and "Summarizing on-device…" — the visible
+          `SummarizingBanner` below stays purely visual (no role="status" of
+          its own) so this is the only thing that ever announces the
+          summarizing state; a role="status" node that instead mounts and
+          unmounts with its text already inside is commonly missed by screen
+          readers. */}
+      <span role="status" className="visually-hidden">
+        {summarizing ? 'Summarizing on-device…' : ''}
+      </span>
       <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         {summarizing && <SummarizingBanner modelName={modelName} />}
         {status === 'error' && <ErrorCard error={error} onRegenerate={onRegenerate} />}

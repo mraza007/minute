@@ -92,13 +92,13 @@ describe('NoteView', () => {
 
   it('renders the transcript tab with the TranscriptList and the player bar', () => {
     render(<NoteView {...makeProps({ noteTab: 'transcript' })} />)
-    expect(screen.getByTitle('Play')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument()
   })
 
   it('shows the markdown card and hides the transcript tab content when noteTab is md', () => {
     render(<NoteView {...makeProps({ noteTab: 'md' })} />)
     expect(screen.getByText('client-call-acme.md')).toBeInTheDocument()
-    expect(screen.queryByTitle('Play')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument()
   })
 
   it('hides the markdown card when noteTab is transcript', () => {
