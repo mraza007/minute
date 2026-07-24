@@ -183,7 +183,7 @@ function ActionItemsCard({
   // the old (still-displayed) array after the worker's write patches the
   // wrong item by index against the new one. Disabling here is the cheap,
   // always-available half of the guard; `toggle_action_item` also rejects
-  // server-side while `SummarizeBusy` is claimed as the authoritative check.
+  // server-side while `LlmBusy` is claimed as the authoritative check.
   disabled: boolean
 }) {
   return (

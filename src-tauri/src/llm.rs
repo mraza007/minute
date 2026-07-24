@@ -70,7 +70,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
@@ -1483,6 +1483,77 @@ pub fn try_spawn_summarize(
 }
 
 // ---------------------------------------------------------------------------
+// auto-summarize busy retry (audio::auto_trigger_summarize's backing seam)
+// ---------------------------------------------------------------------------
+
+/// How often [`retry_spawn_while_busy`] re-attempts a spawn while
+/// [`LlmBusy`] stays claimed by something else — short enough that a
+/// same-length ask/summarize finishing while a *different* one is
+/// auto-triggering (the scenario this whole retry exists for — see
+/// `audio::auto_trigger_summarize`'s docs) is picked up promptly, long
+/// enough not to spin a detached thread hot for up to
+/// [`AUTO_SUMMARIZE_RETRY_DEADLINE`].
+pub const AUTO_SUMMARIZE_POLL_INTERVAL: Duration = Duration::from_millis(300);
+
+/// How long [`retry_spawn_while_busy`] keeps retrying a busy-blocked
+/// auto-summarize before giving up — generous (most real generations,
+/// summarize or ask, finish in seconds; see `llm.rs`'s module docs for
+/// observed timings) without keeping a note silently unsummarized forever
+/// if something is stuck.
+pub const AUTO_SUMMARIZE_RETRY_DEADLINE: Duration = Duration::from_secs(600);
+
+/// The message [`retry_spawn_while_busy`] gives up with — deliberately
+/// never the raw internal token a busy `try_spawn_summarize`/
+/// `try_spawn_ask` call actually rejects with (`"summarization already
+/// running"` / `"busy"`): that's an implementation detail of which flow
+/// currently holds [`LlmBusy`], not something a user reading a
+/// `summary-status` error card should have to parse. This is the one
+/// sentence that actually reaches `AiNotesPanel`'s error card for this
+/// path, so it says what happened *and* what to do about it.
+const AUTO_SUMMARIZE_GIVE_UP_MESSAGE: &str =
+    "the assistant was busy with another generation — use Regenerate to summarize this note";
+
+/// The retry decision loop behind `audio::auto_trigger_summarize`'s
+/// busy-handling: repeatedly calls `try_spawn` (expected to be a closure
+/// wrapping [`try_spawn_summarize`] with everything but the busy claim
+/// itself already bound — see the call site) until it succeeds, sleeping
+/// `poll_interval` (via the injected `sleep`) between attempts, until
+/// `elapsed()` reaches `deadline` — at which point this gives up and
+/// returns [`AUTO_SUMMARIZE_GIVE_UP_MESSAGE`] instead of forwarding
+/// whatever internal token the last `try_spawn` call actually rejected
+/// with (see that constant's docs for why).
+///
+/// Every real `try_spawn_summarize` error *is* a busy-contention rejection
+/// — that's the only `Err` case it has (see its own docs) — so this loop
+/// doesn't need to inspect *what* `try_spawn` returned on failure, only
+/// *that* it failed; it always means "still busy, worth retrying until the
+/// deadline".
+///
+/// `sleep`/`elapsed` are injection seams (not `std::thread::sleep`/
+/// `Instant::now()` called directly) so this is unit-testable — see
+/// `tests::retry_spawn_while_busy_*` — without a real thread ever
+/// sleeping for real wall-clock time; the real call site
+/// (`audio::auto_trigger_summarize`) wires up `std::thread::sleep` and an
+/// `Instant` captured when the retry thread started.
+pub fn retry_spawn_while_busy(
+    mut try_spawn: impl FnMut() -> std::result::Result<(), &'static str>,
+    mut sleep: impl FnMut(Duration),
+    mut elapsed: impl FnMut() -> Duration,
+    poll_interval: Duration,
+    deadline: Duration,
+) -> std::result::Result<(), String> {
+    loop {
+        if try_spawn().is_ok() {
+            return Ok(());
+        }
+        if elapsed() >= deadline {
+            return Err(AUTO_SUMMARIZE_GIVE_UP_MESSAGE.to_string());
+        }
+        sleep(poll_interval);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // summarize_note command
 // ---------------------------------------------------------------------------
 
@@ -2245,6 +2316,199 @@ mod tests {
         // `engine` (inside `run_summarize`) until `_engine_guard` drops at
         // the end of this test — that's fine, it's a detached thread this
         // test never joins (see `SummarizeWorker::spawn`'s docs).
+    }
+
+    // --- retry_spawn_while_busy ---------------------------------------------
+    //
+    // A fake, injected clock: `sleep` advances a shared counter by the
+    // requested duration (never actually blocks), `elapsed` reads it back —
+    // so these tests exercise the real deadline/give-up arithmetic without
+    // any test taking near-real wall-clock time. `Rc<Cell<_>>`, not
+    // `Arc<Mutex<_>>` — these closures never leave the current thread.
+    fn fake_clock() -> (impl FnMut(Duration), impl FnMut() -> Duration) {
+        let now = std::rc::Rc::new(std::cell::Cell::new(Duration::ZERO));
+        let sleep_now = now.clone();
+        let sleep = move |d: Duration| sleep_now.set(sleep_now.get() + d);
+        let elapsed = move || now.get();
+        (sleep, elapsed)
+    }
+
+    #[test]
+    fn retry_spawn_while_busy_succeeds_immediately_when_not_busy() {
+        let (_sleep, elapsed) = fake_clock();
+        let mut attempts = 0;
+        let mut sleep_calls = 0;
+
+        let result = retry_spawn_while_busy(
+            || {
+                attempts += 1;
+                Ok(())
+            },
+            |_d| sleep_calls += 1,
+            elapsed,
+            Duration::from_millis(300),
+            Duration::from_secs(600),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 1, "must succeed on the very first attempt — no retry needed");
+        assert_eq!(sleep_calls, 0, "must never sleep when the first attempt already succeeds");
+    }
+
+    #[test]
+    fn retry_spawn_while_busy_succeeds_once_busy_clears() {
+        let (sleep, elapsed) = fake_clock();
+        let mut attempts = 0;
+
+        let result = retry_spawn_while_busy(
+            move || {
+                attempts += 1;
+                // Busy for the first two attempts, free on the third —
+                // simulates another generation finishing mid-retry.
+                if attempts < 3 { Err("summarization already running") } else { Ok(()) }
+            },
+            sleep,
+            elapsed,
+            Duration::from_millis(300),
+            Duration::from_secs(600),
+        );
+
+        assert!(result.is_ok(), "must eventually succeed once busy clears, well before the deadline");
+    }
+
+    #[test]
+    fn retry_spawn_while_busy_gives_up_with_the_honest_message_past_the_deadline() {
+        let (sleep, elapsed) = fake_clock();
+
+        let result = retry_spawn_while_busy(
+            || Err("summarization already running"), // never clears
+            sleep,
+            elapsed,
+            Duration::from_millis(300),
+            Duration::from_secs(600),
+        );
+
+        let err = result.unwrap_err();
+        assert_eq!(err, AUTO_SUMMARIZE_GIVE_UP_MESSAGE);
+        // The honest give-up message, never the raw internal token
+        // `try_spawn_summarize`/`try_spawn_ask` actually reject with.
+        assert!(!err.contains("already running"));
+        assert!(err.contains("Regenerate"), "should tell the user what to do about it");
+    }
+
+    #[test]
+    fn retry_spawn_while_busy_polls_at_the_given_interval_until_giving_up() {
+        let poll_interval = Duration::from_millis(300);
+        let deadline = Duration::from_secs(3);
+        let (sleep, elapsed) = fake_clock();
+        let mut attempts = 0;
+
+        let result = retry_spawn_while_busy(
+            || {
+                attempts += 1;
+                Err("summarization already running")
+            },
+            sleep,
+            elapsed,
+            poll_interval,
+            deadline,
+        );
+
+        assert!(result.is_err());
+        // `deadline / poll_interval` sleeps land exactly on the deadline
+        // (each failed attempt is followed by one `poll_interval` sleep;
+        // 3000ms / 300ms = 10 sleeps gets `elapsed()` to exactly 3000ms) —
+        // one more attempt after that last sleep is what actually observes
+        // `elapsed() >= deadline` and gives up, so attempts = sleeps + 1.
+        let expected_sleeps = deadline.as_millis() / poll_interval.as_millis();
+        let expected_attempts = expected_sleeps as i32 + 1;
+        assert_eq!(attempts, expected_attempts);
+    }
+
+    // --- retry_spawn_while_busy, wired to the real try_spawn_summarize -----
+    //
+    // The pure tests above prove the retry/deadline arithmetic against a
+    // fake `try_spawn`; these two prove the actual seam
+    // `audio::auto_trigger_summarize` uses — a real [`LlmBusy`] atomic and a
+    // real [`try_spawn_summarize`] call behind the retry loop — end to end,
+    // without a Tauri `AppHandle`/`State` (this crate has no test harness
+    // for those — see the module notes). This is the "auto-summarize hits
+    // busy" path becoming unit-testable for the first time: before
+    // `retry_spawn_while_busy` existed, nothing about that path (the retry,
+    // the eventual honest give-up message) was exercised by any test.
+
+    #[test]
+    fn retry_spawn_while_busy_against_real_try_spawn_summarize_succeeds_once_busy_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        let busy = open_busy_flag();
+
+        // Simulates another generation (an ask, or a manual summarize) that
+        // was already in flight when this recording finished — released
+        // partway through the retry loop, exactly like that other
+        // generation actually completing would.
+        busy.store(true, Ordering::SeqCst);
+        let busy_for_release = busy.clone();
+
+        let (sleep, elapsed) = fake_clock();
+        let mut attempts = 0;
+        let result = retry_spawn_while_busy(
+            || {
+                attempts += 1;
+                if attempts == 2 {
+                    busy_for_release.store(false, Ordering::SeqCst);
+                }
+                try_spawn_summarize(
+                    store.clone(),
+                    engine.clone(),
+                    busy.clone(),
+                    "qwen3.5-4b".to_string(),
+                    dir.path().join("does-not-exist.gguf"),
+                    "some-note".to_string(),
+                    Box::new(|_event| {}),
+                )
+            },
+            sleep,
+            elapsed,
+            Duration::from_millis(300),
+            Duration::from_secs(600),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn retry_spawn_while_busy_against_real_try_spawn_summarize_gives_up_honestly_when_never_freed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        let busy = open_busy_flag();
+        // Never released — simulates a stuck/very long generation.
+        busy.store(true, Ordering::SeqCst);
+
+        let (sleep, elapsed) = fake_clock();
+        let result = retry_spawn_while_busy(
+            || {
+                try_spawn_summarize(
+                    store.clone(),
+                    engine.clone(),
+                    busy.clone(),
+                    "qwen3.5-4b".to_string(),
+                    dir.path().join("does-not-exist.gguf"),
+                    "some-note".to_string(),
+                    Box::new(|_event| {}),
+                )
+            },
+            sleep,
+            elapsed,
+            Duration::from_millis(300),
+            Duration::from_secs(600),
+        );
+
+        let err = result.unwrap_err();
+        assert_eq!(err, AUTO_SUMMARIZE_GIVE_UP_MESSAGE);
     }
 
     // --- run_summarize / run_summarize_worker: empty-transcript short-circuit --
