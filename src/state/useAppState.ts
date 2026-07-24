@@ -414,13 +414,14 @@ export function useAppState() {
    * On failure, reverts the optimistic edit and reports the error.
    */
   function toggleActionItem(id: string, index: number, done: boolean) {
-    const previous = cacheGet(id)
-    if (previous?.summary) {
+    const before = cacheGet(id)
+    const previousDone = before?.summary?.actionItems[index]?.done
+    if (before?.summary) {
       const optimisticSummary: SummaryDoc = {
-        ...previous.summary,
-        actionItems: previous.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
+        ...before.summary,
+        actionItems: before.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
       }
-      cacheSet(id, { ...previous, summary: optimisticSummary })
+      cacheSet(id, { ...before, summary: optimisticSummary })
       if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
     }
 
@@ -431,9 +432,27 @@ export function useAppState() {
         if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
       })
       .catch(err => {
-        if (previous) {
-          cacheSet(id, previous)
-          if (id === selectedNoteId) setSelectedSummary(previous.summary)
+        // Scoped revert: flip only *this* toggle's field back, applied
+        // against whatever the cache holds right now — not the
+        // full-document snapshot captured when this call started. A
+        // second, unrelated toggle (or a confirmed refetch) may have
+        // landed in between; reverting off the stale snapshot would
+        // clobber that change instead of just undoing this one. If the
+        // cache entry (or this specific action item within it) isn't
+        // there anymore — evicted, or replaced wholesale by a
+        // `summary-status` 'done' refresh — there's nothing safe to patch
+        // in place, so fall back to a plain forced refetch instead.
+        const current = cacheGet(id)
+        const currentItem = current?.summary?.actionItems[index]
+        if (current?.summary && currentItem && previousDone !== undefined) {
+          const revertedSummary: SummaryDoc = {
+            ...current.summary,
+            actionItems: current.summary.actionItems.map((item, i) => (i === index ? { ...item, done: previousDone } : item)),
+          }
+          cacheSet(id, { ...current, summary: revertedSummary })
+          if (id === selectedNoteId) setSelectedSummary(revertedSummary)
+        } else if (id === selectedNoteId) {
+          loadNoteTranscript(id, { force: true })
         }
         reportError(err)
       })

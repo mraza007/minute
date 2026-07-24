@@ -1038,6 +1038,74 @@ describe('useAppState', () => {
         await waitFor(() => expect(result.current.lastError).toContain('note note-a has no summary yet'))
         expect(result.current.selectedSummary?.actionItems[0].done).toBe(false)
       })
+
+      it('rapid A-then-B: when B succeeds and A later fails, the scoped revert only undoes A — B\'s confirmed change survives', async () => {
+        let rejectA: (e: unknown) => void = () => {}
+        const pendingA = new Promise<SummaryDoc>((_resolve, reject) => {
+          rejectA = reject
+        })
+        let resolveB: (v: SummaryDoc) => void = () => {}
+        const pendingB = new Promise<SummaryDoc>(resolve => {
+          resolveB = resolve
+        })
+
+        let getNoteCalls = 0
+        setupIPC({
+          notes: [noteA],
+          getNote: () => {
+            getNoteCalls += 1
+            // Call 1: initial load — nothing toggled yet. Call 2+: the
+            // forced refetch B's confirmed toggle triggers — backend truth
+            // at that point is "B landed, A did not" (A's command hasn't
+            // resolved server-side by the time this refetch runs).
+            const actionItems =
+              getNoteCalls === 1
+                ? [{ text: 'Item A', done: false }, { text: 'Item B', done: false }]
+                : [{ text: 'Item A', done: false }, { text: 'Item B', done: true }]
+            return {
+              meta: noteA,
+              transcript: { segments: segmentsA },
+              summary: { summary: 'x', decisions: [], actionItems },
+              markdown: '# note',
+            }
+          },
+          toggleActionItem: (_id, index) => (index === 0 ? pendingA : pendingB),
+        })
+
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedSummary?.actionItems).toHaveLength(2))
+
+        // A: toggles index 0 — stays pending (not yet resolved/rejected).
+        act(() => result.current.toggleActionItem('note-a', 0, true))
+        expect(result.current.selectedSummary?.actionItems[0].done).toBe(true)
+
+        // B: toggles index 1 — also stays pending, layered on top of A's
+        // still-in-flight optimistic edit.
+        act(() => result.current.toggleActionItem('note-a', 1, true))
+        expect(result.current.selectedSummary?.actionItems[1].done).toBe(true)
+
+        // B resolves first: confirmed, triggers a forced refetch.
+        await act(async () => {
+          resolveB({ summary: 'x', decisions: [], actionItems: [{ text: 'Item A', done: false }, { text: 'Item B', done: true }] })
+          await pendingB
+        })
+        await waitFor(() => expect(getNoteCalls).toBeGreaterThanOrEqual(2))
+        await waitFor(() => expect(result.current.selectedSummary?.actionItems[1].done).toBe(true))
+
+        // A now fails.
+        await act(async () => {
+          rejectA('note note-a has no summary yet')
+          await pendingA.catch(() => {})
+        })
+        await waitFor(() => expect(result.current.lastError).toContain('note note-a has no summary yet'))
+
+        // B's confirmed change must survive A's revert — the bug this test
+        // guards against: an old, full-document-snapshot revert (captured
+        // before B ever ran) would clobber it back to `false`.
+        expect(result.current.selectedSummary?.actionItems[1].done).toBe(true)
+        // A's own toggle is still reverted.
+        expect(result.current.selectedSummary?.actionItems[0].done).toBe(false)
+      })
     })
   })
 
