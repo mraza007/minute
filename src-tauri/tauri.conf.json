@@ -43,12 +43,12 @@
     },
     "macOS": {
       "infoPlist": "Info.plist",
+      "minimumSystemVersion": "11.0",
       "frameworks": [
         "frameworks/libggml-base.0.dylib",
         "frameworks/libggml-cpu.0.dylib",
         "frameworks/libggml-metal.0.dylib",
         "frameworks/libggml.0.dylib",
-        "frameworks/libllama-common.0.dylib",
         "frameworks/libllama.0.dylib"
       ]
     }

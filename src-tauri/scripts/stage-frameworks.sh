@@ -12,6 +12,17 @@
 # DYLD search path injection), so we copy from there instead of the hashed
 # build dir.
 #
+# What actually gets staged is driven by the app binary's own LC_LOAD_DYLIB
+# list (via `otool -L`), not a glob of target/<profile>/*.dylib. A glob
+# would also catch stale dylibs left over in target/<profile>/ from a
+# previous build under different Cargo features (cargo never prunes those,
+# it just stops referencing them) — e.g. this is exactly how a prior build
+# of this app under llama-cpp-2's default features left a stray, non-
+# portable libllama-common.*.dylib sitting in target/debug/ even after
+# switching to the trimmed feature set below; a naive glob would have
+# silently re-staged it. Reading the binary's actual dependencies makes
+# staging match reality regardless of build history.
+#
 # Each dylib is written out under its Mach-O install-name basename (e.g.
 # "libggml-base.0.dylib", not the on-disk "libggml-base.0.13.1.dylib"),
 # because that install-name basename is exactly what the app binary's
@@ -29,9 +40,18 @@ if [[ "${TAURI_ENV_DEBUG:-}" == "false" ]]; then
   profile="release"
 fi
 lib_dir="$src_tauri_dir/target/$profile"
+bin="$lib_dir/app"
 
-if [[ ! -d "$lib_dir" ]]; then
-  echo "stage-frameworks: $lib_dir not found (cargo build should already have run)" >&2
+if [[ ! -x "$bin" ]]; then
+  echo "stage-frameworks: $bin not found (cargo build should already have run)" >&2
+  exit 1
+fi
+
+# The @rpath-relative dylib basenames the app binary actually depends on.
+needed_names="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep '^@rpath/' | sed 's#^@rpath/##' | sort -u)"
+
+if [[ -z "$needed_names" ]]; then
+  echo "stage-frameworks: $bin has no @rpath dependencies — dynamic-link feature not active?" >&2
   exit 1
 fi
 
@@ -40,33 +60,58 @@ mkdir -p "$dest"
 
 shopt -s nullglob
 copied=()
-for f in "$lib_dir"/libggml*.dylib "$lib_dir"/libllama*.dylib; do
-  # Only real files carry a meaningful install name; the unversioned/
-  # major-only symlinks cargo also drops in target/<profile>/ resolve to
-  # the same content and would just duplicate an entry.
-  [[ -L "$f" ]] && continue
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
 
-  install_name="$(otool -D "$f" | tail -n 1)"
-  case "$install_name" in
-    @rpath/*)
-      target_name="${install_name#@rpath/}"
-      ;;
-    *)
-      echo "stage-frameworks: $f has non-@rpath install name '$install_name' — refusing to guess a bundle-safe name" >&2
-      exit 1
-      ;;
-  esac
+  found=""
+  for f in "$lib_dir"/*.dylib; do
+    [[ -L "$f" ]] && continue # skip symlinks, only real files have a meaningful install name
+    install_name="$(otool -D "$f" | tail -n 1)"
+    if [[ "$install_name" == "@rpath/$name" ]]; then
+      found="$f"
+      break
+    fi
+  done
 
-  cp "$f" "$dest/$target_name"
-  copied+=("$target_name")
+  if [[ -z "$found" ]]; then
+    echo "stage-frameworks: app binary needs @rpath/$name but no matching dylib (install name @rpath/$name) found in $lib_dir" >&2
+    exit 1
+  fi
+
+  cp "$found" "$dest/$name"
+  copied+=("$name")
+done <<< "$needed_names"
+
+# Portability guard: fail loudly if anything staged pulls in a dependency
+# by absolute path outside the system (i.e. not /usr/lib or
+# /System/Library/Frameworks). This is exactly the bug class that put
+# libllama-common's absolute /opt/homebrew/opt/openssl@3 dependency into
+# the bundle in the first place — a bundle carrying that would launch fine
+# on this machine and fail on any other Mac without that exact Homebrew
+# layout.
+non_system_deps=""
+for name in "${copied[@]}"; do
+  while IFS= read -r dep; do
+    case "$dep" in
+      @rpath/*|/usr/lib/*|/System/Library/Frameworks/*) ;;
+      /*)
+        non_system_deps+="  $name -> $dep"$'\n'
+        ;;
+    esac
+  done < <(otool -L "$dest/$name" | tail -n +2 | awk '{print $1}')
 done
+
+if [[ -n "$non_system_deps" ]]; then
+  echo "stage-frameworks: staged dylib(s) depend on non-system absolute paths — these won't exist on other machines:" >&2
+  echo -n "$non_system_deps" >&2
+  exit 1
+fi
 
 expected=(
   "libggml-base.0.dylib"
   "libggml-cpu.0.dylib"
   "libggml-metal.0.dylib"
   "libggml.0.dylib"
-  "libllama-common.0.dylib"
   "libllama.0.dylib"
 )
 

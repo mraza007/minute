@@ -24,7 +24,7 @@ log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 whisper-rs = { version = "0.16.0", features = ["metal", "log_backend"] }
-llama-cpp-2 = { version = "0.1.152", features = ["metal", "dynamic-link"] }
+llama-cpp-2 = { version = "0.1.152", default-features = false, features = ["metal", "dynamic-link"] }
 cpal = "0.17.1"
 hound = "3.5.1"
 sha2 = "0.10.9"
@@ -39,3 +39,15 @@ tokio = { version = "1", features = ["fs", "rt", "time"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# llama-cpp-2 0.1.152's own Cargo.toml depends on llama-cpp-sys-2 without
+# `default-features = false`, so sys-2's default "common" feature (which
+# links OpenSSL by absolute Homebrew path — non-portable, breaks the
+# bundle) stays on unconditionally no matter what features/default-features
+# we pick on llama-cpp-2 here; `cargo tree -e features -i llama-cpp-sys-2`
+# confirms it. vendor/llama-cpp-2-0.1.152 is that same crate with just the
+# two llama-cpp-sys-2 dependency blocks given `default-features = false` —
+# nothing else changed. Drop this patch if a future llama-cpp-2 release
+# fixes it upstream.
+[patch.crates-io]
+llama-cpp-2 = { path = "vendor/llama-cpp-2-0.1.152" }
