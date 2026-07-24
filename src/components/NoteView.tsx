@@ -453,6 +453,10 @@ export function NoteView({
           }
           navigator.clipboard.writeText(markdown).catch(err => onCopyError(err))
         }}
+        // Export .md reveals via the shared reveal command (audio.wav if
+        // present, else the note directory containing note.md) rather than
+        // a dedicated "reveal note.md specifically" command — a deliberate
+        // simplification, not an oversight (see Stage 3 Task 5's plan doc).
         onExport={() => onReveal(meta.id)}
         onGoSettings={onGoSettings}
       />

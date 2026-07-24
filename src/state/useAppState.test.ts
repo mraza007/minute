@@ -357,16 +357,6 @@ describe('useAppState', () => {
     expect(calls.some(c => c.cmd === 'set_settings' && 'llmModel' in (c.args as { patch: Partial<Settings> }).patch)).toBe(false)
   })
 
-  it('setAskDraft/ask capture the ask-your-notes draft, with a fallback askText', async () => {
-    setupIPC()
-    const result = await loaded()
-    expect(result.current.askText).toBe('What did we promise Acme?')
-    act(() => result.current.setAskDraft('what about pricing?'))
-    act(() => result.current.ask())
-    expect(result.current.asked).toBe(true)
-    expect(result.current.askText).toBe('what about pricing?')
-  })
-
   describe('recording flow', () => {
     const noteId = '20260722-130000'
 

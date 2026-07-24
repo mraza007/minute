@@ -1634,6 +1634,31 @@ mod tests {
         let engine = open_shared();
         let busy = open_busy_flag();
 
+        // The busy claim itself is synchronous (a `compare_exchange` on
+        // *this* thread inside `try_spawn_summarize`, before the worker is
+        // even spawned), but naively asserting `busy` right after the call
+        // returned was flaky under `cargo test`'s parallel scheduling: for
+        // a note id that doesn't exist on disk (as here), the spawned
+        // worker's `run_summarize` fails on its very first `get_note` call
+        // and returns almost immediately, dropping its `BusyGuard` (which
+        // resets `busy` back to `false`) — a real race against this
+        // thread's own assertion, not something fixed by per-test-isolated
+        // `busy`/`store` instances (this test already uses its own). The
+        // `emit` callback is the one synchronization point available: it's
+        // called with the `Running` event as the worker's very first
+        // action, while its `BusyGuard` is still held, so blocking there
+        // until this thread has finished asserting makes the ordering
+        // deterministic instead of depending on scheduling luck.
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let emit = Box::new(move |event: SummaryEvent| {
+            let SummaryEvent::SummaryStatus(payload) = &event;
+            if payload.state == SummaryStatusState::Running {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+            }
+        });
+
         let result = try_spawn_summarize(
             store,
             engine,
@@ -1641,11 +1666,16 @@ mod tests {
             "qwen3.5-4b".to_string(),
             dir.path().join("does-not-exist.gguf"),
             "some-note".to_string(),
-            Box::new(|_event| {}),
+            emit,
         );
 
         assert!(result.is_ok());
+        started_rx.recv().expect("worker never reached its Running emit");
         assert!(busy.load(Ordering::SeqCst));
+        // Let the (now-observed) worker finish on its own — same
+        // fire-and-forget shape as every other test here that spawns a
+        // real worker thread (see `SummarizeWorker::spawn`'s docs).
+        let _ = release_tx.send(());
     }
 
     #[test]

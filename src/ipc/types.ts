@@ -89,9 +89,9 @@ export interface Transcript {
  * returns internally (a bare tuple would serialize as a JSON array).
  * `summary` is `null` until the note has been summarized; `markdown` is
  * `store::render_note_md`'s output for the same data, rendered fresh on
- * every read. The frontend keeps using its own `noteToMarkdown` generator
- * until Stage 3 Task 5 rewires components onto this field — for now it's
- * wired into the wire type only, unused by any component.
+ * every read — the sole source of a note's markdown rendering (Stage 3 Task
+ * 5 retired the frontend's own `noteToMarkdown` generator; every component
+ * that renders/exports a note's markdown reads this field).
  */
 export interface NoteWithTranscript {
   meta: NoteMeta

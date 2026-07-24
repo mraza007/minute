@@ -54,8 +54,6 @@ export function useAppState() {
   const [lastError, setLastErrorState] = useState<string | null>(null)
 
   const [sel, setSel] = useState(0)
-  const [asked, setAsked] = useState(false)
-  const [askDraft, setAskDraft] = useState('')
   const [noteTab, setNoteTab] = useState<NoteTab>('transcript')
 
   // Recording slice — entirely backend-event-driven (no local interval
@@ -592,15 +590,12 @@ export function useAppState() {
     summaryStatus,
     summaryError,
     transcriptLoading,
-    asked,
-    askDraft,
     tDel,
     tEnc,
     noteTab,
     sidebarNotes,
     statsLine,
     recTime: formatMmSs(recElapsed),
-    askText: askDraft || 'What did we promise Acme?',
     goNotes: () => setView('notes'),
     goSettings: () => setView('settings'),
     // The REC pill's "return to recording" action — navigating to Settings
@@ -613,8 +608,6 @@ export function useAppState() {
     togglePause,
     selectNote: setSel,
     setNoteTab,
-    setAskDraft,
-    ask: () => setAsked(true),
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,
     toggleDel: () => {
