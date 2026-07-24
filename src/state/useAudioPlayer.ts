@@ -21,6 +21,9 @@ export interface AudioElementLike {
   pause(): void
   addEventListener(type: string, listener: () => void): void
   removeEventListener(type: string, listener: () => void): void
+  /** Optional — only exercised on true unmount (see the effect below), to fully release the element rather than leaving it loaded/buffered with nothing left pointing at it. Real `HTMLAudioElement` always has both; the test stub opts in. */
+  removeAttribute?(name: string): void
+  load?(): void
 }
 
 /** Playback speeds `cycleRate` steps through, in order, wrapping back to the start. */
@@ -108,6 +111,17 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
     audio.addEventListener('ended', onEnded)
 
     return () => {
+      // Runs both when `audioPath` changes to a different note (about to
+      // re-point `src` at fresh audio — the reset above already zeroes
+      // `currentTime`/`duration`/`playing` for it) and on unmount. Either
+      // way, whatever was loaded here must stop playing: per the HTML spec a
+      // "potentially playing" media element is *not* garbage collected just
+      // because every JS reference to it drops (NoteView, and this hook with
+      // it, unmounts whenever the user navigates to Settings or starts a new
+      // recording), so without this an orphaned element would keep playing
+      // — audibly, with no UI left to stop it — until the whole webview
+      // reloads.
+      audio.pause()
       audio.removeEventListener('timeupdate', onTimeUpdate)
       audio.removeEventListener('loadedmetadata', onLoadedMetadata)
       audio.removeEventListener('play', onPlay)
@@ -116,6 +130,25 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioPath])
+
+  // Unmount-only teardown (empty deps — this cleanup never fires on a mere
+  // `audioPath` change, only when the hook itself goes away): beyond pausing
+  // (already handled above, for both cases), fully releases the element by
+  // clearing its `src` and re-invoking `load()` — the standard way to tell
+  // the browser "stop buffering/decoding this, I'm done" rather than leaving
+  // it holding onto a loaded resource that nothing can reach anymore. Kept
+  // as a second effect (rather than folded into the one above) so switching
+  // between two notes' audio doesn't pay this heavier teardown on every
+  // switch — only real unmounts do.
+  useEffect(() => {
+    return () => {
+      const audio = audioRef.current
+      if (!audio) return
+      audio.pause()
+      audio.removeAttribute?.('src')
+      audio.load?.()
+    }
+  }, [])
 
   const play = useCallback(() => {
     audioRef.current?.play()

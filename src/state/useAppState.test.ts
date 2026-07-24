@@ -694,6 +694,60 @@ describe('useAppState', () => {
       expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2)
     })
 
+    it('an out-of-order get_note response for an abandoned note selection does not clobber the newer note’s audioPath', async () => {
+      // note-a's fetch (kicked off by the initial selection) is still
+      // in flight when the user switches to note-b; note-b's fetch resolves
+      // first, then note-a's stale one resolves late — it must not overwrite
+      // what's now on screen for note-b (selectedAudioPath in particular —
+      // the requestId guard this pins covers every selected* field, but
+      // audioPath is the one that motivated this test).
+      let resolveA: (v: NoteWithTranscript) => void = () => {}
+      const pendingA = new Promise<NoteWithTranscript>(resolve => {
+        resolveA = resolve
+      })
+      let resolveB: (v: NoteWithTranscript) => void = () => {}
+      const pendingB = new Promise<NoteWithTranscript>(resolve => {
+        resolveB = resolve
+      })
+      setupIPC({
+        notes: [noteA, noteB],
+        getNote: (id: string) => (id === 'note-a' ? pendingA : pendingB),
+      })
+
+      const result = await loaded()
+      expect(result.current.transcriptLoading).toBe(true) // note-a's fetch is in flight
+
+      act(() => result.current.selectNote(1)) // switch to note-b before note-a resolves
+
+      await act(async () => {
+        resolveB({
+          meta: noteB,
+          transcript: { segments: segmentsB },
+          summary: null,
+          markdown: '',
+          audioPath: '/notes/note-b/audio.wav',
+        })
+        await pendingB
+      })
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteB))
+      expect(result.current.selectedAudioPath).toBe('/notes/note-b/audio.wav')
+
+      // note-a's stale response finally arrives — must be a no-op for what's displayed.
+      await act(async () => {
+        resolveA({
+          meta: noteA,
+          transcript: { segments: segmentsA },
+          summary: null,
+          markdown: '',
+          audioPath: '/notes/note-a/audio.wav',
+        })
+        await pendingA
+      })
+
+      expect(result.current.selectedMeta).toEqual(noteB)
+      expect(result.current.selectedAudioPath).toBe('/notes/note-b/audio.wav')
+    })
+
     it('reuses the cache instead of refetching when switching back to an already-loaded note', async () => {
       const calls: Array<{ cmd: string; args: unknown }> = []
       setupIPC({ notes: [noteA, noteB], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })

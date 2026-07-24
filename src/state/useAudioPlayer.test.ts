@@ -38,6 +38,14 @@ class FakeAudio implements AudioElementLike {
     this.listeners.get(type)?.delete(listener)
   }
 
+  removeAttribute(name: string) {
+    if (name === 'src') this.src = ''
+  }
+
+  load() {
+    // no-op in the fake — a real element would (re)start buffering whatever `src` currently is.
+  }
+
   /** Test helper: fires a native-style event, invoking every listener registered for `type`. */
   dispatch(type: string) {
     this.listeners.get(type)?.forEach(l => l())
@@ -264,6 +272,32 @@ describe('useAudioPlayer', () => {
       })
     }).not.toThrow()
     expect(result.current.currentTime).toBe(0)
+  })
+
+  it('resets to paused when switching audioPath mid-playback (no orphaned playback on the previous note)', () => {
+    const { created, createAudio } = harness()
+    const { rerender } = renderHook(({ path }) => useAudioPlayer(path, createAudio), {
+      initialProps: { path: '/a.wav' },
+    })
+    act(() => created[0].play())
+    expect(created[0].paused).toBe(false)
+
+    rerender({ path: '/b.wav' })
+
+    expect(created[0].paused).toBe(true)
+  })
+
+  it('pauses and releases the element on unmount so playback does not continue with no UI left to stop it', () => {
+    const { created, createAudio } = harness()
+    const { result, unmount } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
+
+    act(() => result.current.play())
+    expect(created[0].paused).toBe(false)
+
+    unmount()
+
+    expect(created[0].paused).toBe(true)
+    expect(created[0].src).toBe('')
   })
 
   it('keeps play/pause/toggle/seek/skip/cycleRate at stable identities across audioPath changes', () => {
