@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useAppState } from './state/useAppState'
 import { ErrorBanner } from './components/ErrorBanner'
 import { TitleBar } from './components/TitleBar'
@@ -6,9 +7,36 @@ import { NoteView } from './components/NoteView'
 import { OnboardingView } from './components/OnboardingView'
 import { RecordingView } from './components/RecordingView'
 import { SettingsView } from './components/SettingsView'
+import { SearchPalette } from './components/SearchPalette'
 
 export default function App() {
   const s = useAppState()
+
+  // ⌘K / ⌘F anywhere opens the search palette — the palette steals focus
+  // (autofocuses its input) rather than checking what's currently focused,
+  // per .impeccable.md's "quiet by default" but still-discoverable search.
+  // A second ⌘K/⌘F while it's already open toggles it closed again, same as
+  // most command-palette conventions. Registered once at app-mount level
+  // (not gated on `view`) so the shortcut works from every screen,
+  // including mid-recording.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!e.metaKey || (e.key !== 'k' && e.key !== 'f')) return
+      e.preventDefault()
+      if (s.searchOpen) {
+        s.closeSearch()
+      } else {
+        s.openSearch()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+    // Deliberately depends on the three fields this effect actually reads/
+    // calls, not the whole `s` object — `s` is a fresh object every
+    // useAppState render, and depending on it would resubscribe the
+    // listener constantly instead of only when open state actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.searchOpen, s.openSearch, s.closeSearch])
 
   // The selected note's list-level metadata — the same "notes[sel], falling
   // back to notes[0]" rule NoteView used to apply internally before its
@@ -55,12 +83,16 @@ export default function App() {
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           <Sidebar
             notes={s.sidebarNotes}
-            sel={s.sel}
-            onSelect={s.selectNote}
+            selectedNoteId={s.selectedNoteId}
+            onSelect={s.selectNoteById}
             view={s.view}
             onGoNotes={s.goNotes}
             onGoSettings={s.goSettings}
             statsLine={s.statsLine}
+            searchQuery={s.sidebarQuery}
+            onSearchQueryChange={s.setSidebarQuery}
+            matchedNoteIds={s.sidebarMatchedIds}
+            onOpenPalette={s.openSearch}
           />
           {s.view === 'notes' && (
             <NoteView
@@ -71,6 +103,8 @@ export default function App() {
               selectedMarkdown={s.selectedMarkdown}
               selectedAudioPath={s.selectedAudioPath}
               transcriptLoading={s.transcriptLoading}
+              pendingSeek={s.pendingSeek}
+              onPendingSeekApplied={s.clearPendingSeek}
               noteTab={s.noteTab}
               setNoteTab={s.setNoteTab}
               sttStatus={s.sttStatus}
@@ -119,6 +153,21 @@ export default function App() {
           )}
         </div>
       </div>
+      {s.searchOpen && (
+        <SearchPalette
+          notes={s.notes}
+          search={s.searchNotes}
+          onClose={s.closeSearch}
+          onOpenTitleHit={noteId => {
+            s.selectNoteById(noteId)
+            s.closeSearch()
+          }}
+          onOpenTranscriptHit={(noteId, seconds) => {
+            s.requestSeek(noteId, seconds)
+            s.closeSearch()
+          }}
+        />
+      )}
       <ErrorBanner message={s.lastError} />
     </>
   )

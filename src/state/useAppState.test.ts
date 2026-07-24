@@ -9,6 +9,7 @@ import type {
   NoteWithTranscript,
   RecordingStateEvent,
   Recommendation,
+  SearchHit,
   Settings,
   StorageStats,
   StoredSegment,
@@ -105,6 +106,8 @@ interface SetupOpts {
   toggleActionItemReject?: string
   /** Forces `summarize_note` to reject with this message (defaults to resolving `null`). */
   summarizeNoteReject?: string
+  /** `search_notes(query)`'s response — defaults to `[]`. */
+  searchNotes?: (query: string) => SearchHit[] | Promise<SearchHit[]>
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -171,6 +174,10 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'summarize_note':
           if (opts.summarizeNoteReject) throw opts.summarizeNoteReject
           return null
+        case 'search_notes': {
+          const { query } = args as { query: string }
+          return opts.searchNotes ? opts.searchNotes(query) : []
+        }
         default:
           return null
       }
@@ -1262,5 +1269,153 @@ describe('useAppState', () => {
 
     expect(result.current.view).toBe('notes')
     expect(result.current.sttModel).toBe('whisper-small')
+  })
+
+  describe('⌘K search palette state', () => {
+    it('openSearch/closeSearch toggle searchOpen', async () => {
+      setupIPC()
+      const result = await loaded()
+      expect(result.current.searchOpen).toBe(false)
+
+      act(() => result.current.openSearch())
+      expect(result.current.searchOpen).toBe(true)
+
+      act(() => result.current.closeSearch())
+      expect(result.current.searchOpen).toBe(false)
+    })
+
+    it('searchNotes passes the query through to search_notes and resolves with the fixture hits', async () => {
+      const hits: SearchHit[] = [
+        { noteId: '20260722-120000', title: 'Client call — Acme', snippet: 'roadmap', segmentStart: 12, kind: 'transcript' },
+      ]
+      setupIPC({ searchNotes: () => hits })
+      const result = await loaded()
+
+      await expect(result.current.searchNotes('roadmap')).resolves.toEqual(hits)
+    })
+  })
+
+  describe('selectNoteById', () => {
+    it('selects the note matching the given id, regardless of its list position', async () => {
+      const notes = [noteFixture({ id: 'note-a', title: 'A' }), noteFixture({ id: 'note-b', title: 'B' }), noteFixture({ id: 'note-c', title: 'C' })]
+      setupIPC({ notes })
+      const result = await loaded()
+      expect(result.current.selectedNoteId).toBe('note-a')
+
+      act(() => result.current.selectNoteById('note-c'))
+
+      expect(result.current.selectedNoteId).toBe('note-c')
+    })
+
+    it('is a no-op when the id is not found in the current note list', async () => {
+      const notes = [noteFixture({ id: 'note-a' }), noteFixture({ id: 'note-b' })]
+      setupIPC({ notes })
+      const result = await loaded()
+      expect(result.current.selectedNoteId).toBe('note-a')
+
+      act(() => result.current.selectNoteById('does-not-exist'))
+
+      expect(result.current.selectedNoteId).toBe('note-a')
+    })
+  })
+
+  describe('requestSeek / pendingSeek (transcript-hit palette selection)', () => {
+    it('requestSeek selects the note by id and records the pending seek', async () => {
+      const notes = [noteFixture({ id: 'note-a', title: 'A' }), noteFixture({ id: 'note-b', title: 'B' })]
+      setupIPC({ notes })
+      const result = await loaded()
+      expect(result.current.selectedNoteId).toBe('note-a')
+
+      act(() => result.current.requestSeek('note-b', 42))
+
+      expect(result.current.selectedNoteId).toBe('note-b')
+      expect(result.current.pendingSeek).toEqual({ noteId: 'note-b', seconds: 42 })
+    })
+
+    it('clearPendingSeek resets pendingSeek back to null', async () => {
+      const notes = [noteFixture({ id: 'note-a' })]
+      setupIPC({ notes })
+      const result = await loaded()
+
+      act(() => result.current.requestSeek('note-a', 10))
+      expect(result.current.pendingSeek).not.toBeNull()
+
+      act(() => result.current.clearPendingSeek())
+      expect(result.current.pendingSeek).toBeNull()
+    })
+  })
+
+  describe('sidebar search filter', () => {
+    afterEach(() => vi.useRealTimers())
+
+    it('setSidebarQuery debounces a search_notes call and populates sidebarMatchedIds with the matched ids', async () => {
+      const notes = [noteFixture({ id: 'note-a', title: 'Roadmap review' }), noteFixture({ id: 'note-b', title: 'Standup' })]
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        notes,
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+        searchNotes: () => [{ noteId: 'note-a', title: 'Roadmap review', snippet: 'Roadmap review', segmentStart: null, kind: 'title' }],
+      })
+      const result = await loaded()
+      vi.useFakeTimers()
+      expect(result.current.sidebarMatchedIds).toBeNull()
+
+      act(() => result.current.setSidebarQuery('roadmap'))
+      expect(result.current.sidebarQuery).toBe('roadmap')
+      // Not yet called — still inside the debounce window.
+      expect(calls.some(c => c.cmd === 'search_notes')).toBe(false)
+
+      await act(async () => {
+        vi.advanceTimersByTime(150)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(result.current.sidebarMatchedIds).toEqual(new Set(['note-a']))
+    })
+
+    it('clearing the query resets sidebarMatchedIds to null synchronously, without a backend call', async () => {
+      const notes = [noteFixture({ id: 'note-a' })]
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes, onCmd: (cmd, args) => calls.push({ cmd, args }), searchNotes: () => [] })
+      const result = await loaded()
+      vi.useFakeTimers()
+
+      act(() => result.current.setSidebarQuery('roadmap'))
+      await act(async () => {
+        vi.advanceTimersByTime(150)
+        await Promise.resolve()
+      })
+      const searchCallsAfterFirstQuery = calls.filter(c => c.cmd === 'search_notes').length
+
+      act(() => result.current.setSidebarQuery(''))
+
+      expect(result.current.sidebarMatchedIds).toBeNull()
+      expect(calls.filter(c => c.cmd === 'search_notes').length).toBe(searchCallsAfterFirstQuery)
+    })
+
+    it('restarts the debounce on every keystroke rather than firing per keystroke', async () => {
+      const notes = [noteFixture({ id: 'note-a' })]
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes, onCmd: (cmd, args) => calls.push({ cmd, args }), searchNotes: () => [] })
+      const result = await loaded()
+      vi.useFakeTimers()
+
+      act(() => result.current.setSidebarQuery('r'))
+      act(() => {
+        vi.advanceTimersByTime(100)
+      })
+      act(() => result.current.setSidebarQuery('ro'))
+      act(() => {
+        vi.advanceTimersByTime(100)
+      })
+      expect(calls.some(c => c.cmd === 'search_notes')).toBe(false)
+
+      await act(async () => {
+        vi.advanceTimersByTime(150)
+        await Promise.resolve()
+      })
+      expect(calls.filter(c => c.cmd === 'search_notes')).toHaveLength(1)
+    })
   })
 })

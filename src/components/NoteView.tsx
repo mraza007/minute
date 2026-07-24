@@ -32,6 +32,19 @@ export interface NoteViewProps {
   /** This note's `audio.wav` path from `get_note`, or `null` if it doesn't exist on disk — same staleness contract as `selectedTranscript`/`selectedSummary`/`selectedMarkdown` (only trusted once `selectedMeta.id` matches `meta.id`). Feeds `useAudioPlayer`; `null` renders PlayerBar's disabled "Audio removed" state. */
   selectedAudioPath: string | null
   transcriptLoading: boolean
+  /**
+   * A ⌘K search palette "open this transcript hit" request still waiting to
+   * be applied — `{ noteId, seconds }` if the palette asked to seek `meta`
+   * (matched by id) to `seconds`, `null` otherwise. Applied by an effect
+   * below once this note's audio is actually ready (`transcriptReady`) —
+   * `seek`/`play` are safe to call before that too (the audio hook queues a
+   * seek requested before metadata loads), but gating on `transcriptReady`
+   * avoids calling them against a still-stale `audioPath` left over from
+   * whatever note was selected before this one.
+   */
+  pendingSeek: { noteId: string; seconds: number } | null
+  /** Called once `pendingSeek` has been applied (or found not to apply to this note) — clears it so it isn't re-applied on a later re-render. */
+  onPendingSeekApplied: () => void
   noteTab: NoteTab
   setNoteTab: (tab: NoteTab) => void
   sttStatus: SttStatus
@@ -332,6 +345,8 @@ export function NoteView({
   selectedMarkdown,
   selectedAudioPath,
   transcriptLoading,
+  pendingSeek,
+  onPendingSeekApplied,
   noteTab,
   setNoteTab,
   sttStatus,
@@ -414,6 +429,21 @@ export function NoteView({
     },
     [seek, play],
   )
+
+  // ⌘K search palette "open this transcript hit" → seek and play, once this
+  // note's own audio is actually loaded (see `pendingSeek`'s docs on
+  // NoteViewProps for why it's gated on `transcriptReady` rather than firing
+  // the instant `pendingSeek` arrives). Runs after `useAudioPlayer`'s own
+  // effect above (React commits effects in declaration order), so by the
+  // time this fires `audio.src` has already been re-pointed at the right
+  // note — `seek` itself is safe to call even before `loadedmetadata`
+  // (queued internally), so this doesn't need to wait for that too.
+  useEffect(() => {
+    if (!meta || !pendingSeek || pendingSeek.noteId !== meta.id || !transcriptReady) return
+    seek(pendingSeek.seconds)
+    play()
+    onPendingSeekApplied()
+  }, [meta, pendingSeek, transcriptReady, seek, play, onPendingSeekApplied])
 
   // Curried per-note closures handed down to the memoized MarkdownCard/
   // AiNotesPanel — `useCallback`'d (keyed on `meta`'s id, plus whichever

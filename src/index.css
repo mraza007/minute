@@ -64,6 +64,13 @@
   --border: rgba(0, 0, 0, .09);
   --border-strong: rgba(0, 0, 0, .12);
   --control-border: #8a8580;  /* >=3:1 on white for radio/toggle affordances */
+  /* overlay scrim — the ⌘K search palette is the one deliberately-justified
+     overlay in the app (see .impeccable.md's "paper, not glass": no blur/
+     glow/gradients). A plain dim backdrop is still needed to separate the
+     palette from the app behind it, so this is ink-tinted (derived from
+     --ink, not a neutral/cool black) to stay warm rather than read as
+     glass. Reused wherever a future modal scrim is needed. */
+  --scrim: rgba(28, 26, 24, .38);
   /* radii */
   --radius-sm: 8px;
   --radius-md: 12px;

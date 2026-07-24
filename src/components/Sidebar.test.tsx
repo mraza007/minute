@@ -4,12 +4,16 @@ import { Sidebar } from './Sidebar'
 
 const base = {
   notes: demoNotes,
-  sel: 0,
+  selectedNoteId: demoNotes[0].id,
   onSelect: vi.fn(),
   view: 'notes' as const,
   onGoNotes: vi.fn(),
   onGoSettings: vi.fn(),
   statsLine: '6 notes · 3.2 GB local · nothing synced',
+  searchQuery: '',
+  onSearchQueryChange: vi.fn(),
+  matchedNoteIds: null,
+  onOpenPalette: vi.fn(),
 }
 
 describe('Sidebar', () => {
@@ -27,21 +31,21 @@ describe('Sidebar', () => {
     expect(screen.getAllByText('Last week')).toHaveLength(1)
   })
 
-  it('calls onSelect with the clicked note index', () => {
+  it('calls onSelect with the clicked note id', () => {
     const onSelect = vi.fn()
     render(<Sidebar {...base} onSelect={onSelect} />)
     fireEvent.click(screen.getByRole('button', { name: /pricing workshop/i }))
-    expect(onSelect).toHaveBeenCalledWith(5)
+    expect(onSelect).toHaveBeenCalledWith('demo-6')
   })
 
   it('gives the selected row a white background', () => {
-    render(<Sidebar {...base} sel={2} />)
+    render(<Sidebar {...base} selectedNoteId="demo-3" />)
     const row = screen.getByRole('button', { name: /client call — acme/i })
     expect(row).toHaveStyle({ background: 'var(--card)' })
   })
 
   it('marks the selected note row and current nav item with aria-current', () => {
-    render(<Sidebar {...base} sel={2} view="notes" />)
+    render(<Sidebar {...base} selectedNoteId="demo-3" view="notes" />)
     expect(screen.getByRole('button', { name: /client call — acme/i })).toHaveAttribute('aria-current', 'true')
     expect(screen.getByRole('button', { name: /all notes/i })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('button', { name: /settings/i })).not.toHaveAttribute('aria-current')
@@ -70,5 +74,54 @@ describe('Sidebar', () => {
     render(<Sidebar {...base} notes={[]} />)
     expect(screen.getByText(/no notes yet/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /board prep sync/i })).not.toBeInTheDocument()
+  })
+
+  describe('search input', () => {
+    it('is a controlled input reflecting searchQuery', () => {
+      render(<Sidebar {...base} searchQuery="acme" />)
+      expect(screen.getByRole('textbox', { name: 'Search notes' })).toHaveValue('acme')
+    })
+
+    it('calls onSearchQueryChange as the user types', () => {
+      const onSearchQueryChange = vi.fn()
+      render(<Sidebar {...base} onSearchQueryChange={onSearchQueryChange} />)
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search notes' }), { target: { value: 'acme' } })
+      expect(onSearchQueryChange).toHaveBeenCalledWith('acme')
+    })
+
+    it('clicking the ⌘K badge calls onOpenPalette', () => {
+      const onOpenPalette = vi.fn()
+      render(<Sidebar {...base} onOpenPalette={onOpenPalette} />)
+      fireEvent.click(screen.getByRole('button', { name: /open search palette/i }))
+      expect(onOpenPalette).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('matchedNoteIds filtering', () => {
+    it('shows only the matching notes, without group headers, when a filter is active', () => {
+      const matchedNoteIds = new Set(['demo-1', 'demo-3'])
+      render(<Sidebar {...base} searchQuery="a" matchedNoteIds={matchedNoteIds} />)
+
+      expect(screen.getByText('Board prep sync')).toBeInTheDocument()
+      expect(screen.getByText('Client call — Acme')).toBeInTheDocument()
+      expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
+      expect(screen.queryByText('Today')).not.toBeInTheDocument()
+      expect(screen.queryByText('Yesterday')).not.toBeInTheDocument()
+    })
+
+    it('shows an honest "no matches" message when the filter matches nothing', () => {
+      render(<Sidebar {...base} searchQuery="nonexistent" matchedNoteIds={new Set()} />)
+      expect(screen.getByText('No matches for “nonexistent”')).toBeInTheDocument()
+      expect(screen.queryByText('Board prep sync')).not.toBeInTheDocument()
+    })
+
+    it('restores the full grouped list once matchedNoteIds goes back to null', () => {
+      const { rerender } = render(<Sidebar {...base} searchQuery="a" matchedNoteIds={new Set(['demo-1'])} />)
+      expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
+
+      rerender(<Sidebar {...base} searchQuery="" matchedNoteIds={null} />)
+      expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
+      expect(screen.getByText('Today')).toBeInTheDocument()
+    })
   })
 })

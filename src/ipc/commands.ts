@@ -11,6 +11,7 @@ import type {
   NoteMeta,
   NoteWithTranscript,
   Recommendation,
+  SearchHit,
   Settings,
   SettingsPatch,
   StorageStats,
@@ -48,6 +49,17 @@ export const deleteModel = (id: string): Promise<void> => invokeCmd('delete_mode
 export const listNotes = (): Promise<NoteMeta[]> => invokeCmd('list_notes')
 
 export const getNote = (id: string): Promise<NoteWithTranscript> => invokeCmd('get_note', { id })
+
+/**
+ * Case-insensitive substring search over every note's title and transcript
+ * text (see `store::Store::search_notes`) — backs the ⌘K search palette and
+ * the sidebar's filter input. `query` is passed through verbatim (including
+ * an empty/whitespace one) — the backend itself short-circuits that case to
+ * an empty result without scanning; callers that want to skip the IPC round
+ * trip entirely for a blank query do that themselves (see
+ * `SearchPalette`/`useAppState`'s debounce effects).
+ */
+export const searchNotes = (query: string): Promise<SearchHit[]> => invokeCmd('search_notes', { query })
 
 export const renameNote = (id: string, title: string): Promise<NoteMeta> =>
   invokeCmd('rename_note', { id, title })

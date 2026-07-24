@@ -12,6 +12,7 @@ import {
   pickInitialLlmModel,
   pickInitialSttModel,
   speakerInitials,
+  splitHighlight,
   storedSegmentsToDisplay,
 } from './adapters'
 
@@ -427,5 +428,53 @@ describe('groupLiveSegments', () => {
       segEvent({ speaker: 'Speaker 1', start: 2, end: 3, text: 'three' }),
     ])
     expect(groups).toEqual([{ speaker: 'Speaker 1', start: 0, end: 3, text: 'one two three' }])
+  })
+})
+
+describe('splitHighlight', () => {
+  it('returns the whole text as a single non-matching segment for a blank query', () => {
+    expect(splitHighlight('Hello there', '')).toEqual([{ text: 'Hello there', match: false }])
+    expect(splitHighlight('Hello there', '   ')).toEqual([{ text: 'Hello there', match: false }])
+  })
+
+  it('returns the whole text as a single non-matching segment when there is no match', () => {
+    expect(splitHighlight('Hello there', 'goodbye')).toEqual([{ text: 'Hello there', match: false }])
+  })
+
+  it('splits out a match in the middle into before/match/after segments', () => {
+    expect(splitHighlight('Let us discuss the roadmap next', 'roadmap')).toEqual([
+      { text: 'Let us discuss the ', match: false },
+      { text: 'roadmap', match: true },
+      { text: ' next', match: false },
+    ])
+  })
+
+  it('omits the before segment when the match is at the very start', () => {
+    expect(splitHighlight('Roadmap review meeting', 'Roadmap')).toEqual([
+      { text: 'Roadmap', match: true },
+      { text: ' review meeting', match: false },
+    ])
+  })
+
+  it('omits the after segment when the match is at the very end', () => {
+    expect(splitHighlight('Let us discuss the roadmap', 'roadmap')).toEqual([
+      { text: 'Let us discuss the ', match: false },
+      { text: 'roadmap', match: true },
+    ])
+  })
+
+  it('matches case-insensitively but preserves the original text casing in the match segment', () => {
+    expect(splitHighlight('The ROADMAP is set', 'roadmap')).toEqual([
+      { text: 'The ', match: false },
+      { text: 'ROADMAP', match: true },
+      { text: ' is set', match: false },
+    ])
+  })
+
+  it('trims the query before matching', () => {
+    expect(splitHighlight('Roadmap review', '  roadmap  ')).toEqual([
+      { text: 'Roadmap', match: true },
+      { text: ' review', match: false },
+    ])
   })
 })

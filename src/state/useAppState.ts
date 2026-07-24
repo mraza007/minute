@@ -45,6 +45,9 @@ export type SummaryStatus = 'idle' | 'running' | 'error'
  */
 const TRANSCRIPT_CACHE_CAP = 20
 
+/** Debounce window (ms) between a keystroke in the sidebar search input and the `search_notes` call it triggers — same value the ⌘K palette (`SearchPalette`) debounces its own input at. */
+const SIDEBAR_SEARCH_DEBOUNCE_MS = 150
+
 export function useAppState() {
   const [view, setView] = useState<View>('loading')
   const [loaded, setLoaded] = useState(false)
@@ -88,6 +91,35 @@ export function useAppState() {
   // encryption of its own); Settings.tsx now shows a passive FileVault line
   // in its place instead of a toggle.
   const [tDel, setTDel] = useState(true)
+
+  // --- ⌘K search palette + sidebar filter ---------------------------------
+  //
+  // `searchOpen` gates SearchPalette's mount in App.tsx. `pendingSeek` is a
+  // one-shot "open this note, then seek to this position once its audio is
+  // ready" request (see `requestSeek`'s docs below) — deliberately separate
+  // from `sel`/`selectedNoteId` because note *selection* is synchronous (an
+  // index into the already-loaded `notes` list) while a note's `audioPath`
+  // only becomes known once its `get_note` fetch resolves; NoteView applies
+  // the pending seek itself once that's ready, via `clearPendingSeek`.
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [pendingSeek, setPendingSeek] = useState<{ noteId: string; seconds: number } | null>(null)
+
+  // Sidebar filter input: `sidebarQuery` is the raw text box value (kept
+  // even while empty, for the input's own display); `sidebarMatchedIds` is
+  // `null` when no filter is active (Sidebar renders every note, grouped as
+  // normal) or a `Set` of matching note ids once a debounced `search_notes`
+  // call has resolved for the current (non-blank) query — see
+  // `setSidebarQuery` below.
+  const [sidebarQuery, setSidebarQueryState] = useState('')
+  const [sidebarMatchedIds, setSidebarMatchedIds] = useState<Set<string> | null>(null)
+  const sidebarSearchTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Bumped on every debounced sidebar search call and captured per in-flight
+  // request — same stale-response guard as `transcriptRequestId` above, so
+  // a slow response to an abandoned query can never clobber a newer one's
+  // result.
+  const sidebarSearchSeq = useRef(0)
+
+  useEffect(() => () => clearTimeout(sidebarSearchTimeout.current), [])
 
   // Per-note summarization status/error, driven entirely by `summary-status`
   // events (registered at app-mount level below, alongside the recording
@@ -213,6 +245,98 @@ export function useAppState() {
   )
 
   const selectedNoteId = notes[sel]?.id ?? null
+
+  /**
+   * Selects a note by id rather than list index — what the ⌘K search
+   * palette (and `requestSeek` below) use, since a search hit only carries
+   * a `noteId`, not the note's current position in `notes`. A no-op if `id`
+   * isn't found in the current list. `useCallback` (deps: `notes`) — a
+   * fresh identity only when the note list itself changes.
+   */
+  const selectNoteById = useCallback(
+    (id: string) => {
+      setSel(prevSel => {
+        const idx = notes.findIndex(n => n.id === id)
+        return idx >= 0 ? idx : prevSel
+      })
+    },
+    [notes],
+  )
+
+  const openSearch = useCallback(() => setSearchOpen(true), [])
+  const closeSearch = useCallback(() => setSearchOpen(false), [])
+
+  /**
+   * ⌘K palette "open this transcript hit" action: selects the hit's note
+   * (by id — see `selectNoteById`) and records the timestamp to seek to
+   * once that note's audio is actually loaded — see `pendingSeek`'s docs
+   * above. `useCallback` (deps: `selectNoteById`, itself only refreshing
+   * when `notes` changes).
+   */
+  const requestSeek = useCallback(
+    (noteId: string, seconds: number) => {
+      selectNoteById(noteId)
+      setPendingSeek({ noteId, seconds })
+    },
+    [selectNoteById],
+  )
+
+  /**
+   * Clears `pendingSeek` once NoteView has applied it (or determined
+   * there's nothing to apply it to — e.g. the note's audio has since been
+   * swept). `useCallback` with no deps — a permanently stable identity so
+   * it can be handed to NoteView without defeating memoization.
+   */
+  const clearPendingSeek = useCallback(() => setPendingSeek(null), [])
+
+  /**
+   * Thin passthrough to `ipc.searchNotes` — exposed here (rather than
+   * SearchPalette calling `ipc/commands` directly) so every backend call in
+   * the app funnels through this hook, and so SearchPalette can be tested
+   * with a plain injected function instead of mocking the IPC bridge.
+   * `useCallback` with no deps — permanently stable.
+   */
+  const searchNotes = useCallback((query: string) => ipc.searchNotes(query), [])
+
+  /**
+   * Sidebar search input's `onChange` handler: updates the raw text value
+   * immediately, then (re)starts a debounced `search_notes` call — cleared
+   * and restarted on every keystroke, same debounce shape as
+   * `SearchPalette`'s own input. A blank (or whitespace-only) query clears
+   * `sidebarMatchedIds` back to `null` (no filter — every note shows,
+   * grouped as normal) synchronously, without ever hitting the backend, so
+   * clearing the search box restores the full list instantly rather than
+   * waiting out a debounce window. `useCallback` with no deps (only touches
+   * stable setters/refs) — permanently stable, so Sidebar's memo isn't
+   * defeated by this prop.
+   */
+  const setSidebarQuery = useCallback((query: string) => {
+    setSidebarQueryState(query)
+    clearTimeout(sidebarSearchTimeout.current)
+
+    const trimmed = query.trim()
+    if (trimmed === '') {
+      setSidebarMatchedIds(null)
+      return
+    }
+
+    const requestId = ++sidebarSearchSeq.current
+    sidebarSearchTimeout.current = setTimeout(() => {
+      ipc
+        .searchNotes(trimmed)
+        .then(hits => {
+          if (sidebarSearchSeq.current !== requestId) return
+          setSidebarMatchedIds(new Set(hits.map(h => h.noteId)))
+        })
+        .catch(() => {
+          if (sidebarSearchSeq.current !== requestId) return
+          // Honest degrade: a failed search shows "no matches" rather than
+          // silently falling back to the unfiltered list (which would look
+          // like the search box has no effect) or a stale result set.
+          setSidebarMatchedIds(new Set())
+        })
+    }, SIDEBAR_SEARCH_DEBOUNCE_MS)
+  }, [])
 
   useEffect(() => {
     if (!selectedNoteId) {
@@ -728,6 +852,18 @@ export function useAppState() {
     noteTab,
     sidebarNotes,
     statsLine,
+    searchOpen,
+    openSearch,
+    closeSearch,
+    pendingSeek,
+    requestSeek,
+    clearPendingSeek,
+    selectNoteById,
+    searchNotes,
+    sidebarQuery,
+    setSidebarQuery,
+    sidebarMatchedIds,
+    selectedNoteId,
     recTime: formatMmSs(recElapsed),
     goNotes,
     goSettings,

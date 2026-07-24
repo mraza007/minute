@@ -57,6 +57,49 @@ pub struct Transcript {
     pub segments: Vec<StoredSegment>,
 }
 
+/// Which field of a note a [`SearchHit`] matched against — a title
+/// (`meta.json`'s `title`) or a transcript segment's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchHitKind {
+    Title,
+    Transcript,
+}
+
+/// One hit from [`Store::search_notes`], `#[serde(rename_all =
+/// "camelCase")]`.
+///
+/// `snippet` is a window of up to [`SEARCH_SNIPPET_RADIUS`] chars either
+/// side of the first case-insensitive match of the query within the matched
+/// text (the title itself for a `kind: Title` hit, a transcript segment's
+/// text for `kind: Transcript`) — see [`find_snippet`] for the char-boundary
+/// -safe windowing.
+///
+/// Deliberately carries no match-offset field (no `matchStart`/`matchLen`).
+/// Highlighting the matched substring is left entirely to the frontend,
+/// which re-finds it in `snippet` with a plain case-insensitive `indexOf`
+/// against the same query it just sent — see `src/state/adapters.ts`'s
+/// `splitHighlight`. This sidesteps a real cross-language footgun: a Rust
+/// `char_indices` offset, a raw UTF-8 byte offset, and a JavaScript UTF-16
+/// code-unit offset are three different index spaces, and shipping any one
+/// of them over the wire would require the frontend to already know (and
+/// never get wrong) which one it was looking at. Recomputing the match
+/// position client-side against a string it already has removes that whole
+/// class of bug for a negligible amount of extra work — a short substring
+/// search over an already-short snippet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub note_id: String,
+    pub title: String,
+    pub snippet: String,
+    /// The matched transcript segment's start time (seconds) — what a
+    /// frontend click seeks playback to. `None` for a `kind: Title` hit (a
+    /// title has no timestamp to seek to).
+    pub segment_start: Option<f64>,
+    pub kind: SearchHitKind,
+}
+
 /// Disk usage breakdown for the storage stats panel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +118,17 @@ const SUMMARY_FILE: &str = "summary.json";
 const SUMMARY_TMP_FILE: &str = "summary.json.tmp";
 const NOTE_MD_FILE: &str = "note.md";
 const NOTE_MD_TMP_FILE: &str = "note.md.tmp";
+
+/// [`Store::search_notes`]'s total hit cap across every note — a single
+/// query result set never grows past this, regardless of library size.
+const SEARCH_HIT_CAP: usize = 50;
+/// [`Store::search_notes`]'s per-note cap on *transcript* hits (title hits
+/// are uncapped per-note — a note has exactly one title) — keeps one
+/// meeting whose transcript happens to repeat the query many times from
+/// flooding the result list and crowding out every other note's hits.
+const SEARCH_PER_NOTE_TRANSCRIPT_CAP: usize = 3;
+/// [`find_snippet`]'s window radius, in chars, either side of the match.
+const SEARCH_SNIPPET_RADIUS: usize = 40;
 
 /// Folder-per-note store rooted at an app-data directory.
 ///
@@ -473,6 +527,90 @@ impl Store {
         Ok((meta, transcript))
     }
 
+    /// Case-insensitive substring search over every note's title and
+    /// transcript segment text — the backend for ⌘K search and the
+    /// sidebar's filter input.
+    ///
+    /// An empty or whitespace-only `query` returns `Ok(vec![])` immediately,
+    /// without walking a single note directory — a blank query has no
+    /// meaningful matches, and skipping the scan entirely (rather than
+    /// "matching" everything, or scanning and finding nothing) is what keeps
+    /// a debounced-but-not-yet-typed-into search input cheap.
+    ///
+    /// Ordering: every title hit sorts before every transcript hit; within
+    /// each of those two groups, hits are ordered by their note's `created`
+    /// time descending — this falls out naturally from [`Store::list_notes`]
+    /// already returning notes newest-first and this method visiting notes
+    /// in that order, appending each note's (at most one) title hit and (at
+    /// most [`SEARCH_PER_NOTE_TRANSCRIPT_CAP`]) transcript hits to two
+    /// separate buffers that are only concatenated (title buffer first) at
+    /// the very end.
+    ///
+    /// Caps: [`SEARCH_HIT_CAP`] hits total (applied last, after ranking —
+    /// so title hits are never pushed out by transcript hits), at most
+    /// [`SEARCH_PER_NOTE_TRANSCRIPT_CAP`] transcript hits per individual
+    /// note (applied while scanning that note's transcript, before the
+    /// total cap — see the field's docs for why).
+    ///
+    /// A note whose `transcript.json` is missing or fails to parse is
+    /// tolerated exactly like [`Store::read_transcript`]/`get_note` already
+    /// tolerate a missing file (an empty transcript, i.e. title-only
+    /// matching for that note) — a corrupt file is additionally logged via
+    /// `log::warn!` and likewise degrades to "no transcript hits for this
+    /// note" rather than failing the whole search.
+    pub fn search_notes(&self, query: &str) -> Result<Vec<SearchHit>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let needle_lower = trimmed.to_lowercase();
+
+        let notes = self.list_notes()?; // already newest-first, see the ordering docs above
+        let mut title_hits = Vec::new();
+        let mut transcript_hits = Vec::new();
+
+        for meta in &notes {
+            if let Some(snippet) = find_snippet(&meta.title, &needle_lower) {
+                title_hits.push(SearchHit {
+                    note_id: meta.id.clone(),
+                    title: meta.title.clone(),
+                    snippet,
+                    segment_start: None,
+                    kind: SearchHitKind::Title,
+                });
+            }
+
+            let transcript = match self.read_transcript(&meta.id) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("search: skipping unreadable transcript for note {}: {e}", meta.id);
+                    Transcript::default()
+                }
+            };
+            let mut hits_for_this_note = 0;
+            for seg in &transcript.segments {
+                if hits_for_this_note >= SEARCH_PER_NOTE_TRANSCRIPT_CAP {
+                    break;
+                }
+                if let Some(snippet) = find_snippet(&seg.text, &needle_lower) {
+                    transcript_hits.push(SearchHit {
+                        note_id: meta.id.clone(),
+                        title: meta.title.clone(),
+                        snippet,
+                        segment_start: Some(seg.start),
+                        kind: SearchHitKind::Transcript,
+                    });
+                    hits_for_this_note += 1;
+                }
+            }
+        }
+
+        let mut hits = title_hits;
+        hits.extend(transcript_hits);
+        hits.truncate(SEARCH_HIT_CAP);
+        Ok(hits)
+    }
+
     /// Renames a note's title, preserving its id and createdAt. Re-renders
     /// `note.md` (its `# {title}` header line) so the on-disk markdown
     /// doesn't go stale — see [`Store::write_note_md`].
@@ -652,6 +790,55 @@ pub fn resolved_audio_path(meta: &NoteMeta, note_dir: &Path) -> Option<PathBuf> 
         return None;
     }
     audio_path(note_dir)
+}
+
+/// Case-insensitive substring search for `needle_lower` (already
+/// lowercased) within `haystack`, returning a [`SEARCH_SNIPPET_RADIUS`]-char
+/// window around the first match — or `None` if there's no match.
+///
+/// Entirely char-based (never byte-indexed), so it can never panic on
+/// multi-byte UTF-8 (emoji, CJK, accented Latin, ...) even when the ±radius
+/// window would otherwise land mid-character: because every index here is a
+/// position in a `Vec<char>`, not a byte offset, there is no byte boundary
+/// to straddle in the first place.
+///
+/// The match position is found in *lowercased* char-space (`haystack`
+/// lowercased once, compared against `needle_lower`), then the snippet is
+/// sliced from that same char-index window against the *original* (not
+/// lowercased) haystack's chars — preserving real casing/diacritics in what
+/// actually gets displayed — provided lowercasing didn't change this
+/// haystack's char *count*. It can, for a handful of Unicode special-casing
+/// characters (e.g. Turkish `İ` lowercasing to a two-char `i` + combining
+/// dot), in which case the original and lowercased strings no longer line
+/// up char-for-char and this falls back to slicing the *lowercased* chars
+/// instead — a snippet in the wrong case beats an out-of-bounds slice or a
+/// silently misaligned one.
+fn find_snippet(haystack: &str, needle_lower: &str) -> Option<String> {
+    let needle_chars: Vec<char> = needle_lower.chars().collect();
+    if needle_chars.is_empty() {
+        return None;
+    }
+
+    let haystack_lower = haystack.to_lowercase();
+    let lower_chars: Vec<char> = haystack_lower.chars().collect();
+    if needle_chars.len() > lower_chars.len() {
+        return None;
+    }
+
+    let match_start = (0..=lower_chars.len() - needle_chars.len())
+        .find(|&start| lower_chars[start..start + needle_chars.len()] == needle_chars[..])?;
+    let match_end = match_start + needle_chars.len();
+
+    let original_chars: Vec<char> = haystack.chars().collect();
+    let source_chars = if original_chars.len() == lower_chars.len() {
+        &original_chars
+    } else {
+        &lower_chars
+    };
+
+    let snippet_start = match_start.saturating_sub(SEARCH_SNIPPET_RADIUS);
+    let snippet_end = (match_end + SEARCH_SNIPPET_RADIUS).min(source_chars.len());
+    Some(source_chars[snippet_start..snippet_end].iter().collect())
 }
 
 /// Recursively sums file sizes under `path`. Missing paths count as 0.
@@ -1864,5 +2051,297 @@ mod tests {
         assert!(!markdown.contains("## Decisions"));
         assert!(markdown.contains("## Action items"));
         assert!(markdown.contains("- [ ] Follow up"));
+    }
+
+    // --- find_snippet ---------------------------------------------------------
+
+    #[test]
+    fn find_snippet_no_match_returns_none() {
+        assert_eq!(find_snippet("Hello there", "goodbye"), None);
+    }
+
+    #[test]
+    fn find_snippet_empty_needle_returns_none() {
+        assert_eq!(find_snippet("Hello there", ""), None);
+    }
+
+    #[test]
+    fn find_snippet_is_case_insensitive() {
+        let snippet = find_snippet("The Roadmap Discussion", "roadmap").unwrap();
+        assert!(snippet.contains("Roadmap"));
+    }
+
+    #[test]
+    fn find_snippet_preserves_original_casing_not_lowercased() {
+        let snippet = find_snippet("The Roadmap Discussion", "roadmap").unwrap();
+        assert_eq!(snippet, "The Roadmap Discussion");
+    }
+
+    #[test]
+    fn find_snippet_windows_around_the_match_with_radius_40_chars() {
+        let filler_before = "x".repeat(100);
+        let filler_after = "y".repeat(100);
+        let haystack = format!("{filler_before}NEEDLE{filler_after}");
+
+        let snippet = find_snippet(&haystack, "needle").unwrap();
+
+        assert!(snippet.contains("NEEDLE"));
+        // 40 chars of filler on each side, not the full 100.
+        let before_in_snippet = snippet.split("NEEDLE").next().unwrap();
+        let after_in_snippet = snippet.split("NEEDLE").nth(1).unwrap();
+        assert_eq!(before_in_snippet.len(), 40);
+        assert_eq!(after_in_snippet.len(), 40);
+    }
+
+    #[test]
+    fn find_snippet_match_near_the_start_does_not_underflow() {
+        let haystack = "NEEDLE and then some more trailing text after it";
+        let snippet = find_snippet(haystack, "needle").unwrap();
+        assert!(snippet.starts_with("NEEDLE"));
+    }
+
+    #[test]
+    fn find_snippet_match_near_the_end_does_not_overflow() {
+        let haystack = "some leading text before the NEEDLE";
+        let snippet = find_snippet(haystack, "needle").unwrap();
+        assert!(snippet.ends_with("NEEDLE"));
+    }
+
+    #[test]
+    fn find_snippet_handles_emoji_around_the_match_without_panicking() {
+        let haystack = "🎉🎉🎉 celebrating the NEEDLE launch 🚀🚀🚀";
+        let snippet = find_snippet(haystack, "needle").unwrap();
+        assert!(snippet.contains("NEEDLE"));
+        assert!(snippet.contains('🎉'));
+        assert!(snippet.contains('🚀'));
+    }
+
+    #[test]
+    fn find_snippet_handles_cjk_text_without_panicking() {
+        let haystack = "会議の議題は来週のNEEDLE予算計画についてです";
+        let snippet = find_snippet(haystack, "needle").unwrap();
+        assert!(snippet.contains("NEEDLE"));
+        assert!(snippet.contains('議'));
+    }
+
+    #[test]
+    fn find_snippet_handles_accented_latin_text_without_panicking() {
+        let haystack = "L'équipe a discuté du NEEDLE budget à Zürich, café compris";
+        let snippet = find_snippet(haystack, "needle").unwrap();
+        assert!(snippet.contains("NEEDLE"));
+        assert!(snippet.contains('é'));
+    }
+
+    #[test]
+    fn find_snippet_needle_longer_than_haystack_returns_none() {
+        assert_eq!(find_snippet("hi", "hello there"), None);
+    }
+
+    // --- search_notes -----------------------------------------------------
+
+    #[test]
+    fn search_notes_empty_query_returns_empty_without_scanning() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        store.create_note("Standup", "whisper-small", now).unwrap();
+
+        assert_eq!(store.search_notes("").unwrap(), Vec::new());
+        assert_eq!(store.search_notes("   ").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn search_notes_finds_a_title_match_case_insensitively() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Client Call — Acme", "whisper-small", now).unwrap();
+
+        let hits = store.search_notes("acme").unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].note_id, meta.id);
+        assert_eq!(hits[0].kind, SearchHitKind::Title);
+        assert_eq!(hits[0].segment_start, None);
+        assert!(hits[0].snippet.contains("Acme"));
+    }
+
+    #[test]
+    fn search_notes_finds_a_transcript_segment_match_case_insensitively() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        store
+            .append_segment(
+                &meta.id,
+                StoredSegment { speaker: "Speaker 1".into(), start: 12.5, end: 15.0, text: "Let's discuss the ROADMAP next.".into() },
+            )
+            .unwrap();
+
+        let hits = store.search_notes("roadmap").unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].note_id, meta.id);
+        assert_eq!(hits[0].kind, SearchHitKind::Transcript);
+        assert_eq!(hits[0].segment_start, Some(12.5));
+        assert!(hits[0].snippet.contains("ROADMAP"));
+    }
+
+    #[test]
+    fn search_notes_matches_on_both_title_and_transcript_for_the_same_query() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Budget planning", "whisper-small", now).unwrap();
+        store
+            .append_segment(
+                &meta.id,
+                StoredSegment { speaker: "Speaker 1".into(), start: 0.0, end: 2.0, text: "The budget is tight this quarter.".into() },
+            )
+            .unwrap();
+
+        let hits = store.search_notes("budget").unwrap();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].kind, SearchHitKind::Title);
+        assert_eq!(hits[1].kind, SearchHitKind::Transcript);
+    }
+
+    #[test]
+    fn search_notes_title_hits_are_ranked_before_transcript_hits_across_different_notes() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        // Older note only matches via its transcript.
+        let transcript_note = store.create_note("Standup", "whisper-small", now - Duration::hours(2)).unwrap();
+        store
+            .append_segment(
+                &transcript_note.id,
+                StoredSegment { speaker: "Speaker 1".into(), start: 0.0, end: 2.0, text: "Sprint update".into() },
+            )
+            .unwrap();
+
+        // Newer note matches via its title.
+        let title_note = store.create_note("Sprint kickoff", "whisper-small", now).unwrap();
+
+        let hits = store.search_notes("sprint").unwrap();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].note_id, title_note.id);
+        assert_eq!(hits[0].kind, SearchHitKind::Title);
+        assert_eq!(hits[1].note_id, transcript_note.id);
+        assert_eq!(hits[1].kind, SearchHitKind::Transcript);
+    }
+
+    #[test]
+    fn search_notes_orders_hits_within_a_kind_by_created_desc() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let older = store.create_note("Roadmap review — v1", "whisper-small", now - Duration::hours(3)).unwrap();
+        let newer = store.create_note("Roadmap review — v2", "whisper-small", now).unwrap();
+
+        let hits = store.search_notes("roadmap").unwrap();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].note_id, newer.id);
+        assert_eq!(hits[1].note_id, older.id);
+    }
+
+    #[test]
+    fn search_notes_caps_transcript_hits_at_3_per_note() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Long meeting", "whisper-small", now).unwrap();
+        for i in 0..5 {
+            store
+                .append_segment(
+                    &meta.id,
+                    StoredSegment {
+                        speaker: "Speaker 1".into(),
+                        start: i as f64,
+                        end: i as f64 + 1.0,
+                        text: format!("mention number {i} of the keyword"),
+                    },
+                )
+                .unwrap();
+        }
+
+        let hits = store.search_notes("keyword").unwrap();
+
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|h| h.kind == SearchHitKind::Transcript));
+    }
+
+    #[test]
+    fn search_notes_caps_total_hits_at_50() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        for i in 0..60i64 {
+            store
+                .create_note(&format!("Keyword meeting {i}"), "whisper-small", now - Duration::minutes(i))
+                .unwrap();
+        }
+
+        let hits = store.search_notes("keyword").unwrap();
+
+        assert_eq!(hits.len(), 50);
+    }
+
+    #[test]
+    fn search_notes_tolerates_a_note_with_no_transcript_json() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        // create_note never writes transcript.json — only append_segment does.
+        store.create_note("Keyword title only", "whisper-small", now).unwrap();
+
+        let hits = store.search_notes("keyword").unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, SearchHitKind::Title);
+    }
+
+    #[test]
+    fn search_notes_tolerates_a_corrupt_transcript_json() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Keyword title", "whisper-small", now).unwrap();
+        fs::write(store.transcript_path(&meta.id), "not valid json {{{").unwrap();
+
+        let hits = store.search_notes("keyword").unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, SearchHitKind::Title);
+    }
+
+    #[test]
+    fn search_notes_no_matches_returns_empty_vec() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        store.create_note("Standup", "whisper-small", now).unwrap();
+
+        assert_eq!(store.search_notes("nonexistent-term").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn search_notes_handles_unicode_titles_without_panicking() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        store.create_note("会議 🎉 planning NEEDLE session", "whisper-small", now).unwrap();
+
+        let hits = store.search_notes("needle").unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("NEEDLE"));
+        assert!(hits[0].snippet.contains('会'));
     }
 }

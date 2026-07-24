@@ -11,6 +11,8 @@ export type NoteTab = 'transcript' | 'md'
 export type SttStatus = 'idle' | 'loading' | 'ready' | 'finalizing' | 'error'
 
 export interface NoteListItem {
+  /** The note's id — added so the sidebar can filter this list against ⌘K search results (a `Set<string>` of matched note ids) without a second lookup. */
+  id: string
   title: string
   meta: string
   group?: string

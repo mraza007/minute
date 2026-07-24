@@ -3,12 +3,28 @@ import type { NoteListItem, View } from '../types'
 
 interface SidebarProps {
   notes: NoteListItem[]
-  sel: number
-  onSelect: (i: number) => void
+  selectedNoteId: string | null
+  onSelect: (id: string) => void
   view: View
   onGoNotes: () => void
   onGoSettings: () => void
   statsLine: string
+  /** Sidebar filter input's current value — controlled, so clearing it (e.g. programmatically) is reflected here. */
+  searchQuery: string
+  onSearchQueryChange: (query: string) => void
+  /**
+   * `null` when no filter is active — every note renders, grouped as normal
+   * (Today/Yesterday/…). A `Set` of note ids once a debounced `search_notes`
+   * call has resolved for the current (non-blank) `searchQuery` — only
+   * matching notes render, as a flat list (no group headers: a filtered
+   * result set is a different kind of view than browsing, and recomputing
+   * "first of a consecutive run" against a filtered subsequence would
+   * misattribute a header to a note that no longer actually sits next to
+   * what it was grouped with).
+   */
+  matchedNoteIds: Set<string> | null
+  /** ⌘K badge click — opens the search palette (same shortcut as ⌘K/⌘F). */
+  onOpenPalette: () => void
 }
 
 const navBase: CSSProperties = {
@@ -30,11 +46,26 @@ const navBase: CSSProperties = {
 
 // Memoized — the recording view's 1Hz elapsed-time tick re-renders App,
 // which would otherwise re-render Sidebar every second even though none of
-// its props (notes/sel/view/statsLine/the three callbacks) actually change
-// during a recording. Only pays off once App stops handing it fresh
-// object/array/lambda props each render — see useAppState's useCallback'd
-// goNotes/goSettings and the memoized `sidebarNotes`/`statsLine`.
-export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, statsLine }: SidebarProps) {
+// its props actually change during a recording. Only pays off once App
+// stops handing it fresh object/array/lambda props each render — see
+// useAppState's useCallback'd goNotes/goSettings/setSidebarQuery and the
+// memoized `sidebarNotes`/`statsLine`.
+export const Sidebar = memo(function Sidebar({
+  notes,
+  selectedNoteId,
+  onSelect,
+  view,
+  onGoNotes,
+  onGoSettings,
+  statsLine,
+  searchQuery,
+  onSearchQueryChange,
+  matchedNoteIds,
+  onOpenPalette,
+}: SidebarProps) {
+  const filtering = matchedNoteIds !== null
+  const visibleNotes = filtering ? notes.filter(note => matchedNoteIds.has(note.id)) : notes
+
   return (
     <nav
       aria-label="Notes"
@@ -53,6 +84,8 @@ export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoN
           placeholder="Search notes…"
           aria-label="Search notes"
           className="input-focus"
+          value={searchQuery}
+          onChange={e => onSearchQueryChange(e.target.value)}
           style={{
             width: '100%',
             boxSizing: 'border-box',
@@ -67,7 +100,11 @@ export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoN
             boxShadow: '0 1px 2px rgba(0,0,0,.04)',
           }}
         />
-        <span
+        <button
+          type="button"
+          onClick={onOpenPalette}
+          aria-label="Open search palette"
+          title="Open search palette (⌘K)"
           style={{
             position: 'absolute',
             right: 20,
@@ -80,10 +117,12 @@ export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoN
             fontSize: 11,
             fontWeight: 600,
             color: 'var(--ink-faint)',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
           }}
         >
           ⌘K
-        </span>
+        </button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 1 }}>
         {notes.length === 0 && (
@@ -91,17 +130,22 @@ export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoN
             No notes yet — hit "New recording"
           </div>
         )}
-        {notes.map((note, i) => (
-          <div key={i}>
-            {note.group && (
+        {notes.length > 0 && filtering && visibleNotes.length === 0 && (
+          <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
+            No matches for “{searchQuery.trim()}”
+          </div>
+        )}
+        {visibleNotes.map(note => (
+          <div key={note.id}>
+            {!filtering && note.group && (
               <div style={{ padding: '14px 10px 5px', fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>
                 {note.group}
               </div>
             )}
             <button
-              onClick={() => onSelect(i)}
-              className={i === sel ? undefined : 'hov-dark'}
-              aria-current={i === sel ? 'true' : undefined}
+              onClick={() => onSelect(note.id)}
+              className={note.id === selectedNoteId ? undefined : 'hov-dark'}
+              aria-current={note.id === selectedNoteId ? 'true' : undefined}
               style={{
                 display: 'block',
                 width: '100%',
@@ -110,8 +154,8 @@ export const Sidebar = memo(function Sidebar({ notes, sel, onSelect, view, onGoN
                 border: 'none',
                 cursor: 'pointer',
                 borderRadius: 'var(--radius-sm)',
-                background: i === sel ? 'var(--card)' : 'transparent',
-                boxShadow: i === sel ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
+                background: note.id === selectedNoteId ? 'var(--card)' : 'transparent',
+                boxShadow: note.id === selectedNoteId ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
                 fontFamily: 'inherit',
                 textAlign: 'left',
                 color: 'inherit',

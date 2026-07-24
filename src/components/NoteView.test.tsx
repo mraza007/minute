@@ -36,6 +36,8 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     selectedMarkdown: meta ? `# ${meta.title}` : '',
     selectedAudioPath: null,
     transcriptLoading: false,
+    pendingSeek: null,
+    onPendingSeekApplied: vi.fn(),
     noteTab: 'transcript',
     setNoteTab: vi.fn(),
     sttStatus: 'idle',
@@ -260,6 +262,68 @@ describe('NoteView', () => {
         />,
       )
       expect(screen.getByRole('button', { name: 'Play from 00:00' })).not.toBeDisabled()
+    })
+  })
+
+  describe('pendingSeek from the search palette', () => {
+    it('applies a pendingSeek targeting the selected note once its audio is ready, then reports it applied', () => {
+      const onPendingSeekApplied = vi.fn()
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            selectedAudioPath: '/notes/abc/audio.wav',
+            pendingSeek: { noteId: meta.id, seconds: 42 },
+            onPendingSeekApplied,
+          })}
+        />,
+      )
+      expect(onPendingSeekApplied).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not apply a pendingSeek targeting a different note', () => {
+      const onPendingSeekApplied = vi.fn()
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            selectedAudioPath: '/notes/abc/audio.wav',
+            pendingSeek: { noteId: 'some-other-note', seconds: 42 },
+            onPendingSeekApplied,
+          })}
+        />,
+      )
+      expect(onPendingSeekApplied).not.toHaveBeenCalled()
+    })
+
+    it('does not apply a pendingSeek while the selected note is still loading (stale selectedMeta)', () => {
+      const onPendingSeekApplied = vi.fn()
+      const meta = noteFixture({ id: 'note-1' })
+      const staleMeta = noteFixture({ id: 'note-0' })
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: staleMeta,
+            selectedAudioPath: '/notes/note-0/audio.wav',
+            transcriptLoading: true,
+            pendingSeek: { noteId: meta.id, seconds: 42 },
+            onPendingSeekApplied,
+          })}
+        />,
+      )
+      expect(onPendingSeekApplied).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when pendingSeek is null', () => {
+      const onPendingSeekApplied = vi.fn()
+      const meta = noteFixture()
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, pendingSeek: null, onPendingSeekApplied })} />)
+      expect(onPendingSeekApplied).not.toHaveBeenCalled()
     })
   })
 

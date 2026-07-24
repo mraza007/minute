@@ -9,12 +9,12 @@
 import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
 
 export const demoNotes: NoteListItem[] = [
-  { title: 'Board prep sync', meta: '32 min · 2 speakers', group: 'Today' },
-  { title: '1:1 — Sarah', meta: '25 min' },
-  { title: 'Client call — Acme', meta: '48 min · 4 speakers', group: 'Yesterday' },
-  { title: 'Interview — SDK candidate', meta: '55 min' },
-  { title: 'All hands — June', meta: '61 min · 6 speakers', group: 'Last week' },
-  { title: 'Pricing workshop', meta: '90 min · 3 speakers' },
+  { id: 'demo-1', title: 'Board prep sync', meta: '32 min · 2 speakers', group: 'Today' },
+  { id: 'demo-2', title: '1:1 — Sarah', meta: '25 min' },
+  { id: 'demo-3', title: 'Client call — Acme', meta: '48 min · 4 speakers', group: 'Yesterday' },
+  { id: 'demo-4', title: 'Interview — SDK candidate', meta: '55 min' },
+  { id: 'demo-5', title: 'All hands — June', meta: '61 min · 6 speakers', group: 'Last week' },
+  { id: 'demo-6', title: 'Pricing workshop', meta: '90 min · 3 speakers' },
 ]
 
 export const initialActions: ActionItem[] = [

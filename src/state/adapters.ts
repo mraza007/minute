@@ -50,6 +50,7 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
   const minutes = Math.round(meta.durationSec / 60)
   const speakersPart = meta.speakers > 1 ? ` · ${meta.speakers} speakers` : ''
   return {
+    id: meta.id,
     title: meta.title,
     meta: `${minutes} min${speakersPart}`,
     group: noteGroup(createdAt, now),
@@ -307,6 +308,39 @@ export function storedSegmentsToDisplay(segments: StoredSegment[]): TranscriptSe
  * already passed doesn't count as active just because it's the most recent
  * one that started.
  */
+/** One piece of `splitHighlight`'s output — a slice of the original text, tagged with whether it's the matched substring. */
+export interface HighlightSegment {
+  text: string
+  match: boolean
+}
+
+/**
+ * Splits `text` into segments around the first case-insensitive occurrence
+ * of `query`: the matched slice (`match: true`) plus whatever comes before
+ * and/or after it (`match: false`), in order. A blank `query` or no match
+ * at all returns `text` as a single non-matching segment. `SearchPalette`
+ * renders these to bold the matched substring in a search hit's snippet —
+ * see `SearchHit`'s doc comment (in `ipc/types.ts`) for why this happens
+ * here in plain JS rather than off match offsets shipped from the backend.
+ *
+ * Plain JS string operations throughout (`toLowerCase`/`indexOf`/`slice`,
+ * all UTF-16-code-unit-based) — no cross-language index-space concern here,
+ * since both `text` and `query` are already JS strings on this side of the
+ * wire.
+ */
+export function splitHighlight(text: string, query: string): HighlightSegment[] {
+  const trimmed = query.trim()
+  if (!trimmed) return [{ text, match: false }]
+  const idx = text.toLowerCase().indexOf(trimmed.toLowerCase())
+  if (idx === -1) return [{ text, match: false }]
+
+  const segments: HighlightSegment[] = []
+  if (idx > 0) segments.push({ text: text.slice(0, idx), match: false })
+  segments.push({ text: text.slice(idx, idx + trimmed.length), match: true })
+  if (idx + trimmed.length < text.length) segments.push({ text: text.slice(idx + trimmed.length), match: false })
+  return segments
+}
+
 export function findActiveSegmentIndex(segments: { start: number; end: number }[], time: number): number {
   let lo = 0
   let hi = segments.length - 1

@@ -116,6 +116,36 @@ export interface NoteWithTranscript {
   audioPath: string | null
 }
 
+/** `store::SearchHitKind` — `#[serde(rename_all = "lowercase")]`. */
+export type SearchHitKind = 'title' | 'transcript'
+
+/**
+ * `store::SearchHit` — `#[serde(rename_all = "camelCase")]`. One hit from
+ * `search_notes`: a note title match (`kind: 'title'`, `segmentStart:
+ * null`) or a transcript segment match (`kind: 'transcript'`,
+ * `segmentStart` the segment's start time in seconds — what selecting the
+ * hit seeks playback to). `snippet` is a ±40-char window around the first
+ * case-insensitive match within the matched text.
+ *
+ * Deliberately has no `matchStart`/`matchLen` field. Highlighting the
+ * matched substring is done here on the frontend instead — a plain
+ * case-insensitive `indexOf` of the same query against `snippet` (see
+ * `state/adapters.ts`'s `splitHighlight`) — rather than shipping match
+ * offsets computed in Rust: a Rust `char_indices` offset, a raw UTF-8 byte
+ * offset, and a JavaScript UTF-16 code-unit offset are three different
+ * index spaces, and any one of them sent over the wire would require this
+ * side to already know (and never get wrong) which one it was. Recomputing
+ * the match position against a string this side already has removes that
+ * whole class of bug for a negligible amount of extra work.
+ */
+export interface SearchHit {
+  noteId: string
+  title: string
+  snippet: string
+  segmentStart: number | null
+  kind: SearchHitKind
+}
+
 // --- llm.rs --------------------------------------------------------------
 
 /** `llm::ActionItem` — `#[serde(rename_all = "camelCase")]`. */

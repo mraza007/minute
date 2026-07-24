@@ -12,7 +12,7 @@ use download::DownloadRegistry;
 use llm::{SharedLlmEngine, SummarizeBusy, SummaryDoc};
 use settings::{Settings, SettingsPatch, SharedSettings};
 use std::sync::atomic::Ordering;
-use store::{lock_store, render_note_md, NoteMeta, SharedStore, StorageStats, Transcript};
+use store::{lock_store, render_note_md, NoteMeta, SearchHit, SharedStore, StorageStats, Transcript};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
@@ -104,6 +104,14 @@ fn get_note(state: State<SharedStore>, id: String) -> Result<NoteWithTranscript,
   let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
   let audio_path = store::resolved_audio_path(&meta, &store.note_dir(&id)).map(|p| p.to_string_lossy().into_owned());
   Ok(NoteWithTranscript { meta, transcript, summary, markdown, audio_path })
+}
+
+/// Case-insensitive substring search over every note's title and transcript
+/// text — see `store::Store::search_notes` for the ranking/cap/snippet
+/// rules. Backs both the ⌘K search palette and the sidebar's filter input.
+#[tauri::command]
+fn search_notes(state: State<SharedStore>, query: String) -> Result<Vec<SearchHit>, String> {
+  lock_store(&state).search_notes(&query).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -275,6 +283,7 @@ pub fn run() {
       recommended_models,
       list_notes,
       get_note,
+      search_notes,
       rename_note,
       toggle_action_item,
       llm::summarize_note,

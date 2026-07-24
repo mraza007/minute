@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats, SummaryDoc } from './types'
+import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc } from './types'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -139,6 +139,20 @@ describe('ipc/commands', () => {
 
     expect(calls[0].cmd).toBe('get_note')
     expect(calls[0].args).toEqual({ id: '20260722-120000' })
+    expect(result).toEqual(fixture)
+  })
+
+  it('searchNotes invokes search_notes with { query } and passes through the fixture hits', async () => {
+    const fixture: SearchHit[] = [
+      { noteId: '20260722-120000', title: 'Client call — Acme', snippet: 'Client call — Acme', segmentStart: null, kind: 'title' },
+      { noteId: '20260722-120000', title: 'Client call — Acme', snippet: 'Let us discuss the roadmap next.', segmentStart: 12.5, kind: 'transcript' },
+    ]
+    const calls = captureIPC(() => fixture)
+
+    const result = await commands.searchNotes('roadmap')
+
+    expect(calls[0].cmd).toBe('search_notes')
+    expect(calls[0].args).toEqual({ query: 'roadmap' })
     expect(result).toEqual(fixture)
   })
 
