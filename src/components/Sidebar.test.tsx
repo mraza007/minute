@@ -37,7 +37,7 @@ describe('Sidebar', () => {
   it('gives the selected row a white background', () => {
     render(<Sidebar {...base} sel={2} />)
     const row = screen.getByRole('button', { name: /client call — acme/i })
-    expect(row).toHaveStyle({ background: '#fff' })
+    expect(row).toHaveStyle({ background: 'var(--card)' })
   })
 
   it('marks the selected note row and current nav item with aria-current', () => {

@@ -4,31 +4,16 @@ interface TranscriptListProps {
   segments: TranscriptSegment[]
 }
 
-function isExternalHighlightSpeaker(segment: TranscriptSegment) {
-  return segment.initials === 'TR' || segment.speaker.startsWith('Tom')
-}
-
-function avatarColors(segment: TranscriptSegment) {
-  if (segment.isMe) return { background: '#1c1a18', color: '#fff' }
-  if (isExternalHighlightSpeaker(segment)) {
-    return { background: '#fde8e4', color: '#b3200c' }
-  }
-  return { background: '#eceae7', color: '#6d675f' }
-}
-
 function Segment({ segment }: { segment: TranscriptSegment }) {
-  const { background, color } = avatarColors(segment)
-  const isTr = isExternalHighlightSpeaker(segment)
-
-  const content = (
-    <>
+  return (
+    <div style={{ display: 'flex', gap: 12 }}>
       <div
         style={{
           width: 30,
           height: 30,
           borderRadius: '50%',
-          background,
-          color,
+          background: 'var(--panel-warm)',
+          color: 'var(--ink-muted)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -41,47 +26,11 @@ function Segment({ segment }: { segment: TranscriptSegment }) {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
-          <b style={isTr ? { color: '#b3200c' } : undefined}>{segment.speaker}</b>
-          <span style={{ color: segment.highlight ? '#c4938a' : '#b0a9a2' }}>{segment.time}</span>
-          {segment.highlight && (
-            <span
-              style={{
-                marginLeft: 'auto',
-                padding: '2px 9px',
-                borderRadius: 999,
-                background: '#e04430',
-                color: '#fff',
-                fontSize: 10.5,
-                fontWeight: 700,
-                letterSpacing: '.04em',
-              }}
-            >
-              HIGHLIGHT
-            </span>
-          )}
+          <b>{segment.speaker}</b>
+          <span style={{ color: 'var(--ink-faint)' }}>{segment.time}</span>
         </div>
-        <div style={{ fontSize: 14, lineHeight: 1.65, color: '#33302c', textWrap: 'pretty' }}>{segment.text}</div>
+        <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--ink-body)', textWrap: 'pretty' }}>{segment.text}</div>
       </div>
-    </>
-  )
-
-  if (!segment.highlight) {
-    return <div style={{ display: 'flex', gap: 12 }}>{content}</div>
-  }
-
-  return (
-    <div
-      style={{
-        border: '1px solid rgba(224,68,48,.3)',
-        background: '#fff4f1',
-        borderRadius: 12,
-        padding: '14px 18px',
-        boxShadow: '0 1px 3px rgba(0,0,0,.04)',
-        display: 'flex',
-        gap: 12,
-      }}
-    >
-      {content}
     </div>
   )
 }

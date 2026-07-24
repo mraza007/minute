@@ -23,7 +23,7 @@ const navBase: CSSProperties = {
   fontFamily: 'inherit',
   fontSize: 13,
   fontWeight: 600,
-  color: '#1c1a18',
+  color: 'var(--ink)',
   cursor: 'pointer',
   textAlign: 'left',
 }
@@ -34,8 +34,8 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
       style={{
         width: 250,
         flex: 'none',
-        background: '#eceae7',
-        borderRight: '1px solid rgba(0,0,0,.09)',
+        background: 'var(--panel-warm)',
+        borderRight: '1px solid var(--border)',
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
@@ -49,12 +49,12 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
             width: '100%',
             boxSizing: 'border-box',
             padding: '8px 40px 8px 12px',
-            border: '1px solid rgba(0,0,0,.12)',
+            border: '1px solid var(--border-strong)',
             borderRadius: 8,
-            background: '#fff',
+            background: 'var(--card)',
             fontFamily: 'inherit',
             fontSize: 13,
-            color: '#1c1a18',
+            color: 'var(--ink)',
             outline: 'none',
             boxShadow: '0 1px 2px rgba(0,0,0,.04)',
           }}
@@ -66,12 +66,12 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
             top: '50%',
             transform: 'translateY(-38%)',
             padding: '1px 6px',
-            border: '1px solid rgba(0,0,0,.12)',
+            border: '1px solid var(--border-strong)',
             borderRadius: 5,
-            background: '#faf9f7',
-            fontSize: 10.5,
+            background: 'var(--surface-softer)',
+            fontSize: 11,
             fontWeight: 600,
-            color: '#9a938c',
+            color: 'var(--ink-faint)',
           }}
         >
           ⌘K
@@ -79,14 +79,14 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 1 }}>
         {notes.length === 0 && (
-          <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 12.5, color: '#8d867f', lineHeight: 1.6 }}>
+          <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
             No notes yet — hit "New recording"
           </div>
         )}
         {notes.map((note, i) => (
           <div key={i}>
             {note.group && (
-              <div style={{ padding: '14px 10px 5px', fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c' }}>
+              <div style={{ padding: '14px 10px 5px', fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>
                 {note.group}
               </div>
             )}
@@ -102,7 +102,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
                 border: 'none',
                 cursor: 'pointer',
                 borderRadius: 8,
-                background: i === sel ? '#fff' : 'transparent',
+                background: i === sel ? 'var(--card)' : 'transparent',
                 boxShadow: i === sel ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
                 fontFamily: 'inherit',
                 textAlign: 'left',
@@ -112,17 +112,17 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
               <span style={{ display: 'block', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {note.title}
               </span>
-              <span style={{ display: 'block', fontSize: 11.5, color: '#8d867f', marginTop: 1 }}>{note.meta}</span>
+              <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>{note.meta}</span>
             </button>
           </div>
         ))}
       </div>
-      <div style={{ padding: '10px 12px', borderTop: '1px solid rgba(0,0,0,.08)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 2 }}>
         <button
           onClick={onGoNotes}
           className="hov-dark6"
           aria-current={view === 'notes' ? 'page' : undefined}
-          style={{ ...navBase, background: view === 'notes' ? 'rgba(0,0,0,.07)' : 'transparent' }}
+          style={{ ...navBase, background: view === 'notes' ? 'var(--border-soft)' : 'transparent' }}
         >
           <svg
             width="15"
@@ -144,7 +144,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
           onClick={onGoSettings}
           className="hov-dark6"
           aria-current={view === 'settings' ? 'page' : undefined}
-          style={{ ...navBase, background: view === 'settings' ? 'rgba(0,0,0,.07)' : 'transparent' }}
+          style={{ ...navBase, background: view === 'settings' ? 'var(--border-soft)' : 'transparent' }}
         >
           <svg
             width="15"
@@ -162,7 +162,7 @@ export function Sidebar({ notes, sel, onSelect, view, onGoNotes, onGoSettings, s
           </svg>
           Settings
         </button>
-        <div style={{ padding: '8px 10px 2px', fontSize: 11, color: '#9a938c' }}>{statsLine}</div>
+        <div style={{ padding: '8px 10px 2px', fontSize: 11, color: 'var(--ink-faint)' }}>{statsLine}</div>
       </div>
     </div>
   )

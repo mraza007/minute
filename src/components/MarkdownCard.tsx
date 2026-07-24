@@ -54,9 +54,9 @@ export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyErr
       <div
         style={{
           maxWidth: 720,
-          background: '#fff',
+          background: 'var(--card)',
           border: '1px solid rgba(0,0,0,.08)',
-          borderRadius: 14,
+          borderRadius: 'var(--radius-md)',
           boxShadow: '0 1px 4px rgba(0,0,0,.05)',
           overflow: 'hidden',
         }}
@@ -67,31 +67,31 @@ export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyErr
             alignItems: 'center',
             gap: 10,
             padding: '10px 16px',
-            borderBottom: '1px solid rgba(0,0,0,.07)',
-            background: '#faf9f7',
+            borderBottom: '1px solid var(--border-soft)',
+            background: 'var(--surface-softer)',
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6d675f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"></path>
             <path d="M15 3v6h6"></path>
           </svg>
-          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, fontWeight: 600, color: '#33302c' }}>
+          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, fontWeight: 600, color: 'var(--ink-body)' }}>
             {filename}
           </span>
-          <span style={{ fontSize: 11, color: '#9a938c' }}>{subtitle}</span>
+          <span style={{ fontSize: 11, color: 'var(--ink-faint)' }}>{subtitle}</span>
           <div style={{ flex: 1 }} />
           <button
             onClick={handleCopy}
             className="btn-light"
             style={{
               padding: '5px 12px',
-              border: '1px solid rgba(0,0,0,.12)',
-              borderRadius: 7,
-              background: '#fff',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--card)',
               fontFamily: 'inherit',
-              fontSize: 11.5,
+              fontSize: 12,
               fontWeight: 600,
-              color: '#1c1a18',
+              color: 'var(--ink)',
               cursor: 'pointer',
             }}
           >
@@ -103,11 +103,11 @@ export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyErr
             style={{
               padding: '5px 12px',
               border: 'none',
-              borderRadius: 7,
-              background: '#1c1a18',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--ink)',
               color: '#fff',
               fontFamily: 'inherit',
-              fontSize: 11.5,
+              fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
             }}
@@ -119,9 +119,9 @@ export function MarkdownCard({ filename, subtitle, markdown, onReveal, onCopyErr
           style={{
             padding: '20px 24px',
             fontFamily: 'ui-monospace, Menlo, monospace',
-            fontSize: 12.5,
+            fontSize: 13,
             lineHeight: 1.8,
-            color: '#44403a',
+            color: 'var(--ink-body)',
             whiteSpace: 'pre-wrap',
             overflowWrap: 'break-word',
           }}

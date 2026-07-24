@@ -32,9 +32,9 @@ function ModelCard({
   return (
     <div
       style={{
-        background: '#fff',
-        border: '1px solid rgba(0,0,0,.07)',
-        borderRadius: 14,
+        background: 'var(--card)',
+        border: '1px solid var(--border-soft)',
+        borderRadius: 'var(--radius-md)',
         boxShadow: '0 1px 3px rgba(0,0,0,.04)',
         padding: '16px 18px',
       }}
@@ -43,7 +43,7 @@ function ModelCard({
         <div style={{ fontSize: 13, lineHeight: 1.5 }}>
           <b>{info.displayName}</b> — {info.desc}
           <br />
-          <span style={{ fontSize: 12, color: '#9a938c' }}>{info.sub}</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-faint)' }}>{info.sub}</span>
         </div>
         {info.state === 'notInstalled' && (
           <button
@@ -54,11 +54,11 @@ function ModelCard({
               padding: '8px 16px',
               border: 'none',
               borderRadius: 999,
-              background: '#e04430',
+              background: 'var(--accent-solid)',
               color: '#fff',
               fontFamily: 'inherit',
               fontWeight: 600,
-              fontSize: 12.5,
+              fontSize: 13,
               cursor: 'pointer',
               whiteSpace: 'nowrap',
             }}
@@ -73,13 +73,13 @@ function ModelCard({
             style={{
               flex: 'none',
               padding: '8px 16px',
-              border: '1px solid rgba(0,0,0,.12)',
+              border: '1px solid var(--border-strong)',
               borderRadius: 999,
-              background: '#fff',
-              color: '#1c1a18',
+              background: 'var(--card)',
+              color: 'var(--ink)',
               fontFamily: 'inherit',
               fontWeight: 600,
-              fontSize: 12.5,
+              fontSize: 13,
               cursor: 'pointer',
             }}
           >
@@ -88,7 +88,7 @@ function ModelCard({
         )}
       </div>
       {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
-      {footnote && <div style={{ marginTop: 8, fontSize: 11.5, color: '#9a938c' }}>{footnote}</div>}
+      {footnote && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ink-faint)' }}>{footnote}</div>}
     </div>
   )
 }
@@ -99,11 +99,11 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
   const hasInstalledStt = models.some(m => m.kind === 'stt' && m.state === 'installed')
 
   return (
-    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f2f0ee' }}>
+    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
       <div style={{ width: 560, maxWidth: '92vw', display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <div style={{ background: '#1c1a18', color: '#fff', borderRadius: 16, padding: '26px 30px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
-          <div style={{ fontWeight: 700, fontSize: 21, letterSpacing: '-.01em' }}>Minute runs entirely on this Mac.</div>
-          <div style={{ marginTop: 8, fontSize: 13.5, lineHeight: 1.6, color: 'rgba(255,255,255,.75)' }}>
+        <div style={{ background: 'var(--ink)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '26px 30px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
+          <div style={{ fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Minute runs entirely on this Mac.</div>
+          <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.6, color: 'rgba(255,255,255,.75)' }}>
             No account. No cloud. No network permission. Download a transcription model to get started — everything after
             this, recording, transcription, and notes, runs completely offline.
           </div>
@@ -132,11 +132,11 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
             padding: '12px 22px',
             border: 'none',
             borderRadius: 999,
-            background: hasInstalledStt ? '#e04430' : '#d8d4cf',
-            color: hasInstalledStt ? '#fff' : '#9a938c',
+            background: hasInstalledStt ? 'var(--accent-solid)' : '#d8d4cf',
+            color: hasInstalledStt ? '#fff' : 'var(--ink-muted)',
             fontFamily: 'inherit',
             fontWeight: 600,
-            fontSize: 13.5,
+            fontSize: 13,
             cursor: hasInstalledStt ? 'pointer' : 'not-allowed',
             boxShadow: hasInstalledStt ? '0 1px 4px rgba(224,68,48,.35)' : 'none',
           }}

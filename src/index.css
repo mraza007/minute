@@ -1,31 +1,66 @@
+:root {
+  /* surfaces */
+  --canvas: #e8e6e3;
+  --panel: #f2f0ee;
+  --panel-warm: #eceae7;
+  --surface-soft: #f7f6f4;
+  --surface-softer: #faf9f7;
+  --card: #fff;
+  /* ink ramp (all AA on every surface above) */
+  --ink: #1c1a18;
+  --ink-body: #33302c;
+  --ink-muted: #57524b;
+  --ink-faint: #6b6660;
+  /* accent */
+  --accent: #e04430;          /* graphics, dots, borders, REC — never text-bearing fills */
+  --accent-solid: #c93520;    /* button fills with white text (5.2:1) */
+  --accent-solid-hover: #b32d1a;
+  --accent-solid-active: #9c2716;
+  --accent-text: #b3200c;     /* red text on light tints (5.6:1 on #ffe6e1) */
+  --accent-tint: #ffe6e1;
+  --accent-selection: #ffd9d2;
+  /* status */
+  --ok-text: #356b22;
+  --ok-tint: #e6ecda;
+  /* hairlines & controls */
+  --border-soft: rgba(0, 0, 0, .07);
+  --border: rgba(0, 0, 0, .09);
+  --border-strong: rgba(0, 0, 0, .12);
+  --control-border: #8a8580;  /* >=3:1 on white for radio/toggle affordances */
+  /* radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+}
+
 body {
   margin: 0;
-  background: #e8e6e3;
-  color: #1c1a18;
+  background: var(--canvas);
+  color: var(--ink);
   font-family: 'Instrument Sans', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   user-select: none;
   cursor: default;
 }
-a { color: #1c1a18; }
-a:hover { color: #d63822; }
+a { color: var(--ink); }
+a:hover { color: var(--accent-text); }
 @keyframes wf { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-input[type=checkbox], input[type=radio] { accent-color: #e04430; }
-::selection { background: #ffd9d2; }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
+::selection { background: var(--accent-selection); }
 
 /* pseudo-state classes replacing the mock's style-hover/focus/active */
 .btn-rec { transition: background .12s; }
-.btn-rec:hover { background: #c93520 !important; }
-.btn-rec:active { background: #b32d1a !important; }
+.btn-rec:hover { background: var(--accent-solid-hover) !important; }
+.btn-rec:active { background: var(--accent-solid-active) !important; }
 .hov-dark:hover { background: rgba(0, 0, 0, .05) !important; }
 .hov-dark6:hover { background: rgba(0, 0, 0, .06) !important; }
-.icon-btn:hover { background: rgba(0, 0, 0, .06) !important; color: #1c1a18 !important; }
-.icon-btn-danger:hover { background: #fde8e4 !important; color: #b3200c !important; }
+.icon-btn:hover { background: rgba(0, 0, 0, .06) !important; color: var(--ink) !important; }
+.icon-btn-danger:hover { background: var(--accent-tint) !important; color: var(--accent-text) !important; }
 .btn-light:hover { background: #f3f1ef !important; }
-.btn-dark-accent:hover { background: #e04430 !important; }
+.btn-dark-accent:hover { background: var(--accent) !important; }
 .btn-dark:hover { background: #3a3733 !important; }
-.input-focus:focus { border-color: #e04430 !important; box-shadow: 0 0 0 3px rgba(224, 68, 48, .15) !important; }
-.model-card:hover { background: #faf9f7 !important; }
-.seg-off:hover { color: #1c1a18 !important; }
+.input-focus:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(224, 68, 48, .15) !important; }
+.model-card:hover { background: var(--surface-softer) !important; }
+.seg-off:hover { color: var(--ink) !important; }

@@ -155,12 +155,6 @@ describe('storedSegmentsToDisplay', () => {
     ])
   })
 
-  it('never sets isMe or highlight — real segments render neutral', () => {
-    const [display] = storedSegmentsToDisplay([{ speaker: 'Speaker 1', start: 0, end: 1, text: 'Hi' }])
-    expect(display.isMe).toBeUndefined()
-    expect(display.highlight).toBeUndefined()
-  })
-
   it('does not merge consecutive same-speaker segments — each stored segment renders as its own row', () => {
     const segments: StoredSegment[] = [
       { speaker: 'Speaker 1', start: 0, end: 1, text: 'First.' },

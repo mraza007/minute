@@ -25,7 +25,7 @@ export default function App() {
 
   if (s.view === 'loading') {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f2f0ee', fontSize: 13, color: '#8d867f' }}>
+      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)', fontSize: 13, color: 'var(--ink-muted)' }}>
         Loading…
       </div>
     )
@@ -49,7 +49,7 @@ export default function App() {
 
   return (
     <>
-      <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13.5, lineHeight: 1.5, background: '#f2f0ee' }}>
+      <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
         <TitleBar isRecording={s.isRecording} recTime={s.recTime} onStartRec={s.startRec} onReturnToRecording={s.goRecording} />
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           <Sidebar

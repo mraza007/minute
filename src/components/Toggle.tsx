@@ -29,8 +29,10 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
         style={{
           width: 36,
           height: 22,
+          boxSizing: 'border-box',
           borderRadius: 999,
-          background: on ? '#e04430' : '#d8d4cf',
+          background: on ? 'var(--accent)' : '#d8d4cf',
+          border: on ? 'none' : '1px solid var(--control-border)',
           position: 'relative',
           flex: 'none',
           display: 'inline-block',
@@ -46,7 +48,7 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
             width: 18,
             height: 18,
             borderRadius: '50%',
-            background: '#fff',
+            background: 'var(--card)',
             boxShadow: '0 1px 3px rgba(0,0,0,.25)',
             transition: 'left .18s',
           }}

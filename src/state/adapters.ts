@@ -277,11 +277,7 @@ export function speakerInitials(speaker: string): string {
  * `{ speaker: "Speaker 1", start, end, text }`) to `TranscriptList`'s
  * display shape. Unlike `groupLiveSegments`, consecutive same-speaker
  * segments are *not* merged — each is its own whisper-emitted segment with
- * its own timestamp, and rendering them as-is preserves that. `isMe` and
- * `highlight` are always left unset: those are Stage 1 demo-fixture
- * concepts (a "me" speaker, an ai-flagged highlight) with no equivalent
- * yet for real, stored notes — every real segment renders with the neutral
- * avatar/no-highlight styling `TranscriptList` already falls back to.
+ * its own timestamp, and rendering them as-is preserves that.
  */
 export function storedSegmentsToDisplay(segments: StoredSegment[]): TranscriptSegment[] {
   return segments.map(seg => ({

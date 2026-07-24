@@ -25,7 +25,7 @@ const INLINE_RE = /(\*\*[^*]+\*\*)|( \(\d{1,2}:\d{2}\))|( ★ highlight)/g
  */
 export function mdTint(line: string): MdToken[] {
   if (HEADING_RE.test(line)) {
-    return [{ text: line, color: '#b3200c', fontWeight: 700 }]
+    return [{ text: line, color: 'var(--accent-text)', fontWeight: 700 }]
   }
 
   const tokens: MdToken[] = []
@@ -33,10 +33,10 @@ export function mdTint(line: string): MdToken[] {
 
   const actionMatch = rest.match(ACTION_ITEM_RE)
   if (actionMatch) {
-    tokens.push({ text: actionMatch[0], color: '#9a938c' })
+    tokens.push({ text: actionMatch[0], color: 'var(--ink-faint)' })
     rest = rest.slice(actionMatch[0].length)
   } else if (rest.startsWith('- ')) {
-    tokens.push({ text: '-', color: '#9a938c' })
+    tokens.push({ text: '-', color: 'var(--ink-faint)' })
     rest = rest.slice(1)
   }
 
@@ -50,9 +50,9 @@ export function mdTint(line: string): MdToken[] {
     if (match[1]) {
       tokens.push({ text: match[1], fontWeight: 700 })
     } else if (match[2]) {
-      tokens.push({ text: match[2], color: '#9a938c' })
+      tokens.push({ text: match[2], color: 'var(--ink-faint)' })
     } else if (match[3]) {
-      tokens.push({ text: match[3], color: '#b3200c' })
+      tokens.push({ text: match[3], color: 'var(--accent-text)' })
     }
     lastIndex = match.index + match[0].length
   }

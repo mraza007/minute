@@ -16,8 +16,8 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
         gap: 12,
         height: 52,
         padding: '0 16px 0 76px',
-        background: '#eceae7',
-        borderBottom: '1px solid rgba(0,0,0,.09)',
+        background: 'var(--panel-warm)',
+        borderBottom: '1px solid var(--border)',
         flex: 'none',
       }}
     >
@@ -30,14 +30,14 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
           gap: 7,
           padding: '5px 12px',
           borderRadius: 999,
-          background: 'rgba(40,167,69,.1)',
-          border: '1px solid rgba(40,167,69,.25)',
+          background: 'var(--ok-tint)',
+          border: '1px solid var(--ok-text)',
           fontSize: 12,
           fontWeight: 600,
-          color: '#1e7c34',
+          color: 'var(--ok-text)',
         }}
       >
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#28a745' }} />
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
         Offline · On-device
       </div>
       <div data-tauri-drag-region="" style={{ flex: 1 }} />
@@ -53,21 +53,21 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
             padding: '6px 14px',
             border: 'none',
             borderRadius: 999,
-            background: '#ffe6e1',
-            color: '#b3200c',
+            background: 'var(--accent-tint)',
+            color: 'var(--accent-text)',
             fontFamily: 'inherit',
             fontWeight: 700,
-            fontSize: 12.5,
+            fontSize: 13,
             fontVariantNumeric: 'tabular-nums',
             cursor: 'pointer',
           }}
         >
           <span
             style={{
-              width: 8,
-              height: 8,
+              width: 7,
+              height: 7,
               borderRadius: '50%',
-              background: '#e04430',
+              background: 'var(--accent)',
               animation: 'blink 1.2s step-end infinite',
             }}
           />
@@ -85,7 +85,7 @@ export function TitleBar({ isRecording, recTime, onStartRec, onReturnToRecording
             padding: '8px 18px',
             border: 'none',
             borderRadius: 999,
-            background: '#e04430',
+            background: 'var(--accent-solid)',
             color: '#fff',
             fontFamily: 'inherit',
             fontWeight: 600,

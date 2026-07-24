@@ -27,39 +27,47 @@ export interface AiNotesPanelProps {
 const panelStyle: CSSProperties = {
   width: 330,
   flex: 'none',
-  borderLeft: '1px solid rgba(0,0,0,.07)',
+  borderLeft: '1px solid var(--border-soft)',
   display: 'flex',
   flexDirection: 'column',
   minHeight: 0,
-  background: '#f2f0ee',
+  background: 'var(--panel)',
 }
 
 const cardStyle: CSSProperties = {
-  background: '#fff',
-  border: '1px solid rgba(0,0,0,.07)',
-  borderRadius: 12,
+  background: 'var(--card)',
+  border: '1px solid var(--border-soft)',
+  borderRadius: 'var(--radius-md)',
   padding: '14px 16px',
   boxShadow: '0 1px 3px rgba(0,0,0,.04)',
 }
 
+// Eyebrow labels ("SUMMARY", "DECISIONS", "ACTION ITEMS") use the same
+// muted-gray eyebrow color as everywhere else in the app — red is reserved
+// for the "SUMMARY FAILED" error state, which uses errorLabelStyle instead.
 const labelStyle: CSSProperties = {
   fontSize: 11,
   fontWeight: 700,
   letterSpacing: '.07em',
-  color: '#b3200c',
+  color: 'var(--ink-faint)',
   marginBottom: 8,
+}
+
+const errorLabelStyle: CSSProperties = {
+  ...labelStyle,
+  color: 'var(--accent-text)',
 }
 
 const btnStyle: CSSProperties = {
   flex: 1,
   padding: '8px 0',
-  border: '1px solid rgba(0,0,0,.12)',
-  borderRadius: 8,
-  background: '#fff',
+  border: '1px solid var(--border-strong)',
+  borderRadius: 'var(--radius-sm)',
+  background: 'var(--card)',
   fontFamily: 'inherit',
   fontSize: 12,
   fontWeight: 600,
-  color: '#1c1a18',
+  color: 'var(--ink)',
   cursor: 'pointer',
 }
 
@@ -86,17 +94,17 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        background: '#fff',
+        background: 'var(--card)',
         border: '1px solid rgba(224,68,48,.3)',
-        borderRadius: 12,
+        borderRadius: 'var(--radius-md)',
         padding: '12px 16px',
         boxShadow: '0 1px 3px rgba(0,0,0,.04)',
-        fontSize: 12.5,
+        fontSize: 13,
         fontWeight: 600,
-        color: '#b3200c',
+        color: 'var(--accent-text)',
       }}
     >
-      <Spinner color="#e04430" />
+      <Spinner color="var(--accent)" />
       Summarizing on-device — {modelName}
     </div>
   )
@@ -105,8 +113,8 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
 function ErrorCard({ error, onRegenerate }: { error?: string; onRegenerate: () => void }) {
   return (
     <div style={{ ...cardStyle, border: '1px solid rgba(224,68,48,.3)', background: '#fff4f1' }}>
-      <div style={labelStyle}>SUMMARY FAILED</div>
-      <div style={{ fontSize: 12.5, lineHeight: 1.6, color: '#7a1c0e', marginBottom: 10 }}>
+      <div style={errorLabelStyle}>SUMMARY FAILED</div>
+      <div style={{ fontSize: 13, lineHeight: 1.6, color: '#7a1c0e', marginBottom: 10 }}>
         {error || 'Something went wrong generating this summary.'}
       </div>
       <button onClick={onRegenerate} className="btn-light" style={{ ...btnStyle, flex: 'none', padding: '6px 14px' }}>
@@ -120,7 +128,7 @@ function SummaryCard({ text }: { text: string }) {
   return (
     <div style={cardStyle}>
       <div style={labelStyle}>SUMMARY</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, color: '#33302c', textWrap: 'pretty' }}>{text}</div>
+      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-body)', textWrap: 'pretty' }}>{text}</div>
     </div>
   )
 }
@@ -135,13 +143,13 @@ function DecisionsCard({ decisions }: { decisions: string[] }) {
           style={{
             fontSize: 13,
             lineHeight: 1.55,
-            color: '#33302c',
+            color: 'var(--ink-body)',
             display: 'flex',
             gap: 8,
             marginBottom: i < decisions.length - 1 ? 7 : 0,
           }}
         >
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#1c1a18', flex: 'none', marginTop: 7 }} />
+          <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink)', flex: 'none', marginTop: 7 }} />
           {d}
         </div>
       ))}
@@ -190,7 +198,7 @@ function ActionItemsCard({
               onChange={e => onToggleAction(i, e.target.checked)}
               style={{ marginTop: 3 }}
             />
-            <span style={item.done ? { textDecoration: 'line-through', color: '#9a938c' } : { color: '#33302c' }}>{item.text}</span>
+            <span style={item.done ? { textDecoration: 'line-through', color: 'var(--ink-faint)' } : { color: 'var(--ink-body)' }}>{item.text}</span>
           </label>
         ))}
       </div>
@@ -206,8 +214,8 @@ function GenerateSummaryButton({ onClick }: { onClick: () => void }) {
       style={{
         padding: '10px 0',
         border: 'none',
-        borderRadius: 10,
-        background: '#e04430',
+        borderRadius: 999,
+        background: 'var(--accent-solid)',
         color: '#fff',
         fontFamily: 'inherit',
         fontSize: 13,
@@ -222,9 +230,9 @@ function GenerateSummaryButton({ onClick }: { onClick: () => void }) {
 
 function NoLlmPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
   return (
-    <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 12, padding: '14px 16px' }}>
+    <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
       <div style={labelStyle}>SUMMARY</div>
-      <div style={{ fontSize: 12.5, lineHeight: 1.6, color: '#9a938c', marginBottom: 10 }}>
+      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)', marginBottom: 10 }}>
         Summarize this note on-device once a summary model is installed.
       </div>
       <button
@@ -234,9 +242,9 @@ function NoLlmPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
           background: 'none',
           padding: 0,
           fontFamily: 'inherit',
-          fontSize: 12.5,
+          fontSize: 13,
           fontWeight: 700,
-          color: '#b3200c',
+          color: 'var(--accent-text)',
           cursor: 'pointer',
           textDecoration: 'underline',
         }}
@@ -265,7 +273,7 @@ export function AiNotesPanel({
     <div style={panelStyle}>
       <div style={{ padding: '16px 16px 12px', display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>AI notes</div>
-        <div style={{ fontSize: 11, color: '#9a938c' }}>generated locally</div>
+        <div style={{ fontSize: 11, color: 'var(--ink-faint)' }}>generated locally</div>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         {summarizing && <SummarizingBanner modelName={modelName} />}

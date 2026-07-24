@@ -34,14 +34,12 @@ export const demoTranscript: TranscriptSegment[] = [
     initials: 'ME',
     speaker: 'You',
     time: '01:02',
-    isMe: true,
     text: "Short answer: nowhere. Everything you're hearing transcribed right now runs on this laptop — the model, the audio, the notes. There's no account and no server.",
   },
   {
     initials: 'TR',
     speaker: 'Tom Reyes — Acme',
     time: '01:34',
-    highlight: true,
     text: "If that holds up in review, we can move the pilot from 20 seats to the full 200 by Q3. Send over the security documentation and we'll start procurement.",
   },
   {
@@ -54,7 +52,6 @@ export const demoTranscript: TranscriptSegment[] = [
     initials: 'ME',
     speaker: 'You',
     time: '02:26',
-    isMe: true,
     text: "Yes — Markdown export is templated, I'll set one up and share it with the pilot group before Friday.",
   },
 ]

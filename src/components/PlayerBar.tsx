@@ -13,9 +13,9 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          background: '#fff',
+          background: 'var(--card)',
           border: '1px solid rgba(0,0,0,.08)',
-          borderRadius: 12,
+          borderRadius: 'var(--radius-md)',
           padding: '10px 16px',
           boxShadow: '0 1px 4px rgba(0,0,0,.06)',
         }}
@@ -29,7 +29,7 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             border: 'none',
             borderRadius: '50%',
             background: 'transparent',
-            color: '#6d675f',
+            color: 'var(--ink-muted)',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
@@ -51,7 +51,7 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             height: 36,
             border: 'none',
             borderRadius: '50%',
-            background: '#1c1a18',
+            background: 'var(--ink)',
             color: '#fff',
             cursor: 'pointer',
             display: 'flex',
@@ -73,7 +73,7 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
             border: 'none',
             borderRadius: '50%',
             background: 'transparent',
-            color: '#6d675f',
+            color: 'var(--ink-muted)',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
@@ -87,7 +87,7 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
           </svg>
         </button>
         <div style={{ flex: 1, height: 5, borderRadius: 999, background: '#e8e5e1', position: 'relative' }}>
-          <div style={{ position: 'absolute', inset: '0 100% 0 0', borderRadius: 999, background: '#1c1a18' }} />
+          <div style={{ position: 'absolute', inset: '0 100% 0 0', borderRadius: 999, background: 'var(--ink)' }} />
           <div
             style={{
               position: 'absolute',
@@ -96,26 +96,26 @@ export function PlayerBar({ durationSec }: PlayerBarProps) {
               width: 13,
               height: 13,
               borderRadius: '50%',
-              background: '#fff',
-              border: '2.5px solid #e04430',
+              background: 'var(--card)',
+              border: '2.5px solid var(--accent)',
               boxShadow: '0 1px 3px rgba(0,0,0,.2)',
             }}
           />
         </div>
-        <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: '#8d867f', flex: 'none' }}>
+        <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-muted)', flex: 'none' }}>
           00:00 / {formatMmSs(durationSec)}
         </div>
         <button
           className="btn-light"
           style={{
             padding: '4px 10px',
-            border: '1px solid rgba(0,0,0,.12)',
+            border: '1px solid var(--border-strong)',
             borderRadius: 999,
-            background: '#fff',
+            background: 'var(--card)',
             fontFamily: 'inherit',
-            fontSize: 11.5,
+            fontSize: 12,
             fontWeight: 700,
-            color: '#1c1a18',
+            color: 'var(--ink)',
             cursor: 'pointer',
             flex: 'none',
           }}

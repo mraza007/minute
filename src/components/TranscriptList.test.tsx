@@ -10,11 +10,6 @@ describe('TranscriptList', () => {
     expect(screen.getByText('Priya Shah')).toBeInTheDocument()
   })
 
-  it('shows exactly one HIGHLIGHT chip for the highlighted segment', () => {
-    render(<TranscriptList segments={demoTranscript} />)
-    expect(screen.getAllByText('HIGHLIGHT')).toHaveLength(1)
-  })
-
   it('renders nothing but an empty container for an empty segment list', () => {
     const { container } = render(<TranscriptList segments={[]} />)
     expect(container.firstChild).toBeEmptyDOMElement()

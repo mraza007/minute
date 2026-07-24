@@ -18,7 +18,7 @@ export const Waveform = memo(function Waveform({ paused }: WaveformProps) {
             height: 24,
             flex: 'none',
             borderRadius: 2,
-            background: '#e04430',
+            background: 'var(--accent)',
             animation: `wf ${(0.7 + (i % 5) * 0.14).toFixed(2)}s ease-in-out ${(i * 0.05).toFixed(2)}s infinite`,
             ...(paused ? { animationPlayState: 'paused' as const } : {}),
           }}

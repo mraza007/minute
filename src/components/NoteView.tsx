@@ -51,10 +51,10 @@ const DELETE_CONFIRM_TIMEOUT_MS = 4000
 
 function EmptyNotesArea() {
   return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f7f6f4' }}>
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-soft)' }}>
       <div style={{ textAlign: 'center', maxWidth: 340 }}>
         <div style={{ fontWeight: 700, fontSize: 17 }}>No notes yet</div>
-        <div style={{ marginTop: 6, fontSize: 13, color: '#8d867f', lineHeight: 1.6 }}>
+        <div style={{ marginTop: 6, fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
           Hit "New recording" in the title bar to capture your first meeting — transcription happens entirely on this
           Mac.
         </div>
@@ -69,7 +69,7 @@ const pillBaseStyle = {
   gap: 6,
   padding: '4px 10px',
   borderRadius: 999,
-  fontSize: 11.5,
+  fontSize: 12,
   fontWeight: 700,
   flex: 'none',
 } as const
@@ -99,14 +99,14 @@ function StatusPill({
 
   if (finalizing) {
     return (
-      <span style={{ ...pillBaseStyle, background: '#ffe6e1', border: '1px solid rgba(224,68,48,.3)', color: '#b3200c' }}>
+      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
           style={{
             width: 10,
             height: 10,
             borderRadius: '50%',
             border: '2px solid rgba(224,68,48,.25)',
-            borderTopColor: '#e04430',
+            borderTopColor: 'var(--accent)',
             animation: 'spin .8s linear infinite',
             flex: 'none',
           }}
@@ -118,14 +118,14 @@ function StatusPill({
 
   if (summaryStatus === 'running') {
     return (
-      <span style={{ ...pillBaseStyle, background: '#ffe6e1', border: '1px solid rgba(224,68,48,.3)', color: '#b3200c' }}>
+      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
         <span
           style={{
             width: 10,
             height: 10,
             borderRadius: '50%',
             border: '2px solid rgba(224,68,48,.25)',
-            borderTopColor: '#e04430',
+            borderTopColor: 'var(--accent)',
             animation: 'spin .8s linear infinite',
             flex: 'none',
           }}
@@ -137,8 +137,8 @@ function StatusPill({
 
   if (meta.status === 'ready') {
     return (
-      <span style={{ ...pillBaseStyle, background: 'rgba(40,167,69,.1)', border: '1px solid rgba(40,167,69,.25)', color: '#1e7c34' }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#28a745' }} />
+      <span style={{ ...pillBaseStyle, background: 'var(--ok-tint)', border: '1px solid var(--ok-text)', color: 'var(--ok-text)' }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
         Ready
       </span>
     )
@@ -146,8 +146,8 @@ function StatusPill({
 
   if (meta.status === 'transcribed') {
     return (
-      <span style={{ ...pillBaseStyle, background: 'rgba(40,167,69,.1)', border: '1px solid rgba(40,167,69,.25)', color: '#1e7c34' }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#28a745' }} />
+      <span style={{ ...pillBaseStyle, background: 'var(--ok-tint)', border: '1px solid var(--ok-text)', color: 'var(--ok-text)' }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
         Transcribed
       </span>
     )
@@ -199,7 +199,7 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
             border: 'none',
             borderRadius: 8,
             background: 'transparent',
-            color: '#6d675f',
+            color: 'var(--ink-muted)',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
@@ -285,7 +285,7 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
         border: 'none',
         borderRadius: 8,
         background: confirming ? 'rgba(224,68,48,.12)' : 'transparent',
-        color: confirming ? '#b3200c' : '#6d675f',
+        color: confirming ? 'var(--accent-text)' : 'var(--ink-muted)',
         cursor: 'pointer',
         display: 'flex',
         alignItems: 'center',
@@ -347,12 +347,12 @@ export function NoteView({
   const markdownBytes = new TextEncoder().encode(markdown).length
 
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0, background: '#f7f6f4' }}>
+    <div style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
         <div
           style={{
             padding: '22px 32px 16px',
-            borderBottom: '1px solid rgba(0,0,0,.07)',
+            borderBottom: '1px solid var(--border-soft)',
             display: 'flex',
             alignItems: 'flex-start',
             justifyContent: 'space-between',
@@ -364,12 +364,12 @@ export function NoteView({
               <NoteTitle meta={meta} onRename={title => onRename(meta.id, title)} />
               <StatusPill meta={meta} sttStatus={sttStatus} sttStatusNoteId={sttStatusNoteId} summaryStatus={summaryStatus} />
             </div>
-            <div style={{ marginTop: 4, fontSize: 12.5, color: '#8d867f' }}>
+            <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ink-muted)' }}>
               {metaLine} · {dateLabel} · stored locally
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 'none' }}>
-            <div role="tablist" aria-label="Note content" style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
+            <div role="tablist" aria-label="Note content" style={{ display: 'flex', background: 'var(--panel-warm)', borderRadius: 9, padding: 3 }}>
               <button
                 role="tab"
                 aria-selected={noteTab === 'transcript'}
@@ -380,11 +380,11 @@ export function NoteView({
                   border: 'none',
                   borderRadius: 7,
                   fontFamily: 'inherit',
-                  fontSize: 12.5,
+                  fontSize: 13,
                   fontWeight: 600,
                   cursor: 'pointer',
-                  background: noteTab === 'transcript' ? '#fff' : 'transparent',
-                  color: noteTab === 'transcript' ? '#1c1a18' : '#6d675f',
+                  background: noteTab === 'transcript' ? 'var(--card)' : 'transparent',
+                  color: noteTab === 'transcript' ? 'var(--ink)' : 'var(--ink-muted)',
                   boxShadow: noteTab === 'transcript' ? '0 1px 3px rgba(0,0,0,.1)' : 'none',
                 }}
               >
@@ -400,11 +400,11 @@ export function NoteView({
                   border: 'none',
                   borderRadius: 7,
                   fontFamily: 'inherit',
-                  fontSize: 12.5,
+                  fontSize: 13,
                   fontWeight: 600,
                   cursor: 'pointer',
-                  background: noteTab === 'md' ? '#fff' : 'transparent',
-                  color: noteTab === 'md' ? '#1c1a18' : '#6d675f',
+                  background: noteTab === 'md' ? 'var(--card)' : 'transparent',
+                  color: noteTab === 'md' ? 'var(--ink)' : 'var(--ink-muted)',
                   boxShadow: noteTab === 'md' ? '0 1px 3px rgba(0,0,0,.1)' : 'none',
                 }}
               >
@@ -419,7 +419,7 @@ export function NoteView({
         {noteTab === 'transcript' && (
           <>
             {showTranscriptLoading ? (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, color: '#8d867f' }}>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, color: 'var(--ink-muted)' }}>
                 Loading transcript…
               </div>
             ) : (

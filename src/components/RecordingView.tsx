@@ -17,8 +17,8 @@ interface RecordingViewProps {
 
 function TranscribingIndicator() {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b3200c', fontSize: 13, fontWeight: 600 }}>
-      <span style={{ width: 8, height: 16, borderRadius: 3, background: '#e04430', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-text)', fontSize: 13, fontWeight: 600 }}>
+      <span style={{ width: 8, height: 16, borderRadius: 3, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
       transcribing…
     </div>
   )
@@ -31,15 +31,15 @@ function SttErrorRow({ sttError }: { sttError: string | null }) {
         display: 'flex',
         flexDirection: 'column',
         gap: 3,
-        background: '#ffe6e1',
+        background: 'var(--accent-tint)',
         border: '1px solid rgba(224,68,48,.3)',
-        borderRadius: 10,
+        borderRadius: 'var(--radius-md)',
         padding: '10px 14px',
-        color: '#b3200c',
+        color: 'var(--accent-text)',
       }}
     >
       <div style={{ fontSize: 13, fontWeight: 600 }}>Recording continues — transcript unavailable</div>
-      {sttError && <div style={{ fontSize: 12, color: '#c65847' }}>{sttError}</div>}
+      {sttError && <div style={{ fontSize: 12, color: 'var(--accent-text)' }}>{sttError}</div>}
     </div>
   )
 }
@@ -61,7 +61,7 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
 }) {
   if (liveSegments.length === 0) {
     if (sttStatus === 'loading') {
-      return <div style={{ fontSize: 13, color: '#9a938c' }}>Loading {modelName}…</div>
+      return <div style={{ fontSize: 13, color: 'var(--ink-faint)' }}>Loading {modelName}…</div>
     }
     if (sttStatus === 'error') {
       return <SttErrorRow sttError={sttError} />
@@ -75,9 +75,9 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
         <div key={i}>
           <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
             <b>{group.speaker}</b>
-            <span style={{ color: '#b0a9a2' }}>{formatMmSs(group.start)}</span>
+            <span style={{ color: 'var(--ink-faint)' }}>{formatMmSs(group.start)}</span>
           </div>
-          <div style={{ fontSize: 14.5, lineHeight: 1.65, color: '#33302c', textWrap: 'pretty' }}>{group.text}</div>
+          <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--ink-body)', textWrap: 'pretty' }}>{group.text}</div>
         </div>
       ))}
       {sttStatus === 'error' ? <SttErrorRow sttError={sttError} /> : <TranscribingIndicator />}
@@ -96,17 +96,17 @@ export const RecordingView = memo(function RecordingView({
   modelName,
 }: RecordingViewProps) {
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0, background: '#f7f6f4' }}>
+    <div style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <div style={{ padding: '16px 32px', borderBottom: '1px solid rgba(0,0,0,.07)', display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div role="group" aria-label="Audio source" style={{ display: 'flex', background: '#eceae7', borderRadius: 9, padding: 3 }}>
+        <div style={{ padding: '16px 32px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div role="group" aria-label="Audio source" style={{ display: 'flex', background: 'var(--panel-warm)', borderRadius: 9, padding: 3 }}>
             <div
               style={{
                 padding: '6px 14px',
                 borderRadius: 7,
-                background: '#fff',
+                background: 'var(--card)',
                 boxShadow: '0 1px 3px rgba(0,0,0,.1)',
-                fontSize: 12.5,
+                fontSize: 13,
                 fontWeight: 600,
                 display: 'flex',
                 gap: 7,
@@ -122,7 +122,7 @@ export const RecordingView = memo(function RecordingView({
             <div
               className="seg-off"
               aria-disabled="true"
-              style={{ padding: '6px 14px', borderRadius: 7, fontSize: 12.5, fontWeight: 600, color: '#6d675f', display: 'flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}
+              style={{ padding: '6px 14px', borderRadius: 7, fontSize: 13, fontWeight: 600, color: 'var(--ink-muted)', display: 'flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
                 <rect width="20" height="14" x="2" y="3" rx="2"></rect>
@@ -133,10 +133,10 @@ export const RecordingView = memo(function RecordingView({
             </div>
           </div>
           <Waveform paused={paused} />
-          <div style={{ fontSize: 12, color: '#9a938c', flex: 'none' }}>{modelName} · on-device</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-faint)', flex: 'none' }}>{modelName} · on-device</div>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 740 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c' }}>LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
           <LiveTranscriptBody liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
         </div>
         <div style={{ padding: '14px 32px 18px', display: 'flex', gap: 10, flex: 'none' }}>
@@ -151,11 +151,11 @@ export const RecordingView = memo(function RecordingView({
               padding: '11px 22px',
               border: 'none',
               borderRadius: 999,
-              background: '#e04430',
+              background: 'var(--accent-solid)',
               color: '#fff',
               fontFamily: 'inherit',
               fontWeight: 600,
-              fontSize: 13.5,
+              fontSize: 13,
               cursor: stopping ? 'default' : 'pointer',
               opacity: stopping ? 0.7 : 1,
               boxShadow: '0 1px 4px rgba(224,68,48,.35)',
@@ -170,27 +170,27 @@ export const RecordingView = memo(function RecordingView({
             onClick={togglePause}
             disabled={stopping}
             className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: '#fff', color: '#1c1a18', fontFamily: 'inherit', fontWeight: 600, fontSize: 13.5, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
+            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
           <button
             disabled={stopping}
             className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: '#fff', color: '#1c1a18', fontFamily: 'inherit', fontWeight: 600, fontSize: 13.5, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
+            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
           >
             Add marker
           </button>
         </div>
       </div>
-      <div style={{ width: 330, flex: 'none', borderLeft: '1px solid rgba(0,0,0,.07)', display: 'flex', flexDirection: 'column', minHeight: 0, background: '#f2f0ee' }}>
+      <div style={{ width: 330, flex: 'none', borderLeft: '1px solid var(--border-soft)', display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)' }}>
         <div style={{ padding: '16px 16px 12px', fontWeight: 700, fontSize: 14 }}>Live insights</div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 12, padding: '14px 16px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: '#9a938c', marginBottom: 6 }}>LIVE INSIGHTS</div>
-            <div style={{ fontSize: 12.5, lineHeight: 1.6, color: '#9a938c' }}>Live insights arrive in a later update.</div>
+          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)', marginBottom: 6 }}>LIVE INSIGHTS</div>
+            <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)' }}>Live insights arrive in a later update.</div>
           </div>
-          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 12, padding: '12px 14px', fontSize: 12, lineHeight: 1.55, color: '#9a938c' }}>
+          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '12px 14px', fontSize: 12, lineHeight: 1.55, color: 'var(--ink-faint)' }}>
             Transcription runs on-device — nothing leaves this machine.
           </div>
         </div>

@@ -26,8 +26,6 @@ export interface TranscriptSegment {
   speaker: string
   time: string
   text: string
-  isMe?: boolean
-  highlight?: boolean
 }
 
 export interface SttModelInfo {

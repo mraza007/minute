@@ -25,9 +25,9 @@ export interface SettingsViewProps {
 }
 
 const cardStyle: CSSProperties = {
-  background: '#fff',
-  border: '1px solid rgba(0,0,0,.07)',
-  borderRadius: 14,
+  background: 'var(--card)',
+  border: '1px solid var(--border-soft)',
+  borderRadius: 'var(--radius-md)',
   boxShadow: '0 1px 3px rgba(0,0,0,.04)',
   overflow: 'hidden',
 }
@@ -41,13 +41,13 @@ const cardHeaderStyle: CSSProperties = {
 const secondaryBtnStyle: CSSProperties = {
   flex: 'none',
   padding: '6px 12px',
-  border: '1px solid rgba(0,0,0,.12)',
+  border: '1px solid var(--border-strong)',
   borderRadius: 999,
-  background: '#fff',
+  background: 'var(--card)',
   fontFamily: 'inherit',
-  fontSize: 11.5,
+  fontSize: 12,
   fontWeight: 600,
-  color: '#1c1a18',
+  color: 'var(--ink)',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
 }
@@ -55,7 +55,7 @@ const secondaryBtnStyle: CSSProperties = {
 const dangerBtnStyle: CSSProperties = {
   ...secondaryBtnStyle,
   border: '1px solid rgba(224,68,48,.35)',
-  color: '#b3200c',
+  color: 'var(--accent-text)',
 }
 
 interface ModelRowAction {
@@ -87,7 +87,7 @@ function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload,
           e.stopPropagation()
           downloadModel(entry.id)
         }}
-        style={{ ...secondaryBtnStyle, border: 'none', background: '#e04430', color: '#fff' }}
+        style={{ ...secondaryBtnStyle, border: 'none', background: 'var(--accent-solid)', color: '#fff' }}
       >
         Download ({formatBytes(entry.sizeBytes)})
       </button>
@@ -173,9 +173,9 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, downloadMode
         alignItems: 'flex-start',
         width: '100%',
         boxSizing: 'border-box',
-        border: selected ? '1.5px solid #e04430' : '1px solid rgba(0,0,0,.1)',
-        background: selected ? '#fff6f4' : '#fff',
-        borderRadius: 10,
+        border: selected ? '1.5px solid var(--accent)' : '1px solid rgba(0,0,0,.1)',
+        background: selected ? '#fff6f4' : 'var(--card)',
+        borderRadius: 'var(--radius-md)',
         padding: selected ? '11.5px 13.5px' : '12px 14px',
         cursor: selectable ? 'pointer' : 'default',
         fontSize: 13,
@@ -194,15 +194,15 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, downloadMode
           marginTop: 2,
           borderRadius: '50%',
           boxSizing: 'border-box',
-          background: '#fff',
-          border: selected ? '5px solid #e04430' : '1.5px solid #b0a9a2',
+          background: 'var(--card)',
+          border: selected ? '5px solid var(--accent)' : '1.5px solid var(--control-border)',
           transition: 'border .15s',
         }}
       />
       <span style={{ flex: 1, minWidth: 0 }}>
         <b>{info.displayName}</b> — {info.desc}
         <br />
-        <span style={{ fontSize: 12, color: selected ? '#b3200c' : '#9a938c', fontWeight: selected ? 600 : 400 }}>{info.sub}</span>
+        <span style={{ fontSize: 12, color: selected ? 'var(--accent-text)' : 'var(--ink-faint)', fontWeight: selected ? 600 : 400 }}>{info.sub}</span>
         {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
       </span>
       <span style={{ flex: 'none' }}>
@@ -239,13 +239,13 @@ export function SettingsView({
   const pct = (n: number) => (totalBytes > 0 ? (n / totalBytes) * 100 : 0)
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', background: '#f7f6f4' }}>
+    <div style={{ flex: 1, overflow: 'auto', background: 'var(--surface-soft)' }}>
       <div style={{ maxWidth: 760, padding: '28px 36px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <h1 style={{ margin: 0, fontWeight: 700, fontSize: 22, letterSpacing: '-.02em' }}>Settings</h1>
+        <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Settings</h1>
 
-        <div style={{ background: '#1c1a18', color: '#fff', borderRadius: 16, padding: '24px 28px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
-          <div style={{ fontWeight: 700, fontSize: 19, letterSpacing: '-.01em' }}>Nothing leaves this machine.</div>
-          <div style={{ marginTop: 6, fontSize: 13.5, lineHeight: 1.6, color: 'rgba(255,255,255,.75)', maxWidth: 520 }}>
+        <div style={{ background: 'var(--ink)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '24px 28px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
+          <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.02em' }}>Nothing leaves this machine.</div>
+          <div style={{ marginTop: 6, fontSize: 13, lineHeight: 1.6, color: 'rgba(255,255,255,.75)', maxWidth: 520 }}>
             No account. No cloud. No network permission. Transcription and summarization run entirely on your hardware — pull the Wi-Fi and everything still works.
           </div>
         </div>
@@ -274,7 +274,7 @@ export function SettingsView({
 
         <div style={cardStyle}>
           <div style={cardHeaderStyle}>Summary model</div>
-          <div style={{ padding: '4px 20px 4px', fontSize: 12, color: '#9a938c' }}>Powers summaries, decisions & action items.</div>
+          <div style={{ padding: '4px 20px 4px', fontSize: 12, color: 'var(--ink-faint)' }}>Powers summaries, decisions & action items.</div>
           <div
             role="radiogroup"
             aria-label="Summary model"
@@ -298,20 +298,20 @@ export function SettingsView({
         <div style={cardStyle}>
           <div style={cardHeaderStyle}>Storage</div>
           <div style={{ padding: '12px 20px 18px' }}>
-            <div style={{ display: 'flex', height: 12, borderRadius: 999, overflow: 'hidden', background: '#eceae7', maxWidth: 520 }}>
-              <div style={{ width: `${pct(modelsBytes)}%`, background: '#1c1a18' }} />
-              <div style={{ width: `${pct(audioBytes)}%`, background: '#e04430' }} />
-              <div style={{ width: `${pct(notesBytes)}%`, background: '#b0a9a2' }} />
+            <div style={{ display: 'flex', height: 12, borderRadius: 999, overflow: 'hidden', background: 'var(--panel-warm)', maxWidth: 520 }}>
+              <div style={{ width: `${pct(modelsBytes)}%`, background: 'var(--ink)' }} />
+              <div style={{ width: `${pct(audioBytes)}%`, background: 'var(--accent)' }} />
+              <div style={{ width: `${pct(notesBytes)}%`, background: 'var(--ink-faint)' }} />
             </div>
-            <div style={{ display: 'flex', gap: 18, marginTop: 8, fontSize: 12, color: '#8d867f', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 18, marginTop: 8, fontSize: 12, color: 'var(--ink-muted)', flexWrap: 'wrap' }}>
               <span>
-                <b style={{ color: '#1c1a18' }}>●</b> Models {formatBytes(modelsBytes)}
+                <b style={{ color: 'var(--ink)' }}>●</b> Models {formatBytes(modelsBytes)}
               </span>
               <span>
-                <b style={{ color: '#e04430' }}>●</b> Audio {formatBytes(audioBytes)}
+                <b style={{ color: 'var(--accent)' }}>●</b> Audio {formatBytes(audioBytes)}
               </span>
               <span>
-                <b style={{ color: '#b0a9a2' }}>●</b> Notes {formatBytes(notesBytes)}
+                <b style={{ color: 'var(--ink-faint)' }}>●</b> Notes {formatBytes(notesBytes)}
               </span>
               <span>{noteCount} notes</span>
             </div>
