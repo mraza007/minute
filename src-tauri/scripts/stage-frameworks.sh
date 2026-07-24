@@ -47,8 +47,33 @@ if [[ ! -x "$bin" ]]; then
   exit 1
 fi
 
+# Guard: the app binary itself must carry the LC_RPATH that makes its
+# @rpath/*.dylib references resolvable at launch (added via
+# `-Wl,-rpath,@executable_path/../Frameworks` in .cargo/config.toml's
+# target rustflags). A RUSTFLAGS env var set anywhere in the build
+# environment (e.g. `-D warnings` in CI) *replaces* — does not merge with —
+# .cargo/config.toml's target rustflags, silently dropping this -rpath
+# flag; the compile and bundle both still succeed, but the shipped app
+# fails to load its dylibs at launch on any machine. Catch that here
+# instead of at a user's launch.
+if ! otool -l "$bin" | grep -qF 'path @executable_path/../Frameworks'; then
+  echo "stage-frameworks: $bin has no LC_RPATH for @executable_path/../Frameworks." >&2
+  echo "  This binary won't be able to load its @rpath dylibs after bundling." >&2
+  echo "  Likely cause: a RUSTFLAGS env var (e.g. -D warnings in CI) replaced" >&2
+  echo "  .cargo/config.toml's target rustflags instead of merging with them," >&2
+  echo "  silently dropping the -Wl,-rpath,@executable_path/../Frameworks flag." >&2
+  echo "  Rebuild without an overriding RUSTFLAGS, or fold it into the" >&2
+  echo "  [target.*.rustflags] array in .cargo/config.toml instead." >&2
+  exit 1
+fi
+
 # The @rpath-relative dylib basenames the app binary actually depends on.
-needed_names="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep '^@rpath/' | sed 's#^@rpath/##' | sort -u)"
+# The `{ grep ... || true; }` guards against `set -o pipefail` treating a
+# legitimate zero-matches result (e.g. dynamic-link feature not active) as
+# a pipeline failure — under `set -e` that would abort the script on this
+# line before the explicit empty-check below ever gets to print its
+# diagnostic.
+needed_names="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | { grep '^@rpath/' || true; } | sed 's#^@rpath/##' | sort -u)"
 
 if [[ -z "$needed_names" ]]; then
   echo "stage-frameworks: $bin has no @rpath dependencies — dynamic-link feature not active?" >&2
@@ -58,27 +83,32 @@ fi
 rm -rf "$dest"
 mkdir -p "$dest"
 
-shopt -s nullglob
 copied=()
 while IFS= read -r name; do
   [[ -z "$name" ]] && continue
 
-  found=""
-  for f in "$lib_dir"/*.dylib; do
-    [[ -L "$f" ]] && continue # skip symlinks, only real files have a meaningful install name
-    install_name="$(otool -D "$f" | tail -n 1)"
-    if [[ "$install_name" == "@rpath/$name" ]]; then
-      found="$f"
-      break
-    fi
-  done
-
-  if [[ -z "$found" ]]; then
-    echo "stage-frameworks: app binary needs @rpath/$name but no matching dylib (install name @rpath/$name) found in $lib_dir" >&2
+  # Resolve the exact symlink cargo drops in target/<profile>/ for this
+  # dylib (e.g. libggml-base.0.dylib -> libggml-base.0.13.1.dylib) rather
+  # than scanning every *.dylib for a matching install name: cargo
+  # recreates that symlink fresh on every build, so it always points at
+  # the current version, whereas a glob scan picks whichever real file
+  # happens to sort first — if a ggml version bump ever leaves an old
+  # fully-versioned file behind alongside the new one (both sharing the
+  # same @rpath install name), glob order rather than recency decides
+  # which one ships.
+  link="$lib_dir/$name"
+  if [[ ! -e "$link" ]]; then
+    echo "stage-frameworks: app binary needs @rpath/$name but $link doesn't exist" >&2
     exit 1
   fi
 
-  cp "$found" "$dest/$name"
+  resolved="$(readlink -f "$link" 2>/dev/null || true)"
+  if [[ -z "$resolved" || ! -f "$resolved" ]]; then
+    echo "stage-frameworks: $link's symlink target is missing or invalid (resolved to '${resolved:-<empty>}')" >&2
+    exit 1
+  fi
+
+  cp "$resolved" "$dest/$name"
   copied+=("$name")
 done <<< "$needed_names"
 
