@@ -53,7 +53,7 @@ const secondaryBtnStyle: CSSProperties = {
 
 const dangerBtnStyle: CSSProperties = {
   ...secondaryBtnStyle,
-  border: '1px solid rgba(224,68,48,.35)',
+  border: '1px solid rgba(var(--accent-rgb), .35)',
   color: 'var(--accent-text)',
 }
 

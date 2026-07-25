@@ -138,7 +138,7 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
             fontWeight: 600,
             fontSize: 13,
             cursor: hasInstalledStt ? 'pointer' : 'not-allowed',
-            boxShadow: hasInstalledStt ? '0 1px 4px rgba(224,68,48,.35)' : 'none',
+            boxShadow: hasInstalledStt ? '0 1px 4px rgba(var(--accent-rgb), .35)' : 'none',
           }}
         >
           Start using Minute

@@ -84,7 +84,17 @@ const btnStyle: CSSProperties = {
   cursor: 'pointer',
 }
 
-function Spinner({ color }: { color: string }) {
+// `color` was previously interpolated straight into a `border` shorthand
+// (`` `2px solid ${color}40` ``) — with the only value ever passed being
+// `var(--accent)`, that produced the string `2px solid var(--accent)40`,
+// which isn't valid CSS. The whole `border` declaration was dropped as a
+// result, so the ring never rendered at all — only `borderTopColor` (a
+// separate, valid declaration) painted anything, i.e. a single accent arc
+// with no visible track behind it. Fixed by building the border from
+// `--accent-rgb` directly, the same pattern NoteView's own spinner rings
+// already use; the prop is gone since every call site passed the same
+// color.
+function Spinner() {
   return (
     <span
       className="spin"
@@ -92,8 +102,8 @@ function Spinner({ color }: { color: string }) {
         width: 14,
         height: 14,
         borderRadius: '50%',
-        border: `2px solid ${color}40`,
-        borderTopColor: color,
+        border: '2px solid rgba(var(--accent-rgb), .25)',
+        borderTopColor: 'var(--accent)',
         animation: 'spin .8s linear infinite',
         flex: 'none',
       }}
@@ -109,7 +119,7 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
         alignItems: 'center',
         gap: 10,
         background: 'var(--card)',
-        border: '1px solid rgba(224,68,48,.3)',
+        border: '1px solid rgba(var(--accent-rgb), .3)',
         borderRadius: 'var(--radius-md)',
         padding: '12px 16px',
         boxShadow: '0 1px 3px rgba(0,0,0,.04)',
@@ -118,7 +128,7 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
         color: 'var(--accent-text)',
       }}
     >
-      <Spinner color="var(--accent)" />
+      <Spinner />
       Summarizing on-device — {modelName}
     </div>
   )
@@ -126,7 +136,7 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
 
 function ErrorCard({ error, onRegenerate }: { error?: string; onRegenerate: () => void }) {
   return (
-    <div role="alert" style={{ ...cardStyle, border: '1px solid rgba(224,68,48,.3)', background: 'var(--error-tint)' }}>
+    <div role="alert" style={{ ...cardStyle, border: '1px solid rgba(var(--accent-rgb), .3)', background: 'var(--error-tint)' }}>
       <div style={errorLabelStyle}>SUMMARY FAILED</div>
       <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--error-text-strong)', marginBottom: 10 }}>
         {error || 'Something went wrong generating this summary.'}
@@ -453,7 +463,7 @@ function AskSection({
           className="input-focus"
           style={{ ...askInputStyle, flex: 1, opacity: disabled ? 0.6 : 1 }}
         />
-        {running && <Spinner color="var(--accent)" />}
+        {running && <Spinner />}
       </div>
       {!running && llmBusy && (
         <div style={{ fontSize: 12, color: 'var(--ink-faint)' }}>Waiting for the current generation…</div>

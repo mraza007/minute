@@ -71,6 +71,7 @@
   --banner-text: #fff;
   --banner-text-muted: rgba(255, 255, 255, .75);
   /* accent */
+  --accent-rgb: 224, 68, 48;  /* == --accent, as r,g,b — for rgba() borders/shadows/rings that need a translucent accent rather than a solid one */
   --accent: #e04430;          /* graphics, dots, borders, REC — never text-bearing fills */
   --accent-solid: #c93520;    /* button fills with white text (5.2:1) */
   --accent-solid-hover: #b32d1a;
@@ -121,7 +122,12 @@
     --surface-soft: #2d2a26;
     --surface-softer: #312d29;
     --card: #34302b;
-    --control-track: #4a453f;
+    /* darker than the initial ramp guess (#4a453f) — that value only cleared
+       3.74:1 against --ink-muted (the OnboardingView disabled-CTA label),
+       short of AA; this clears 4.94:1 while staying a clearly "muted/off"
+       fill (--control-border, not this token, carries the Toggle
+       off/on boundary, so darkening it doesn't touch that pairing). */
+    --control-track: #423b35;
     --player-track: #403b35;
     --selected-tint: #3a2620;
     /* ink ramp */
@@ -141,6 +147,7 @@
        light mode's own hover/active step) so white text clears AA on a dark
        canvas; hover/active continue darkening for consistent depress
        feedback. */
+    --accent-rgb: 224, 84, 63;  /* == dark --accent */
     --accent: #e0543f;
     --accent-solid: #b32d1a;
     --accent-solid-hover: #9c2716;
@@ -195,7 +202,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .btn-light:hover { background: var(--btn-light-hover) !important; }
 .btn-dark-accent:hover { background: var(--accent) !important; }
 .btn-dark:hover { background: var(--btn-dark-hover) !important; }
-.input-focus:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(224, 68, 48, .15) !important; }
+.input-focus:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .15) !important; }
 .model-card:hover { background: var(--surface-softer) !important; }
 .seg-off:hover { color: var(--ink) !important; }
 

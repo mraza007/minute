@@ -139,14 +139,14 @@ function StatusPill({
 
   if (finalizing) {
     content = (
-      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
+      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(var(--accent-rgb), .3)', color: 'var(--accent-text)' }}>
         <span
           className="spin"
           style={{
             width: 10,
             height: 10,
             borderRadius: '50%',
-            border: '2px solid rgba(224,68,48,.25)',
+            border: '2px solid rgba(var(--accent-rgb), .25)',
             borderTopColor: 'var(--accent)',
             animation: 'spin .8s linear infinite',
             flex: 'none',
@@ -157,14 +157,14 @@ function StatusPill({
     )
   } else if (summaryStatus === 'running') {
     content = (
-      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(224,68,48,.3)', color: 'var(--accent-text)' }}>
+      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(var(--accent-rgb), .3)', color: 'var(--accent-text)' }}>
         <span
           className="spin"
           style={{
             width: 10,
             height: 10,
             borderRadius: '50%',
-            border: '2px solid rgba(224,68,48,.25)',
+            border: '2px solid rgba(var(--accent-rgb), .25)',
             borderTopColor: 'var(--accent)',
             animation: 'spin .8s linear infinite',
             flex: 'none',
@@ -323,7 +323,7 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
           height: 32,
           border: 'none',
           borderRadius: 'var(--radius-sm)',
-          background: confirming ? 'rgba(224,68,48,.12)' : 'transparent',
+          background: confirming ? 'rgba(var(--accent-rgb), .12)' : 'transparent',
           color: confirming ? 'var(--accent-text)' : 'var(--ink-muted)',
           cursor: 'pointer',
           display: 'flex',

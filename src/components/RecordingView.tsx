@@ -46,7 +46,7 @@ function SttErrorRow({ sttError }: { sttError: string | null }) {
         flexDirection: 'column',
         gap: 3,
         background: 'var(--accent-tint)',
-        border: '1px solid rgba(224,68,48,.3)',
+        border: '1px solid rgba(var(--accent-rgb), .3)',
         borderRadius: 'var(--radius-md)',
         padding: '10px 14px',
         color: 'var(--accent-text)',
@@ -282,7 +282,7 @@ export const RecordingView = memo(function RecordingView({
               fontSize: 13,
               cursor: stopping ? 'default' : 'pointer',
               opacity: stopping ? 0.7 : 1,
-              boxShadow: '0 1px 4px rgba(224,68,48,.35)',
+              boxShadow: '0 1px 4px rgba(var(--accent-rgb), .35)',
             }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

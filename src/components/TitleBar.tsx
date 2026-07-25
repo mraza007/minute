@@ -98,7 +98,7 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
             fontWeight: 600,
             fontSize: 13,
             cursor: 'pointer',
-            boxShadow: '0 1px 3px rgba(224,68,48,.35)',
+            boxShadow: '0 1px 3px rgba(var(--accent-rgb), .35)',
           }}
         >
           <svg
