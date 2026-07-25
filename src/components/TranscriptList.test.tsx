@@ -120,8 +120,11 @@ describe('TranscriptList', () => {
     it('renders only a windowed subset of rows for a long transcript, not all of them', () => {
       render(<TranscriptList {...makeProps({ segments: makeSegments(300) })} />)
       const buttons = screen.getAllByRole('button', { name: /^Play from/ })
+      // Stub geometry (600px viewport / 80px rows, overscan 8) yields ~7-8
+      // rows visible plus overscan on either side — comfortably under 50,
+      // and a far stronger windowing signal than merely "< 300".
       expect(buttons.length).toBeGreaterThan(0)
-      expect(buttons.length).toBeLessThan(300)
+      expect(buttons.length).toBeLessThan(50)
     })
 
     it('a rendered row’s seek button still calls onSeek in the virtualized path', () => {

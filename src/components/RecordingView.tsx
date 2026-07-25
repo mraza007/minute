@@ -109,8 +109,25 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
           Showing the latest {LIVE_RENDER_CAP} entries — the full transcript is saved.
         </div>
       )}
-      {visibleGroups.map((group, i) => (
-        <div key={i}>
+      {visibleGroups.map(group => (
+        // Keyed on the group's own identity (`speaker`+`start`), never a
+        // positional index: `visibleGroups` is a *rotating* window
+        // (`slice(-LIVE_RENDER_CAP)`) once capped — every new arrival drops
+        // the oldest group and shifts everyone else's array index down by
+        // one, even though nothing about those groups themselves changed.
+        // An index key would make React read that as "the row at this
+        // position now has different content" and rewrite each visible
+        // row's text in place — silently changing what a user scrolled up
+        // to read out from under them, without moving their scroll
+        // position at all. Keying on identity instead means a group
+        // already in the window keeps its own DOM node (and thus its own
+        // text) untouched; only the dropped group's node is removed and
+        // the new group's node appended. `start` is unique per group here
+        // — `groupLiveSegments` (adapters.ts) only ever starts a *new*
+        // group on a speaker change, and stream time only moves forward —
+        // but `speaker` is included too as a defensive tiebreaker rather
+        // than relying on that alone.
+        <div key={`${group.speaker}-${group.start}`}>
           <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
             <b>{group.speaker}</b>
             <span style={{ color: 'var(--ink-faint)' }}>{formatMmSs(group.start)}</span>

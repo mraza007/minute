@@ -150,6 +150,31 @@ describe('RecordingView', () => {
       expect(screen.getByText('entry number 249')).toBeInTheDocument()
       expect(screen.getByText('Showing the latest 200 entries — the full transcript is saved.')).toBeInTheDocument()
     })
+
+    it('keeps a still-visible group’s DOM node identity (and thus its own text) stable as the capped window rotates', () => {
+      // Regression test for positional (index) keys on a rotating window:
+      // with 201 groups, the visible window is entries [1..200]; a group
+      // that survives the *next* arrival must keep its own DOM node rather
+      // than having some other row's text rewritten into it.
+      const { rerender } = render(<RecordingView {...base} liveSegments={makeGroups(201)} />)
+      const survivorText = 'entry number 150'
+      const nodeBefore = screen.getByText(survivorText)
+
+      // One more group arrives — the window rotates forward by one (entry 1
+      // drops out, entry 201 is added); entry 150 remains in the window
+      // throughout.
+      rerender(<RecordingView {...base} liveSegments={makeGroups(202)} />)
+      const nodeAfter = screen.getByText(survivorText)
+
+      expect(nodeAfter).toBe(nodeBefore)
+
+      // The full visible slice after rotation is exactly the latest 200
+      // (entries [2..201]) — the oldest surviving entry from before (1) is
+      // now gone, and the freshly-arrived one (201) is present.
+      expect(screen.queryByText('entry number 1')).not.toBeInTheDocument()
+      expect(screen.getByText('entry number 2')).toBeInTheDocument()
+      expect(screen.getByText('entry number 201')).toBeInTheDocument()
+    })
   })
 
   describe('live transcript auto-scroll (H6)', () => {
