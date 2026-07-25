@@ -79,6 +79,37 @@ objc2-core-audio = "=0.3.2"
 # block's other pinned dependencies already follow.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
+# Stage 5 Task 4: system-audio capture (ScreenCaptureKit). MIT OR Apache-2.0
+# (confirmed against crates.io) — permissive, no attribution/copyleft
+# obligations beyond what's already carried by every other MIT/Apache dep
+# here. `default-features = false` (the crate's own `default = []` anyway,
+# so this is just explicit) — none of the `macos_1x_0` feature-gated extras
+# (HDR presets, content-rect, included-displays introspection, ...) are
+# used; only the unconditionally-compiled base API (SCStream,
+# SCContentFilter, SCStreamConfiguration's audio/exclude-current-process
+# knobs) is needed. See syscap.rs's module docs for the full API notes, and
+# this file's own `[patch.crates-io]` section below for why this (and its
+# transitive `apple-metal` dependency) are vendored rather than pulled
+# straight from crates.io.
+screencapturekit = { version = "=8.0.1", default-features = false }
+# `CGPreflightScreenCaptureAccess`/`CGRequestScreenCaptureAccess` (the Screen
+# Recording TCC check/request pair, predating ScreenCaptureKit itself —
+# available since macOS 10.15, safe to call unconditionally on this crate's
+# whole 11.0 floor) live in this crate's `CGWindow` module. Pinned the same
+# "already-resolved transitive version" way as the Task 1 objc2-* crates
+# above (`cargo tree -i objc2-core-graphics` shows `=0.3.2` already in the
+# tree via `objc2-app-kit`).
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGWindow"] }
+# `NSProcessInfo.operatingSystemVersion` — the macOS-13+ runtime gate for
+# system-audio capture (see `syscap.rs::macos_major_version`), rather than
+# parsing `sw_vers` output. Already resolved transitively at `=0.3.2` (via
+# `cpal`/`tauri-nspanel`) — same "pin what's already there" rationale as
+# every other objc2-* entry in this file. `features = ["std", "NSProcessInfo"]`:
+# `std` is required unconditionally by this crate's own `lib.rs` (verified by
+# a local build — omitting it is a hard compile error, not just unused code);
+# `NSProcessInfo` gates the one type this crate actually calls into.
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -92,5 +123,35 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # two llama-cpp-sys-2 dependency blocks given `default-features = false` —
 # nothing else changed. Drop this patch if a future llama-cpp-2 release
 # fixes it upstream.
+#
+# screencapturekit 8.0.1 / apple-metal 0.8.8 (Stage 5 Task 4): both link
+# one framework unconditionally via the plain `cargo:rustc-link-lib=
+# framework=X` directive — `ScreenCaptureKit.framework` (screencapturekit's
+# own build.rs) and `MetalFX.framework` (apple-metal's, a transitive dep
+# `screencapturekit` pulls in unconditionally for its Metal-texture
+# screenshot helpers, unrelated to anything this task actually uses). That
+# directive produces a *hard* `LC_LOAD_DYLIB` — dyld refuses to launch the
+# whole process if the named framework isn't present on disk. Both
+# frameworks are macOS-13+-only (ScreenCaptureKit: 12.3 for video, 13.0 for
+# audio; MetalFX: 13.0), which sits well above this crate's own declared
+# floor (`tauri.conf.json`'s `minimumSystemVersion: "11.0"`). Per the Stage
+# 5 plan, system-audio support is meant to be a *runtime* feature gate
+# (`syscap.rs` reports `unsupported` below macOS 13 — see that module's
+# docs) — a hard link on either framework would silently defeat that by
+# preventing the entire app (every feature, not just system audio) from
+# launching at all on macOS 11/12, regardless of any Rust-level version
+# check. vendor/screencapturekit-8.0.1 and vendor/apple-metal-0.8.8 are
+# those crates unchanged except swapping each risky framework link for
+# `-weak_framework` (an `LC_LOAD_WEAK_DYLIB` — dyld resolves it lazily and
+# simply leaves it unbound if absent, exactly what "runtime-gated" needs);
+# every other linked framework in both build scripts (Metal, Foundation,
+# IOSurface, CoreGraphics, CoreMedia, ...) predates macOS 11 and is left as
+# a normal hard link, unchanged. Verified empirically (not just by reading
+# ld64's docs): a throwaway binary linked with `-weak_framework
+# ScreenCaptureKit` shows `LC_LOAD_WEAK_DYLIB` (not `LC_LOAD_DYLIB`) for
+# that entry under `otool -l`. Drop these patches if a future release of
+# either crate weak-links these itself.
 [patch.crates-io]
 llama-cpp-2 = { path = "vendor/llama-cpp-2-0.1.152" }
+screencapturekit = { path = "vendor/screencapturekit-8.0.1" }
+apple-metal = { path = "vendor/apple-metal-0.8.8" }

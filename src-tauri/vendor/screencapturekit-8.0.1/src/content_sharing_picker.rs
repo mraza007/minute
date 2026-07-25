@@ -1,0 +1,929 @@
+//! `SCContentSharingPicker` - UI for selecting content to share
+//!
+//! Available on macOS 14.0+.
+//! Provides a system UI for users to select displays, windows, or applications to share.
+//!
+//! ## When to Use
+//!
+//! Use the content sharing picker when:
+//! - You want users to choose what to capture via a native macOS UI
+//! - You need consistent UX with other screen sharing apps
+//! - You want to avoid manually listing and presenting content options
+//!
+//! ## APIs
+//!
+//! | Method | Returns | Use Case |
+//! |--------|---------|----------|
+//! | [`SCContentSharingPicker::show()`] | callback with [`SCPickerOutcome`] | Get filter + metadata (dimensions, picked content) |
+//! | [`SCContentSharingPicker::show_filter()`] | callback with [`SCPickerFilterOutcome`] | Just get the filter |
+//!
+//! For async/await, use [`AsyncSCContentSharingPicker`](crate::async_api::AsyncSCContentSharingPicker) from the `async_api` module.
+//!
+//! # Examples
+//!
+//! ## Callback API: Get filter with metadata
+//! ```no_run
+//! use screencapturekit::content_sharing_picker::*;
+//! use screencapturekit::prelude::*;
+//!
+//! let config = SCContentSharingPickerConfiguration::new();
+//! SCContentSharingPicker::show(&config, |outcome| {
+//!     match outcome {
+//!         SCPickerOutcome::Picked(result) => {
+//!             let (width, height) = result.pixel_size();
+//!             let filter = result.filter();
+//!             println!("Selected content: {}x{}", width, height);
+//!             // Create stream with the filter...
+//!         }
+//!         SCPickerOutcome::Cancelled => println!("Cancelled"),
+//!         SCPickerOutcome::Error(e) => eprintln!("Error: {}", e),
+//!     }
+//! });
+//! ```
+//!
+//! ## Async API
+//! ```no_run
+//! use screencapturekit::async_api::AsyncSCContentSharingPicker;
+//! use screencapturekit::content_sharing_picker::*;
+//!
+//! async fn example() {
+//!     let config = SCContentSharingPickerConfiguration::new();
+//!     if let SCPickerOutcome::Picked(result) = AsyncSCContentSharingPicker::show(&config).await {
+//!         let (width, height) = result.pixel_size();
+//!         let filter = result.filter();
+//!         println!("Selected: {}x{}", width, height);
+//!     }
+//! }
+//! ```
+//!
+//! ## Configure Picker Modes
+//! ```no_run
+//! use screencapturekit::content_sharing_picker::*;
+//!
+//! let mut config = SCContentSharingPickerConfiguration::new();
+//! // Only allow single display selection
+//! config.set_allowed_picker_modes(&[SCContentSharingPickerMode::SingleDisplay]);
+//! // Exclude specific apps from the picker
+//! config.set_excluded_bundle_ids(&["com.apple.finder", "com.apple.dock"]);
+//! ```
+
+use crate::stream::content_filter::SCContentFilter;
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Represents the type of content selected in the picker
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SCPickedSource {
+    /// A window was selected, with its title
+    Window(String),
+    /// A display was selected, with its ID
+    Display(u32),
+    /// An application was selected, with its name
+    Application(String),
+    /// No specific source identified
+    Unknown,
+}
+
+/// Picker mode determines what content types can be selected
+///
+/// These modes can be combined to allow users to pick from different source types.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SCContentSharingPickerMode {
+    /// Allow selection of a single window
+    #[default]
+    SingleWindow = 0,
+    /// Allow selection of multiple windows
+    MultipleWindows = 1,
+    /// Allow selection of a single display/screen
+    SingleDisplay = 2,
+    /// Allow selection of a single application
+    SingleApplication = 3,
+    /// Allow selection of multiple applications
+    MultipleApplications = 4,
+}
+
+/// Configuration for the content sharing picker
+pub struct SCContentSharingPickerConfiguration {
+    ptr: *const c_void,
+}
+
+impl SCContentSharingPickerConfiguration {
+    #[must_use]
+    pub fn new() -> Self {
+        let ptr = unsafe { crate::ffi::sc_content_sharing_picker_configuration_create() };
+        Self { ptr }
+    }
+
+    /// Construct a configuration initialised with the system's default values
+    /// (the equivalent of Apple's `SCContentSharingPicker.shared.defaultConfiguration`).
+    ///
+    /// Use this when you want "system defaults plus my one tweak" — call this
+    /// to get the baseline, then mutate the fields you care about. Compared
+    /// to [`SCContentSharingPickerConfiguration::new()`], which starts from a
+    /// blank-slate `SCContentSharingPickerConfiguration()`, this preserves
+    /// any system-wide picker preferences the OS applies to fresh
+    /// configurations (e.g. allowed picker modes, default exclusion lists).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    ///
+    /// // Start from the system defaults, then override only what you need.
+    /// let mut config = SCContentSharingPickerConfiguration::default_from_system();
+    /// config.set_excluded_bundle_ids(&["com.apple.dock"]);
+    /// ```
+    #[must_use]
+    pub fn default_from_system() -> Self {
+        let ptr = unsafe { crate::ffi::sc_content_sharing_picker_create_default_configuration() };
+        Self { ptr }
+    }
+
+    /// Set allowed picker modes
+    pub fn set_allowed_picker_modes(&mut self, modes: &[SCContentSharingPickerMode]) {
+        let mode_values: Vec<i32> = modes.iter().map(|m| *m as i32).collect();
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_set_allowed_picker_modes(
+                self.ptr,
+                mode_values.as_ptr(),
+                mode_values.len(),
+            );
+        }
+    }
+
+    /// Get the currently allowed picker modes.
+    pub fn allowed_picker_modes(&self) -> Vec<SCContentSharingPickerMode> {
+        let mask = unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_get_allowed_picker_modes_mask(
+                self.ptr,
+            )
+        };
+        let mut modes = Vec::new();
+        for (raw_value, mode) in [
+            (1_u64, SCContentSharingPickerMode::SingleWindow),
+            (2_u64, SCContentSharingPickerMode::MultipleWindows),
+            (16_u64, SCContentSharingPickerMode::SingleDisplay),
+            (4_u64, SCContentSharingPickerMode::SingleApplication),
+            (8_u64, SCContentSharingPickerMode::MultipleApplications),
+        ] {
+            if mask & raw_value != 0 {
+                modes.push(mode);
+            }
+        }
+        modes
+    }
+
+    /// Set whether the user can change the selected content while sharing
+    ///
+    /// When `true`, the user can modify their selection during an active session.
+    pub fn set_allows_changing_selected_content(&mut self, allows: bool) {
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_set_allows_changing_selected_content(
+                self.ptr,
+                allows,
+            );
+        }
+    }
+
+    /// Get whether changing selected content is allowed
+    pub fn allows_changing_selected_content(&self) -> bool {
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_get_allows_changing_selected_content(
+                self.ptr,
+            )
+        }
+    }
+
+    /// Set bundle identifiers to exclude from the picker
+    ///
+    /// Applications with these bundle IDs will not appear in the picker.
+    pub fn set_excluded_bundle_ids(&mut self, bundle_ids: &[&str]) {
+        let c_strings: Vec<std::ffi::CString> = bundle_ids
+            .iter()
+            .filter_map(|s| std::ffi::CString::new(*s).ok())
+            .collect();
+        let ptrs: Vec<*const i8> = c_strings.iter().map(|s| s.as_ptr()).collect();
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_set_excluded_bundle_ids(
+                self.ptr,
+                ptrs.as_ptr(),
+                ptrs.len(),
+            );
+        }
+    }
+
+    /// Get the list of excluded bundle identifiers
+    pub fn excluded_bundle_ids(&self) -> Vec<String> {
+        let count = unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_get_excluded_bundle_ids_count(
+                self.ptr,
+            )
+        };
+        let mut result = Vec::with_capacity(count);
+        for i in 0..count {
+            let mut buffer = vec![0i8; 256];
+            let success = unsafe {
+                crate::ffi::sc_content_sharing_picker_configuration_get_excluded_bundle_id_at(
+                    self.ptr,
+                    i,
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                )
+            };
+            if success {
+                let c_str = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+                if let Ok(s) = c_str.to_str() {
+                    result.push(s.to_string());
+                }
+            }
+        }
+        result
+    }
+
+    /// Set window IDs to exclude from the picker
+    ///
+    /// Windows with these IDs will not appear in the picker.
+    pub fn set_excluded_window_ids(&mut self, window_ids: &[u32]) {
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_set_excluded_window_ids(
+                self.ptr,
+                window_ids.as_ptr(),
+                window_ids.len(),
+            );
+        }
+    }
+
+    /// Get the list of excluded window IDs
+    pub fn excluded_window_ids(&self) -> Vec<u32> {
+        let count = unsafe {
+            crate::ffi::sc_content_sharing_picker_configuration_get_excluded_window_ids_count(
+                self.ptr,
+            )
+        };
+        let mut result = Vec::with_capacity(count);
+        for i in 0..count {
+            let id = unsafe {
+                crate::ffi::sc_content_sharing_picker_configuration_get_excluded_window_id_at(
+                    self.ptr, i,
+                )
+            };
+            result.push(id);
+        }
+        result
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const c_void {
+        self.ptr
+    }
+}
+
+impl Default for SCContentSharingPickerConfiguration {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+crate::utils::retained::sc_retained!(
+    SCContentSharingPickerConfiguration,
+    field = ptr,
+    retain = crate::ffi::sc_content_sharing_picker_configuration_retain,
+    release = crate::ffi::sc_content_sharing_picker_configuration_release,
+);
+
+impl std::fmt::Debug for SCContentSharingPickerConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SCContentSharingPickerConfiguration")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+// ============================================================================
+// Simple API: Returns SCContentFilter directly
+// ============================================================================
+
+/// Result from the simple `show_filter()` API
+#[derive(Debug)]
+pub enum SCPickerFilterOutcome {
+    /// User selected content - contains the filter to use with `SCStream`
+    Filter(SCContentFilter),
+    /// User cancelled the picker
+    Cancelled,
+    /// An error occurred
+    Error(String),
+}
+
+// ============================================================================
+// Main API: Returns SCPickerResult with metadata
+// ============================================================================
+
+/// Result from the main `show()` API - contains filter and content metadata
+///
+/// Provides access to:
+/// - The `SCContentFilter` for use with `SCStream`
+/// - Content dimensions and scale factor
+/// - The picked windows, displays, and applications for custom filter creation
+pub struct SCPickerResult {
+    ptr: *const c_void,
+}
+
+impl SCPickerResult {
+    /// Create from raw pointer (used by async API)
+    #[cfg(feature = "async")]
+    #[must_use]
+    pub(crate) fn from_ptr(ptr: *const c_void) -> Self {
+        Self { ptr }
+    }
+
+    /// Get the content filter for use with `SCStream::new()`
+    #[must_use]
+    pub fn filter(&self) -> SCContentFilter {
+        let filter_ptr = unsafe { crate::ffi::sc_picker_result_get_filter(self.ptr) };
+        SCContentFilter::from_picker_ptr(filter_ptr)
+    }
+
+    /// Get the content size in points (width, height)
+    #[must_use]
+    pub fn size(&self) -> (f64, f64) {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut width = 0.0;
+        let mut height = 0.0;
+        unsafe {
+            crate::ffi::sc_picker_result_get_content_rect(
+                self.ptr,
+                &mut x,
+                &mut y,
+                &mut width,
+                &mut height,
+            );
+        }
+        (width, height)
+    }
+
+    /// Get the content rect (x, y, width, height) in points
+    #[must_use]
+    pub fn rect(&self) -> (f64, f64, f64, f64) {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut width = 0.0;
+        let mut height = 0.0;
+        unsafe {
+            crate::ffi::sc_picker_result_get_content_rect(
+                self.ptr,
+                &mut x,
+                &mut y,
+                &mut width,
+                &mut height,
+            );
+        }
+        (x, y, width, height)
+    }
+
+    /// Get the point-to-pixel scale factor (typically 2.0 for Retina displays)
+    #[must_use]
+    pub fn scale(&self) -> f64 {
+        unsafe { crate::ffi::sc_picker_result_get_scale(self.ptr) }
+    }
+
+    /// Get the pixel dimensions (size * scale)
+    #[must_use]
+    pub fn pixel_size(&self) -> (u32, u32) {
+        let (w, h) = self.size();
+        let scale = self.scale();
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let width = (w * scale) as u32;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let height = (h * scale) as u32;
+        (width, height)
+    }
+
+    /// Get the windows selected by the user
+    ///
+    /// Returns the picked windows that can be used to create a custom `SCContentFilter`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    /// use screencapturekit::prelude::*;
+    ///
+    /// let config = SCContentSharingPickerConfiguration::new();
+    /// SCContentSharingPicker::show(&config, |outcome| {
+    ///     if let SCPickerOutcome::Picked(result) = outcome {
+    ///         let windows = result.windows();
+    ///         if let Some(window) = windows.first() {
+    ///             // Create custom filter with a picked window
+    ///             let filter = SCContentFilter::create()
+    ///                 .with_window(window)
+    ///                 .build();
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    #[must_use]
+    pub fn windows(&self) -> Vec<crate::shareable_content::SCWindow> {
+        let count = unsafe { crate::ffi::sc_picker_result_get_windows_count(self.ptr) };
+        (0..count)
+            .filter_map(|i| {
+                let ptr = unsafe { crate::ffi::sc_picker_result_get_window_at(self.ptr, i) };
+                unsafe { crate::shareable_content::SCWindow::from_retained_ptr(ptr) }
+            })
+            .collect()
+    }
+
+    /// Get the displays selected by the user
+    ///
+    /// Returns the picked displays that can be used to create a custom `SCContentFilter`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    /// use screencapturekit::prelude::*;
+    ///
+    /// let config = SCContentSharingPickerConfiguration::new();
+    /// SCContentSharingPicker::show(&config, |outcome| {
+    ///     if let SCPickerOutcome::Picked(result) = outcome {
+    ///         let displays = result.displays();
+    ///         if let Some(display) = displays.first() {
+    ///             // Create custom filter with the picked display
+    ///             let filter = SCContentFilter::create()
+    ///                 .with_display(display)
+    ///                 .with_excluding_windows(&[])
+    ///                 .build();
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    #[must_use]
+    pub fn displays(&self) -> Vec<crate::shareable_content::SCDisplay> {
+        let count = unsafe { crate::ffi::sc_picker_result_get_displays_count(self.ptr) };
+        (0..count)
+            .filter_map(|i| {
+                let ptr = unsafe { crate::ffi::sc_picker_result_get_display_at(self.ptr, i) };
+                unsafe { crate::shareable_content::SCDisplay::from_retained_ptr(ptr) }
+            })
+            .collect()
+    }
+
+    /// Get the applications selected by the user
+    ///
+    /// Returns the picked applications that can be used to create a custom `SCContentFilter`.
+    #[must_use]
+    pub fn applications(&self) -> Vec<crate::shareable_content::SCRunningApplication> {
+        let count = unsafe { crate::ffi::sc_picker_result_get_applications_count(self.ptr) };
+        (0..count)
+            .filter_map(|i| {
+                let ptr = unsafe { crate::ffi::sc_picker_result_get_application_at(self.ptr, i) };
+                unsafe { crate::shareable_content::SCRunningApplication::from_retained_ptr(ptr) }
+            })
+            .collect()
+    }
+
+    /// Get the source type that was picked
+    ///
+    /// Returns information about what the user selected: window, display, or application.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    ///
+    /// fn example() {
+    ///     let config = SCContentSharingPickerConfiguration::new();
+    ///     SCContentSharingPicker::show(&config, |outcome| {
+    ///         if let SCPickerOutcome::Picked(result) = outcome {
+    ///             match result.source() {
+    ///                 SCPickedSource::Window(title) => println!("[W] {}", title),
+    ///                 SCPickedSource::Display(id) => println!("[D] Display {}", id),
+    ///                 SCPickedSource::Application(name) => println!("[A] {}", name),
+    ///                 SCPickedSource::Unknown => println!("Unknown source"),
+    ///             }
+    ///         }
+    ///     });
+    /// }
+    /// ```
+    #[must_use]
+    #[allow(clippy::option_if_let_else)]
+    pub fn source(&self) -> SCPickedSource {
+        if let Some(window) = self.windows().first() {
+            SCPickedSource::Window(window.title().unwrap_or_else(|| "Untitled".to_string()))
+        } else if let Some(display) = self.displays().first() {
+            SCPickedSource::Display(display.display_id())
+        } else if let Some(app) = self.applications().first() {
+            SCPickedSource::Application(app.application_name())
+        } else {
+            SCPickedSource::Unknown
+        }
+    }
+}
+
+crate::utils::retained::sc_retained!(
+    SCPickerResult,
+    field = ptr,
+    release = crate::ffi::sc_picker_result_release,
+);
+
+impl std::fmt::Debug for SCPickerResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (w, h) = self.size();
+        let scale = self.scale();
+        f.debug_struct("SCPickerResult")
+            .field("size", &(w, h))
+            .field("scale", &scale)
+            .field("pixel_size", &self.pixel_size())
+            .finish()
+    }
+}
+
+/// Outcome from the main `show()` API
+#[derive(Debug)]
+pub enum SCPickerOutcome {
+    /// User selected content - contains result with filter and metadata
+    Picked(SCPickerResult),
+    /// User cancelled the picker
+    Cancelled,
+    /// An error occurred
+    Error(String),
+}
+
+// ============================================================================
+// SCContentSharingPicker
+// ============================================================================
+
+/// System UI for selecting content to share
+///
+/// Available on macOS 14.0+
+///
+/// The picker requires user interaction and cannot block the calling thread.
+/// Use one of these approaches:
+///
+/// - **Callback-based**: `show()` / `show_filter()` - pass a callback closure
+/// - **Async/await**: `AsyncSCContentSharingPicker` from the `async_api` module
+///
+/// # Example (callback)
+/// ```no_run
+/// use screencapturekit::content_sharing_picker::*;
+///
+/// let config = SCContentSharingPickerConfiguration::new();
+/// SCContentSharingPicker::show(&config, |outcome| {
+///     if let SCPickerOutcome::Picked(result) = outcome {
+///         let (width, height) = result.pixel_size();
+///         let filter = result.filter();
+///         // ... create stream
+///     }
+/// });
+/// ```
+///
+/// # Example (async)
+/// ```no_run
+/// use screencapturekit::async_api::AsyncSCContentSharingPicker;
+/// use screencapturekit::content_sharing_picker::*;
+///
+/// async fn example() {
+///     let config = SCContentSharingPickerConfiguration::new();
+///     if let SCPickerOutcome::Picked(result) = AsyncSCContentSharingPicker::show(&config).await {
+///         let (width, height) = result.pixel_size();
+///         let filter = result.filter();
+///         // ... create stream
+///     }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct SCContentSharingPicker;
+
+impl SCContentSharingPicker {
+    /// Show the picker UI with a callback for the result
+    ///
+    /// This is non-blocking - the callback is invoked when the user makes a selection
+    /// or cancels the picker.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    ///
+    /// let config = SCContentSharingPickerConfiguration::new();
+    /// SCContentSharingPicker::show(&config, |outcome| {
+    ///     match outcome {
+    ///         SCPickerOutcome::Picked(result) => {
+    ///             let (width, height) = result.pixel_size();
+    ///             let filter = result.filter();
+    ///             println!("Selected {}x{}", width, height);
+    ///         }
+    ///         SCPickerOutcome::Cancelled => println!("Cancelled"),
+    ///         SCPickerOutcome::Error(e) => eprintln!("Error: {}", e),
+    ///     }
+    /// });
+    /// ```
+    pub fn show<F>(config: &SCContentSharingPickerConfiguration, callback: F)
+    where
+        F: FnOnce(SCPickerOutcome) + Send + 'static,
+    {
+        let context = into_callback_context::<SCPickerOutcome, F>(callback);
+
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_show_with_result(
+                config.as_ptr(),
+                picker_trampoline::<ResultDecoder>,
+                context,
+            );
+        }
+    }
+
+    /// Show the picker UI for an existing stream (to change source while capturing)
+    ///
+    /// Use this when you have an active `SCStream` and want to let the user
+    /// select a new content source. The callback receives the new filter
+    /// which can be used with `stream.update_content_filter()`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    /// use screencapturekit::stream::SCStream;
+    /// use screencapturekit::stream::configuration::SCStreamConfiguration;
+    /// use screencapturekit::stream::content_filter::SCContentFilter;
+    /// use screencapturekit::shareable_content::SCShareableContent;
+    ///
+    /// fn example() -> Option<()> {
+    ///     let content = SCShareableContent::get().ok()?;
+    ///     let displays = content.displays();
+    ///     let display = displays.first()?;
+    ///     let filter = SCContentFilter::create().with_display(display).with_excluding_windows(&[]).build();
+    ///     let stream_config = SCStreamConfiguration::new();
+    ///     let stream = SCStream::new(&filter, &stream_config);
+    ///
+    ///     // When stream is active and user wants to change source
+    ///     let config = SCContentSharingPickerConfiguration::new();
+    ///     SCContentSharingPicker::show_for_stream(&config, &stream, |outcome| {
+    ///         if let SCPickerOutcome::Picked(result) = outcome {
+    ///             // Use result.filter() with stream.update_content_filter()
+    ///             let _ = result.filter();
+    ///         }
+    ///     });
+    ///     Some(())
+    /// }
+    /// ```
+    pub fn show_for_stream<F>(
+        config: &SCContentSharingPickerConfiguration,
+        stream: &crate::stream::SCStream,
+        callback: F,
+    ) where
+        F: FnOnce(SCPickerOutcome) + Send + 'static,
+    {
+        let context = into_callback_context::<SCPickerOutcome, F>(callback);
+
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_show_for_stream(
+                config.as_ptr(),
+                stream.as_ptr(),
+                picker_trampoline::<ResultDecoder>,
+                context,
+            );
+        }
+    }
+
+    /// Show the picker UI with a callback that receives just the filter
+    ///
+    /// This is the simple API - use when you just need the filter without metadata.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use screencapturekit::content_sharing_picker::*;
+    ///
+    /// let config = SCContentSharingPickerConfiguration::new();
+    /// SCContentSharingPicker::show_filter(&config, |outcome| {
+    ///     if let SCPickerFilterOutcome::Filter(filter) = outcome {
+    ///         // Use filter with SCStream
+    ///     }
+    /// });
+    /// ```
+    pub fn show_filter<F>(config: &SCContentSharingPickerConfiguration, callback: F)
+    where
+        F: FnOnce(SCPickerFilterOutcome) + Send + 'static,
+    {
+        let context = into_callback_context::<SCPickerFilterOutcome, F>(callback);
+
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_show(
+                config.as_ptr(),
+                picker_trampoline::<FilterDecoder>,
+                context,
+            );
+        }
+    }
+
+    /// Show the picker UI with a specific content style
+    ///
+    /// Presents the picker pre-filtered to a specific content type.
+    ///
+    /// # Arguments
+    /// * `config` - The picker configuration
+    /// * `style` - The content style to show (Window, Display, Application)
+    /// * `callback` - Called with the picker result
+    pub fn show_using_style<F>(
+        config: &SCContentSharingPickerConfiguration,
+        style: crate::stream::content_filter::SCShareableContentStyle,
+        callback: F,
+    ) where
+        F: FnOnce(SCPickerOutcome) + Send + 'static,
+    {
+        let context = into_callback_context::<SCPickerOutcome, F>(callback);
+
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_show_using_style(
+                config.as_ptr(),
+                style as i32,
+                picker_trampoline::<ResultDecoder>,
+                context,
+            );
+        }
+    }
+
+    /// Show the picker for an existing stream with a specific content style
+    ///
+    /// # Arguments
+    /// * `config` - The picker configuration
+    /// * `stream` - The stream to update
+    /// * `style` - The content style to show (Window, Display, Application)
+    /// * `callback` - Called with the picker result
+    pub fn show_for_stream_using_style<F>(
+        config: &SCContentSharingPickerConfiguration,
+        stream: &crate::stream::SCStream,
+        style: crate::stream::content_filter::SCShareableContentStyle,
+        callback: F,
+    ) where
+        F: FnOnce(SCPickerOutcome) + Send + 'static,
+    {
+        let context = into_callback_context::<SCPickerOutcome, F>(callback);
+
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_show_for_stream_using_style(
+                config.as_ptr(),
+                stream.as_ptr(),
+                style as i32,
+                picker_trampoline::<ResultDecoder>,
+                context,
+            );
+        }
+    }
+
+    /// Set the maximum number of streams that can be created from the picker
+    ///
+    /// Pass 0 to allow unlimited streams.
+    pub fn set_maximum_stream_count(count: usize) {
+        unsafe {
+            crate::ffi::sc_content_sharing_picker_set_maximum_stream_count(count);
+        }
+    }
+
+    /// Get the maximum number of streams allowed
+    ///
+    /// Returns 0 if unlimited streams are allowed.
+    pub fn maximum_stream_count() -> usize {
+        unsafe { crate::ffi::sc_content_sharing_picker_get_maximum_stream_count() }
+    }
+
+    /// Returns whether the shared content-sharing picker is currently
+    /// marked active.
+    ///
+    /// Apple requires `picker.isActive = true` before its UI can appear.
+    /// The various `show*()` trampolines on this type set it implicitly
+    /// before presenting, but this getter is useful for callers that
+    /// want to:
+    ///
+    /// * avoid double-presenting (skip a second `show()` while the first
+    ///   picker session is still up),
+    /// * render UI affordances based on whether the picker is currently
+    ///   visible to the user.
+    #[must_use]
+    pub fn is_active() -> bool {
+        unsafe { crate::ffi::sc_content_sharing_picker_get_active() }
+    }
+
+    /// Mark the shared content-sharing picker active or inactive.
+    ///
+    /// Setting this to `false` hides the picker UI between sessions
+    /// (the recommended hygiene step after a long-running app finishes
+    /// using the picker — leaving it active leaves the system-level
+    /// Control Center entry in a "ready to share" state).
+    ///
+    /// Setting to `true` is required before `present*()` can surface
+    /// the picker; the `show*()` trampolines do this for you. Set it
+    /// manually only if you want to opt into the picker UI without
+    /// immediately presenting it.
+    pub fn set_active(active: bool) {
+        unsafe { crate::ffi::sc_content_sharing_picker_set_active(active) }
+    }
+}
+
+// ============================================================================
+// One-shot callback context + trampoline (shared by all `show*()` methods)
+// ============================================================================
+
+/// Heap context handed to the Swift bridge as the opaque `user_data` pointer.
+///
+/// It owns the user's closure plus a `consumed` guard. Centralising the
+/// `Box::into_raw` / `Box::from_raw` lifecycle here means the one-shot
+/// reclaim happens in exactly one place ([`picker_trampoline`]) instead of
+/// being duplicated across every `show*()` method, and the `consumed` flag
+/// makes a (mis-behaving) double fire from Swift safe: the second invocation
+/// observes `true` and returns without a second `Box::from_raw`.
+struct PickerCallbackContext<O> {
+    consumed: AtomicBool,
+    closure: Box<dyn FnOnce(O) + Send>,
+}
+
+/// Box a user closure into the opaque `*mut c_void` context handed to Swift.
+fn into_callback_context<O, F>(callback: F) -> *mut c_void
+where
+    F: FnOnce(O) + Send + 'static,
+{
+    let context = Box::new(PickerCallbackContext {
+        consumed: AtomicBool::new(false),
+        closure: Box::new(callback),
+    });
+    Box::into_raw(context).cast::<c_void>()
+}
+
+/// Decodes the `(code, ptr)` pair from the Swift bridge into a typed outcome.
+///
+/// Implemented by zero-sized marker types so a single generic trampoline can
+/// serve both the result-bearing and filter-only APIs while keeping the FFI
+/// signature identical.
+trait PickerDecode {
+    type Outcome;
+    fn decode(code: i32, ptr: *const c_void) -> Self::Outcome;
+}
+
+struct ResultDecoder;
+impl PickerDecode for ResultDecoder {
+    type Outcome = SCPickerOutcome;
+    fn decode(code: i32, ptr: *const c_void) -> SCPickerOutcome {
+        match code {
+            1 if !ptr.is_null() => SCPickerOutcome::Picked(SCPickerResult { ptr }),
+            0 => SCPickerOutcome::Cancelled,
+            _ => SCPickerOutcome::Error("Picker failed".to_string()),
+        }
+    }
+}
+
+struct FilterDecoder;
+impl PickerDecode for FilterDecoder {
+    type Outcome = SCPickerFilterOutcome;
+    fn decode(code: i32, ptr: *const c_void) -> SCPickerFilterOutcome {
+        match code {
+            1 if !ptr.is_null() => {
+                SCPickerFilterOutcome::Filter(SCContentFilter::from_picker_ptr(ptr))
+            }
+            0 => SCPickerFilterOutcome::Cancelled,
+            _ => SCPickerFilterOutcome::Error("Picker failed".to_string()),
+        }
+    }
+}
+
+/// Single trampoline for every picker `show*()` callback.
+///
+/// `code` follows the Swift bridge contract (1 = picked, 0 = cancelled,
+/// anything else = error). A `code` of 0 is also produced by the Swift
+/// replacement path when a pending observer is superseded by a newer
+/// `show*()`, so a replaced picker resolves as `Cancelled` rather than
+/// leaking its context.
+///
+/// The boxed closure is reclaimed here exactly once; a duplicate fire on the
+/// same still-live context is rejected by the atomic `consumed` guard.
+extern "C" fn picker_trampoline<D: PickerDecode>(
+    code: i32,
+    ptr: *const c_void,
+    context: *mut c_void,
+) {
+    if context.is_null() {
+        return;
+    }
+
+    // SAFETY: `context` is a live `PickerCallbackContext<D::Outcome>` created
+    // by `into_callback_context`. We only read `consumed` here without taking
+    // ownership; ownership is taken below only by the winner of the swap.
+    let consumed = unsafe { &(*context.cast::<PickerCallbackContext<D::Outcome>>()).consumed };
+    if consumed.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    // SAFETY: we won the `consumed` swap, so this is the unique reclaim of the
+    // box created in `into_callback_context`.
+    let context = unsafe { Box::from_raw(context.cast::<PickerCallbackContext<D::Outcome>>()) };
+    let outcome = D::decode(code, ptr);
+    crate::utils::panic_safe::catch_user_panic("picker callback", move || {
+        (context.closure)(outcome);
+    });
+}
+
+// Safety: Configuration wraps an Objective-C object that is thread-safe
+// SAFETY: `SCContentSharingPickerConfiguration` wraps an Objective-C object
+// whose reference counting is atomic; it is safe to send between and share
+// across threads.
+unsafe impl Send for SCContentSharingPickerConfiguration {}
+unsafe impl Sync for SCContentSharingPickerConfiguration {}
+// SAFETY: `SCPickerResult` holds retained Objective-C objects whose reference
+// counting is atomic; it is safe to send between and share across threads.
+unsafe impl Send for SCPickerResult {}
+unsafe impl Sync for SCPickerResult {}

@@ -16,6 +16,7 @@ import type {
   SettingsPatch,
   StorageStats,
   SummaryDoc,
+  SysAudioStatus,
 } from './types'
 
 /**
@@ -133,3 +134,22 @@ export const toggleActionItem = (id: string, index: number, done: boolean): Prom
  * `AskAnswerEvent`'s docs).
  */
 export const askNote = (id: string, question: string): Promise<void> => invokeCmd('ask_note', { id, question })
+
+/**
+ * Reports whether system-audio capture is available right now (Stage 5
+ * Task 4) — see `SysAudioAvailability`'s docs for what each state means.
+ * Read-only: never triggers the Screen Recording prompt (that's
+ * `requestSysAudioPermission`, below).
+ */
+export const sysAudioStatus = (): Promise<SysAudioStatus> => invokeCmd('sys_audio_status')
+
+/**
+ * Triggers the Screen Recording consent prompt (a no-op re-check, not a
+ * re-prompt, if the user already decided one way or the other — see the
+ * backend command's docs) and resolves with the resulting status. A fresh
+ * grant may still need an app restart before real capture works — see that
+ * same doc comment for the honest caveat; this call alone doesn't
+ * guarantee `SysCapture::start` will succeed even after it resolves
+ * `{ availability: 'ready' }`.
+ */
+export const requestSysAudioPermission = (): Promise<SysAudioStatus> => invokeCmd('request_sys_audio_permission')

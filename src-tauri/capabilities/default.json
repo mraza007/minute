@@ -28,6 +28,8 @@
     "allow-start-recording",
     "allow-pause-recording",
     "allow-resume-recording",
-    "allow-stop-recording"
+    "allow-stop-recording",
+    "allow-sys-audio-status",
+    "allow-request-sys-audio-permission"
   ]
 }

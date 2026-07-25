@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc } from './types'
+import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -249,6 +249,28 @@ describe('ipc/commands', () => {
 
     expect(calls[0].cmd).toBe('popup_dismiss')
     expect(calls[0].args).toEqual({ timedOut: true })
+  })
+
+  it('sysAudioStatus invokes sys_audio_status with no args and passes through the fixture', async () => {
+    const status: SysAudioStatus = { availability: 'ready' }
+    const calls = captureIPC(() => status)
+
+    const result = await commands.sysAudioStatus()
+
+    expect(calls[0].cmd).toBe('sys_audio_status')
+    expect(calls[0].args).toEqual({})
+    expect(result).toEqual(status)
+  })
+
+  it('requestSysAudioPermission invokes request_sys_audio_permission with no args and passes through the fixture', async () => {
+    const status: SysAudioStatus = { availability: 'notGranted' }
+    const calls = captureIPC(() => status)
+
+    const result = await commands.requestSysAudioPermission()
+
+    expect(calls[0].cmd).toBe('request_sys_audio_permission')
+    expect(calls[0].args).toEqual({})
+    expect(result).toEqual(status)
   })
 
   it('revealNote invokes reveal_note with { id }', async () => {

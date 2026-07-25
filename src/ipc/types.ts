@@ -300,3 +300,29 @@ export interface MeetingDetectedEvent {
 export interface MeetingPopupPayloadEvent {
   appName: string
 }
+
+// --- syscap.rs ---------------------------------------------------------
+
+/**
+ * `syscap::SysAudioAvailability` — a unit-only enum with
+ * `#[serde(rename_all = "camelCase")]` and no `tag`/`content` attribute, so
+ * (same as `catalog::InstallState` — see that type's own note above) it
+ * serializes as a bare JSON string: `"unsupported"` | `"notGranted"` |
+ * `"ready"`, never an object.
+ *
+ * Deliberately three states, not four (`PermissionNeeded` vs
+ * `PermissionDenied` isn't a distinction macOS's `CGPreflightScreenCaptureAccess`
+ * can actually make — see the Rust enum's own doc comment for why
+ * `notGranted` covers both "never asked" and "explicitly denied"):
+ * - `unsupported`: macOS is below 13 — not a permission question at all.
+ * - `notGranted`: macOS 13+, but Screen Recording isn't currently granted.
+ * - `ready`: macOS 13+ and Screen Recording is currently granted (though see
+ *   `requestSysAudioPermission`'s docs for the "may still need an app
+ *   restart" caveat on a *freshly* granted permission).
+ */
+export type SysAudioAvailability = 'unsupported' | 'notGranted' | 'ready'
+
+/** `syscap::SysAudioStatus` — `#[serde(rename_all = "camelCase")]`. */
+export interface SysAudioStatus {
+  availability: SysAudioAvailability
+}

@@ -47,6 +47,8 @@ const APP_COMMANDS: &[&str] = &[
   "stop_recording",
   "popup_start",
   "popup_dismiss",
+  "sys_audio_status",
+  "request_sys_audio_permission",
 ];
 
 fn main() {

@@ -8,6 +8,7 @@ mod error;
 mod llm;
 mod popup;
 mod settings;
+mod syscap;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
@@ -335,7 +336,9 @@ pub fn run() {
       audio::resume_recording,
       audio::stop_recording,
       popup::popup_start,
-      popup::popup_dismiss
+      popup::popup_dismiss,
+      syscap::sys_audio_status,
+      syscap::request_sys_audio_permission
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -576,6 +579,22 @@ mod acl_tests {
   }
 
   #[test]
+  fn the_popup_capability_does_not_grant_the_sys_audio_commands() {
+    // Stage 5 Task 4: `sys_audio_status`/`request_sys_audio_permission` are
+    // main-window-only (Task 5 wires the settings toggle there) — the
+    // meeting-popup pill has no business querying or requesting Screen
+    // Recording permission.
+    let capabilities = resolved_capabilities();
+    let popup = &capabilities["popup"];
+    let permissions = permissions_of(popup);
+    assert!(
+      !permissions.contains(&"allow-sys-audio-status")
+        && !permissions.contains(&"allow-request-sys-audio-permission"),
+      "the popup window has no business calling the sys-audio commands — got: {permissions:?}"
+    );
+  }
+
+  #[test]
   fn the_default_capability_does_not_grant_the_popups_own_commands() {
     let capabilities = resolved_capabilities();
     let default = &capabilities["default"];
@@ -619,6 +638,8 @@ mod acl_tests {
       "allow-pause-recording",
       "allow-resume-recording",
       "allow-stop-recording",
+      "allow-sys-audio-status",
+      "allow-request-sys-audio-permission",
     ] {
       assert!(
         permissions.contains(&expected),
