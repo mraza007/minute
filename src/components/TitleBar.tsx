@@ -33,18 +33,15 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 7,
-          padding: '5px 12px',
-          borderRadius: 999,
-          background: 'var(--ok-tint)',
-          border: '1px solid var(--ok-text)',
+          gap: 6,
+          padding: '5px 2px',
           fontSize: 12,
-          fontWeight: 600,
-          color: 'var(--ok-text)',
+          fontWeight: 500,
+          color: 'var(--ink-faint)',
         }}
       >
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
-        Offline · On-device
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok-text)' }} />
+        On-device
       </div>
       <div data-tauri-drag-region="" style={{ flex: 1 }} />
       {isRecording && (
