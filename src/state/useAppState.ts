@@ -480,10 +480,26 @@ export function useAppState() {
    * `startRec` from the popup path specifically. If none is installed, this
    * sends the user to onboarding with an honest message instead of quietly
    * starting an untranscribed recording.
+   *
+   * Two guards before any of that: `activeNoteId !== null` (Minute is
+   * already recording) is a silent no-op rather than calling `startRec` —
+   * `start_recording` would just reject with "a recording is already in
+   * progress" server-side, which would only ever surface here as a
+   * confusing toast for something the user didn't ask for from this event
+   * in the first place; `DetectorCore` already suppresses showing a *new*
+   * prompt while Minute is recording, so in practice this guards a rare
+   * edge case (e.g. a recording started some other way while an
+   * already-shown popup from just before it started is still up) rather
+   * than the expected path. `view === 'onboarding'` is also a silent no-op
+   * — meeting detection has no live detector thread (and Task 3 hasn't yet
+   * added an onboarding-time opt-in row) while onboarding is showing today,
+   * so this isn't reachable yet either, but guarding it now means it won't
+   * fight the onboarding flow the moment Task 3 makes it reachable.
    */
   useTauriEvent(
     onMeetingPopupStart,
     () => {
+      if (activeNoteId !== null || view === 'onboarding') return
       const hasInstalledStt = modelManager.models.some(m => m.kind === 'stt' && m.state === 'installed')
       if (hasInstalledStt) {
         startRec()
@@ -492,7 +508,7 @@ export function useAppState() {
         reportError('Install a transcription model in onboarding before Minute can start recording.')
       }
     },
-    [modelManager.models, startRec, reportError],
+    [activeNoteId, view, modelManager.models, startRec, reportError],
   )
 
   /**

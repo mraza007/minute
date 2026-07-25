@@ -106,6 +106,16 @@
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+  /* Meeting-popup pill (src/popup/Pill.tsx) drop shadow — the one shadow
+     token in the app so far (every other box-shadow here is a plain
+     hardcoded literal, not theme-varying — .impeccable.md's "paper, not
+     glass" principle keeps shadows rare and functional, not decorative).
+     This one specifically needs to vary by theme: unlike every other
+     shadowed surface in the app (a card sitting on the app's own --canvas),
+     the popup floats directly over an arbitrary desktop/call window, so its
+     shadow is the only thing separating it from whatever's behind it in
+     either theme — never "none". */
+  --shadow-pill: 0 4px 16px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .12);
 }
 
 /* Dark ramp — follows macOS appearance. Keeps the warm paper-and-ink
@@ -171,6 +181,15 @@
     --hover-overlay-strong: rgba(255, 255, 255, .08);
     --btn-light-hover: #3a3733;
     --btn-dark-hover: #47423b;
+    /* Reduced (not "none"): every other dark-mode shadow already present in
+       the app (AiNotesPanel/MarkdownCard/SettingsView's near-invisible `0
+       1px 3px rgba(0,0,0,.04)` cards) leans on this same idea — a black
+       drop shadow reads as heavy/muddy against an already-dark surface, so
+       dark mode keeps a lighter touch here too and lets the pill's own `1px
+       solid var(--border)` (already present) carry most of the actual
+       separation instead of the shadow doing all the work, the same
+       division of labor those other dark-mode cards rely on. */
+    --shadow-pill: 0 4px 16px rgba(0, 0, 0, .1), 0 1px 3px rgba(0, 0, 0, .08);
   }
 }
 

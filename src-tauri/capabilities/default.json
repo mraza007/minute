@@ -1,12 +1,33 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "Main window: core defaults plus every app command it actually calls. Scoped to the \"main\" window only — the meeting-detected popup window gets its own, much narrower capability (see capabilities/popup.json).",
   "windows": [
-    "main",
-    "meeting-popup"
+    "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-hardware-info",
+    "allow-list-models",
+    "allow-recommended-models",
+    "allow-list-notes",
+    "allow-get-note",
+    "allow-search-notes",
+    "allow-rename-note",
+    "allow-toggle-action-item",
+    "allow-summarize-note",
+    "allow-ask-note",
+    "allow-delete-note",
+    "allow-storage-stats",
+    "allow-reveal-note",
+    "allow-get-settings",
+    "allow-set-settings",
+    "allow-download-model",
+    "allow-cancel-download",
+    "allow-delete-model",
+    "allow-start-recording",
+    "allow-pause-recording",
+    "allow-resume-recording",
+    "allow-stop-recording"
   ]
 }

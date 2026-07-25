@@ -37,18 +37,35 @@ interface PillProps {
  */
 export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
   const [appName, setAppName] = useState<string | null>(null)
-  // Guards against a double-resolve (e.g. the auto-dismiss timer firing the
-  // same instant a click is already in flight) — only the first of
-  // start/dismiss should ever actually call its command; a second call
-  // would report a second, contradictory outcome for a prompt the detector
-  // already resolved once.
+  // Bumped every time a new `meeting-popup-payload` arrives. The popup
+  // window itself is created once and reused for the app's whole session
+  // (see popup.rs's `ensure_window`) — `show_meeting_prompt` never remounts
+  // this component between detections, it just re-emits the payload event
+  // into the same still-mounted webview. Without something like this,
+  // `resolvedRef` (below) would stay latched from the *first* detection's
+  // resolution forever, and the auto-dismiss effect (also below) would
+  // never re-arm — the second (and every later) detection would show a
+  // pill whose buttons quietly do nothing and whose countdown never fires,
+  // rather than actually resolving. `generation` is what both resets
+  // `resolvedRef` and re-triggers the auto-dismiss effect for each new
+  // prompt; the countdown bar below also keys off it to restart its CSS
+  // animation from the beginning.
+  const [generation, setGeneration] = useState(0)
+  // Guards against a double-resolve for the *same* shown prompt (e.g. the
+  // auto-dismiss timer firing the same instant a click is already in
+  // flight) — reset to `false` every time `generation` bumps (a fresh
+  // prompt to resolve), not just once at mount; see `generation`'s own docs
+  // above.
   const resolvedRef = useRef(false)
 
   useEffect(() => {
     let live = true
     let unlisten: (() => void) | undefined
     onMeetingPopupPayload(payload => {
-      if (live) setAppName(payload.appName)
+      if (!live) return
+      setAppName(payload.appName)
+      resolvedRef.current = false
+      setGeneration(g => g + 1)
     }).then(fn => {
       if (live) {
         unlisten = fn
@@ -82,7 +99,10 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
   useEffect(() => {
     const timer = setTimeout(() => dismiss(true), autoDismissMs)
     return () => clearTimeout(timer)
-  }, [autoDismissMs, dismiss])
+    // Re-arms on every new `generation` (a fresh prompt to auto-dismiss) —
+    // without this dependency, only the very first detection's timer would
+    // ever run; see `generation`'s docs above.
+  }, [autoDismissMs, dismiss, generation])
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -115,7 +135,7 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
         borderRadius: 999,
         background: 'var(--card)',
         border: '1px solid var(--border)',
-        boxShadow: '0 4px 16px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.12)',
+        boxShadow: 'var(--shadow-pill)',
         overflow: 'hidden',
         fontFamily: "'Instrument Sans', system-ui, -apple-system, sans-serif",
       }}
@@ -201,6 +221,13 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
       </button>
 
       <div
+        // Keyed on `generation` so React remounts a fresh element (rather
+        // than patching the existing one's style) on every new detection —
+        // a CSS animation on an element that never remounts doesn't replay
+        // just because its `animationDuration` value is set again, so
+        // without this the bar would stay visually frozen at 0% width for
+        // every showing after the first.
+        key={generation}
         className="popup-countdown-bar"
         style={{
           position: 'absolute',

@@ -1,5 +1,6 @@
+import { emit } from '@tauri-apps/api/event'
 import { mockIPC } from '@tauri-apps/api/mocks'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Pill } from './Pill'
 
@@ -128,5 +129,61 @@ describe('popup/Pill', () => {
     const resolving = calls.filter(c => c.cmd === 'popup_start' || c.cmd === 'popup_dismiss')
     expect(resolving).toHaveLength(1)
     expect(resolving[0].cmd).toBe('popup_start')
+  })
+
+  // The popup window is created once and reused for the app's whole
+  // session (see popup.rs's `ensure_window`) — this same rendered `<Pill>`
+  // instance has to keep working across every later detection, not just
+  // the first. Regression coverage for the bug where a second detection
+  // showed a pill whose buttons quietly did nothing and whose countdown
+  // never fired again.
+  describe('re-arming across multiple detections (the window is reused, not remounted)', () => {
+    it('buttons work again after a second payload following the first prompt being dismissed', async () => {
+      const calls = captureIPC()
+      render(<Pill autoDismissMs={NO_TIMEOUT_MS} />)
+
+      // First detection, resolved via the dismiss ×.
+      fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+      expect(calls.filter(c => c.cmd === 'popup_dismiss')).toHaveLength(1)
+      expect(calls.filter(c => c.cmd === 'popup_start')).toHaveLength(0)
+
+      // A second, independent detection arrives on the same still-mounted
+      // instance — the pill must not be permanently dead.
+      await act(async () => {
+        await emit('meeting-popup-payload', { appName: 'Slack' })
+      })
+      expect(screen.getByText('Slack is using the microphone')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /start recording/i }))
+      expect(calls.filter(c => c.cmd === 'popup_start')).toHaveLength(1)
+      // The first prompt's dismiss must still be the only dismiss call —
+      // this new click resolved the *second* prompt via Start, not another
+      // dismiss.
+      expect(calls.filter(c => c.cmd === 'popup_dismiss')).toHaveLength(1)
+    })
+
+    it('the auto-dismiss timer re-arms for a second payload after the first prompt was resolved via Start', async () => {
+      vi.useFakeTimers()
+      const calls = captureIPC()
+      render(<Pill autoDismissMs={100} />)
+
+      // First detection, resolved via Start — well before its own 100ms
+      // countdown would have fired.
+      fireEvent.click(screen.getByRole('button', { name: /start recording/i }))
+      expect(calls.filter(c => c.cmd === 'popup_start')).toHaveLength(1)
+
+      // Second detection arrives — left untouched this time.
+      await act(async () => {
+        await emit('meeting-popup-payload', { appName: 'Zoom' })
+      })
+
+      vi.advanceTimersByTime(100)
+
+      expect(calls.filter(c => c.cmd === 'popup_dismiss')).toHaveLength(1)
+      expect(calls.find(c => c.cmd === 'popup_dismiss')?.args).toEqual({ timedOut: true })
+      // Still exactly one popup_start (the first prompt's) — the re-armed
+      // timer resolved the *second* prompt, not a repeat of the first.
+      expect(calls.filter(c => c.cmd === 'popup_start')).toHaveLength(1)
+    })
   })
 })

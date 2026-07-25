@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "popup",
+  "description": "The meeting-detected popup window (Stage 5 Task 2) — deliberately the narrowest capability in the app: only the two commands it actually calls (popup_start/popup_dismiss) plus core:event (it listens for meeting-popup-payload via @tauri-apps/api/event, nothing else — no filesystem, window management, or any other app command). Everything else (delete_note, set_settings, start_recording, ...) is unreachable from this window.",
+  "windows": [
+    "meeting-popup"
+  ],
+  "permissions": [
+    "core:event:default",
+    "allow-popup-start",
+    "allow-popup-dismiss"
+  ]
+}

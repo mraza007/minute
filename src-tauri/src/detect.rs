@@ -241,12 +241,27 @@ impl DetectorCore {
                 Action::None
             }
             DetectorEvent::Outcome(outcome) => {
-                self.phase = match outcome {
-                    PromptOutcome::Accepted => Phase::SuppressedUntilMicDrop,
-                    PromptOutcome::Dismissed | PromptOutcome::TimedOut => {
-                        Phase::Cooldown(now + COOLDOWN)
-                    }
-                };
+                // Phase-checked, not unconditional: a stale outcome for a
+                // prompt that isn't (or is no longer) actually shown — e.g.
+                // a late `popup_dismiss`/`popup_start` IPC call racing the
+                // core's own `PROMPT_AUTO_TIMEOUT` fallback, which may have
+                // already resolved this same prompt on its own by the time
+                // the real outcome arrives — must not retroactively
+                // introduce a cooldown/suppression onto whatever the core
+                // has independently moved on to since (a fresh `Watching`,
+                // a `Cooldown` already running for an unrelated reason,
+                // ...). It only actually applies while a prompt is
+                // genuinely still `Prompted` — see
+                // `core_tests::outcome_while_watching_is_tolerated_and_does_not_corrupt_state`
+                // for the regression this guards.
+                if let Phase::Prompted { .. } = self.phase {
+                    self.phase = match outcome {
+                        PromptOutcome::Accepted => Phase::SuppressedUntilMicDrop,
+                        PromptOutcome::Dismissed | PromptOutcome::TimedOut => {
+                            Phase::Cooldown(now + COOLDOWN)
+                        }
+                    };
+                }
                 Action::None
             }
         }
@@ -925,6 +940,94 @@ mod core_tests {
             Action::ShowPrompt {
                 app_name: "Zoom".to_string()
             }
+        );
+    }
+
+    // --- a stale/late Outcome is phase-checked, not unconditional --------
+
+    #[test]
+    fn outcome_while_watching_is_tolerated_and_does_not_corrupt_state() {
+        // No prompt was ever shown — e.g. a stray/duplicate popup_dismiss
+        // call, or one that arrives after some other path already resolved
+        // things. Must be a harmless no-op: no cooldown, no suppression,
+        // still able to prompt normally on its own merits right after.
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        let outcome_result = core.process(DetectorEvent::Outcome(PromptOutcome::Dismissed), base);
+        assert_eq!(outcome_result, Action::None);
+
+        core.process(DetectorEvent::MicStarted, base);
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            },
+            "a stale Outcome while Watching must not have introduced a cooldown that blocks this fresh, on-its-own-merits prompt"
+        );
+    }
+
+    #[test]
+    fn a_stale_outcome_after_the_cores_own_auto_timeout_already_resolved_it_does_not_extend_the_cooldown() {
+        // The core's own PROMPT_AUTO_TIMEOUT fallback (see that constant's
+        // docs) can resolve a Prompted phase into Cooldown entirely on its
+        // own, independent of any real popup_dismiss/popup_start IPC call
+        // ever arriving. If the real outcome (e.g. a `timedOut: true`
+        // popup_dismiss racing that same fallback) then arrives *after*
+        // that has already happened, it must not retroactively restart a
+        // fresh 15-minute cooldown on top of the one already counting down
+        // — the phase is no longer `Prompted` by then, so the late Outcome
+        // is a no-op rather than pushing `until` further out.
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        core.process(DetectorEvent::MicStarted, base);
+        let shown = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        assert!(matches!(shown, Action::ShowPrompt { .. }));
+
+        // The core notices its own stale Prompted phase and cools down on
+        // the very next tick at/after the 12s auto-timeout mark (see
+        // `an_unanswered_prompt_auto_times_out_and_then_cools_down` above
+        // for the same mechanics) — cooldown now runs from base+17s to
+        // base+17s+900s.
+        core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5) + secs(12),
+        );
+
+        // The real (now-stale) outcome finally arrives a bit later — must
+        // be a no-op: phase is `Cooldown`, not `Prompted`, by this point.
+        core.process(DetectorEvent::Outcome(PromptOutcome::TimedOut), base + secs(20));
+
+        // Right at what would have been the *original* cooldown's
+        // expiry (base + 17s + 900s) — if the late Outcome had wrongly
+        // restarted the cooldown from base+20s instead, this would still
+        // be blocked; it isn't, proving the late Outcome changed nothing.
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5) + secs(12) + secs(900),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            },
+            "the late, already-stale Outcome must not have pushed the cooldown's expiry further out"
         );
     }
 }

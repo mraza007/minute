@@ -667,7 +667,37 @@ describe('useAppState', () => {
       expect(calls.some(c => c.cmd === 'start_recording' && (c.args as { modelId: string }).modelId === 'whisper-small')).toBe(true)
     })
 
-    it('navigates to onboarding with an honest error instead of recording when no STT model is installed', async () => {
+    it('navigates to onboarding with an honest error instead of recording when no STT model is installed (and the view is not already onboarding)', async () => {
+      // No STT installed would normally already land (and stay) on
+      // 'onboarding' via the initial-load gate — which the guard below
+      // ignores meeting-popup-start on for a *different* reason (there's
+      // nothing useful to do, the user is already exactly where they need
+      // to be). To exercise this branch's own logic (the actual "no model
+      // -> navigate + honest error" behavior) independent of that guard,
+      // this moves off onboarding first via `completeOnboarding` — the same
+      // "Start using Minute" bypass a real user could trigger without
+      // actually finishing model setup, landing on 'notes' with no STT
+      // model installed regardless.
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'notInstalled' })],
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      expect(result.current.view).toBe('onboarding')
+      act(() => result.current.completeOnboarding())
+      expect(result.current.view).toBe('notes')
+
+      await act(async () => {
+        await emit('meeting-popup-start', null)
+      })
+
+      expect(result.current.view).toBe('onboarding')
+      expect(result.current.lastError).toContain('Install a transcription model')
+      expect(calls.some(c => c.cmd === 'start_recording')).toBe(false)
+    })
+
+    it('ignores meeting-popup-start entirely while already viewing onboarding (nothing useful to do there)', async () => {
       const calls: Array<{ cmd: string; args: unknown }> = []
       setupIPC({
         models: [sttModelFixture({ id: 'whisper-small', state: 'notInstalled' })],
@@ -681,8 +711,34 @@ describe('useAppState', () => {
       })
 
       expect(result.current.view).toBe('onboarding')
-      expect(result.current.lastError).toContain('Install a transcription model')
+      expect(result.current.lastError).toBeNull()
       expect(calls.some(c => c.cmd === 'start_recording')).toBe(false)
+    })
+
+    it('ignores meeting-popup-start while a recording is already active, without an error toast', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-150000',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      act(() => result.current.startRec())
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+      expect(result.current.isRecording).toBe(true)
+      const startRecordingCallsBefore = calls.filter(c => c.cmd === 'start_recording').length
+
+      await act(async () => {
+        await emit('meeting-popup-start', null)
+      })
+
+      // Still exactly the one active recording, no *second*
+      // start_recording call, and no confusing "already recording" error
+      // toast surfaced to the user (the backend would have rejected a
+      // second start_recording with exactly that message).
+      expect(result.current.view).toBe('recording')
+      expect(calls.filter(c => c.cmd === 'start_recording')).toHaveLength(startRecordingCallsBefore)
+      expect(result.current.lastError).toBeNull()
     })
   })
 

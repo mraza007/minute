@@ -478,3 +478,167 @@ pub fn run() {
     _ => {}
   });
 }
+
+/// Proof that the app-level ACL manifest (`build.rs`'s `APP_COMMANDS` +
+/// `capabilities/{default,popup}.json`) actually scopes commands per
+/// window — not the crate's hand-written *source* JSON (asserting on that
+/// directly would just be restating it), but `tauri-build`'s own
+/// **resolved** output: `capabilities.json`, written to `OUT_DIR` by
+/// `build.rs` on every build (see that file's `save_capabilities`/`build`
+/// functions), the exact same artifact `tauri::generate_context!()` embeds
+/// into the real app at compile time. Read here via `include_str!` off
+/// `env!("OUT_DIR")` — this crate's own `OUT_DIR`, since this test lives in
+/// the same crate the build script ran for.
+///
+/// (An earlier version of this test tried to go one step further — actually
+/// dispatching a mock IPC call via `tauri::test::get_ipc_response` against
+/// a `tauri::test::MockRuntime` app built from this same
+/// `generate_context!()`, to prove denial at the real dispatch layer, not
+/// just in the resolved config. That doesn't work: `generate_context!()`
+/// embeds a process-global `_EMBED_INFO_PLIST` symbol at macro-expansion
+/// time, and `run()`'s own call above already puts one copy of that symbol
+/// into every compilation of this crate, including its `--lib` unit-test
+/// binary — a second invocation in a test module is a hard link error
+/// ("symbol already defined"), not just a logical duplicate, and there's no
+/// way to keep `run()`'s copy out of the test binary without making a large
+/// fraction of the crate's own production code look unused to `cargo
+/// clippy --all-targets` (confirmed: gating `run()` behind
+/// `#[cfg(not(test))]` fixes the link error but produces dozens of
+/// "function/struct is never used" warnings crate-wide, since `run()` is
+/// what wires almost everything else together). Reading the resolved
+/// `capabilities.json` instead sidesteps that limitation entirely while
+/// still exercising real `tauri-build` output rather than restating the
+/// source files.)
+///
+/// `tauri-build`'s own `validate_capabilities` step (which runs — and would
+/// hard-fail the whole build — on every `cargo build`/`test`/`clippy`
+/// already proves every permission identifier referenced below actually
+/// exists among the generated per-command `allow-*`/`deny-*` permissions;
+/// what these assertions add on top is that the *shape* of each capability
+/// (which window it's scoped to, which permissions it grants) is exactly
+/// what least-privilege requires, not accidentally broader.
+#[cfg(test)]
+mod acl_tests {
+  use serde_json::Value;
+
+  fn resolved_capabilities() -> Value {
+    let raw = include_str!(concat!(env!("OUT_DIR"), "/capabilities.json"));
+    serde_json::from_str(raw).expect("OUT_DIR/capabilities.json should be valid JSON")
+  }
+
+  fn permissions_of(capability: &Value) -> Vec<&str> {
+    capability["permissions"]
+      .as_array()
+      .expect("permissions should be an array")
+      .iter()
+      .map(|p| p.as_str().expect("each permission entry should be a plain string identifier"))
+      .collect()
+  }
+
+  fn windows_of(capability: &Value) -> Vec<&str> {
+    capability["windows"]
+      .as_array()
+      .expect("windows should be an array")
+      .iter()
+      .map(|w| w.as_str().expect("each window entry should be a plain string label"))
+      .collect()
+  }
+
+  #[test]
+  fn the_popup_capability_is_scoped_to_only_the_meeting_popup_window() {
+    let capabilities = resolved_capabilities();
+    let popup = &capabilities["popup"];
+    assert_eq!(windows_of(popup), vec!["meeting-popup"]);
+  }
+
+  #[test]
+  fn the_popup_capability_grants_exactly_its_own_two_commands_plus_core_event() {
+    let capabilities = resolved_capabilities();
+    let popup = &capabilities["popup"];
+    let mut permissions = permissions_of(popup);
+    permissions.sort_unstable();
+    assert_eq!(
+      permissions,
+      vec!["allow-popup-dismiss", "allow-popup-start", "core:event:default"],
+      "the popup window's capability must grant nothing beyond its own two commands and core event listening"
+    );
+  }
+
+  #[test]
+  fn the_default_capability_is_scoped_to_only_the_main_window() {
+    let capabilities = resolved_capabilities();
+    let default = &capabilities["default"];
+    assert_eq!(
+      windows_of(default),
+      vec!["main"],
+      "the main window's capability must not also cover meeting-popup — that's exactly the bug this whole fix closes"
+    );
+  }
+
+  #[test]
+  fn the_default_capability_does_not_grant_the_popups_own_commands() {
+    let capabilities = resolved_capabilities();
+    let default = &capabilities["default"];
+    let permissions = permissions_of(default);
+    assert!(
+      !permissions.contains(&"allow-popup-start") && !permissions.contains(&"allow-popup-dismiss"),
+      "the main window has no business calling popup_start/popup_dismiss — got: {permissions:?}"
+    );
+  }
+
+  #[test]
+  fn the_default_capability_still_grants_every_command_the_main_frontend_actually_calls() {
+    // A regression guard the other direction: tightening this ACL must not
+    // have silently dropped a command the real main-window frontend (see
+    // src/ipc/commands.ts) still needs — every one of these missing would
+    // break a real feature (settings, notes, recording, ...), not just a
+    // permissions test.
+    let capabilities = resolved_capabilities();
+    let default = &capabilities["default"];
+    let permissions = permissions_of(default);
+    for expected in [
+      "allow-hardware-info",
+      "allow-list-models",
+      "allow-recommended-models",
+      "allow-list-notes",
+      "allow-get-note",
+      "allow-search-notes",
+      "allow-rename-note",
+      "allow-toggle-action-item",
+      "allow-summarize-note",
+      "allow-ask-note",
+      "allow-delete-note",
+      "allow-storage-stats",
+      "allow-reveal-note",
+      "allow-get-settings",
+      "allow-set-settings",
+      "allow-download-model",
+      "allow-cancel-download",
+      "allow-delete-model",
+      "allow-start-recording",
+      "allow-pause-recording",
+      "allow-resume-recording",
+      "allow-stop-recording",
+    ] {
+      assert!(
+        permissions.contains(&expected),
+        "main window is missing {expected} — this would break a real feature, not just a test"
+      );
+    }
+  }
+
+  /// The generated per-command permission's own `commands.allow` list
+  /// (under `permissions/autogenerated/`, produced by `build.rs`'s
+  /// `APP_COMMANDS`) — proves `allow-popup-start`/`allow-popup-dismiss`
+  /// themselves are scoped to exactly `["popup_start"]`/`["popup_dismiss"]`
+  /// and nothing broader, i.e. that even the *permission identifiers*
+  /// granted to the popup window can't be walked to reach some other
+  /// command.
+  #[test]
+  fn the_autogenerated_popup_permissions_allow_exactly_their_own_command() {
+    let start_toml = include_str!("../permissions/autogenerated/popup_start.toml");
+    assert!(start_toml.contains(r#"commands.allow = ["popup_start"]"#));
+    let dismiss_toml = include_str!("../permissions/autogenerated/popup_dismiss.toml");
+    assert!(dismiss_toml.contains(r#"commands.allow = ["popup_dismiss"]"#));
+  }
+}
