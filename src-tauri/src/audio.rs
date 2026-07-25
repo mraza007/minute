@@ -1070,15 +1070,15 @@ fn auto_trigger_summarize(
         let app = app.clone();
         move || {
             let emit = Box::new(llm::tauri_emit(app.clone()));
-            llm::try_spawn_summarize(
-                store.clone(),
-                engine.clone(),
-                busy.clone(),
-                model_id.clone(),
-                model_path.clone(),
-                note_id.clone(),
+            llm::try_spawn_summarize(llm::SummarizeWorkerCtx {
+                note_id: note_id.clone(),
+                store: store.clone(),
+                engine: engine.clone(),
+                busy: busy.clone(),
+                model_id: model_id.clone(),
+                model_path: model_path.clone(),
                 emit,
-            )
+            })
         }
     };
 

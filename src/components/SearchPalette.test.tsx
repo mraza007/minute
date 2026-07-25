@@ -207,6 +207,18 @@ describe('SearchPalette', () => {
     expect(onOpenTitleHit).toHaveBeenCalledWith('note-abc')
   })
 
+  it('does not select on the Enter that confirms an IME composition (e.g. CJK input)', async () => {
+    const onOpenTitleHit = vi.fn()
+    const search = vi.fn().mockResolvedValue([titleHit({ noteId: 'note-abc' })])
+    render(<SearchPalette {...baseProps({ search, onOpenTitleHit })} />)
+    const input = screen.getByRole('combobox', { name: 'Search notes' })
+    await typeAndFlush(input, 'acme')
+
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+
+    expect(onOpenTitleHit).not.toHaveBeenCalled()
+  })
+
   it('Enter on a transcript hit calls onOpenTranscriptHit with its note id and segment start', async () => {
     const onOpenTranscriptHit = vi.fn()
     const search = vi.fn().mockResolvedValue([transcriptHit({ noteId: 'note-abc', segmentStart: 72 })])

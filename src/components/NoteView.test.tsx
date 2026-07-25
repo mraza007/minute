@@ -432,7 +432,7 @@ describe('NoteView', () => {
             meta,
             selectedMeta: meta,
             llmInstalled: true,
-            askHistory: [{ question: 'What did they decide?', answer: 'They locked pricing.' }],
+            askHistory: [{ id: 1, question: 'What did they decide?', answer: 'They locked pricing.' }],
             askStatus: 'idle',
             llmBusy: false,
           })}
@@ -463,11 +463,11 @@ describe('NoteView', () => {
             selectedMeta: meta,
             llmInstalled: true,
             selectedAudioPath: '/notes/abc/audio.wav',
-            askHistory: [{ question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34].' }],
+            askHistory: [{ id: 1, question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34].' }],
           })}
         />,
       )
-      const citation = screen.getByRole('button', { name: '[01:34]' })
+      const citation = screen.getByRole('button', { name: 'Play from 01:34' })
       expect(() => fireEvent.click(citation)).not.toThrow()
     })
 

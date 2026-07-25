@@ -47,8 +47,17 @@ export type AskStatus = 'idle' | 'running' | 'error'
  * successful ask carries `answer` (with inline `[mm:ss]` citations,
  * rendered by `AiNotesPanel`'s `splitAnswerCitations`), a failed one carries
  * `error` (and a retry affordance that just re-asks `question`).
+ *
+ * `id` is a monotonically increasing counter this hook assigns at
+ * insertion (see `nextAskEntryId`) — a stable React list key `AiNotesPanel`
+ * uses instead of the entry's array index: history is newest-first, so
+ * every existing entry's *index* shifts by one on every prepend, which
+ * would make an index-keyed list re-key (and, worse, potentially
+ * misattribute in-flight state to) every existing row each time a new
+ * question lands. `id` never shifts.
  */
 export interface AskHistoryEntry {
+  id: number
   question: string
   answer?: string
   error?: string
@@ -365,6 +374,13 @@ export function useNoteDetail(params: {
   // `askHistoryMap`/`askStatusMap` updates that read it.
   const pendingQuestion = useRef<Record<string, string>>({})
 
+  // Monotonically increasing across every note this hook instance ever
+  // tracks (not reset per-note) — see `AskHistoryEntry.id`'s docs. A plain
+  // ref, bumped imperatively at each of the two insertion points below
+  // (`recordAskError`/the `ask-answer` handler) — never itself read by a
+  // render, so it doesn't need to be state.
+  const nextAskEntryId = useRef(0)
+
   /**
    * Appends an error entry to `id`'s ask history using whatever question is
    * currently recorded as pending for it in `pendingQuestion`, then clears
@@ -385,7 +401,8 @@ export function useNoteDetail(params: {
     delete pendingQuestion.current[id]
     setAskHistoryMap(prev => {
       const existing = prev[id] ?? []
-      return { ...prev, [id]: [{ question, error: errorMessage }, ...existing].slice(0, ASK_HISTORY_CAP) }
+      const entry: AskHistoryEntry = { id: nextAskEntryId.current++, question, error: errorMessage }
+      return { ...prev, [id]: [entry, ...existing].slice(0, ASK_HISTORY_CAP) }
     })
   }, [])
 
@@ -411,10 +428,8 @@ export function useNoteDetail(params: {
       delete pendingQuestion.current[payload.noteId]
       setAskHistoryMap(prev => {
         const existing = prev[payload.noteId] ?? []
-        return {
-          ...prev,
-          [payload.noteId]: [{ question: payload.question, answer: payload.answer }, ...existing].slice(0, ASK_HISTORY_CAP),
-        }
+        const entry: AskHistoryEntry = { id: nextAskEntryId.current++, question: payload.question, answer: payload.answer }
+        return { ...prev, [payload.noteId]: [entry, ...existing].slice(0, ASK_HISTORY_CAP) }
       })
     },
     [],
@@ -468,6 +483,48 @@ export function useNoteDetail(params: {
    */
   const llmBusy = Object.values(summaryStatus).some(s => s === 'running') || Object.values(askStatusMap).some(s => s === 'running')
 
+  /**
+   * Removes `id`'s entries from every per-note map this hook otherwise
+   * grows unboundedly over a session — `summaryStatus`/`summaryError`/
+   * `askStatusMap`/`askHistoryMap`. Unlike `transcriptCache` (LRU-capped —
+   * see `TRANSCRIPT_CACHE_CAP`) these four were never bounded and never
+   * pruned: a deleted note's stale summarization/ask state used to sit
+   * around in memory for the rest of the session even though the note
+   * itself is gone. Also clears any pending ask question for `id` — dead
+   * weight once the note it was in flight for no longer exists.
+   * `useAppState`'s `deleteNote` calls this alongside `invalidateNoteCache`
+   * (a different concern — the transcript/summary *content* cache, not
+   * this lifecycle bookkeeping). `useCallback` with no deps — permanently
+   * stable, same rationale as `invalidateNoteCache`.
+   */
+  const pruneNoteDetail = useCallback((id: string) => {
+    delete pendingQuestion.current[id]
+    setSummaryStatus(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setSummaryError(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setAskStatusMap(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setAskHistoryMap(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+  }, [])
+
   return {
     selectedTranscript,
     selectedMeta,
@@ -477,6 +534,7 @@ export function useNoteDetail(params: {
     transcriptLoading,
     loadNoteTranscript,
     invalidateNoteCache,
+    pruneNoteDetail,
     summaryStatus,
     summaryError,
     regenerateSummary,

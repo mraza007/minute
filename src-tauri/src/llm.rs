@@ -1199,40 +1199,24 @@ fn run_ask(ctx: &AskWorkerCtx) -> Result<String> {
     extract_ask_answer(&raw_output)
 }
 
-/// Attempts to claim [`LlmBusy`] and spawn an ask worker thread for
-/// `note_id`/`question` against `model_id`/`model_path` — the ask
-/// counterpart to [`try_spawn_summarize`], same single authoritative
-/// check-and-claim shape (a `compare_exchange` on the one app-wide `busy`
-/// flag shared with summarization). Returns `Err("busy")` without spawning
-/// anything if a generation (either a summarize or another ask) is already
-/// in flight; `ask_note` surfaces that to the frontend directly.
-pub fn try_spawn_ask(
-    store: SharedStore,
-    engine: SharedLlmEngine,
-    busy: LlmBusy,
-    model_id: String,
-    model_path: PathBuf,
-    note_id: String,
-    question: String,
-    emit: Box<dyn Fn(AskEvent) + Send + 'static>,
-) -> std::result::Result<(), &'static str> {
-    if busy
+/// Attempts to claim [`LlmBusy`] and spawn an ask worker thread for `ctx` —
+/// the ask counterpart to [`try_spawn_summarize`], same single
+/// authoritative check-and-claim shape (a `compare_exchange` on the one
+/// app-wide `busy` flag shared with summarization) and same single-`ctx`
+/// parameter shape (see that function's docs for why — this had the same
+/// too-many-separate-arguments problem, one worse: 8 rather than 7).
+/// Returns `Err("busy")` without spawning anything if a generation (either
+/// a summarize or another ask) is already in flight; `ask_note` surfaces
+/// that to the frontend directly.
+pub fn try_spawn_ask(ctx: AskWorkerCtx) -> std::result::Result<(), &'static str> {
+    if ctx
+        .busy
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
         return Err("busy");
     }
 
-    let ctx = AskWorkerCtx {
-        note_id,
-        store,
-        engine,
-        busy,
-        model_id,
-        model_path,
-        question,
-        emit,
-    };
     AskWorker::spawn(ctx);
     Ok(())
 }
@@ -1305,16 +1289,16 @@ pub async fn ask_note(
     let model_path = catalog::installed_path(&entry, &models_root);
     let emit = Box::new(tauri_emit_ask(app.clone()));
 
-    try_spawn_ask(
-        store.inner().clone(),
-        engine.inner().clone(),
-        busy.inner().clone(),
-        entry.id.clone(),
+    try_spawn_ask(AskWorkerCtx {
+        note_id: id,
+        store: store.inner().clone(),
+        engine: engine.inner().clone(),
+        busy: busy.inner().clone(),
+        model_id: entry.id.clone(),
         model_path,
-        id,
         question,
         emit,
-    )
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -1453,31 +1437,24 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
 /// or mid-generate (seconds, sometimes tens of seconds) holding that mutex;
 /// see [`LlmEngineState`]'s concurrency note. The spawned worker thread is
 /// the only thing that ever locks it, once it actually starts running.
-pub fn try_spawn_summarize(
-    store: SharedStore,
-    engine: SharedLlmEngine,
-    busy: LlmBusy,
-    model_id: String,
-    model_path: PathBuf,
-    note_id: String,
-    emit: Box<dyn Fn(SummaryEvent) + Send + 'static>,
-) -> std::result::Result<(), &'static str> {
-    if busy
+///
+/// Takes a single pre-built [`SummarizeWorkerCtx`] (rather than each of its
+/// fields as its own parameter — the previous shape, which had grown to 7
+/// separate arguments) both to keep this under `clippy::too_many_arguments`
+/// and because `ctx` already *is* everything a spawned worker needs: no
+/// second, differently-shaped bag of the same values to keep in sync.
+/// `ctx.busy` is checked in place via `compare_exchange` (needs only `&self`
+/// — no need to destructure `busy` out first); on success `ctx` moves into
+/// the worker whole.
+pub fn try_spawn_summarize(ctx: SummarizeWorkerCtx) -> std::result::Result<(), &'static str> {
+    if ctx
+        .busy
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
         return Err("summarization already running");
     }
 
-    let ctx = SummarizeWorkerCtx {
-        note_id,
-        store,
-        engine,
-        busy,
-        model_id,
-        model_path,
-        emit,
-    };
     SummarizeWorker::spawn(ctx);
     Ok(())
 }
@@ -1610,15 +1587,15 @@ pub async fn summarize_note(
     let model_path = catalog::installed_path(&entry, &models_root);
     let emit = Box::new(tauri_emit(app.clone()));
 
-    try_spawn_summarize(
-        store.inner().clone(),
-        engine.inner().clone(),
-        busy.inner().clone(),
-        entry.id.clone(),
+    try_spawn_summarize(SummarizeWorkerCtx {
+        note_id: id,
+        store: store.inner().clone(),
+        engine: engine.inner().clone(),
+        busy: busy.inner().clone(),
+        model_id: entry.id.clone(),
         model_path,
-        id,
         emit,
-    )
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -2216,15 +2193,15 @@ mod tests {
         let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_emit = events.clone();
 
-        let result = try_spawn_summarize(
+        let result = try_spawn_summarize(SummarizeWorkerCtx {
+            note_id: "some-note".to_string(),
             store,
             engine,
             busy,
-            "qwen3.5-4b".to_string(),
-            dir.path().join("does-not-exist.gguf"),
-            "some-note".to_string(),
-            Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
-        );
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        });
 
         assert_eq!(result, Err("summarization already running"));
         // Nothing spawned — no worker ever ran, so no events fired either.
@@ -2263,15 +2240,15 @@ mod tests {
             }
         });
 
-        let result = try_spawn_summarize(
+        let result = try_spawn_summarize(SummarizeWorkerCtx {
+            note_id: "some-note".to_string(),
             store,
             engine,
-            busy.clone(),
-            "qwen3.5-4b".to_string(),
-            dir.path().join("does-not-exist.gguf"),
-            "some-note".to_string(),
+            busy: busy.clone(),
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
             emit,
-        );
+        });
 
         assert!(result.is_ok());
         started_rx.recv().expect("worker never reached its Running emit");
@@ -2298,15 +2275,15 @@ mod tests {
 
         let _engine_guard = lock_llm_engine(&engine);
 
-        let result = try_spawn_summarize(
+        let result = try_spawn_summarize(SummarizeWorkerCtx {
+            note_id: "some-note".to_string(),
             store,
-            engine.clone(),
+            engine: engine.clone(),
             busy,
-            "qwen3.5-4b".to_string(),
-            dir.path().join("does-not-exist.gguf"),
-            "some-note".to_string(),
-            Box::new(|_event| {}),
-        );
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            emit: Box::new(|_event| {}),
+        });
 
         assert!(
             result.is_ok(),
@@ -2459,15 +2436,15 @@ mod tests {
                 if attempts == 2 {
                     busy_for_release.store(false, Ordering::SeqCst);
                 }
-                try_spawn_summarize(
-                    store.clone(),
-                    engine.clone(),
-                    busy.clone(),
-                    "qwen3.5-4b".to_string(),
-                    dir.path().join("does-not-exist.gguf"),
-                    "some-note".to_string(),
-                    Box::new(|_event| {}),
-                )
+                try_spawn_summarize(SummarizeWorkerCtx {
+                    note_id: "some-note".to_string(),
+                    store: store.clone(),
+                    engine: engine.clone(),
+                    busy: busy.clone(),
+                    model_id: "qwen3.5-4b".to_string(),
+                    model_path: dir.path().join("does-not-exist.gguf"),
+                    emit: Box::new(|_event| {}),
+                })
             },
             sleep,
             elapsed,
@@ -2491,15 +2468,15 @@ mod tests {
         let (sleep, elapsed) = fake_clock();
         let result = retry_spawn_while_busy(
             || {
-                try_spawn_summarize(
-                    store.clone(),
-                    engine.clone(),
-                    busy.clone(),
-                    "qwen3.5-4b".to_string(),
-                    dir.path().join("does-not-exist.gguf"),
-                    "some-note".to_string(),
-                    Box::new(|_event| {}),
-                )
+                try_spawn_summarize(SummarizeWorkerCtx {
+                    note_id: "some-note".to_string(),
+                    store: store.clone(),
+                    engine: engine.clone(),
+                    busy: busy.clone(),
+                    model_id: "qwen3.5-4b".to_string(),
+                    model_path: dir.path().join("does-not-exist.gguf"),
+                    emit: Box::new(|_event| {}),
+                })
             },
             sleep,
             elapsed,
@@ -2587,16 +2564,16 @@ mod tests {
         let events: Arc<Mutex<Vec<AskEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_emit = events.clone();
 
-        let result = try_spawn_ask(
+        let result = try_spawn_ask(AskWorkerCtx {
+            note_id: "some-note".to_string(),
             store,
             engine,
             busy,
-            "qwen3.5-4b".to_string(),
-            dir.path().join("does-not-exist.gguf"),
-            "some-note".to_string(),
-            "What did they discuss?".to_string(),
-            Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
-        );
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            question: "What did they discuss?".to_string(),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        });
 
         assert_eq!(result, Err("busy"));
         assert!(events.lock().unwrap().is_empty());
@@ -2624,16 +2601,16 @@ mod tests {
             }
         });
 
-        let result = try_spawn_ask(
+        let result = try_spawn_ask(AskWorkerCtx {
+            note_id: "some-note".to_string(),
             store,
             engine,
-            busy.clone(),
-            "qwen3.5-4b".to_string(),
-            dir.path().join("does-not-exist.gguf"),
-            "some-note".to_string(),
-            "What did they discuss?".to_string(),
+            busy: busy.clone(),
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            question: "What did they discuss?".to_string(),
             emit,
-        );
+        });
 
         assert!(result.is_ok());
         started_rx.recv().expect("worker never reached its Running emit");

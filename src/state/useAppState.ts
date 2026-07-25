@@ -129,7 +129,7 @@ export function useAppState() {
     ipc.listNotes().then(setNotes).catch(reportError)
   }, [reportError])
   const noteDetail = useNoteDetail({ selectedNoteId, reportError, refreshNotes })
-  const { loadNoteTranscript, invalidateNoteCache } = noteDetail
+  const { loadNoteTranscript, invalidateNoteCache, pruneNoteDetail } = noteDetail
 
   // Invalidates a still-pending seek the instant it's no longer for the
   // note currently on screen — covers every way `sel` can change
@@ -302,6 +302,11 @@ export function useAppState() {
         .deleteNote(id)
         .then(() => {
           invalidateNoteCache(id)
+          // The note is gone on disk — its summarization/ask lifecycle
+          // state (`summaryStatus`/`summaryError`/`askStatusMap`/
+          // `askHistoryMap`) would otherwise sit around in memory for the
+          // rest of the session with nothing left to ever clear it.
+          pruneNoteDetail(id)
           return ipc.listNotes()
         })
         .then(freshNotes => {
@@ -310,7 +315,7 @@ export function useAppState() {
         })
         .catch(reportError)
     },
-    [invalidateNoteCache, reportError],
+    [invalidateNoteCache, pruneNoteDetail, reportError],
   )
 
   /**
@@ -627,9 +632,9 @@ export function useAppState() {
     // `...noteDetail` spread) so this hook's return shape stays exactly what
     // it was before that extraction, plus the new ask-your-notes fields
     // (`askHistory`/`askStatus`/`askQuestion`/`llmBusy`) it now also owns —
-    // `loadNoteTranscript`/`invalidateNoteCache` are `useNoteDetail`'s own
-    // internal seam (used above by `renameNote`/`deleteNote`/`stopRec`), not
-    // part of this hook's public surface.
+    // `loadNoteTranscript`/`invalidateNoteCache`/`pruneNoteDetail` are
+    // `useNoteDetail`'s own internal seam (used above by `renameNote`/
+    // `deleteNote`/`stopRec`), not part of this hook's public surface.
     selectedTranscript: noteDetail.selectedTranscript,
     selectedMeta: noteDetail.selectedMeta,
     selectedSummary: noteDetail.selectedSummary,

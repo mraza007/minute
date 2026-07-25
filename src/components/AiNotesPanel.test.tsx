@@ -266,8 +266,8 @@ describe('AiNotesPanel', () => {
         <AiNotesPanel
           {...baseProps({
             askHistory: [
-              { question: 'What did they decide about the rollout?', answer: 'A phased EU-first rollout.' },
-              { question: 'Who owns the FAQ doc?', answer: 'Speaker 3, due Friday.' },
+              { id: 2, question: 'What did they decide about the rollout?', answer: 'A phased EU-first rollout.' },
+              { id: 1, question: 'Who owns the FAQ doc?', answer: 'Speaker 3, due Friday.' },
             ],
           })}
         />,
@@ -284,20 +284,35 @@ describe('AiNotesPanel', () => {
       render(
         <AiNotesPanel
           {...baseProps({
-            askHistory: [{ question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
+            askHistory: [{ id: 1, question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
             onSeekCitation,
           })}
         />,
       )
-      const citation = screen.getByRole('button', { name: '[01:34]' })
+      const citation = screen.getByRole('button', { name: 'Play from 01:34' })
       fireEvent.click(citation)
       expect(onSeekCitation).toHaveBeenCalledWith(94)
     })
 
+    it('gives each citation button an aria-label matching TranscriptList\'s "Play from {mm:ss}" convention', () => {
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [{ id: 1, question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
+          })}
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Play from 01:34' })).toBeInTheDocument()
+    })
+
     it('renders an answer with no citations as plain text with no extra buttons', () => {
-      render(<AiNotesPanel {...baseProps({ askHistory: [{ question: 'What happened?', answer: "The transcript doesn't cover that." }] })} />)
+      render(
+        <AiNotesPanel
+          {...baseProps({ askHistory: [{ id: 1, question: 'What happened?', answer: "The transcript doesn't cover that." }] })}
+        />,
+      )
       expect(screen.getByText("The transcript doesn't cover that.")).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: /^\[\d{1,2}:\d{2}\]$/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^Play from \d{1,2}:\d{2}$/ })).not.toBeInTheDocument()
     })
 
     it('shows an inline error and a Retry button for a failed entry, which re-asks the same question', () => {
@@ -305,7 +320,7 @@ describe('AiNotesPanel', () => {
       render(
         <AiNotesPanel
           {...baseProps({
-            askHistory: [{ question: 'What did they discuss?', error: 'The transcript doesn\'t cover that.' }],
+            askHistory: [{ id: 1, question: 'What did they discuss?', error: 'The transcript doesn\'t cover that.' }],
             onAsk,
           })}
         />,
@@ -319,12 +334,24 @@ describe('AiNotesPanel', () => {
       render(
         <AiNotesPanel
           {...baseProps({
-            askHistory: [{ question: 'What did they discuss?', error: 'boom' }],
+            askHistory: [{ id: 1, question: 'What did they discuss?', error: 'boom' }],
             llmBusy: true,
           })}
         />,
       )
       expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled()
+    })
+
+    it('does not submit on the Enter that confirms an IME composition (e.g. CJK input)', () => {
+      const onAsk = vi.fn()
+      render(<AiNotesPanel {...baseProps({ onAsk })} />)
+      const input = screen.getByPlaceholderText('Ask about this meeting…')
+
+      fireEvent.change(input, { target: { value: '日本語' } })
+      fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+
+      expect(onAsk).not.toHaveBeenCalled()
+      expect(input).toHaveValue('日本語')
     })
 
     it('renders no history cards when askHistory is empty', () => {

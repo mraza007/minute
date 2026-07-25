@@ -302,7 +302,11 @@ const citationButtonStyle: CSSProperties = {
  * Renders an ask answer's text with every inline `[mm:ss]` citation (see
  * `splitAnswerCitations`) as a clickable seek button — everything else
  * renders as plain text, no markdown parsing (per the plan: answers are
- * plain prose with inline citations, nothing fancier).
+ * plain prose with inline citations, nothing fancier). Each citation button
+ * gets an `aria-label` of `"Play from {mm:ss}"` — the exact same convention
+ * `TranscriptList`'s own segment-timestamp seek buttons use — so a screen
+ * reader announces the same, unambiguous action regardless of which of the
+ * two seek entry points the user is on.
  */
 function AnswerWithCitations({ text, onSeekCitation }: { text: string; onSeekCitation: (seconds: number) => void }) {
   const parts = splitAnswerCitations(text)
@@ -312,7 +316,12 @@ function AnswerWithCitations({ text, onSeekCitation }: { text: string; onSeekCit
         part.citationSeconds === undefined ? (
           <span key={i}>{part.text}</span>
         ) : (
-          <button key={i} onClick={() => onSeekCitation(part.citationSeconds as number)} style={citationButtonStyle}>
+          <button
+            key={i}
+            onClick={() => onSeekCitation(part.citationSeconds as number)}
+            aria-label={`Play from ${part.text.slice(1, -1)}`}
+            style={citationButtonStyle}
+          >
             {part.text}
           </button>
         ),
@@ -420,10 +429,14 @@ function AskSection({
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      submit()
-    }
+    if (e.key !== 'Enter') return
+    // Ignore the Enter that confirms a CJK/IME composition (e.g. picking a
+    // kanji candidate) — that Enter is finishing the *text*, not asking to
+    // submit the question. `nativeEvent.isComposing` is what actually
+    // distinguishes the two; `e.key === 'Enter'` alone can't.
+    if (e.nativeEvent.isComposing) return
+    e.preventDefault()
+    submit()
   }
 
   return (
@@ -447,9 +460,9 @@ function AskSection({
       )}
       {askHistory.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {askHistory.map((entry, i) => (
+          {askHistory.map(entry => (
             <AskEntryCard
-              key={i}
+              key={entry.id}
               entry={entry}
               disabled={disabled}
               onSeekCitation={onSeekCitation}

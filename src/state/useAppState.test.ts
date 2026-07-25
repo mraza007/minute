@@ -891,6 +891,40 @@ describe('useAppState', () => {
         act(() => result.current.deleteNote('note-a'))
         await waitFor(() => expect(result.current.lastError).toContain('note not found'))
       })
+
+      it('prunes the deleted note\'s summarization/ask state (summaryStatus/summaryError/askHistory/askStatus) without touching another note or llmBusy', async () => {
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteB],
+        })
+        const result = await loaded()
+        await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+
+        await act(async () => {
+          await emit('summary-status', { noteId: 'note-a', state: 'error', error: 'boom' })
+        })
+        await act(async () => {
+          await emit('ask-answer', { noteId: 'note-a', question: 'Q for A', answer: 'A for A' })
+        })
+        // note-b's own state must survive note-a's deletion untouched, and
+        // keep llmBusy true throughout.
+        await act(async () => {
+          await emit('summary-status', { noteId: 'note-b', state: 'running', error: null })
+        })
+
+        expect(result.current.summaryStatus['note-a']).toBe('error')
+        expect(result.current.summaryError['note-a']).toBe('boom')
+        expect(result.current.askHistory).toHaveLength(1)
+
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.notes).toEqual([noteB]))
+
+        expect(result.current.summaryStatus['note-a']).toBeUndefined()
+        expect(result.current.summaryError['note-a']).toBeUndefined()
+        expect(result.current.summaryStatus['note-b']).toBe('running')
+        expect(result.current.llmBusy).toBe(true)
+      })
     })
 
     describe('revealNote', () => {

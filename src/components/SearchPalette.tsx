@@ -147,6 +147,11 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
       e.preventDefault()
       if (hits.length > 0) setActiveIndex(i => (i - 1 + hits.length) % hits.length)
     } else if (e.key === 'Enter') {
+      // Ignore the Enter that confirms a CJK/IME composition (e.g. picking
+      // a kanji candidate while typing the query) — same guard as
+      // `AiNotesPanel`'s ask input; that Enter is finishing the *text*, not
+      // asking to open the active hit.
+      if (e.nativeEvent.isComposing) return
       e.preventDefault()
       const hit = hits[activeIndex]
       if (hit) selectHit(hit)
