@@ -31,7 +31,7 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
           height: 24,
           boxSizing: 'border-box',
           borderRadius: 999,
-          background: on ? 'var(--accent)' : '#d8d4cf',
+          background: on ? 'var(--accent)' : 'var(--control-track)',
           // Constant 1px border in both states (transparent when on, over
           // the accent fill) — a none↔1px border toggle shifts the
           // absolutely-positioned knob's padding-edge origin by 1px between

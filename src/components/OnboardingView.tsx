@@ -55,7 +55,7 @@ function ModelCard({
               border: 'none',
               borderRadius: 999,
               background: 'var(--accent-solid)',
-              color: '#fff',
+              color: 'var(--text-on-accent)',
               fontFamily: 'inherit',
               fontWeight: 600,
               fontSize: 13,
@@ -101,9 +101,9 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
   return (
     <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
       <div style={{ width: 560, maxWidth: '92vw', display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <div style={{ background: 'var(--ink)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '26px 30px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
+        <div style={{ background: 'var(--banner-bg)', color: 'var(--banner-text)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-lg)', padding: '26px 30px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
           <div style={{ fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Minute runs entirely on this Mac.</div>
-          <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.6, color: 'rgba(255,255,255,.75)' }}>
+          <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.6, color: 'var(--banner-text-muted)' }}>
             No account. No cloud. No network permission. Download a transcription model to get started — everything after
             this, recording, transcription, and notes, runs completely offline.
           </div>
@@ -132,8 +132,8 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
             padding: '12px 22px',
             border: 'none',
             borderRadius: 999,
-            background: hasInstalledStt ? 'var(--accent-solid)' : '#d8d4cf',
-            color: hasInstalledStt ? '#fff' : 'var(--ink-muted)',
+            background: hasInstalledStt ? 'var(--accent-solid)' : 'var(--control-track)',
+            color: hasInstalledStt ? 'var(--text-on-accent)' : 'var(--ink-muted)',
             fontFamily: 'inherit',
             fontWeight: 600,
             fontSize: 13,

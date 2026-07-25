@@ -22,7 +22,7 @@ export function ErrorBanner({ message }: ErrorBannerProps) {
         maxWidth: 480,
         padding: '10px 16px',
         borderRadius: 'var(--radius-md)',
-        background: '#fff4f1',
+        background: 'var(--error-tint)',
         border: '1px solid rgba(224,68,48,.3)',
         color: 'var(--accent-text)',
         fontSize: 13,

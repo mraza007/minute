@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Guards against a white flash on first paint in dark mode: index.css
+         loads as a module import (or, in the built app, a linked
+         stylesheet) a beat after this HTML parses, so without this inline
+         fallback the default (white) canvas would show for one frame before
+         the real --canvas token takes over. Values mirror src/index.css's
+         --canvas token — kept in sync manually since this predates the CSS
+         being available at all. -->
+    <style>
+      html { background: #e8e6e3; color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) {
+        html { background: #211f1c; }
+      }
+    </style>
     <title>Minute</title>
   </head>
   <body>

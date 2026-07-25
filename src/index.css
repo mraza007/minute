@@ -36,6 +36,7 @@
 }
 
 :root {
+  color-scheme: light dark;
   /* surfaces */
   --canvas: #e8e6e3;
   --panel: #f2f0ee;
@@ -43,11 +44,32 @@
   --surface-soft: #f7f6f4;
   --surface-softer: #faf9f7;
   --card: #fff;
+  --control-track: #d8d4cf;   /* Toggle off-track, disabled CTA fills */
+  --player-track: #e8e5e1;    /* PlayerBar seek track */
+  --selected-tint: #fff6f4;   /* selected-model row tint (SettingsView) */
   /* ink ramp (all AA on every surface above) */
   --ink: #1c1a18;
   --ink-body: #33302c;
   --ink-muted: #57524b;
   --ink-faint: #6b6660;
+  /* fixed-dark chrome — intentionally NOT inverted in the dark ramp below.
+     Used for the "trust banner" panels and the dark play/reveal buttons,
+     which are meant to read as a printed dark card/button in both
+     appearances rather than following the ink/text color's light↔dark
+     flip. */
+  --ink-solid: #1c1a18;
+  --text-on-accent: #fff;           /* text over accent-solid / ink-solid / btn-dark fills */
+  /* trust-banner chrome (SettingsView + OnboardingView "nothing leaves this
+     machine" callouts) — DOES invert in the dark ramp below, unlike
+     --ink-solid: in light mode a nearly-black block reads as a deliberate,
+     loud callout against the light page, but the same near-black block on
+     an already-near-black dark canvas would just disappear. Dark mode
+     instead renders it as a normal elevated --card, matching every other
+     card on the page, which is the honest equivalent for this half of the
+     ramp. */
+  --banner-bg: #1c1a18;
+  --banner-text: #fff;
+  --banner-text-muted: rgba(255, 255, 255, .75);
   /* accent */
   --accent: #e04430;          /* graphics, dots, borders, REC — never text-bearing fills */
   --accent-solid: #c93520;    /* button fills with white text (5.2:1) */
@@ -56,6 +78,8 @@
   --accent-text: #b3200c;     /* red text on light tints (5.6:1 on #ffe6e1) */
   --accent-tint: #ffe6e1;
   --accent-selection: #ffd9d2;
+  --error-tint: #fff4f1;      /* error-card bg (AiNotesPanel, ErrorBanner) */
+  --error-text-strong: #7a1c0e; /* darker error body text on --error-tint */
   /* status */
   --ok-text: #356b22;
   --ok-tint: #e6ecda;
@@ -63,6 +87,7 @@
   --border-soft: rgba(0, 0, 0, .07);
   --border: rgba(0, 0, 0, .09);
   --border-strong: rgba(0, 0, 0, .12);
+  --border-heavy: rgba(0, 0, 0, .15); /* dashed placeholder cards, delete-confirm border */
   --control-border: #8a8580;  /* >=3:1 on white for radio/toggle affordances */
   /* overlay scrim — the ⌘K search palette is the one deliberately-justified
      overlay in the app (see .impeccable.md's "paper, not glass": no blur/
@@ -71,10 +96,75 @@
      --ink, not a neutral/cool black) to stay warm rather than read as
      glass. Reused wherever a future modal scrim is needed. */
   --scrim: rgba(28, 26, 24, .38);
+  /* hover overlays (utility classes below) */
+  --hover-overlay: rgba(0, 0, 0, .05);
+  --hover-overlay-strong: rgba(0, 0, 0, .06);
+  --btn-light-hover: #f3f1ef;
+  --btn-dark-hover: #3a3733;
   /* radii */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+}
+
+/* Dark ramp — follows macOS appearance. Keeps the warm paper-and-ink
+   character (see .impeccable.md: "dark warm ink surfaces, not cool slate or
+   neon-on-black") rather than a cool/neutral dark theme: every surface below
+   is a warm near-black brown, not a blue-grey. Values verified with a WCAG
+   contrast script — see the Task 6 report for the pairing table. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* surfaces */
+    --canvas: #211f1c;
+    --panel: #262421;
+    --panel-warm: #2a2724;
+    --surface-soft: #2d2a26;
+    --surface-softer: #312d29;
+    --card: #34302b;
+    --control-track: #4a453f;
+    --player-track: #403b35;
+    --selected-tint: #3a2620;
+    /* ink ramp */
+    --ink: #ece9e4;
+    --ink-body: #d9d5cf;
+    --ink-muted: #b3ada4;
+    --ink-faint: #a29a90;
+    /* --ink-solid / --text-on-accent intentionally NOT overridden — the
+       small dark buttons that use them (PlayerBar play/pause, MarkdownCard
+       "Reveal in Finder") keep a fixed near-black fill in both appearances;
+       they're shape-defined (circle/pill) with a crisp white icon/label
+       rather than relying on separation from the page behind them. */
+    --banner-bg: #34302b;               /* = dark --card */
+    --banner-text: #ece9e4;             /* = dark --ink */
+    --banner-text-muted: rgba(236, 233, 228, .75);
+    /* accent — same graphic accent; solid fill darkened (same direction as
+       light mode's own hover/active step) so white text clears AA on a dark
+       canvas; hover/active continue darkening for consistent depress
+       feedback. */
+    --accent: #e0543f;
+    --accent-solid: #b32d1a;
+    --accent-solid-hover: #9c2716;
+    --accent-solid-active: #821f11;
+    --accent-text: #ff9c87;
+    --accent-tint: #47231c;
+    --accent-selection: #5c2c22;
+    --error-tint: #3d221c;
+    --error-text-strong: #ffb3a1;
+    /* status */
+    --ok-text: #a2c97a;
+    --ok-tint: #2c3a22;
+    /* hairlines & controls */
+    --border-soft: rgba(255, 255, 255, .07);
+    --border: rgba(255, 255, 255, .1);
+    --border-strong: rgba(255, 255, 255, .14);
+    --border-heavy: rgba(255, 255, 255, .16);
+    --control-border: #948e85;
+    --scrim: rgba(0, 0, 0, .5);
+    --hover-overlay: rgba(255, 255, 255, .06);
+    --hover-overlay-strong: rgba(255, 255, 255, .08);
+    --btn-light-hover: #3a3733;
+    --btn-dark-hover: #47423b;
+  }
 }
 
 body {
@@ -98,13 +188,13 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .btn-rec { transition: background .12s; }
 .btn-rec:hover { background: var(--accent-solid-hover) !important; }
 .btn-rec:active { background: var(--accent-solid-active) !important; }
-.hov-dark:hover { background: rgba(0, 0, 0, .05) !important; }
-.hov-dark6:hover { background: rgba(0, 0, 0, .06) !important; }
-.icon-btn:hover { background: rgba(0, 0, 0, .06) !important; color: var(--ink) !important; }
+.hov-dark:hover { background: var(--hover-overlay) !important; }
+.hov-dark6:hover { background: var(--hover-overlay-strong) !important; }
+.icon-btn:hover { background: var(--hover-overlay-strong) !important; color: var(--ink) !important; }
 .icon-btn-danger:hover { background: var(--accent-tint) !important; color: var(--accent-text) !important; }
-.btn-light:hover { background: #f3f1ef !important; }
+.btn-light:hover { background: var(--btn-light-hover) !important; }
 .btn-dark-accent:hover { background: var(--accent) !important; }
-.btn-dark:hover { background: #3a3733 !important; }
+.btn-dark:hover { background: var(--btn-dark-hover) !important; }
 .input-focus:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(224, 68, 48, .15) !important; }
 .model-card:hover { background: var(--surface-softer) !important; }
 .seg-off:hover { color: var(--ink) !important; }

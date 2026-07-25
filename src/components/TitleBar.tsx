@@ -93,7 +93,7 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
             border: 'none',
             borderRadius: 999,
             background: 'var(--accent-solid)',
-            color: '#fff',
+            color: 'var(--text-on-accent)',
             fontFamily: 'inherit',
             fontWeight: 600,
             fontSize: 13,

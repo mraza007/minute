@@ -287,7 +287,7 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
         fontSize: 21,
         letterSpacing: '-.02em',
         fontFamily: 'inherit',
-        border: '1px solid rgba(0,0,0,.15)',
+        border: '1px solid var(--border-heavy)',
         borderRadius: 6,
         padding: '1px 6px',
         minWidth: 240,

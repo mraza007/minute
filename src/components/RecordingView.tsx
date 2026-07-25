@@ -276,7 +276,7 @@ export const RecordingView = memo(function RecordingView({
               border: 'none',
               borderRadius: 999,
               background: 'var(--accent-solid)',
-              color: '#fff',
+              color: 'var(--text-on-accent)',
               fontFamily: 'inherit',
               fontWeight: 600,
               fontSize: 13,
@@ -294,7 +294,7 @@ export const RecordingView = memo(function RecordingView({
             onClick={togglePause}
             disabled={stopping}
             className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
+            style={{ padding: '11px 22px', border: '1px solid var(--border-strong)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
@@ -303,7 +303,7 @@ export const RecordingView = memo(function RecordingView({
             aria-disabled="true"
             title="Markers arrive in a later update."
             className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: 'default', opacity: 0.5 }}
+            style={{ padding: '11px 22px', border: '1px solid var(--border-strong)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: 'default', opacity: 0.5 }}
           >
             Add marker
           </button>
@@ -312,11 +312,11 @@ export const RecordingView = memo(function RecordingView({
       <div style={{ width: 330, flex: 'none', borderLeft: '1px solid var(--border-soft)', display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)' }}>
         <h2 style={{ margin: 0, padding: '16px 16px 12px', fontWeight: 700, fontSize: 14 }}>Live insights</h2>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
+          <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)', marginBottom: 6 }}>LIVE INSIGHTS</div>
             <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)' }}>Live insights arrive in a later update.</div>
           </div>
-          <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '12px 14px', fontSize: 12, lineHeight: 1.55, color: 'var(--ink-faint)' }}>
+          <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '12px 14px', fontSize: 12, lineHeight: 1.55, color: 'var(--ink-faint)' }}>
             Transcription runs on-device — nothing leaves this machine.
           </div>
         </div>

@@ -126,9 +126,9 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
 
 function ErrorCard({ error, onRegenerate }: { error?: string; onRegenerate: () => void }) {
   return (
-    <div role="alert" style={{ ...cardStyle, border: '1px solid rgba(224,68,48,.3)', background: '#fff4f1' }}>
+    <div role="alert" style={{ ...cardStyle, border: '1px solid rgba(224,68,48,.3)', background: 'var(--error-tint)' }}>
       <div style={errorLabelStyle}>SUMMARY FAILED</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, color: '#7a1c0e', marginBottom: 10 }}>
+      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--error-text-strong)', marginBottom: 10 }}>
         {error || 'Something went wrong generating this summary.'}
       </div>
       <button onClick={onRegenerate} className="btn-light" style={{ ...btnStyle, flex: 'none', padding: '6px 14px' }}>
@@ -230,7 +230,7 @@ function GenerateSummaryButton({ onClick }: { onClick: () => void }) {
         border: 'none',
         borderRadius: 999,
         background: 'var(--accent-solid)',
-        color: '#fff',
+        color: 'var(--text-on-accent)',
         fontFamily: 'inherit',
         fontSize: 13,
         fontWeight: 700,
@@ -244,7 +244,7 @@ function GenerateSummaryButton({ onClick }: { onClick: () => void }) {
 
 function NoLlmPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
   return (
-    <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
+    <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
       <div style={labelStyle}>SUMMARY</div>
       <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)', marginBottom: 10 }}>
         Summarize this note on-device once a summary model is installed.
@@ -369,7 +369,7 @@ function AskEntryCard({
 
 function NoLlmAskPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
   return (
-    <div style={{ border: '1px dashed rgba(0,0,0,.15)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
+    <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
       <div style={labelStyle}>ASK YOUR NOTES</div>
       <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)', marginBottom: 10 }}>
         Ask questions about this meeting on-device once a summary model is installed.
