@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import type { ModelStatus, Recommendation } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
+import { Toggle } from './Toggle'
 
 export interface OnboardingViewProps {
   models: ModelStatus[]
@@ -8,7 +10,13 @@ export interface OnboardingViewProps {
   downloads: Record<string, DownloadProgressState>
   onDownload: (id: string) => void
   onCancel: (id: string) => void
-  onStart: () => void
+  /**
+   * "Start using Minute" — receives the opt-in row's checked state (see
+   * `meetingDetectionOptIn` below) so `useAppState`'s `completeOnboarding`
+   * can persist it in the same call that finalizes onboarding, rather than
+   * this view needing its own separate `set_settings` call.
+   */
+  onStart: (meetingDetectionOptIn: boolean) => void
 }
 
 function ModelCard({
@@ -98,6 +106,14 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
   const llmEntry = recommendation ? models.find(m => m.id === recommendation.llm) : undefined
   const hasInstalledStt = models.some(m => m.kind === 'stt' && m.state === 'installed')
 
+  // Quiet, opt-in meeting-detection row — default unchecked. Notion's own
+  // opt-out backlash (turning a similar feature on by default) is the
+  // lesson the plan explicitly calls out: onboarding must never pre-check
+  // this. Local to this view (not yet a real setting) until "Start using
+  // Minute" is actually clicked — see `onStart`'s docs for why the write
+  // happens on completion rather than immediately on toggle.
+  const [meetingDetectionOptIn, setMeetingDetectionOptIn] = useState(false)
+
   return (
     <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
       <div style={{ width: 560, maxWidth: '92vw', display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -124,9 +140,24 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
           />
         )}
 
+        <div
+          style={{
+            background: 'var(--card)',
+            border: '1px solid var(--border-soft)',
+            borderRadius: 'var(--radius-md)',
+            padding: '14px 18px',
+          }}
+        >
+          <Toggle
+            on={meetingDetectionOptIn}
+            onToggle={() => setMeetingDetectionOptIn(v => !v)}
+            label="Offer to record when a meeting starts — you can change this anytime in Settings."
+          />
+        </div>
+
         <button
           disabled={!hasInstalledStt}
-          onClick={onStart}
+          onClick={() => onStart(meetingDetectionOptIn)}
           className="btn-rec"
           style={{
             padding: '12px 22px',

@@ -259,7 +259,7 @@ describe('useAppState', () => {
     setupIPC({ models: [sttModelFixture({ state: 'notInstalled' })] })
     const result = await loaded()
     expect(result.current.view).toBe('onboarding')
-    act(() => result.current.completeOnboarding())
+    act(() => result.current.completeOnboarding(false))
     expect(result.current.view).toBe('notes')
   })
 
@@ -338,7 +338,7 @@ describe('useAppState', () => {
     })
     const result = await loaded()
 
-    act(() => result.current.completeOnboarding())
+    act(() => result.current.completeOnboarding(false))
 
     expect(result.current.view).toBe('notes')
     expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.sttModel === 'whisper-small')).toBe(
@@ -357,12 +357,64 @@ describe('useAppState', () => {
     })
     const result = await loaded()
 
-    act(() => result.current.completeOnboarding())
+    act(() => result.current.completeOnboarding(false))
 
     expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.sttModel === 'whisper-small')).toBe(
       true,
     )
     expect(calls.some(c => c.cmd === 'set_settings' && 'llmModel' in (c.args as { patch: Partial<Settings> }).patch)).toBe(false)
+  })
+
+  it('toggleMeetingDetection flips local state and persists it via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+
+    expect(result.current.tMeetingDetection).toBe(false)
+    act(() => result.current.toggleMeetingDetection())
+    expect(result.current.tMeetingDetection).toBe(true)
+    expect(
+      calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.meetingDetection === true),
+    ).toBe(true)
+  })
+
+  it('initializes tMeetingDetection from persisted settings rather than the hardcoded default', async () => {
+    setupIPC({ settings: settingsFixture({ meetingDetection: true }) })
+    const result = await loaded()
+    expect(result.current.tMeetingDetection).toBe(true)
+  })
+
+  it('completeOnboarding(true) persists meetingDetection when the opt-in row was checked', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      models: [sttModelFixture({ id: 'whisper-small', state: 'notInstalled' })],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+    })
+    const result = await loaded()
+
+    act(() => result.current.completeOnboarding(true))
+
+    expect(result.current.view).toBe('notes')
+    expect(result.current.tMeetingDetection).toBe(true)
+    expect(
+      calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.meetingDetection === true),
+    ).toBe(true)
+  })
+
+  it('completeOnboarding(false) does not touch meetingDetection at all', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      models: [sttModelFixture({ id: 'whisper-small', state: 'notInstalled' })],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+    })
+    const result = await loaded()
+
+    act(() => result.current.completeOnboarding(false))
+
+    expect(result.current.tMeetingDetection).toBe(false)
+    expect(
+      calls.some(c => c.cmd === 'set_settings' && 'meetingDetection' in (c.args as { patch: Partial<Settings> }).patch),
+    ).toBe(false)
   })
 
   describe('recording flow', () => {
@@ -685,7 +737,7 @@ describe('useAppState', () => {
       })
       const result = await loaded()
       expect(result.current.view).toBe('onboarding')
-      act(() => result.current.completeOnboarding())
+      act(() => result.current.completeOnboarding(false))
       expect(result.current.view).toBe('notes')
 
       await act(async () => {

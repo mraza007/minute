@@ -60,6 +60,8 @@ const base = {
   noteCount: 14,
   tDel: true,
   toggleDel: vi.fn(),
+  meetingDetection: false,
+  toggleMeetingDetection: vi.fn(),
 }
 
 describe('SettingsView', () => {
@@ -253,5 +255,32 @@ describe('SettingsView', () => {
     render(<SettingsView {...base} />)
     expect(screen.getByText('Your library inherits FileVault full-disk encryption.')).toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: /encrypt/i })).not.toBeInTheDocument()
+  })
+
+  it('renders the meeting detection card with its toggle off by default', () => {
+    render(<SettingsView {...base} />)
+    expect(screen.getByText('Meeting detection')).toBeInTheDocument()
+    const toggle = screen.getByRole('switch', { name: /offer to record when a meeting starts/i })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('reflects an enabled meeting detection setting via aria-checked', () => {
+    render(<SettingsView {...base} meetingDetection={true} />)
+    expect(screen.getByRole('switch', { name: /offer to record when a meeting starts/i })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('wires the meeting detection toggle to its handler', () => {
+    const toggleMeetingDetection = vi.fn()
+    render(<SettingsView {...base} toggleMeetingDetection={toggleMeetingDetection} />)
+    fireEvent.click(screen.getByRole('switch', { name: /offer to record when a meeting starts/i }))
+    expect(toggleMeetingDetection).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the local-only caption and the supported-apps line', () => {
+    render(<SettingsView {...base} />)
+    expect(
+      screen.getByText('When another app starts using the microphone, Minute shows a small prompt. Detection is fully local and never listens to audio.'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.')).toBeInTheDocument()
   })
 })

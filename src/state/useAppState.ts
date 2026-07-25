@@ -67,6 +67,13 @@ export function useAppState() {
   // in its place instead of a toggle.
   const [tDel, setTDel] = useState(true)
 
+  // Settings-backed meeting-detection toggle (Stage 5 Task 3) — same
+  // optimistic-flip-then-persist shape as `tDel`/`toggleDel` just above.
+  // Seeded from `get_settings` in the initial load effect below; also set
+  // (once, at most) by `completeOnboarding` if the onboarding opt-in row was
+  // checked — see that callback's docs.
+  const [tMeetingDetection, setTMeetingDetection] = useState(false)
+
   // --- ⌘K search palette + sidebar filter ---------------------------------
   //
   // `searchOpen` gates SearchPalette's mount in App.tsx. `pendingSeek` is a
@@ -357,6 +364,7 @@ export function useAppState() {
         setHardware(loadedHardware)
         setStorage(loadedStorage)
         setTDel(loadedSettings.deleteAudioAfter30d)
+        setTMeetingDetection(loadedSettings.meetingDetection)
         const hasInstalledStt = loadedModels.some(m => m.kind === 'stt' && m.state === 'installed')
         setView(hasInstalledStt ? 'notes' : 'onboarding')
         setLoaded(true)
@@ -622,6 +630,21 @@ export function useAppState() {
   }, [reportError])
 
   /**
+   * Settings screen's "Offer to record when a meeting starts" toggle —
+   * identical optimistic-flip-then-persist shape as `toggleDel` above.
+   * `set_settings` (lib.rs) live-applies this: it starts/stops the backend
+   * detector thread synchronously off the very same call, so flipping this
+   * on/off here takes effect immediately, not just on next launch.
+   */
+  const toggleMeetingDetection = useCallback(() => {
+    setTMeetingDetection(next => {
+      const flipped = !next
+      ipc.setSettings({ meetingDetection: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  /**
    * Persists the recommended pair as the user's explicit selections for
    * whichever of the two actually finished installing during onboarding
    * (the STT one always did, by construction — "Start using Minute" is
@@ -638,16 +661,41 @@ export function useAppState() {
    * changes.
    */
   const { recommendation: modelRecommendation, models: modelCatalog, setSttModel: setSttModelOnComplete, setLlmModel: setLlmModelOnComplete } = modelManager
-  const completeOnboarding = useCallback(() => {
-    const rec = modelRecommendation
-    if (rec) {
-      const sttInstalled = modelCatalog.find(m => m.kind === 'stt' && m.id === rec.stt && m.state === 'installed')
-      if (sttInstalled) setSttModelOnComplete(sttInstalled.id)
-      const llmInstalledEntry = modelCatalog.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
-      if (llmInstalledEntry) setLlmModelOnComplete(llmInstalledEntry.id)
-    }
-    setView('notes')
-  }, [modelRecommendation, modelCatalog, setSttModelOnComplete, setLlmModelOnComplete])
+
+  /**
+   * "Start using Minute" — persists whichever of the recommended STT/LLM
+   * pair actually finished installing (unchanged from before), and now also
+   * `meetingDetectionOptIn`: the onboarding opt-in row's checked state (see
+   * `OnboardingView`'s `onStart` prop). Only actually calls `set_settings`
+   * when the row was checked — `settings.meetingDetection` already defaults
+   * to `false` (see `settings.rs`'s `Default` impl), so leaving the row
+   * unchecked is a genuine no-op rather than a redundant write of a value
+   * that's already correct; this keeps "unchecked changes nothing" an
+   * honest, literal claim, not just a UI one. Chosen over writing it
+   * together with the model selections in one batched patch because
+   * `setSttModelOnComplete`/`setLlmModelOnComplete` above already each fire
+   * their own independent `set_settings` call (see `useModelManager`) —
+   * there's no existing "single onboarding-completion write" to join, so a
+   * third small, independent patch call matches the established pattern
+   * rather than introducing a new one.
+   */
+  const completeOnboarding = useCallback(
+    (meetingDetectionOptIn: boolean) => {
+      const rec = modelRecommendation
+      if (rec) {
+        const sttInstalled = modelCatalog.find(m => m.kind === 'stt' && m.id === rec.stt && m.state === 'installed')
+        if (sttInstalled) setSttModelOnComplete(sttInstalled.id)
+        const llmInstalledEntry = modelCatalog.find(m => m.kind === 'llm' && m.id === rec.llm && m.state === 'installed')
+        if (llmInstalledEntry) setLlmModelOnComplete(llmInstalledEntry.id)
+      }
+      if (meetingDetectionOptIn) {
+        setTMeetingDetection(true)
+        ipc.setSettings({ meetingDetection: true }).catch(reportError)
+      }
+      setView('notes')
+    },
+    [modelRecommendation, modelCatalog, setSttModelOnComplete, setLlmModelOnComplete, reportError],
+  )
 
   return {
     view,
@@ -703,6 +751,8 @@ export function useAppState() {
     askQuestion: noteDetail.askQuestion,
     llmBusy: noteDetail.llmBusy,
     tDel,
+    tMeetingDetection,
+    toggleMeetingDetection,
     noteTab,
     sidebarNotes,
     statsLine,

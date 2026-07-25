@@ -153,6 +153,8 @@ export default function App() {
               noteCount={s.notes.length}
               tDel={s.tDel}
               toggleDel={s.toggleDel}
+              meetingDetection={s.tMeetingDetection}
+              toggleMeetingDetection={s.toggleMeetingDetection}
             />
           )}
         </div>

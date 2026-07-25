@@ -51,9 +51,10 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::SharedRecorderState;
+use crate::catalog::{self, ModelKind};
 use crate::settings::SharedSettings;
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,21 @@ pub enum DetectorEvent {
     /// Minute's own mic usage must never trigger its own prompt — see the
     /// `!minute_recording` term in `evaluate`.
     SetMinuteRecording(bool),
+    /// Whether at least one speech-to-text catalog entry is installed on
+    /// disk right now — closes a real, reachable edge (Stage 5 Task 3):
+    /// enable meeting detection in Settings, then later delete every
+    /// installed STT model. Deleting a model touches nothing in
+    /// `settings.json` and never calls `set_settings`, so the live detector
+    /// thread is never told to stop — it would otherwise keep prompting
+    /// while the frontend has re-gated `view` back to `'onboarding'` (see
+    /// `useModelManager`'s re-gate effect), producing a popup whose "Start
+    /// recording" `useAppState`'s `meeting-popup-start` handler can only
+    /// bounce straight back to onboarding with an error. Fed by
+    /// `run_detector_thread` every poll tick, exactly like
+    /// `SetMinuteRecording` (see that function's body) — never fed by real
+    /// user action, so unlike `SetEnabled` there's no "mid-debounce" streak
+    /// to specially discard, just one more term in `evaluate`'s AND.
+    SetSttModelInstalled(bool),
     /// A previously shown prompt's resolution — see [`PromptOutcome`]'s docs.
     Outcome(PromptOutcome),
 }
@@ -172,6 +188,12 @@ pub struct DetectorCore {
     mic_hot_since: Option<Instant>,
     /// The most recent `Tick`'s running-app check result.
     last_meeting_app: Option<String>,
+    /// The most recent `SetSttModelInstalled` snapshot — see that event
+    /// variant's docs for the edge this closes. Defaults to `true` in
+    /// [`new`](Self::new) (the ordinary post-onboarding case), so every
+    /// test above this field's introduction, none of which ever sends
+    /// `SetSttModelInstalled`, keeps its original meaning unchanged.
+    stt_model_installed: bool,
     phase: Phase,
 }
 
@@ -188,6 +210,7 @@ impl DetectorCore {
             mic_active: false,
             mic_hot_since: None,
             last_meeting_app: None,
+            stt_model_installed: true,
             phase: Phase::Watching,
         }
     }
@@ -238,6 +261,10 @@ impl DetectorCore {
             }
             DetectorEvent::SetMinuteRecording(recording) => {
                 self.minute_recording = recording;
+                Action::None
+            }
+            DetectorEvent::SetSttModelInstalled(installed) => {
+                self.stt_model_installed = installed;
                 Action::None
             }
             DetectorEvent::Outcome(outcome) => {
@@ -294,7 +321,7 @@ impl DetectorCore {
         if self.phase != Phase::Watching {
             return Action::None;
         }
-        if !self.enabled || self.minute_recording || !self.mic_active {
+        if !self.enabled || self.minute_recording || !self.mic_active || !self.stt_model_installed {
             return Action::None;
         }
         let Some(app_name) = self.last_meeting_app.clone() else {
@@ -618,6 +645,85 @@ mod core_tests {
                 meeting_app_present: Some("Zoom".to_string()),
             },
             base + secs(6),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            }
+        );
+    }
+
+    // --- stt_model_installed (Stage 5 Task 3's onboarding-suppression fix) -
+
+    #[test]
+    fn no_stt_model_installed_suppresses_the_prompt_even_if_every_other_condition_holds() {
+        // The reachable edge this closes: detection stays enabled (nothing
+        // about deleting a model touches `settings.meetingDetection`), but
+        // every STT model has since been deleted — re-gating the frontend
+        // back to onboarding. The still-running detector must not prompt.
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+        core.process(DetectorEvent::SetSttModelInstalled(false), base);
+
+        core.process(DetectorEvent::MicStarted, base);
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn stt_model_installed_defaults_to_true_so_a_fresh_core_prompts_normally() {
+        // No `SetSttModelInstalled` ever sent — the ordinary post-onboarding
+        // case every other test above this field's introduction relies on.
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        core.process(DetectorEvent::MicStarted, base);
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn stt_model_becoming_installed_again_lets_a_fresh_streak_prompt() {
+        // A model finishes installing (e.g. the user completes onboarding)
+        // partway through an already-hot mic streak — the very next tick at
+        // or past the 5s mark prompts on that streak's own merits, same as
+        // any other input becoming true mid-streak (e.g.
+        // `app_appearing_after_mic_already_hot_still_triggers_once_present`).
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+        core.process(DetectorEvent::SetSttModelInstalled(false), base);
+
+        core.process(DetectorEvent::MicStarted, base);
+        let blocked = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(3),
+        );
+        assert_eq!(blocked, Action::None);
+
+        core.process(DetectorEvent::SetSttModelInstalled(true), base + secs(4));
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
         );
         assert_eq!(
             action,
@@ -1666,6 +1772,29 @@ struct MeetingDetectedEvent {
     app_name: String,
 }
 
+/// Whether at least one STT catalog entry is installed under the app's data
+/// dir right now — mirrors the frontend's own gate (`useModelManager`'s
+/// re-gate check, `OnboardingView`'s `hasInstalledStt`: `models.some(m =>
+/// m.kind === 'stt' && m.state === 'installed')`) so the backend detector can
+/// never disagree with what onboarding/gating has already decided — see
+/// [`DetectorEvent::SetSttModelInstalled`]'s docs for the edge this closes.
+/// Fails closed (`false`) on any lookup error (app-data-dir unresolvable, a
+/// corrupt embedded catalog) rather than failing open: a false negative here
+/// only ever costs a suppressed prompt that could have fired; a false
+/// positive would let a popup nobody can actually act on slip through during
+/// onboarding, which is the exact bug this input exists to close.
+fn any_stt_model_installed(app: &AppHandle) -> bool {
+    let Ok(models_root) = app.path().app_data_dir() else {
+        return false;
+    };
+    let Ok(entries) = catalog::load_catalog() else {
+        return false;
+    };
+    entries.iter().any(|entry| {
+        entry.kind == ModelKind::Stt && catalog::install_state(entry, &models_root) == catalog::InstallState::Installed
+    })
+}
+
 fn emit_meeting_detected(app: &AppHandle, app_name: &str) {
     let event = MeetingDetectedEvent {
         app_name: app_name.to_string(),
@@ -1741,6 +1870,13 @@ fn run_detector_thread(
 
         let recording = crate::audio::is_recording_active(&recorder);
         core.process(DetectorEvent::SetMinuteRecording(recording), Instant::now());
+
+        // Same every-iteration polling shape as the recording-state check
+        // just above — see `DetectorEvent::SetSttModelInstalled`'s docs for
+        // why this needs to be re-checked continuously rather than only at
+        // startup (a model can be deleted well after the thread starts).
+        let stt_installed = any_stt_model_installed(&app);
+        core.process(DetectorEvent::SetSttModelInstalled(stt_installed), Instant::now());
 
         let action = match msg_rx.recv_timeout(POLL_INTERVAL) {
             Ok(ThreadMsg::Shim(ShimEvent::MicStarted)) => {

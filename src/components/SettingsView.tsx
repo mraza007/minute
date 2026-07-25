@@ -20,6 +20,8 @@ export interface SettingsViewProps {
   noteCount: number
   tDel: boolean
   toggleDel: () => void
+  meetingDetection: boolean
+  toggleMeetingDetection: () => void
 }
 
 const cardStyle: CSSProperties = {
@@ -238,6 +240,8 @@ export function SettingsView({
   noteCount,
   tDel,
   toggleDel,
+  meetingDetection,
+  toggleMeetingDetection,
 }: SettingsViewProps) {
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
@@ -331,6 +335,17 @@ export function SettingsView({
                 deleteModel={deleteModel}
               />
             ))}
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <h2 style={cardHeaderStyle}>Meeting detection</h2>
+          <div style={{ padding: '12px 20px 18px' }}>
+            <Toggle on={meetingDetection} onToggle={toggleMeetingDetection} label="Offer to record when a meeting starts" />
+            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-faint)' }}>
+              When another app starts using the microphone, Minute shows a small prompt. Detection is fully local and never listens to audio.
+            </div>
+            <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.</div>
           </div>
         </div>
 

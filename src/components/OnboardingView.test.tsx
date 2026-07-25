@@ -109,15 +109,32 @@ describe('OnboardingView', () => {
     expect(screen.getByRole('button', { name: /start using minute/i })).toBeEnabled()
   })
 
-  it('calls onStart when the enabled Start button is clicked', () => {
+  it('calls onStart with false when the enabled Start button is clicked without opting in', () => {
     const onStart = vi.fn()
     render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} onStart={onStart} />)
     fireEvent.click(screen.getByRole('button', { name: /start using minute/i }))
     expect(onStart).toHaveBeenCalledTimes(1)
+    expect(onStart).toHaveBeenCalledWith(false)
   })
 
   it('shows an in-use sub-line once the recommended STT model is installed', () => {
     render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} />)
     expect(screen.getByText('Installed · in use')).toBeInTheDocument()
+  })
+
+  it('shows the meeting detection opt-in row unchecked by default', () => {
+    render(<OnboardingView {...base} />)
+    const toggle = screen.getByRole('switch', { name: /offer to record when a meeting starts/i })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('checking the opt-in row then starting calls onStart with true', () => {
+    const onStart = vi.fn()
+    render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} onStart={onStart} />)
+
+    fireEvent.click(screen.getByRole('switch', { name: /offer to record when a meeting starts/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start using minute/i }))
+
+    expect(onStart).toHaveBeenCalledWith(true)
   })
 })
