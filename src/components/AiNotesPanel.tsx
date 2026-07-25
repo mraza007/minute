@@ -24,6 +24,8 @@ export interface AiNotesPanelProps {
   askHistory: AskHistoryEntry[]
   /** This note's ask lifecycle — `'idle'` covers both "never asked" and "the last one finished", same collapsing rule as `status` above. */
   askStatus: AskStatus
+  /** Whether this note's audio can actually be seeked into right now — `audioPath !== null && !failed`, the same computation NoteView feeds TranscriptList's own `seekable` prop. Gates every `[mm:ss]` citation button in ask history exactly like TranscriptList gates its timestamp buttons: `false` renders them aria-disabled, unclickable, and in muted styling instead of looking like a working link that silently does nothing. */
+  seekable: boolean
   /** Whether *any* LLM generation is in flight app-wide (a summarize or an ask, for this note or any other) — disables the ask input even when it's `status`/`askStatus` for some *other* note that's actually running, since the backend would reject a submit either way (one generation at a time — see `llm::LlmBusy`'s docs). */
   llmBusy: boolean
   onToggleAction: (index: number, done: boolean) => void
@@ -317,8 +319,18 @@ const citationButtonStyle: CSSProperties = {
  * `TranscriptList`'s own segment-timestamp seek buttons use — so a screen
  * reader announces the same, unambiguous action regardless of which of the
  * two seek entry points the user is on.
+ *
+ * `seekable` mirrors `TranscriptList`'s own timestamp-button treatment
+ * exactly (see `Segment` there): `disabled` + `aria-disabled`, no pointer
+ * cursor, and the click guarded to a no-op, so a swept (or failed-to-load)
+ * note's citations go visibly inert instead of looking like working links
+ * that silently do nothing. The underline + accent color that make these
+ * read as links in the first place are dropped too when not seekable —
+ * muted to `--ink-faint`, the same "off" ink token used everywhere else in
+ * the app for a disabled affordance — precisely because looking clickable
+ * is the failure mode this is closing.
  */
-function AnswerWithCitations({ text, onSeekCitation }: { text: string; onSeekCitation: (seconds: number) => void }) {
+function AnswerWithCitations({ text, seekable, onSeekCitation }: { text: string; seekable: boolean; onSeekCitation: (seconds: number) => void }) {
   const parts = splitAnswerCitations(text)
   return (
     <>
@@ -328,9 +340,16 @@ function AnswerWithCitations({ text, onSeekCitation }: { text: string; onSeekCit
         ) : (
           <button
             key={i}
-            onClick={() => onSeekCitation(part.citationSeconds as number)}
+            onClick={() => seekable && onSeekCitation(part.citationSeconds as number)}
+            disabled={!seekable}
+            aria-disabled={!seekable}
             aria-label={`Play from ${part.text.slice(1, -1)}`}
-            style={citationButtonStyle}
+            style={{
+              ...citationButtonStyle,
+              color: seekable ? citationButtonStyle.color : 'var(--ink-faint)',
+              cursor: seekable ? 'pointer' : 'default',
+              textDecoration: seekable ? 'underline' : 'none',
+            }}
           >
             {part.text}
           </button>
@@ -343,11 +362,13 @@ function AnswerWithCitations({ text, onSeekCitation }: { text: string; onSeekCit
 function AskEntryCard({
   entry,
   disabled,
+  seekable,
   onSeekCitation,
   onRetry,
 }: {
   entry: AskHistoryEntry
   disabled: boolean
+  seekable: boolean
   onSeekCitation: (seconds: number) => void
   onRetry: () => void
 }) {
@@ -370,7 +391,7 @@ function AskEntryCard({
         </>
       ) : (
         <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-body)' }}>
-          <AnswerWithCitations text={entry.answer ?? ''} onSeekCitation={onSeekCitation} />
+          <AnswerWithCitations text={entry.answer ?? ''} seekable={seekable} onSeekCitation={onSeekCitation} />
         </div>
       )}
     </div>
@@ -418,12 +439,14 @@ function AskSection({
   askHistory,
   askStatus,
   llmBusy,
+  seekable,
   onAsk,
   onSeekCitation,
 }: {
   askHistory: AskHistoryEntry[]
   askStatus: AskStatus
   llmBusy: boolean
+  seekable: boolean
   onAsk: (question: string) => void
   onSeekCitation: (seconds: number) => void
 }) {
@@ -475,6 +498,7 @@ function AskSection({
               key={entry.id}
               entry={entry}
               disabled={disabled}
+              seekable={seekable}
               onSeekCitation={onSeekCitation}
               onRetry={() => onAsk(entry.question)}
             />
@@ -498,6 +522,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   askHistory,
   askStatus,
   llmBusy,
+  seekable,
   onToggleAction,
   onRegenerate,
   onCopy,
@@ -568,7 +593,14 @@ export const AiNotesPanel = memo(function AiNotesPanel({
         )}
 
         {llmInstalled ? (
-          <AskSection askHistory={askHistory} askStatus={askStatus} llmBusy={llmBusy} onAsk={onAsk} onSeekCitation={onSeekCitation} />
+          <AskSection
+            askHistory={askHistory}
+            askStatus={askStatus}
+            llmBusy={llmBusy}
+            seekable={seekable}
+            onAsk={onAsk}
+            onSeekCitation={onSeekCitation}
+          />
         ) : (
           <NoLlmAskPlaceholder onGoSettings={onGoSettings} />
         )}

@@ -30,7 +30,7 @@ export interface NoteViewProps {
   selectedTranscript: StoredSegment[]
   selectedSummary: SummaryDoc | null
   selectedMarkdown: string
-  /** This note's `audio.wav` path from `get_note`, or `null` if it doesn't exist on disk — same staleness contract as `selectedTranscript`/`selectedSummary`/`selectedMarkdown` (only trusted once `selectedMeta.id` matches `meta.id`). Feeds `useAudioPlayer`; `null` renders PlayerBar's disabled "Audio removed" state. */
+  /** This note's `audio.wav` path from `get_note`, or `null` if it doesn't exist on disk — same staleness contract as `selectedTranscript`/`selectedSummary`/`selectedMarkdown` (only trusted once `selectedMeta.id` matches `meta.id`). Feeds `useAudioPlayer`; `null` renders PlayerBar's disabled "Audio removed" state. A non-null path that then fails to actually load (see `useAudioPlayer`'s `failed`) renders the same disabled affordances with different, honest copy — "Audio unavailable" — since the file wasn't necessarily removed. */
   selectedAudioPath: string | null
   transcriptLoading: boolean
   /**
@@ -409,7 +409,18 @@ export function NoteView({
   // `play`/`pause`/`toggle`/`seek`/`skip`/`cycleRate` are permanently stable
   // identities, which is what keeps `handleSeekFromTranscript` below (and
   // therefore TranscriptList's `onSeek` prop) stable too.
-  const { playing, currentTime, duration, rate, play, toggle, seek, skip, cycleRate } = useAudioPlayer(audioPath)
+  const { playing, currentTime, duration, rate, failed, play, toggle, seek, skip, cycleRate } = useAudioPlayer(audioPath)
+
+  // Whether this note's audio can actually be seeked into right now — the
+  // single source of truth fed to every seek/playback affordance below
+  // (PlayerBar's controls, TranscriptList's timestamp buttons, and — via
+  // AiNotesPanel — ask history's citation buttons): not just "does a path
+  // exist" but "does a path exist AND did loading it not just fail". A note
+  // whose audio.wav was swept (or deleted/raced out from under the app
+  // after this path was fetched) must look and behave identically inert
+  // either way, even though PlayerBar shows different copy for the two
+  // causes (see its own docs).
+  const seekable = audioPath !== null && !failed
 
   // The real audio element's duration once its metadata has loaded; before
   // that (or with no audio at all) falls back to the note's persisted
@@ -601,11 +612,12 @@ export function NoteView({
                 segments={displaySegments}
                 activeIndex={activeIndex}
                 onSeek={handleSeekFromTranscript}
-                seekable={audioPath !== null}
+                seekable={seekable}
               />
             )}
             <PlayerBar
               audioPath={audioPath}
+              failed={failed}
               playing={playing}
               currentTime={currentTime}
               durationSec={durationSec}
@@ -638,6 +650,7 @@ export function NoteView({
         askHistory={askHistory}
         askStatus={askStatus}
         llmBusy={llmBusy}
+        seekable={seekable}
         onAsk={handleAsk}
         // Citation click → seek target — the exact same seek-then-play
         // callback TranscriptList's own `onSeek` uses (see

@@ -36,6 +36,19 @@ export interface AudioPlayerControls {
   /** The loaded audio's real duration (seconds) once `loadedmetadata` has fired; `0` before that (or with no `audioPath`). */
   duration: number
   rate: PlaybackRate
+  /**
+   * `true` once the element has fired a native `error` event for the
+   * current `audioPath` — the file existed at `get_note` time (`audioPath`
+   * is non-null) but the load itself failed: deleted out from under the app
+   * after that fetch, or raced by the launch sweep before the browser ever
+   * got to read it. Distinct from `audioPath === null` (no file was ever
+   * known to exist) — callers (NoteView) treat the two the same for
+   * disabling playback/seek affordances, but show honest, different copy
+   * ("Audio unavailable" vs. "Audio removed") since the cause differs.
+   * Reset to `false` whenever `audioPath` changes, same as
+   * `currentTime`/`duration`/`playing`.
+   */
+  failed: boolean
   play: () => void
   pause: () => void
   toggle: () => void
@@ -91,11 +104,13 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [rate, setRate] = useState<PlaybackRate>(1)
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     setPlaying(false)
     setCurrentTime(0)
     setDuration(0)
+    setFailed(false)
     pendingSeekRef.current = null
 
     if (!audioPath) {
@@ -126,12 +141,20 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
     const onPlay = () => setPlaying(true)
     const onPause = () => setPlaying(false)
     const onEnded = () => setPlaying(false)
+    // A real load failure (audio.wav deleted out from under the app while
+    // this path was still cached, or the launch sweep racing the first
+    // get_note) — the browser never gets usable media out of `src`. Nothing
+    // else here reacts to it (no retry — there's nothing to retry against),
+    // this just flips `failed` so callers can stop presenting playback as
+    // live instead of silently no-op-ing forever.
+    const onError = () => setFailed(true)
 
     audio.addEventListener('timeupdate', onTimeUpdate)
     audio.addEventListener('loadedmetadata', onLoadedMetadata)
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
     audio.addEventListener('ended', onEnded)
+    audio.addEventListener('error', onError)
 
     return () => {
       // Runs both when `audioPath` changes to a different note (about to
@@ -150,6 +173,7 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
       audio.removeEventListener('play', onPlay)
       audio.removeEventListener('pause', onPause)
       audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('error', onError)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioPath])
@@ -236,5 +260,5 @@ export function useAudioPlayer(audioPath: string | null, createAudio: () => Audi
     })
   }, [])
 
-  return { playing, currentTime, duration, rate, play, pause, toggle, seek, skip, cycleRate }
+  return { playing, currentTime, duration, rate, failed, play, pause, toggle, seek, skip, cycleRate }
 }

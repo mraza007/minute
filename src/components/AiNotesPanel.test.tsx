@@ -24,6 +24,7 @@ function baseProps(overrides: Partial<AiNotesPanelProps> = {}): AiNotesPanelProp
     askHistory: [],
     askStatus: 'idle',
     llmBusy: false,
+    seekable: true,
     onToggleAction: vi.fn(),
     onRegenerate: vi.fn(),
     onCopy: vi.fn(),
@@ -303,6 +304,41 @@ describe('AiNotesPanel', () => {
         />,
       )
       expect(screen.getByRole('button', { name: 'Play from 01:34' })).toBeInTheDocument()
+    })
+
+    it('disables citation buttons and does not call onSeekCitation when the note is not seekable (e.g. swept or failed-to-load audio)', () => {
+      const onSeekCitation = vi.fn()
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [{ id: 1, question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
+            seekable: false,
+            onSeekCitation,
+          })}
+        />,
+      )
+      const citation = screen.getByRole('button', { name: 'Play from 01:34' })
+      expect(citation).toBeDisabled()
+      expect(citation).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.click(citation)
+      expect(onSeekCitation).not.toHaveBeenCalled()
+    })
+
+    it('citation buttons are enabled and clickable when the note is seekable', () => {
+      const onSeekCitation = vi.fn()
+      render(
+        <AiNotesPanel
+          {...baseProps({
+            askHistory: [{ id: 1, question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
+            seekable: true,
+            onSeekCitation,
+          })}
+        />,
+      )
+      const citation = screen.getByRole('button', { name: 'Play from 01:34' })
+      expect(citation).not.toBeDisabled()
+      fireEvent.click(citation)
+      expect(onSeekCitation).toHaveBeenCalledWith(94)
     })
 
     it('renders an answer with no citations as plain text with no extra buttons', () => {

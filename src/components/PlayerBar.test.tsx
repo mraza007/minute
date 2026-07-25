@@ -5,6 +5,7 @@ import { PlayerBar, type PlayerBarProps } from './PlayerBar'
 function makeProps(overrides: Partial<PlayerBarProps> = {}): PlayerBarProps {
   return {
     audioPath: '/notes/abc/audio.wav',
+    failed: false,
     playing: false,
     currentTime: 0,
     durationSec: 48 * 60 + 22,
@@ -155,6 +156,30 @@ describe('PlayerBar', () => {
     it('clicking the disabled Play button does not call onToggle', () => {
       const onToggle = vi.fn()
       render(<PlayerBar {...makeProps({ audioPath: null, onToggle })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Play' }))
+      expect(onToggle).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('failed to load (audioPath present, but the element fired an error)', () => {
+    it('shows "Audio unavailable" instead of "Audio removed" or a time label', () => {
+      render(<PlayerBar {...makeProps({ failed: true })} />)
+      expect(screen.getByText('Audio unavailable')).toBeInTheDocument()
+      expect(screen.queryByText('Audio removed')).not.toBeInTheDocument()
+      expect(screen.queryByText(/\d\d:\d\d \/ \d\d:\d\d/)).not.toBeInTheDocument()
+    })
+
+    it('disables every control, same as no audio at all', () => {
+      render(<PlayerBar {...makeProps({ failed: true })} />)
+      expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Back 15s' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Forward 15s' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Playback speed' })).toBeDisabled()
+    })
+
+    it('clicking the disabled Play button does not call onToggle', () => {
+      const onToggle = vi.fn()
+      render(<PlayerBar {...makeProps({ failed: true, onToggle })} />)
       fireEvent.click(screen.getByRole('button', { name: 'Play' }))
       expect(onToggle).not.toHaveBeenCalled()
     })

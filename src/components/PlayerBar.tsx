@@ -4,6 +4,8 @@ import { formatMmSs } from '../state/adapters'
 export interface PlayerBarProps {
   /** Absolute path to this note's `audio.wav`, or `null` if it doesn't exist on disk (never captured, or swept) — drives the whole bar's disabled "Audio removed" state rather than faking controls that don't work. */
   audioPath: string | null
+  /** `true` once the audio element has fired a load `error` for `audioPath` — the file was known to exist (`audioPath` non-null) but failed to actually load (deleted out from under the app, or raced by the launch sweep). Disables every control exactly like `audioPath === null` does, but with honest "Audio unavailable" copy instead of "Audio removed" — the file wasn't necessarily removed, the load just failed. */
+  failed: boolean
   playing: boolean
   currentTime: number
   /** The live audio element's real duration once loaded, falling back to the note's persisted duration before then — see NoteView's wiring. */
@@ -34,8 +36,8 @@ function PlayPauseIcon({ playing }: { playing: boolean }) {
   )
 }
 
-export function PlayerBar({ audioPath, playing, currentTime, durationSec, rate, onToggle, onSkip, onSeek, onCycleRate }: PlayerBarProps) {
-  const disabled = audioPath === null
+export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec, rate, onToggle, onSkip, onSeek, onCycleRate }: PlayerBarProps) {
+  const disabled = audioPath === null || failed
   const trackRef = useRef<HTMLDivElement>(null)
   const progressPercent = durationSec > 0 ? Math.min(100, Math.max(0, (currentTime / durationSec) * 100)) : 0
 
@@ -201,7 +203,7 @@ export function PlayerBar({ audioPath, playing, currentTime, durationSec, rate, 
           />
         </div>
         <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: disabled ? 'var(--ink-faint)' : 'var(--ink-muted)', flex: 'none' }}>
-          {disabled ? 'Audio removed' : `${formatMmSs(currentTime)} / ${formatMmSs(durationSec)}`}
+          {disabled ? (failed ? 'Audio unavailable' : 'Audio removed') : `${formatMmSs(currentTime)} / ${formatMmSs(durationSec)}`}
         </div>
         <button
           disabled={disabled}

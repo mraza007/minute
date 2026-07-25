@@ -78,6 +78,11 @@ class FakeAudio implements AudioElementLike {
     this.currentTime = seconds
     this.dispatch('timeupdate')
   }
+
+  /** Test helper: simulates the element firing a native `error` event — a real load failure (file deleted out from under the app, or the launch sweep racing the first `get_note`). */
+  fail() {
+    this.dispatch('error')
+  }
 }
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -184,6 +189,28 @@ describe('useAudioPlayer', () => {
     expect(result.current.duration).toBe(0)
     act(() => created[0].loadMetadata(180))
     expect(result.current.duration).toBe(180)
+  })
+
+  it('failed starts false and flips true once the element fires a native error event', () => {
+    const { created, createAudio } = harness()
+    const { result } = renderHook(() => useAudioPlayer('/a.wav', createAudio))
+
+    expect(result.current.failed).toBe(false)
+    act(() => created[0].fail())
+    expect(result.current.failed).toBe(true)
+  })
+
+  it('resets failed to false when audioPath changes to a different note', () => {
+    const { created, createAudio } = harness()
+    const { result, rerender } = renderHook(({ path }) => useAudioPlayer(path, createAudio), {
+      initialProps: { path: '/a.wav' },
+    })
+    act(() => created[0].fail())
+    expect(result.current.failed).toBe(true)
+
+    rerender({ path: '/b.wav' })
+
+    expect(result.current.failed).toBe(false)
   })
 
   it('seek() clamps to [0, duration]', () => {

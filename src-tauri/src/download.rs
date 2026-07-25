@@ -851,7 +851,13 @@ mod tests {
 
     /// Downloads the real whisper-small model (~466 MB) into the actual app
     /// data dir so it's available for Task 6's e2e whisper test too. Not
-    /// run in CI/normal `cargo test` — run manually:
+    /// run in CI/normal `cargo test`.
+    ///
+    /// Skips the network round-trip entirely (just logs and returns) if the
+    /// model is already installed with a matching size — same short-circuit
+    /// `real_download_of_qwen3_5_4b` below uses — without it, every run of
+    /// this test would re-download the full 466 MB even when it's already
+    /// on disk. Run manually:
     ///
     /// ```sh
     /// cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_download_of_whisper_small
@@ -868,6 +874,11 @@ mod tests {
 
         let home = std::env::var("HOME").expect("HOME must be set");
         let models_root = PathBuf::from(home).join("Library/Application Support/dev.minute.app");
+
+        if catalog::install_state(&entry, &models_root) == catalog::InstallState::Installed {
+            eprintln!("whisper-small already installed at the expected size — skipping download");
+            return;
+        }
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let runtime = tokio::runtime::Runtime::new().unwrap();

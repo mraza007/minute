@@ -269,6 +269,81 @@ describe('NoteView', () => {
     })
   })
 
+  // A load failure (audio.wav deleted out from under the app while its path
+  // was still cached, or the launch sweep racing the first get_note) can
+  // only be reproduced here by firing a genuine `error` event on the real
+  // `<audio>` element `useAudioPlayer` creates internally — NoteView doesn't
+  // expose a `createAudio` injection seam (that's useAudioPlayer.test.ts's
+  // job), so the element is captured by intercepting the global `Audio`
+  // constructor for the duration of each test below.
+  describe('audio load failure (selectedAudioPath present, but the element errors)', () => {
+    let audioInstances: HTMLAudioElement[]
+
+    beforeEach(() => {
+      audioInstances = []
+      const OriginalAudio = window.Audio
+      vi.spyOn(window, 'Audio').mockImplementation(function (...args: ConstructorParameters<typeof Audio>) {
+        const el = new OriginalAudio(...args)
+        audioInstances.push(el)
+        return el
+      } as unknown as typeof Audio)
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('shows the disabled "Audio unavailable" state (not "Audio removed") once the element errors', () => {
+      const meta = noteFixture()
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedAudioPath: '/notes/abc/audio.wav' })} />)
+
+      act(() => {
+        audioInstances[0].dispatchEvent(new Event('error'))
+      })
+
+      expect(screen.getByText('Audio unavailable')).toBeInTheDocument()
+      expect(screen.queryByText('Audio removed')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    })
+
+    it('makes transcript timestamps inert once the element errors', () => {
+      const meta = noteFixture()
+      const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'Thanks for making time.' }]
+      render(
+        <NoteView
+          {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, selectedAudioPath: '/notes/abc/audio.wav' })}
+        />,
+      )
+
+      expect(screen.getByRole('button', { name: 'Play from 00:00' })).not.toBeDisabled()
+      act(() => {
+        audioInstances[0].dispatchEvent(new Event('error'))
+      })
+      expect(screen.getByRole('button', { name: 'Play from 00:00' })).toBeDisabled()
+    })
+
+    it('makes ask-history citations inert once the element errors', () => {
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            selectedAudioPath: '/notes/abc/audio.wav',
+            llmInstalled: true,
+            askHistory: [{ id: 1, question: 'When was pricing locked?', answer: 'Pricing was locked at [01:34] during the call.' }],
+          })}
+        />,
+      )
+
+      expect(screen.getByRole('button', { name: 'Play from 01:34' })).not.toBeDisabled()
+      act(() => {
+        audioInstances[0].dispatchEvent(new Event('error'))
+      })
+      expect(screen.getByRole('button', { name: 'Play from 01:34' })).toBeDisabled()
+    })
+  })
+
   describe('pendingSeek from the search palette', () => {
     it('applies a pendingSeek targeting the selected note once its audio is ready, then reports it applied', () => {
       const onPendingSeekApplied = vi.fn()
