@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Minute — screenshot harness</title>
+    <style>
+      /* Fills whatever box the outer screenshot.html iframe gives it
+         (1280×800 logical px) so App's own `height: 100vh` root div
+         resolves against *this* document's viewport, not the marketing
+         page's — see src/screenshot/darkOverride.ts's docs for why this
+         file exists separately from screenshot.html at all. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/screenshot/main.tsx"></script>
+  </body>
+</html>

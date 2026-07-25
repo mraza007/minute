@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Minute — marketing capture frame</title>
+    <style>
+      :root {
+        --backdrop-base: #efe9e2;
+        --blob-accent: rgba(224, 68, 48, 0.22);
+        --blob-cream: rgba(250, 240, 222, 0.65);
+        --blob-gray: rgba(150, 140, 128, 0.16);
+        --window-border: rgba(28, 26, 24, 0.1);
+      }
+      html[data-theme='dark'] {
+        --backdrop-base: #18160f;
+        --blob-accent: rgba(224, 84, 63, 0.16);
+        --blob-cream: rgba(90, 76, 58, 0.28);
+        --blob-gray: rgba(70, 64, 56, 0.22);
+        --window-border: rgba(255, 255, 255, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--backdrop-base);
+      }
+
+      /* Soft blurred-blob backdrop — warm paper light, not a SaaS gradient:
+         see .impeccable.md's "paper, not glass" and the anti-references
+         list (no purple/cyan glassmorphism). Blobs are plain absolutely-
+         positioned divs, heavily blurred, well outside the window chrome so
+         nothing sharp-edged shows through. */
+      .blob {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(110px);
+        pointer-events: none;
+      }
+      .blob-accent {
+        width: 900px;
+        height: 900px;
+        top: -280px;
+        left: -220px;
+        background: var(--blob-accent);
+      }
+      .blob-cream {
+        width: 1000px;
+        height: 1000px;
+        bottom: -420px;
+        right: -280px;
+        background: var(--blob-cream);
+      }
+      .blob-gray {
+        width: 760px;
+        height: 760px;
+        bottom: -320px;
+        left: 220px;
+        background: var(--blob-gray);
+      }
+
+      /* Barely-there grain so the blurred backdrop doesn't read as a flat
+         digital gradient — a tiny repeating radial-gradient tile, very low
+         opacity. */
+      .grain {
+        position: absolute;
+        inset: 0;
+        opacity: 0.035;
+        background-image: radial-gradient(circle at 1px 1px, #000 1px, transparent 0);
+        background-size: 3px 3px;
+        pointer-events: none;
+      }
+      html[data-theme='dark'] .grain {
+        opacity: 0.05;
+        background-image: radial-gradient(circle at 1px 1px, #fff 1px, transparent 0);
+      }
+
+      .stage {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .window-chrome {
+        position: relative;
+        width: 1280px;
+        height: 800px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid var(--window-border);
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.06),
+          0 8px 24px rgba(0, 0, 0, 0.14),
+          0 25px 80px rgba(0, 0, 0, 0.25);
+      }
+
+      .window-chrome iframe {
+        display: block;
+        width: 1280px;
+        height: 800px;
+        border: none;
+      }
+
+      /* Fake traffic lights — the real app reserves 76px of left padding in
+         its title bar (see TitleBar.tsx's `padding: '0 16px 0 76px'`) for
+         native macOS traffic lights, which only exist in the real windowed
+         app (Tauri's overlay title bar draws them, not any DOM the harness
+         can render). This overlay reproduces them at the same position so
+         the capture looks like a real app window instead of a browser tab. */
+      .traffic-lights {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        display: flex;
+        gap: 8px;
+        z-index: 10;
+        pointer-events: none;
+      }
+      .traffic-lights span {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.15);
+      }
+      .traffic-lights .tl-close {
+        background: #ff5f57;
+      }
+      .traffic-lights .tl-min {
+        background: #febc2e;
+      }
+      .traffic-lights .tl-zoom {
+        background: #28c840;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="blob blob-accent"></div>
+    <div class="blob blob-cream"></div>
+    <div class="blob blob-gray"></div>
+    <div class="grain"></div>
+    <div class="stage">
+      <div class="window-chrome">
+        <div class="traffic-lights">
+          <span class="tl-close"></span>
+          <span class="tl-min"></span>
+          <span class="tl-zoom"></span>
+        </div>
+        <iframe id="app-frame" title="Minute"></iframe>
+      </div>
+    </div>
+    <script>
+      // Forwards every query param this page was loaded with straight to
+      // the app iframe (?state=…&theme=…&focus=…) and flips the backdrop's
+      // own dark variant in lockstep — kept as one param rather than a
+      // separate marketing-frame theme so a single URL always drives both
+      // consistently.
+      var params = new URLSearchParams(window.location.search)
+      if (params.get('theme') === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark')
+      }
+      document.getElementById('app-frame').src = '/screenshot-app.html?' + params.toString()
+    </script>
+  </body>
+</html>
