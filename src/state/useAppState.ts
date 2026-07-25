@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
-import { onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
+import { onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
 import type { Hardware, NoteMeta, StorageStats, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
@@ -457,6 +457,43 @@ export function useAppState() {
       })
       .catch(reportError)
   }, [modelManager.sttModel, reportError])
+
+  /**
+   * The meeting-popup's "Start recording" click (`popup::popup_start`'s
+   * `meeting-popup-start` event) — see that command's docs (src-tauri/src/
+   * popup.rs) for why the backend deliberately doesn't call
+   * `start_recording` itself and emits this plain event instead: `startRec`
+   * above is the *only* place the main window's `view` actually navigates
+   * to `'recording'` (it's driven by `ipc.startRecording(...)`'s own
+   * `.then`, not by listening for a `recording-state` event — that event
+   * only ever updates an already-showing recording view's elapsed/paused
+   * fields), so reusing it here — rather than duplicating a second,
+   * lower-level recording-start path — is both the least code and the only
+   * way this actually navigates anywhere.
+   *
+   * Mirrors `useModelManager`'s own `hasInstalledStt` re-gate check (same
+   * `models.some(...)` shape) to decide whether there's actually a
+   * transcription model to record with: `start_recording` itself has no
+   * such guard (it happily records with no live transcript if the model
+   * isn't installed — see `audio::spawn_stt_worker_if_model_installed`), so
+   * this is the one place that check needs to be re-applied before calling
+   * `startRec` from the popup path specifically. If none is installed, this
+   * sends the user to onboarding with an honest message instead of quietly
+   * starting an untranscribed recording.
+   */
+  useTauriEvent(
+    onMeetingPopupStart,
+    () => {
+      const hasInstalledStt = modelManager.models.some(m => m.kind === 'stt' && m.state === 'installed')
+      if (hasInstalledStt) {
+        startRec()
+      } else {
+        setView('onboarding')
+        reportError('Install a transcription model in onboarding before Minute can start recording.')
+      }
+    },
+    [modelManager.models, startRec, reportError],
+  )
 
   /**
    * Flips `paused` optimistically, then asks the backend to actually

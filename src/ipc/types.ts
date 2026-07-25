@@ -288,3 +288,15 @@ export interface AskAnswerEvent {
 export interface MeetingDetectedEvent {
   appName: string
 }
+
+/**
+ * `popup.rs::MeetingPopupPayload` — event `meeting-popup-payload`, emitted
+ * (via `emit_to`, targeted only at the `meeting-popup` window) every time
+ * `popup::show_meeting_prompt` shows the pill, including on reuse — the
+ * popup window is created once and kept alive for the rest of the app's
+ * session, so this is how it learns which app's call triggered *this*
+ * particular showing.
+ */
+export interface MeetingPopupPayloadEvent {
+  appName: string
+}

@@ -10,6 +10,7 @@ import type {
   AskAnswerEvent,
   AskStatusEvent,
   MeetingDetectedEvent,
+  MeetingPopupPayloadEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
   RecordingStateEvent,
@@ -61,9 +62,41 @@ export function onAskAnswer(cb: (payload: AskAnswerEvent) => void): Promise<Unli
 
 /**
  * `detect.rs`'s meeting-detection prompt trigger — see `MeetingDetectedEvent`'s
- * docs. Stage 5 Task 1 only wires the typed listener itself; nothing in the
- * frontend subscribes to it yet (the popup pill is Task 2).
+ * docs. Broadcast to every window (the main window doesn't currently act on
+ * it — the popup pill itself is driven by `onMeetingPopupPayload` below,
+ * targeted specifically at the popup window); kept as its own event rather
+ * than folded into that one since it's the general "a prompt fired"
+ * notification, not popup-window-specific wiring.
  */
 export function onMeetingDetected(cb: (payload: MeetingDetectedEvent) => void): Promise<UnlistenFn> {
   return listen<MeetingDetectedEvent>('meeting-detected', (event) => cb(event.payload))
+}
+
+/**
+ * `popup.rs`'s per-showing payload for the meeting-detected pill — see
+ * `MeetingPopupPayloadEvent`'s docs. Only ever listened to by the popup
+ * window itself (`src/popup/Pill.tsx`).
+ */
+export function onMeetingPopupPayload(
+  cb: (payload: MeetingPopupPayloadEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<MeetingPopupPayloadEvent>('meeting-popup-payload', (event) => cb(event.payload))
+}
+
+/**
+ * `popup::popup_start`'s "the user clicked Start recording" signal to the
+ * *main* window — see that command's docs for why this is a plain event
+ * the main frontend reacts to (re-running its own already-tested `startRec`
+ * flow) rather than the backend starting the recording directly. No real
+ * payload (the Rust side emits `()`, which serializes to `null` — `cb`'s
+ * `null` parameter matches that shape rather than pretending there's a
+ * payload type, and is left unused by every caller) — everything the main
+ * window's handler needs (which STT model, whether one is even installed)
+ * is already in its own in-memory state. Kept in the same `(cb: (payload:
+ * T) => void) => Promise<UnlistenFn>` shape as every other helper here
+ * (rather than a bare `() => void` callback) so it can be passed directly
+ * to `useTauriEvent`, which is generic over that shape.
+ */
+export function onMeetingPopupStart(cb: (payload: null) => void): Promise<UnlistenFn> {
+  return listen<null>('meeting-popup-start', (event) => cb(event.payload))
 }

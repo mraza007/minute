@@ -21,7 +21,21 @@ tauri-build = { version = "2.6.3", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3", features = ["protocol-asset"] }
+# `macos-private-api` (Stage 5 Task 2): required by `tauri-nspanel` (the
+# meeting-detected popup's non-activating NSPanel — see popup.rs's module
+# docs) and by this crate's own `tauri.conf.json`'s `macOSPrivateApi: true`
+# (`transparent: true` on the popup window needs it — see that config
+# field's own doc comment in tauri's config schema). `tauri-build`'s build
+# script cross-checks the two at compile time (`tauri.conf.json`'s
+# `macOSPrivateApi` flag against this literal feature list) and fails the
+# build if they disagree, which is also why this has to live on this base
+# entry rather than only under the macOS-only target-dependency table below
+# (Cargo itself unions features fine either way, but tauri-build's own
+# check apparently doesn't look there). Not actually a cross-platform
+# concern in practice — this app only ships for macOS (see Info.plist/the
+# bundled Metal frameworks) — so keeping it unconditional here is honest,
+# not a compromise.
+tauri = { version = "2.11.3", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-log = "2"
 whisper-rs = { version = "0.16.0", features = ["metal", "log_backend"] }
 llama-cpp-2 = { version = "0.1.152", default-features = false, features = ["metal", "dynamic-link"] }
@@ -53,6 +67,17 @@ tokio = { version = "1", features = ["fs", "rt", "time"] }
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", features = ["NSWorkspace", "NSRunningApplication"] }
 objc2-core-audio = "=0.3.2"
+
+# Stage 5 Task 2: the meeting-detected pill's non-activating NSPanel — see
+# popup.rs's module docs for the tauri-apps/tauri #11488/#5566 rationale.
+# Not published to crates.io — confirmed directly against the crates.io API
+# before adding it (no `tauri-nspanel` crate exists there); upstream ships
+# it as a git-only crate instead. Pinned to an exact commit on its `v2.1`
+# branch (the one built against Tauri 2 — the older `v2` branch predates
+# it; there are no tagged releases to pin to instead) rather than floating
+# on the branch HEAD, the same "never float on a moving target" rule this
+# block's other pinned dependencies already follow.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

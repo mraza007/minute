@@ -6,6 +6,7 @@ mod detect;
 mod download;
 mod error;
 mod llm;
+mod popup;
 mod settings;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
@@ -298,7 +299,18 @@ fn finalize_active_recording_on_exit(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  let app = tauri::Builder::default()
+  let builder = tauri::Builder::default();
+  // The `tauri-nspanel` plugin (Stage 5 Task 2) only exists as a macOS
+  // target dependency (see Cargo.toml) — registering it unconditionally
+  // wouldn't even compile on another target, so this whole plugin
+  // registration is cfg-gated the same way `detect.rs`'s macOS-only shim
+  // module is. `popup::show_meeting_prompt`'s own `#[cfg(not(target_os =
+  // "macos"))]` stub never actually calls into any of this on other
+  // platforms either way.
+  #[cfg(target_os = "macos")]
+  let builder = builder.plugin(tauri_nspanel::init());
+
+  let app = builder
     .invoke_handler(tauri::generate_handler![
       hardware_info,
       list_models,
@@ -321,7 +333,9 @@ pub fn run() {
       audio::start_recording,
       audio::pause_recording,
       audio::resume_recording,
-      audio::stop_recording
+      audio::stop_recording,
+      popup::popup_start,
+      popup::popup_dismiss
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

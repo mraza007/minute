@@ -648,6 +648,44 @@ describe('useAppState', () => {
     })
   })
 
+  describe('meeting-popup-start event', () => {
+    it('re-runs the normal startRec flow when an STT model is installed', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      expect(result.current.view).toBe('notes')
+
+      await act(async () => {
+        await emit('meeting-popup-start', null)
+      })
+
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+      expect(calls.some(c => c.cmd === 'start_recording' && (c.args as { modelId: string }).modelId === 'whisper-small')).toBe(true)
+    })
+
+    it('navigates to onboarding with an honest error instead of recording when no STT model is installed', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'notInstalled' })],
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      expect(result.current.view).toBe('onboarding')
+
+      await act(async () => {
+        await emit('meeting-popup-start', null)
+      })
+
+      expect(result.current.view).toBe('onboarding')
+      expect(result.current.lastError).toContain('Install a transcription model')
+      expect(calls.some(c => c.cmd === 'start_recording')).toBe(false)
+    })
+  })
+
   describe('note detail (real transcript loading)', () => {
     const noteA = noteFixture({ id: 'note-a', title: 'Note A' })
     const noteB = noteFixture({ id: 'note-b', title: 'Note B' })

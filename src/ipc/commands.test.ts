@@ -233,6 +233,24 @@ describe('ipc/commands', () => {
     expect(result).toEqual(meta)
   })
 
+  it('popupStart invokes popup_start with no args', async () => {
+    const calls = captureIPC()
+
+    await commands.popupStart()
+
+    expect(calls[0].cmd).toBe('popup_start')
+    expect(calls[0].args).toEqual({})
+  })
+
+  it('popupDismiss invokes popup_dismiss with { timedOut }', async () => {
+    const calls = captureIPC()
+
+    await commands.popupDismiss(true)
+
+    expect(calls[0].cmd).toBe('popup_dismiss')
+    expect(calls[0].args).toEqual({ timedOut: true })
+  })
+
   it('revealNote invokes reveal_note with { id }', async () => {
     const calls = captureIPC()
 

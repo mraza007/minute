@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as events from './events'
 import type {
   MeetingDetectedEvent,
+  MeetingPopupPayloadEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
   RecordingStateEvent,
@@ -115,6 +116,28 @@ describe('ipc/events', () => {
     await emit('meeting-detected', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onMeetingPopupPayload subscribes to meeting-popup-payload and delivers the payload', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onMeetingPopupPayload(cb)
+    const payload: MeetingPopupPayloadEvent = { appName: 'Zoom' }
+    await emit('meeting-popup-payload', payload)
+
+    expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onMeetingPopupStart subscribes to meeting-popup-start and fires (payload is always null — there is no real payload)', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onMeetingPopupStart(cb)
+    await emit('meeting-popup-start', null)
+
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(cb).toHaveBeenCalledWith(null)
   })
 
   it('the returned unlisten function stops further delivery', async () => {

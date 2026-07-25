@@ -1,0 +1,217 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { popupDismiss, popupStart } from '../ipc/commands'
+import { onMeetingPopupPayload } from '../ipc/events'
+
+/** The popup's own 12s auto-dismiss window — see the plan's Task 2 spec ("Auto-dismiss after 12s"). Exposed as a prop default (not hardcoded inline) so tests can drive the countdown on a short, fake-timer-free window instead of waiting out a real 12s. */
+export const DEFAULT_AUTO_DISMISS_MS = 12_000
+
+interface PillProps {
+  autoDismissMs?: number
+}
+
+/**
+ * The "meeting detected" pill rendered inside the popup window (see
+ * src-tauri/src/popup.rs) — mic glyph, "Meeting detected" + the triggering
+ * app's name, a [Start recording] accent-solid button, a quiet × dismiss,
+ * and a hairline countdown bar that auto-dismisses after `autoDismissMs`.
+ *
+ * The window this renders into is created transparent and non-activating
+ * (see popup.rs's module docs) — this component is what actually carries
+ * the visible surface (var(--card)/var(--border) + a CSS shadow, never a
+ * native window shadow — see popup.rs's `.shadow(false)`).
+ *
+ * ## Keyboard caveat
+ * Enter/Escape are wired below via a plain `window` keydown listener, but
+ * whether they're ever actually reachable depends on AppKit having made the
+ * panel key at all — `popup.rs`'s initial `panel.show()` deliberately does
+ * *not* do that (it's `orderFrontRegardless`, chosen precisely so appearing
+ * doesn't steal focus). A `nonactivating` NSPanel *can* still become key
+ * without activating Minute if the user clicks into it (the standard
+ * non-activating-panel recipe), at which point these listeners do start
+ * receiving events — but the very first `Enter`/`Escape` press, before any
+ * click, may land on nothing. This is implemented anyway (a real accessible
+ * fallback whenever the panel does have keyboard focus) rather than
+ * skipped, but it's an honest best-effort, not a guarantee — see popup.rs's
+ * own "what's verified vs. release-build-only" note for the same caveat
+ * applied to the panel's AppKit behavior generally.
+ */
+export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
+  const [appName, setAppName] = useState<string | null>(null)
+  // Guards against a double-resolve (e.g. the auto-dismiss timer firing the
+  // same instant a click is already in flight) — only the first of
+  // start/dismiss should ever actually call its command; a second call
+  // would report a second, contradictory outcome for a prompt the detector
+  // already resolved once.
+  const resolvedRef = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    let unlisten: (() => void) | undefined
+    onMeetingPopupPayload(payload => {
+      if (live) setAppName(payload.appName)
+    }).then(fn => {
+      if (live) {
+        unlisten = fn
+      } else {
+        fn()
+      }
+    })
+    return () => {
+      live = false
+      unlisten?.()
+    }
+  }, [])
+
+  const start = useCallback(() => {
+    if (resolvedRef.current) return
+    resolvedRef.current = true
+    // Best-effort: this tiny popup window has no error-reporting surface of
+    // its own (that's the main window's ErrorBanner/reportError) — a
+    // rejected IPC call here has nothing more specific to show; the main
+    // window still gets its own chance to report a real failure once (if)
+    // `meeting-popup-start` reaches it.
+    popupStart().catch(() => {})
+  }, [])
+
+  const dismiss = useCallback((timedOut: boolean) => {
+    if (resolvedRef.current) return
+    resolvedRef.current = true
+    popupDismiss(timedOut).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => dismiss(true), autoDismissMs)
+    return () => clearTimeout(timer)
+  }, [autoDismissMs, dismiss])
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        start()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        dismiss(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [start, dismiss])
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Meeting detected"
+      style={{
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        width: 380,
+        height: 72,
+        boxSizing: 'border-box',
+        padding: '0 14px',
+        margin: 8,
+        borderRadius: 999,
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        boxShadow: '0 4px 16px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.12)',
+        overflow: 'hidden',
+        fontFamily: "'Instrument Sans', system-ui, -apple-system, sans-serif",
+      }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          flex: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 32,
+          height: 32,
+          borderRadius: '50%',
+          background: 'var(--accent-tint)',
+          color: 'var(--accent-text)',
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" x2="12" y1="19" y2="22"></line>
+        </svg>
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Meeting detected</div>
+        <div
+          style={{
+            fontSize: 12,
+            color: 'var(--ink-muted)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {appName ? `${appName} is using the microphone` : 'Another app is using the microphone'}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={start}
+        className="btn-rec"
+        style={{
+          flex: 'none',
+          padding: '7px 14px',
+          border: 'none',
+          borderRadius: 999,
+          background: 'var(--accent-solid)',
+          color: 'var(--text-on-accent)',
+          fontFamily: 'inherit',
+          fontWeight: 600,
+          fontSize: 12.5,
+          cursor: 'pointer',
+        }}
+      >
+        Start recording
+      </button>
+
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={() => dismiss(false)}
+        className="icon-btn"
+        style={{
+          flex: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 24,
+          height: 24,
+          border: 'none',
+          borderRadius: '50%',
+          background: 'transparent',
+          color: 'var(--ink-faint)',
+          fontSize: 15,
+          lineHeight: 1,
+          cursor: 'pointer',
+        }}
+      >
+        ×
+      </button>
+
+      <div
+        className="popup-countdown-bar"
+        style={{
+          position: 'absolute',
+          left: 0,
+          bottom: 0,
+          width: '100%',
+          height: 2,
+          background: 'var(--accent)',
+          animationDuration: `${autoDismissMs}ms`,
+        }}
+      />
+    </div>
+  )
+}

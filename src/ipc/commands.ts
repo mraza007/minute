@@ -82,6 +82,24 @@ export const resumeRecording = (): Promise<void> => invokeCmd('resume_recording'
 /** Stops the active recording; resolves with the finalized note's metadata. */
 export const stopRecording = (): Promise<NoteMeta> => invokeCmd('stop_recording')
 
+/**
+ * Resolves the meeting-detected popup as "Start recording" (Stage 5 Task 2):
+ * hides the popup, reports the accepted outcome to the detector, and brings
+ * the main window forward — see `popup::popup_start`'s docs for why the
+ * actual `start_recording` call happens on the frontend (via the
+ * `meeting-popup-start` event, `onMeetingPopupStart`) rather than here.
+ */
+export const popupStart = (): Promise<void> => invokeCmd('popup_start')
+
+/**
+ * Resolves the meeting-detected popup as dismissed: the quiet × click
+ * (`timedOut: false`) or the popup's own auto-dismiss timer expiring
+ * (`timedOut: true`). Either way the detector applies the same 15-minute
+ * cooldown — see `popup::popup_dismiss`'s docs.
+ */
+export const popupDismiss = (timedOut: boolean): Promise<void> =>
+  invokeCmd('popup_dismiss', { timedOut })
+
 export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
 
 /** Merges `patch` into the persisted settings and resolves with the updated settings. */

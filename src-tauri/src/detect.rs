@@ -81,16 +81,14 @@ pub const PROMPT_AUTO_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// The outcome of a shown prompt, reported back into the core once known.
 ///
-/// Nothing outside `#[cfg(test)]` constructs these yet — the real popup that
-/// will (Task 2's `resolve_meeting_prompt`-shaped command, reporting a click
-/// on Start/× or its own auto-dismiss timer) doesn't exist yet. Until then
-/// `DetectorCore::evaluate`'s own [`PROMPT_AUTO_TIMEOUT`] fallback is what
-/// keeps a shown prompt from latching forever — see its docs. `#[allow
-/// (dead_code)]` on the variants, matching `stt::transcribe_samples`'/
-/// `download::feed_chunks_checking_cancel`'s same shape (a function/type
-/// whose only non-test caller today is a later stage's not-yet-written
-/// integration).
-#[allow(dead_code)]
+/// Constructed for real now (Stage 5 Task 2): `popup::popup_start`/
+/// `popup::popup_dismiss` report `Accepted`/`Dismissed`/`TimedOut` through
+/// [`report_outcome`] -> the detector thread's outcome channel -> here.
+/// Before that wiring existed, `DetectorCore::evaluate`'s own
+/// [`PROMPT_AUTO_TIMEOUT`] fallback was the only thing keeping a shown
+/// prompt from latching forever — that fallback stays in place as a
+/// safety net (e.g. the popup window failing to create at all), it's just
+/// no longer the *only* path to an outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptOutcome {
     /// The user clicked "Start recording".
@@ -130,9 +128,7 @@ pub enum DetectorEvent {
     /// Minute's own mic usage must never trigger its own prompt — see the
     /// `!minute_recording` term in `evaluate`.
     SetMinuteRecording(bool),
-    /// A previously shown prompt's resolution — see [`PromptOutcome`]'s docs
-    /// for why nothing constructs this outside tests yet.
-    #[allow(dead_code)]
+    /// A previously shown prompt's resolution — see [`PromptOutcome`]'s docs.
     Outcome(PromptOutcome),
 }
 
@@ -1444,9 +1440,26 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// One message the detector thread's main loop selects over — either a real
+/// mic-activity transition (forwarded from the [`MicMonitor`]'s own channel
+/// by a small adapter thread — see `start`'s docs) or an externally-reported
+/// [`PromptOutcome`] (via [`report_outcome`]). Unifying both into one
+/// `mpsc::Receiver` lets the thread's loop keep a single `recv_timeout` call
+/// (see `run_detector_thread`) instead of juggling two channels with no
+/// built-in `select!` for plain `std::sync::mpsc`.
+#[derive(Debug)]
+enum ThreadMsg {
+    Shim(ShimEvent),
+    Outcome(PromptOutcome),
+}
+
 struct RunningDetector {
     shutdown: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<()>,
+    /// Clone of the detector thread's unified message channel sender — the
+    /// seam [`report_outcome`] uses to deliver a popup's outcome into the
+    /// running `DetectorCore` without either side needing a shared mutex.
+    msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
 }
 
 /// Managed state: at most one running detector thread. Empty (no thread) is
@@ -1482,8 +1495,37 @@ pub fn start(
     }
     let shutdown = Arc::new(AtomicBool::new(false));
     let thread_shutdown = shutdown.clone();
-    let thread = std::thread::spawn(move || run_detector_thread(app, settings, recorder, thread_shutdown));
-    *guard = Some(RunningDetector { shutdown, thread });
+    // Built here (rather than inside `run_detector_thread`) so a clone of
+    // the sender half can be stashed on `RunningDetector` for
+    // `report_outcome` to use — the thread itself only ever needs the
+    // receiver plus its own clone of the sender (for the mic-monitor
+    // forwarding adapter — see the thread body).
+    let (msg_tx, msg_rx) = std::sync::mpsc::channel::<ThreadMsg>();
+    let outcome_tx = msg_tx.clone();
+    let thread = std::thread::spawn(move || {
+        run_detector_thread(app, settings, recorder, thread_shutdown, msg_tx, msg_rx)
+    });
+    *guard = Some(RunningDetector {
+        shutdown,
+        thread,
+        msg_tx: outcome_tx,
+    });
+}
+
+/// Delivers a shown prompt's outcome (Start/dismiss/timeout) into the
+/// currently-running detector thread, if any — the seam `popup::popup_start`/
+/// `popup::popup_dismiss` use to turn a user's click (or the popup's own
+/// 12s auto-dismiss) into the `DetectorCore` transition that actually
+/// applies the accepted-suppression/cooldown rule (see `DetectorCore::
+/// process`'s `Outcome` arm). A silent no-op if nothing is running (e.g. a
+/// stale popup outcome arriving after detection was toggled off, or — since
+/// this crosses threads via a plain channel `send` — the vanishingly rare
+/// race of the detector thread having just exited) — there is no `DetectorCore`
+/// left for it to mean anything to either way.
+pub fn report_outcome(handle: &SharedDetectorHandle, outcome: PromptOutcome) {
+    if let Some(running) = lock(&handle.running).as_ref() {
+        let _ = running.msg_tx.send(ThreadMsg::Outcome(outcome));
+    }
 }
 
 /// Signals the detector thread to stop and joins it — after this returns,
@@ -1532,20 +1574,37 @@ fn emit_meeting_detected(app: &AppHandle, app_name: &str) {
 
 /// The detector thread body: owns a [`MicMonitor`] (real listeners on
 /// macOS, an inert stub elsewhere — see the two `macos` module variants
-/// above) and a [`DetectorCore`], translating shim events + periodic ticks
-/// into `Action`s and emitting `meeting-detected` to the frontend on
-/// `ShowPrompt`.
+/// above) and a [`DetectorCore`], translating shim events, periodic ticks,
+/// and reported prompt outcomes into `Action`s, emitting `meeting-detected`
+/// to the frontend AND triggering the popup panel
+/// (`popup::show_meeting_prompt`) on `ShowPrompt`.
+///
+/// `msg_tx`/`msg_rx` are the unified [`ThreadMsg`] channel `start` built —
+/// this function's own job with `msg_tx` is only to hand a clone to a small
+/// adapter thread that forwards the `MicMonitor`'s raw `ShimEvent`s into it
+/// (translating the mic monitor's own narrower channel type into the wider
+/// one this loop actually selects over); `report_outcome` (running on
+/// whatever thread a Tauri command handler runs on) sends directly into its
+/// own clone of the same sender, kept on `RunningDetector` — see `start`'s
+/// docs. The adapter thread exits on its own once `_monitor` (owning the
+/// `MicMonitor`'s send half) is dropped at the end of this function, closing
+/// its `recv()` loop; it's never explicitly joined (a short-lived, harmless
+/// leak-until-it-notices-the-close, same shape as every other detached
+/// helper thread in this crate — see e.g. `lib.rs`'s audio sweep thread).
 ///
 /// Runs until `shutdown` is set — checked every [`POLL_INTERVAL`], which
 /// also doubles as the cadence for polling `recorder`/re-checking the
 /// meeting-app allowlist while the mic is hot (see `POLL_INTERVAL`'s docs).
-/// A real mic transition (`ShimEvent`) interrupts the wait immediately
-/// regardless of this cadence — the mic side stays fully event-driven.
+/// A real mic transition or a reported outcome interrupts the wait
+/// immediately regardless of this cadence — only the periodic app-presence
+/// re-check actually needs the timeout to fire.
 fn run_detector_thread(
     app: AppHandle,
     _settings: SharedSettings,
     recorder: SharedRecorderState,
     shutdown: Arc<AtomicBool>,
+    msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
+    msg_rx: std::sync::mpsc::Receiver<ThreadMsg>,
 ) {
     let (shim_tx, shim_rx) = std::sync::mpsc::channel::<ShimEvent>();
     let _monitor = match MicMonitor::start(shim_tx) {
@@ -1555,6 +1614,19 @@ fn run_detector_thread(
             return;
         }
     };
+
+    // Forwards the mic monitor's own `ShimEvent`s into the unified
+    // `ThreadMsg` channel this loop actually reads — see this function's
+    // docs for why a separate small thread (rather than trying to make
+    // `MicMonitor` speak `ThreadMsg` directly) is the simplest way to unify
+    // two independently-typed channels without a `select!` macro.
+    std::thread::spawn(move || {
+        while let Ok(event) = shim_rx.recv() {
+            if msg_tx.send(ThreadMsg::Shim(event)).is_err() {
+                break;
+            }
+        }
+    });
 
     let mut core = DetectorCore::new(true);
     let mut mic_active = false;
@@ -1567,15 +1639,16 @@ fn run_detector_thread(
         let recording = crate::audio::is_recording_active(&recorder);
         core.process(DetectorEvent::SetMinuteRecording(recording), Instant::now());
 
-        let action = match shim_rx.recv_timeout(POLL_INTERVAL) {
-            Ok(ShimEvent::MicStarted) => {
+        let action = match msg_rx.recv_timeout(POLL_INTERVAL) {
+            Ok(ThreadMsg::Shim(ShimEvent::MicStarted)) => {
                 mic_active = true;
                 core.process(DetectorEvent::MicStarted, Instant::now())
             }
-            Ok(ShimEvent::MicStopped) => {
+            Ok(ThreadMsg::Shim(ShimEvent::MicStopped)) => {
                 mic_active = false;
                 core.process(DetectorEvent::MicStopped, Instant::now())
             }
+            Ok(ThreadMsg::Outcome(outcome)) => core.process(DetectorEvent::Outcome(outcome), Instant::now()),
             Err(RecvTimeoutError::Timeout) => {
                 if mic_active {
                     let app_present = macos::meeting_app_present();
@@ -1585,13 +1658,84 @@ fn run_detector_thread(
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                log::warn!("meeting detector thread exiting: mic monitor channel disconnected");
+                // Shouldn't happen in practice — `RunningDetector` holds a
+                // live `ThreadMsg` sender (see `start`'s `outcome_tx`) for
+                // as long as this thread might be running, so every sender
+                // being dropped implies something unexpected already went
+                // wrong upstream. Exiting the thread is still the right
+                // call if it somehow does: there's nothing left that could
+                // ever feed this loop another message.
+                log::warn!("meeting detector thread exiting: message channel disconnected");
                 break;
             }
         };
 
         if let Action::ShowPrompt { app_name } = action {
             emit_meeting_detected(&app, &app_name);
+            crate::popup::show_meeting_prompt(&app, &app_name);
         }
+    }
+}
+
+#[cfg(test)]
+mod handle_tests {
+    //! `report_outcome`'s plumbing — Stage 5 Task 2's "outcome-channel
+    //! seam" (see the plan's Task 2 verify list). Doesn't spin up a real
+    //! `run_detector_thread`/`MicMonitor` (hardware-dependent, see that
+    //! function's own docs) — instead hand-assembles a `RunningDetector`
+    //! around a plain channel, the exact same shape `start` wires up, so
+    //! `report_outcome`'s "find the running slot, forward the message" logic
+    //! is exercised without any CoreAudio/NSWorkspace dependency.
+    use super::*;
+
+    #[test]
+    fn report_outcome_is_a_no_op_when_nothing_is_running() {
+        let handle = open_shared();
+        // No detector thread was ever started — must not panic and must not
+        // block; there's simply nothing for the outcome to reach.
+        report_outcome(&handle, PromptOutcome::Dismissed);
+    }
+
+    #[test]
+    fn report_outcome_delivers_onto_the_running_detectors_message_channel() {
+        let (msg_tx, msg_rx) = std::sync::mpsc::channel::<ThreadMsg>();
+        let handle = open_shared();
+        *lock(&handle.running) = Some(RunningDetector {
+            shutdown: Arc::new(AtomicBool::new(false)),
+            // No real detector thread backs this — nothing here ever calls
+            // `stop()` (which would join it), so a real thread handle would
+            // just leak silently when `handle` drops at the end of this
+            // test. An already-finished no-op thread's `JoinHandle` is the
+            // honest stand-in: it detaches on drop exactly the same way,
+            // without pretending there's live work behind it.
+            thread: std::thread::spawn(|| {}),
+            msg_tx,
+        });
+
+        report_outcome(&handle, PromptOutcome::Accepted);
+
+        match msg_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(ThreadMsg::Outcome(PromptOutcome::Accepted)) => {}
+            other => panic!("expected ThreadMsg::Outcome(Accepted), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn report_outcome_does_not_panic_once_the_running_slot_has_been_cleared() {
+        // Mirrors what a real `stop()` leaves behind: the slot goes back to
+        // `None`, and a `report_outcome` racing in right after (e.g. a
+        // stale popup outcome arriving just as detection was toggled off)
+        // must find nothing to deliver to rather than panicking on a stale
+        // reference.
+        let (msg_tx, _msg_rx) = std::sync::mpsc::channel::<ThreadMsg>();
+        let handle = open_shared();
+        *lock(&handle.running) = Some(RunningDetector {
+            shutdown: Arc::new(AtomicBool::new(false)),
+            thread: std::thread::spawn(|| {}),
+            msg_tx,
+        });
+        *lock(&handle.running) = None;
+
+        report_outcome(&handle, PromptOutcome::TimedOut);
     }
 }

@@ -11,6 +11,7 @@
     "beforeBundleCommand": "src-tauri/scripts/stage-frameworks.sh"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Minute",

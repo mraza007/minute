@@ -188,6 +188,17 @@ a:hover { color: var(--accent-text); }
 @keyframes wf { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Meeting-popup pill (src/popup/Pill.tsx) countdown hairline — shrinks
+   left-to-right over the pill's auto-dismiss window (duration set inline
+   per-instance via `animationDuration`, since it's driven by a prop, not a
+   fixed constant). */
+@keyframes popup-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.popup-countdown-bar {
+  animation-name: popup-countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  transform-origin: left;
+}
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 ::selection { background: var(--accent-selection); }
 
@@ -217,6 +228,13 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   .wf-bar { animation: none !important; transform: scaleY(.6); }
   .blink-dot { animation: none !important; }
   .spin { animation: none !important; }
+  /* The countdown bar is purely decorative — the actual 12s auto-dismiss
+     timer is a plain JS setTimeout in Pill.tsx, entirely independent of
+     this animation, so disabling the motion here loses no information (the
+     pill's text/buttons already carry everything the bar communicates
+     visually). Frozen full rather than collapsed to 0 so it doesn't read as
+     "already expired". */
+  .popup-countdown-bar { animation: none !important; transform: scaleX(1); }
 }
 
 /* Visible keyboard focus on every interactive control (WCAG 2.4.7) — text
