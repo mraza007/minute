@@ -9,6 +9,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
   AskAnswerEvent,
   AskStatusEvent,
+  MeetingDetectedEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
   RecordingStateEvent,
@@ -56,4 +57,13 @@ export function onAskStatus(cb: (payload: AskStatusEvent) => void): Promise<Unli
 
 export function onAskAnswer(cb: (payload: AskAnswerEvent) => void): Promise<UnlistenFn> {
   return listen<AskAnswerEvent>('ask-answer', (event) => cb(event.payload))
+}
+
+/**
+ * `detect.rs`'s meeting-detection prompt trigger — see `MeetingDetectedEvent`'s
+ * docs. Stage 5 Task 1 only wires the typed listener itself; nothing in the
+ * frontend subscribes to it yet (the popup pill is Task 2).
+ */
+export function onMeetingDetected(cb: (payload: MeetingDetectedEvent) => void): Promise<UnlistenFn> {
+  return listen<MeetingDetectedEvent>('meeting-detected', (event) => cb(event.payload))
 }

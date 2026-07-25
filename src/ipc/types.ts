@@ -176,12 +176,17 @@ export interface StorageStats {
  * implemented at-rest encryption of its own; the library only ever
  * inherited whatever FileVault protection macOS itself provides, so the
  * toggle was a fake capability. Settings.tsx now shows a passive line about
- * that instead).
+ * that instead). `meetingDetection` is Stage 5 Task 1's opt-in toggle
+ * (`#[serde(default)]` on the Rust side, so it's always present here too —
+ * `false` for both a fresh install and any settings.json written before
+ * this field existed); the toggle UI itself is Task 3, this file only adds
+ * the wire type.
  */
 export interface Settings {
   sttModel: string | null
   llmModel: string | null
   deleteAudioAfter30d: boolean
+  meetingDetection: boolean
 }
 
 /**
@@ -194,6 +199,7 @@ export interface SettingsPatch {
   sttModel?: string
   llmModel?: string
   deleteAudioAfter30d?: boolean
+  meetingDetection?: boolean
 }
 
 // --- events ----------------------------------------------------------------
@@ -268,4 +274,17 @@ export interface AskAnswerEvent {
   noteId: string
   question: string
   answer: string
+}
+
+/**
+ * `detect.rs::MeetingDetectedEvent` — event `meeting-detected`. Emitted once
+ * `detect::DetectorCore` decides to show the prompt (≥5s continuous mic
+ * activity + a meeting app present + Minute not already recording + not in
+ * cooldown — see that module's docs). `appName` is the friendly name of the
+ * highest-priority allowlisted app currently running (e.g. `"Zoom"`), never
+ * a bundle id. Stage 5 Task 1 only adds this typed listener — there's no
+ * popup UI wired to it yet (Task 2).
+ */
+export interface MeetingDetectedEvent {
+  appName: string
 }

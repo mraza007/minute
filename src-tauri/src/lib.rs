@@ -2,6 +2,7 @@ mod catalog;
 mod store;
 mod audio;
 mod stt;
+mod detect;
 mod download;
 mod error;
 mod llm;
@@ -224,17 +225,35 @@ fn get_settings(state: State<SharedSettings>) -> Settings {
 /// (including keeping the shared in-memory settings consistent with disk if
 /// the save fails) lives in `settings::apply_and_save` — this command is
 /// just the thin AppHandle-resolving wrapper around it.
+///
+/// Also live-applies a `meetingDetection` change: once the patch is
+/// persisted, `detect::set_enabled_live` starts the detector thread if it's
+/// now `true` and nothing's running, or stops it (fully — see
+/// `detect::stop`'s docs) if it's now `false`. Applied unconditionally on
+/// every call (not just when the patch actually touched the field) —
+/// idempotent either way, and simpler than tracking whether this particular
+/// patch happened to include it.
 #[tauri::command]
 fn set_settings(
   app: AppHandle,
   state: State<SharedSettings>,
+  detector: State<detect::SharedDetectorHandle>,
+  recorder: State<audio::SharedRecorderState>,
   patch: SettingsPatch,
 ) -> Result<Settings, String> {
   let root = app
     .path()
     .app_data_dir()
     .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-  settings::apply_and_save(&root, &state, patch).map_err(|e| e.to_string())
+  let updated = settings::apply_and_save(&root, &state, patch).map_err(|e| e.to_string())?;
+  detect::set_enabled_live(
+    app,
+    state.inner().clone(),
+    recorder.inner().clone(),
+    &detector,
+    updated.meeting_detection,
+  );
+  Ok(updated)
 }
 
 #[tauri::command]
@@ -330,6 +349,16 @@ pub fn run() {
       // flipped after launch only affects the *next* launch's sweep, not a
       // currently-running one).
       let sweep_enabled = settings::lock_settings(&shared_settings).delete_audio_after_30d;
+      // Same one-shot read for the meeting detector below — unlike the
+      // sweep flag, a later toggle *does* keep working live (via
+      // `set_settings` -> `detect::set_enabled_live`), so this only decides
+      // whether a detector thread starts at launch, not for the rest of the
+      // session.
+      let meeting_detection_enabled = settings::lock_settings(&shared_settings).meeting_detection;
+      // A clone kept for the detector thread further down (see
+      // `detect::start`'s call site) — `shared_settings` itself moves into
+      // `app.manage` on the very next line.
+      let detector_settings = shared_settings.clone();
       app.manage(shared_settings);
 
       // A single shared handle: Tauri commands and the recording/
@@ -394,9 +423,21 @@ pub fn run() {
 
       // Tracks the single in-progress recording (if any) so pause/resume/
       // stop commands can reach the active `Recorder` — see
-      // `audio::SharedRecorderState`.
+      // `audio::SharedRecorderState`. Minute's own mic usage is exactly
+      // what the meeting detector below must *not* mistake for someone
+      // else's call — see `detect::DetectorCore`'s `!minute_recording` term.
       let recorder_state: audio::SharedRecorderState = audio::open_shared();
-      app.manage(recorder_state);
+      app.manage(recorder_state.clone());
+
+      // Managed state for Stage 5 Task 1's meeting detector — see
+      // `detect::DetectorHandle`'s docs. Empty (no thread) until started
+      // just below (if enabled at launch) or later via `set_settings`
+      // toggling `meetingDetection` live.
+      let detector_handle: detect::SharedDetectorHandle = detect::open_shared();
+      app.manage(detector_handle.clone());
+      if meeting_detection_enabled {
+        detect::start(app.handle().clone(), detector_settings, recorder_state, &detector_handle);
+      }
 
       Ok(())
     })

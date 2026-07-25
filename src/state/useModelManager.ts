@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS: Settings = {
   sttModel: null,
   llmModel: null,
   deleteAudioAfter30d: true,
+  meetingDetection: false,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

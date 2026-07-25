@@ -37,16 +37,25 @@ pub struct Settings {
     pub stt_model: Option<String>,
     pub llm_model: Option<String>,
     pub delete_audio_after_30d: bool,
+    /// Stage 5 Task 1: opt-in meeting detection (mic-activity + running-app
+    /// check, see `detect.rs`). `#[serde(default)]` so an old `settings.json`
+    /// written before this field existed loads as `false` (opt-in, off by
+    /// default — see the plan's callout to learn from Notion's opt-out
+    /// backlash) rather than failing to parse — see
+    /// `settings_json_without_meeting_detection_field_defaults_to_false`.
+    #[serde(default)]
+    pub meeting_detection: bool,
 }
 
 impl Default for Settings {
     /// Matches the Stage 1 mock's initial toggle state: delete-after-30d on,
-    /// no model selected yet.
+    /// no model selected yet, meeting detection off (opt-in).
     fn default() -> Self {
         Self {
             stt_model: None,
             llm_model: None,
             delete_audio_after_30d: true,
+            meeting_detection: false,
         }
     }
 }
@@ -65,6 +74,7 @@ pub struct SettingsPatch {
     pub stt_model: Option<String>,
     pub llm_model: Option<String>,
     pub delete_audio_after_30d: Option<bool>,
+    pub meeting_detection: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -79,6 +89,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.delete_audio_after_30d {
         settings.delete_audio_after_30d = v;
+    }
+    if let Some(v) = patch.meeting_detection {
+        settings.meeting_detection = v;
     }
 }
 
@@ -190,6 +203,7 @@ mod tests {
         assert_eq!(settings.stt_model, None);
         assert_eq!(settings.llm_model, None);
         assert!(settings.delete_audio_after_30d);
+        assert!(!settings.meeting_detection);
     }
 
     #[test]
@@ -199,6 +213,7 @@ mod tests {
             stt_model: Some("whisper-medium".to_string()),
             llm_model: Some("qwen3.5-4b".to_string()),
             delete_audio_after_30d: false,
+            meeting_detection: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -231,6 +246,39 @@ mod tests {
                 stt_model: Some("whisper-medium".to_string()),
                 llm_model: None,
                 delete_audio_after_30d: false,
+                meeting_detection: false,
+            }
+        );
+    }
+
+    #[test]
+    fn settings_json_without_meeting_detection_field_defaults_to_false() {
+        // Stage 5 Task 1's own migration case: a settings.json written by any
+        // pre-Stage-5 build has no "meetingDetection" key at all —
+        // `#[serde(default)]` must make that load as `false` (opt-in, off),
+        // not fail to parse or fall back to full defaults for the rest of
+        // the file.
+        let dir = tempdir().unwrap();
+        let pre_stage5_json = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": false,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_stage5_json).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_settings(dir.path());
+
+        assert_eq!(
+            loaded,
+            Settings {
+                stt_model: Some("whisper-medium".to_string()),
+                llm_model: Some("qwen3.5-4b".to_string()),
+                delete_audio_after_30d: false,
+                meeting_detection: false,
             }
         );
     }
@@ -259,6 +307,7 @@ mod tests {
             stt_model: Some("whisper-small".to_string()),
             llm_model: None,
             delete_audio_after_30d: true,
+            meeting_detection: true,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -266,6 +315,7 @@ mod tests {
         assert!(raw.contains("\"sttModel\""));
         assert!(raw.contains("\"llmModel\""));
         assert!(raw.contains("\"deleteAudioAfter30d\""));
+        assert!(raw.contains("\"meetingDetection\""));
         assert!(!raw.contains("\"encryptLibrary\""));
     }
 
@@ -296,6 +346,7 @@ mod tests {
             stt_model: Some("whisper-medium".to_string()),
             llm_model: Some("gemma-4-e4b".to_string()),
             delete_audio_after_30d: Some(false),
+            meeting_detection: Some(true),
         };
 
         apply_patch(&mut settings, patch);
@@ -303,6 +354,7 @@ mod tests {
         assert_eq!(settings.stt_model, Some("whisper-medium".to_string()));
         assert_eq!(settings.llm_model, Some("gemma-4-e4b".to_string()));
         assert!(!settings.delete_audio_after_30d);
+        assert!(settings.meeting_detection);
     }
 
     #[test]
@@ -311,11 +363,13 @@ mod tests {
             stt_model: Some("whisper-small".to_string()),
             llm_model: Some("qwen3.5-4b".to_string()),
             delete_audio_after_30d: true,
+            meeting_detection: false,
         };
         let patch = SettingsPatch {
             stt_model: None,
             llm_model: None,
             delete_audio_after_30d: Some(false),
+            meeting_detection: None,
         };
 
         apply_patch(&mut settings, patch);
@@ -323,6 +377,7 @@ mod tests {
         assert_eq!(settings.stt_model, Some("whisper-small".to_string()));
         assert_eq!(settings.llm_model, Some("qwen3.5-4b".to_string()));
         assert!(!settings.delete_audio_after_30d);
+        assert!(!settings.meeting_detection);
     }
 
     #[test]
@@ -331,6 +386,7 @@ mod tests {
             stt_model: Some("whisper-small".to_string()),
             llm_model: None,
             delete_audio_after_30d: true,
+            meeting_detection: true,
         };
         let mut settings = original.clone();
 
@@ -396,10 +452,32 @@ mod tests {
         };
 
         let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+        assert!(!returned.meeting_detection);
 
         assert_eq!(returned.stt_model, Some("whisper-medium".to_string()));
         assert_eq!(*lock_settings(&shared), returned);
         assert_eq!(load_settings(dir.path()), returned);
+    }
+
+    #[test]
+    fn apply_and_save_toggles_meeting_detection_and_persists_it() {
+        // The path `set_settings` (lib.rs) drives when the frontend flips
+        // the Settings toggle — confirms the whole round trip (patch ->
+        // shared state -> disk) carries `meetingDetection`, which is what
+        // `detect::set_enabled_live` reads to start/stop the detector
+        // thread.
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        let patch = SettingsPatch {
+            meeting_detection: Some(true),
+            ..SettingsPatch::default()
+        };
+
+        let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+
+        assert!(returned.meeting_detection);
+        assert!(lock_settings(&shared).meeting_detection);
+        assert!(load_settings(dir.path()).meeting_detection);
     }
 
     #[test]

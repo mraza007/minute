@@ -289,7 +289,12 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
 
 export const HARDWARE: Hardware = { totalRamGb: 36, appleSilicon: true, cores: 12 }
 export const RECOMMENDATION: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
-export const SETTINGS: Settings = { sttModel: 'whisper-small', llmModel: 'qwen3.5-4b', deleteAudioAfter30d: true }
+export const SETTINGS: Settings = {
+  sttModel: 'whisper-small',
+  llmModel: 'qwen3.5-4b',
+  deleteAudioAfter30d: true,
+  meetingDetection: false,
+}
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 
 /** Search-palette demo hits for the `?state=palette` capture — query "pricing". */

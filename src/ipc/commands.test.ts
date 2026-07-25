@@ -247,6 +247,7 @@ describe('ipc/commands', () => {
       sttModel: 'whisper-small',
       llmModel: null,
       deleteAudioAfter30d: true,
+      meetingDetection: false,
     }
     const calls = captureIPC(() => settings)
 
@@ -262,6 +263,7 @@ describe('ipc/commands', () => {
       sttModel: 'whisper-medium',
       llmModel: null,
       deleteAudioAfter30d: true,
+      meetingDetection: false,
     }
     const calls = captureIPC(() => updated)
 

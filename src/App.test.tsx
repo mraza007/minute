@@ -8,7 +8,7 @@ import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendatio
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 const storage: StorageStats = { modelsBytes: 500_000_000, audioBytes: 200_000_000, notesBytes: 100_000_000 }
-const settings: Settings = { sttModel: null, llmModel: null, deleteAudioAfter30d: true }
+const settings: Settings = { sttModel: null, llmModel: null, deleteAudioAfter30d: true, meetingDetection: false }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {

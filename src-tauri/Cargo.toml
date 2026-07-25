@@ -36,6 +36,24 @@ time = { version = "0.3.54", features = ["formatting", "macros", "parsing"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "rt", "time"] }
 
+# Meeting detection (Stage 5 Task 1): mic-in-use + running-app checks, both
+# permission-free on macOS. `cargo tree -i coreaudio-sys` (checked before
+# adding these) turns up *no* `coreaudio-sys` anywhere in the tree — cpal's
+# macOS backend depends on `coreaudio-rs`, which as of its 0.14 line binds
+# CoreAudio through `objc2-core-audio` (the same modern, safer objc2-based
+# framework binding used here), not the classic C `coreaudio-sys` crate the
+# plan assumed. So instead of pinning a crate that isn't actually anywhere
+# in the tree, `objc2-core-audio` is pinned directly at the exact version
+# already resolved transitively (`=0.3.2`, matching Cargo.lock) — same
+# rationale as the plan's "pin the transitive dep" ask (never float on a
+# transitive resolution), just against the crate that's actually there.
+# `objc2`/`objc2-app-kit` are pinned the same way (`=0.6.4`/`=0.3.2`,
+# already present transitively via `tauri`'s own macOS tray/menu support).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-core-audio = "=0.3.2"
+
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

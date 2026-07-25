@@ -3,6 +3,7 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { describe, expect, it, vi } from 'vitest'
 import * as events from './events'
 import type {
+  MeetingDetectedEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
   RecordingStateEvent,
@@ -101,6 +102,17 @@ describe('ipc/events', () => {
     await events.onSummaryStatus(cb)
     const payload: SummaryStatusEvent = { noteId: '20260722-120000', state: 'running', error: null }
     await emit('summary-status', payload)
+
+    expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onMeetingDetected subscribes to meeting-detected and delivers the payload', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onMeetingDetected(cb)
+    const payload: MeetingDetectedEvent = { appName: 'Zoom' }
+    await emit('meeting-detected', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
   })
