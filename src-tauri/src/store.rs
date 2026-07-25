@@ -153,7 +153,9 @@ const SEARCH_SNIPPET_RADIUS: usize = 40;
 /// thread (Task 5), and the transcription worker thread (Task 6) — goes
 /// through that one shared mutex. Constructing a second `Store` over the
 /// same root from another thread reintroduces the races those methods are
-/// meant to prevent.
+/// meant to prevent. Note `run_audio_sweep` (Stage 4 Task 3) holds this
+/// same mutex for its entire pass over the library, not just per-note —
+/// commands issued while it's running queue briefly behind it at launch.
 pub struct Store {
     root: PathBuf,
 }

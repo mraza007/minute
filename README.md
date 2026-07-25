@@ -4,10 +4,13 @@ Minute is a fully offline meeting notetaker. It records audio, transcribes it on
 
 ## Status
 
-Stage 3 complete: records, live-transcribes, and summarizes meetings fully
-on-device — summaries, decisions, and action items are generated in-process
-by a local Qwen3.5 model. Stage 4 next: ask-your-notes, playback, search,
-polish.
+Stage 4 complete: Minute now ships as a bundled `.app` that runs both models
+standalone (no `cargo`/dev environment needed), with real audio playback and
+seek-from-transcript, a ⌘K search palette, per-note ask-your-notes with
+timestamp citations, a 30-day audio-deletion sweep, dark mode that follows
+macOS appearance, and an LLM idle-unload janitor plus virtualized transcripts
+for long meetings. The encryption toggle was replaced with an honest note
+about FileVault. The app is feature-complete for personal use.
 
 ## Development
 
@@ -20,12 +23,11 @@ npm run test:rust # Rust backend tests (cargo test)
 
 ## Known debt
 
-- CSP is currently `null` in `src-tauri/tauri.conf.json` — tighten before Stage 4 release.
-- Google Fonts dependency (Instrument Sans) to be removed once fonts are bundled locally.
 - The chunk dedupe midpoint rule can drop up to ~1s of text straddling a chunk
   boundary (documented and `log::debug!`'d in `stt.rs`).
-- The LLM stays resident in memory after the first summary (~2.6 GB) —
-  unload-after-idle is deferred.
-- `summaryStatus`/`summaryError` records accumulate unbounded per session
-  (`deleteNote` doesn't prune them).
-- `useAppState` is ~650 lines — extract a `useNoteDetail` hook in Stage 4.
+- CSP's `media-src` entries (asset protocol, for playback) still want a
+  manual runtime check.
+- Speaker diarization/rename and cross-note retrieval (ask across every
+  note, not just the open one) are both future work.
+- whisper-rs 0.16.0's log trampoline has a known upstream UB edge case on a
+  null text pointer from whisper.cpp — tracked, not fixable from this repo.
