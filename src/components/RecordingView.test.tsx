@@ -125,6 +125,33 @@ describe('RecordingView', () => {
     expect(bars[0]).not.toHaveStyle({ animationPlayState: 'paused' })
   })
 
+  describe('live transcript render cap', () => {
+    function makeGroups(count: number): LiveTranscriptGroup[] {
+      return Array.from({ length: count }, (_, i) => ({
+        speaker: 'Speaker 1',
+        start: i,
+        end: i + 1,
+        text: `entry number ${i}`,
+      }))
+    }
+
+    it('renders every group and shows no honest-count line when under the cap', () => {
+      render(<RecordingView {...base} liveSegments={makeGroups(150)} />)
+      expect(screen.getByText('entry number 0')).toBeInTheDocument()
+      expect(screen.getByText('entry number 149')).toBeInTheDocument()
+      expect(screen.queryByText(/Showing the latest/)).not.toBeInTheDocument()
+    })
+
+    it('caps rendered groups at 200 and shows the honest count line when over the cap', () => {
+      render(<RecordingView {...base} liveSegments={makeGroups(250)} />)
+      // Only the most recent 200 are rendered — the earliest 50 are dropped.
+      expect(screen.queryByText('entry number 49')).not.toBeInTheDocument()
+      expect(screen.getByText('entry number 50')).toBeInTheDocument()
+      expect(screen.getByText('entry number 249')).toBeInTheDocument()
+      expect(screen.getByText('Showing the latest 200 entries — the full transcript is saved.')).toBeInTheDocument()
+    })
+  })
+
   describe('live transcript auto-scroll (H6)', () => {
     /** jsdom never computes real layout — scrollHeight/clientHeight are always 0 — so the scroll metrics the component reads have to be stubbed directly on the node. */
     function setScrollMetrics(el: HTMLElement, metrics: { scrollTop: number; scrollHeight: number; clientHeight: number }) {

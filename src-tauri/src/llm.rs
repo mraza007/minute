@@ -650,6 +650,16 @@ struct LoadedModel {
 /// complaints — tracked in the design doc's Known debt list.
 pub struct LlmEngineState {
     loaded: Option<LoadedModel>,
+    /// When the currently-loaded model (if any) was last used for a
+    /// generation — see the "Idle unload" section below
+    /// ([`should_unload`]/[`janitor_pass`]). Meaningless while `loaded` is
+    /// `None` (nothing to unload); harmless either way, since
+    /// [`LlmEngineState::unload_if_idle`] only ever consults it once it's
+    /// already confirmed `loaded.is_some()`. Updated via
+    /// [`LlmEngineState::touch_last_used`], called from `run_summarize`/
+    /// `run_ask` at the end of every generation — success *and* error paths
+    /// alike (see that method's docs for why).
+    last_used: Instant,
 }
 
 /// Shared handle to an [`LlmEngineState`] — same `Arc<Mutex<_>>` shape as
@@ -665,8 +675,11 @@ pub fn lock_llm_engine(engine: &SharedLlmEngine) -> MutexGuard<'_, LlmEngineStat
 }
 
 /// Creates an empty, ready-to-`app.manage()` engine state — no model loaded.
+/// `last_used` starts at `Instant::now()`; harmless regardless of what value
+/// it starts at, since [`LlmEngineState::unload_if_idle`] never consults it
+/// while `loaded` is `None`.
 pub(crate) fn open_shared() -> SharedLlmEngine {
-    Arc::new(Mutex::new(LlmEngineState { loaded: None }))
+    Arc::new(Mutex::new(LlmEngineState { loaded: None, last_used: Instant::now() }))
 }
 
 /// Single-generation-at-a-time gate, app-wide — deliberately *not* a field
@@ -780,6 +793,172 @@ impl LlmEngineState {
             .ok_or_else(|| MinuteError::Other("no LLM model loaded".to_string()))?;
         generate_with_loaded(loaded, prompt, &params)
     }
+
+    /// Records that the currently loaded model was just used — resets the
+    /// idle clock [`should_unload`] measures against. Called from
+    /// `run_summarize`/`run_ask` at the end of every generation attempt,
+    /// *while the engine mutex is still held* (the same scope that just
+    /// called `ensure_loaded`/`generate`/`generate_with_params`) — the
+    /// cleanest seam available: that scope already has `&mut
+    /// LlmEngineState` in hand, so this needs no extra locking of its own.
+    /// Called on the success *and* error path alike (a failed generation
+    /// still ran the model — and, just as importantly, a user hammering
+    /// Regenerate into repeated failures shouldn't have the model yanked
+    /// out from under them mid-troubleshooting by an idle timer that never
+    /// saw any of those attempts).
+    pub fn touch_last_used(&mut self) {
+        self.last_used = Instant::now();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Idle unload — a detached janitor thread drops the loaded model after
+// IDLE_UNLOAD_AFTER of inactivity, freeing its ~2.6 GB (Qwen3.5-4B Q4_K_M)
+// until the next generation transparently reloads it (see
+// `LlmEngineState::ensure_loaded` — the frontend already shows a
+// running/loading state for that reload via `summary-status`/`ask-status`,
+// so nothing new is needed on that side; see this section's own doc note in
+// the Task 7 commit for where that was verified).
+// ---------------------------------------------------------------------------
+
+/// How long a loaded model may sit idle (no generation touching it) before
+/// the janitor unloads it.
+pub const IDLE_UNLOAD_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// How often the janitor thread (see [`spawn_janitor`]) wakes up to check
+/// whether it's time to unload — deliberately much finer-grained than
+/// [`IDLE_UNLOAD_AFTER`] itself (so the model is actually freed reasonably
+/// promptly once idle, not up to a whole extra unload-period late) without
+/// spinning a thread that's asleep the entire time in between.
+pub const JANITOR_TICK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Pure decision function: should the janitor unload the currently loaded
+/// model right now? True iff no generation is in flight (`!busy`) *and* at
+/// least [`IDLE_UNLOAD_AFTER`] has elapsed since `last_used`.
+///
+/// **`>=`, not `>`, at the boundary** — exactly [`IDLE_UNLOAD_AFTER`] of
+/// idle time already counts (see
+/// [`tests::should_unload_true_exactly_at_the_boundary`]). Deliberate, not
+/// an off-by-one: the janitor only samples this every
+/// [`JANITOR_TICK_INTERVAL`] anyway, so a real tick essentially never lands
+/// on the exact boundary nanosecond — the strict-vs-non-strict choice only
+/// matters for this function's own boundary test — and `>=` is the more
+/// natural reading of "unload after 5 minutes idle" (at the 5:00 mark, it
+/// *has been* 5 minutes).
+///
+/// **Why `busy` is a reliable signal here:** every generation claims the
+/// single app-wide [`LlmBusy`] atomic (via `try_spawn_summarize`/
+/// `try_spawn_ask`'s `compare_exchange`) *before* ever touching the engine
+/// mutex, and only releases it (via [`BusyGuard`]'s `Drop`) *after* it's
+/// done with the engine entirely — `run_summarize_worker`/`run_ask_worker`
+/// construct the guard first, then call into `run_summarize`/`run_ask`
+/// (which is what locks the engine mutex), and only return — dropping the
+/// guard — once that call has already returned. So `busy == false` here
+/// means not just "nothing is mid-generation" but "nothing has even started
+/// claiming the engine yet either" — see [`janitor_pass`]'s docs for why
+/// that ordering is what makes checking `busy` a meaningful
+/// thrash-avoidance optimization on top of the engine mutex's own
+/// structural guarantee (not a substitute for it).
+pub fn should_unload(last_used: Instant, now: Instant, busy: bool) -> bool {
+    if busy {
+        return false;
+    }
+    now.duration_since(last_used) >= IDLE_UNLOAD_AFTER
+}
+
+/// The generic core of one unload decision+action: no-op (`None`, `loaded`
+/// untouched) when `loaded` is already `None` or [`should_unload`] says it
+/// isn't time yet; otherwise takes `loaded`, leaving `None` behind, and
+/// returns what was there (the caller drops it — for free, via the returned
+/// value's own `Drop` once it goes out of scope).
+///
+/// Generic over `T` so this exact logic is unit-testable with a cheap
+/// stand-in (a `&str`, a bare `()`, ...) in place of the real, Metal-backed,
+/// GGUF-loaded [`LoadedModel`] — nothing in this crate's fast unit tests can
+/// cheaply construct one of those (same limitation as `ensure_loaded`
+/// against a real model path — see the note above the `LlmEngineState`/
+/// `try_spawn_summarize` test section). Production's only caller is
+/// [`LlmEngineState::unload_if_idle`], instantiated with `T = LoadedModel`.
+fn unload_if_idle<T>(loaded: &mut Option<T>, last_used: Instant, now: Instant, busy: bool) -> Option<T> {
+    if loaded.is_none() {
+        return None;
+    }
+    if !should_unload(last_used, now, busy) {
+        return None;
+    }
+    loaded.take()
+}
+
+impl LlmEngineState {
+    /// Unloads the currently loaded model if it's been idle long enough —
+    /// see the free function [`unload_if_idle`] for the actual decision+take
+    /// logic, here specialized to this state's real `loaded: Option<LoadedModel>`/
+    /// `last_used`. Returns whether anything was actually unloaded, for the
+    /// janitor's log line (see [`janitor_pass`]).
+    pub fn unload_if_idle(&mut self, now: Instant, busy: bool) -> bool {
+        unload_if_idle(&mut self.loaded, self.last_used, now, busy).is_some()
+    }
+}
+
+/// Non-blocking counterpart to [`lock_llm_engine`] — `None` if the mutex is
+/// currently held by anything else (a generation mid-load/mid-decode); same
+/// poison-tolerance as the blocking version otherwise (one panicking
+/// generation must not brick the janitor for the rest of the session any
+/// more than it should brick the next generation). This is what makes it
+/// safe to run [`janitor_pass`] on its own detached thread: it must *never*
+/// block waiting for a generation to finish — see that function's docs.
+fn try_lock_llm_engine(engine: &SharedLlmEngine) -> Option<MutexGuard<'_, LlmEngineState>> {
+    match engine.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+/// One janitor tick: tries to unload the currently loaded model if it's
+/// idle past [`IDLE_UNLOAD_AFTER`] and nothing is busy generating against
+/// it. `now` is threaded in (rather than this calling `Instant::now()`
+/// itself) purely so [`spawn_janitor`]'s call site is the one place that
+/// actually depends on wall-clock time — this function itself stays exactly
+/// as testable as [`LlmEngineState::unload_if_idle`]/[`should_unload`].
+///
+/// **Never blocks the janitor on a generation:** if a `summarize`/`ask`
+/// worker currently holds the engine mutex (mid-load or mid-decode),
+/// [`try_lock_llm_engine`] returns `None` immediately and this tick is
+/// simply skipped — the model stays loaded, and the next tick (at most
+/// [`JANITOR_TICK_INTERVAL`] later) tries again.
+///
+/// **Never drops a context a generation is using — structurally, not just
+/// by the `busy` check:** unloading only ever happens while this function
+/// holds `engine`'s `std::sync::Mutex`, and every generation
+/// (`run_summarize`/`run_ask`) holds that exact same mutex for its entire
+/// span of touching the loaded model (`ensure_loaded` through
+/// `generate`/`generate_with_params` — see those functions). A plain
+/// `Mutex` gives mutual exclusion for free: the janitor and a generation
+/// can never be inside that span at the same time, so this could drop
+/// `should_unload`'s `busy` parameter entirely and *still* never race a
+/// live generation — `busy` exists purely so a model isn't needlessly
+/// unloaded (and then have to eagerly reload) the instant something is
+/// about to generate against it again, not for correctness.
+pub fn janitor_pass(engine: &SharedLlmEngine, busy: &LlmBusy, now: Instant) {
+    let Some(mut guard) = try_lock_llm_engine(engine) else {
+        return;
+    };
+    if guard.unload_if_idle(now, busy.load(Ordering::SeqCst)) {
+        log::info!("llm: unloaded idle model after {:?} of inactivity", IDLE_UNLOAD_AFTER);
+    }
+}
+
+/// Spawns the detached janitor thread — created once in `lib.rs`'s
+/// `setup`, never joined (same fire-and-forget shape as this app's other
+/// background threads: the download registry's workers, the audio sweep).
+/// Sleeps [`JANITOR_TICK_INTERVAL`] between calls to [`janitor_pass`] for
+/// the lifetime of the process.
+pub fn spawn_janitor(engine: SharedLlmEngine, busy: LlmBusy) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(JANITOR_TICK_INTERVAL);
+        janitor_pass(&engine, &busy, Instant::now());
+    })
 }
 
 /// Sampling knobs [`generate_with_loaded`] uses beyond the fixed
@@ -1193,7 +1372,12 @@ fn run_ask(ctx: &AskWorkerCtx) -> Result<String> {
     let raw_output = {
         let mut engine = lock_llm_engine(&ctx.engine);
         engine.ensure_loaded(&ctx.model_id, &ctx.model_path)?;
-        engine.generate_with_params(&prompt, ASK_GENERATION_PARAMS)?
+        let result = engine.generate_with_params(&prompt, ASK_GENERATION_PARAMS);
+        // Touch the idle clock on both the success and error path — see
+        // `LlmEngineState::touch_last_used`'s docs — before propagating
+        // `result`'s own error via `?`.
+        engine.touch_last_used();
+        result?
     };
 
     extract_ask_answer(&raw_output)
@@ -1412,7 +1596,12 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     let raw_output = {
         let mut engine = lock_llm_engine(&ctx.engine);
         engine.ensure_loaded(&ctx.model_id, &ctx.model_path)?;
-        engine.generate(&prompt)?
+        let result = engine.generate(&prompt);
+        // Touch the idle clock on both the success and error path — see
+        // `LlmEngineState::touch_last_used`'s docs — before propagating
+        // `result`'s own error via `?`.
+        engine.touch_last_used();
+        result?
     };
 
     let summary = extract_summary_json(&raw_output)?;
@@ -2164,10 +2353,141 @@ mod tests {
 
     #[test]
     fn generate_with_nothing_loaded_errors() {
-        let state = LlmEngineState { loaded: None };
+        let state = LlmEngineState { loaded: None, last_used: Instant::now() };
         let result = state.generate("Say OK.");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no LLM model loaded"));
+    }
+
+    // --- should_unload: pure decision function ----------------------------
+
+    #[test]
+    fn should_unload_false_when_recently_used() {
+        let now = Instant::now();
+        let last_used = now - Duration::from_secs(10);
+        assert!(!should_unload(last_used, now, false));
+    }
+
+    #[test]
+    fn should_unload_false_one_moment_before_the_boundary() {
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER + Duration::from_millis(1);
+        assert!(!should_unload(last_used, now, false));
+    }
+
+    #[test]
+    fn should_unload_true_exactly_at_the_boundary() {
+        // `>=`, not `>` — see `should_unload`'s docs on why this is the
+        // deliberate boundary semantics, not an off-by-one.
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER;
+        assert!(should_unload(last_used, now, false));
+    }
+
+    #[test]
+    fn should_unload_true_comfortably_past_the_boundary() {
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER - Duration::from_secs(600);
+        assert!(should_unload(last_used, now, false));
+    }
+
+    #[test]
+    fn should_unload_false_when_busy_even_well_past_the_boundary() {
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER - Duration::from_secs(600);
+        assert!(!should_unload(last_used, now, true));
+    }
+
+    // --- unload_if_idle: generic decision+take core ------------------------
+    //
+    // Exercised against a `&str` stand-in for the real (Metal-backed,
+    // GGUF-loaded) `LoadedModel` — see `unload_if_idle`'s own docs for why a
+    // real one isn't cheaply constructible in a fast unit test. This is the
+    // exact same code path `LlmEngineState::unload_if_idle` delegates to.
+
+    #[test]
+    fn unload_if_idle_clears_a_loaded_value_past_the_threshold() {
+        let mut loaded = Some("model-a");
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER - Duration::from_secs(1);
+
+        let dropped = unload_if_idle(&mut loaded, last_used, now, false);
+
+        assert_eq!(dropped, Some("model-a"));
+        assert!(loaded.is_none(), "the janitor must actually clear the cached model");
+    }
+
+    #[test]
+    fn unload_if_idle_leaves_a_busy_engine_loaded() {
+        let mut loaded = Some("model-a");
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER - Duration::from_secs(1);
+
+        let dropped = unload_if_idle(&mut loaded, last_used, now, true);
+
+        assert_eq!(dropped, None);
+        assert_eq!(loaded, Some("model-a"), "busy must block unload");
+    }
+
+    #[test]
+    fn unload_if_idle_leaves_a_freshly_used_engine_loaded() {
+        let mut loaded = Some("model-a");
+        let now = Instant::now();
+        let last_used = now - Duration::from_secs(5);
+
+        let dropped = unload_if_idle(&mut loaded, last_used, now, false);
+
+        assert_eq!(dropped, None);
+        assert_eq!(loaded, Some("model-a"), "recent use must block unload");
+    }
+
+    #[test]
+    fn unload_if_idle_is_a_no_op_when_nothing_is_loaded() {
+        let mut loaded: Option<&str> = None;
+        let now = Instant::now();
+        let last_used = now - IDLE_UNLOAD_AFTER - Duration::from_secs(1);
+
+        let dropped = unload_if_idle(&mut loaded, last_used, now, false);
+
+        assert_eq!(dropped, None);
+        assert!(loaded.is_none());
+    }
+
+    // --- LlmEngineState::unload_if_idle / janitor_pass ----------------------
+    //
+    // Nothing here loads a real model (see the module note above the
+    // `LlmEngineState`/`try_spawn_summarize` test section) — the `loaded:
+    // Some(...)` unload behavior is already proven above against
+    // `unload_if_idle`'s generic core; these confirm `LlmEngineState`'s
+    // thin wrapper and `janitor_pass`'s mutex plumbing don't misbehave
+    // around the one state a fast test *can* construct (`loaded: None`),
+    // and that a held engine mutex never blocks the janitor.
+
+    #[test]
+    fn llm_engine_state_unload_if_idle_is_a_no_op_with_nothing_loaded() {
+        let mut state = LlmEngineState { loaded: None, last_used: Instant::now() - IDLE_UNLOAD_AFTER - Duration::from_secs(1) };
+        assert!(!state.unload_if_idle(Instant::now(), false));
+    }
+
+    #[test]
+    fn janitor_pass_is_a_no_op_when_nothing_is_loaded() {
+        let engine = open_shared();
+        let busy = open_busy_flag();
+        // Must not panic even given a `now` well past the idle threshold —
+        // there's simply nothing to unload.
+        janitor_pass(&engine, &busy, Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600));
+    }
+
+    #[test]
+    fn janitor_pass_skips_without_blocking_when_the_engine_mutex_is_already_held() {
+        let engine = open_shared();
+        let busy = open_busy_flag();
+        // Simulates a generation currently holding the engine mutex — the
+        // janitor must try_lock, fail, and return immediately rather than
+        // blocking behind it (that's the whole point of `try_lock_llm_engine`
+        // over `lock_llm_engine` here).
+        let _generation_guard = lock_llm_engine(&engine);
+        janitor_pass(&engine, &busy, Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600));
     }
 
     #[test]
@@ -2939,7 +3259,7 @@ mod tests {
         let segments = fake_product_launch_transcript();
         let prompt = build_summary_prompt("Aurora launch planning", &segments);
 
-        let mut state = LlmEngineState { loaded: None };
+        let mut state = LlmEngineState { loaded: None, last_used: Instant::now() };
 
         let load_start = Instant::now();
         state
@@ -3048,7 +3368,7 @@ mod tests {
         let question = "What did they discuss and decide?";
         let prompt = build_ask_prompt("Aurora launch planning", &segments, question);
 
-        let mut state = LlmEngineState { loaded: None };
+        let mut state = LlmEngineState { loaded: None, last_used: Instant::now() };
 
         let load_start = Instant::now();
         state

@@ -7,6 +7,21 @@ import { Waveform } from './Waveform'
 /** Within this many px of the bottom still counts as "stuck" — accounts for sub-pixel scrollHeight rounding, not just an exact 0. */
 const STICK_THRESHOLD_PX = 48
 
+/**
+ * Live view renders at most this many of the most recent grouped rows —
+ * unbounded DOM growth over a long meeting (hundreds of groups, each with
+ * its own speaker/timestamp row and text block) is the live-recording
+ * counterpart to `TranscriptList`'s stored-note virtualization (Task 7).
+ * Simpler than virtualizing here: the live list only ever grows and is only
+ * ever viewed at its tail (stick-to-bottom is the default — see
+ * `LiveTranscriptScroller`), so a plain "keep the last N" cap is enough —
+ * no windowing machinery needed for content the user has already scrolled
+ * past. The full transcript is never lost: everything is still persisted to
+ * `transcript.json` as it arrives and is available in full once the note is
+ * stopped (via `TranscriptList`) — capping only what's rendered *live*.
+ */
+const LIVE_RENDER_CAP = 200
+
 interface RecordingViewProps {
   liveSegments: LiveTranscriptGroup[]
   paused: boolean
@@ -80,9 +95,21 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
   const showError = sttStatus === 'error'
   const showTranscribing = !showLoadingHint && !showError
 
+  // Cap rendered rows at LIVE_RENDER_CAP — see that constant's docs. Always
+  // the *most recent* groups (a `slice(-N)`, not the earliest) since the
+  // live view is stick-to-bottom by default; the full list is still what's
+  // persisted, only rendering is capped.
+  const capped = liveSegments.length > LIVE_RENDER_CAP
+  const visibleGroups = capped ? liveSegments.slice(-LIVE_RENDER_CAP) : liveSegments
+
   return (
     <>
-      {liveSegments.map((group, i) => (
+      {capped && (
+        <div style={{ fontSize: 12, color: 'var(--ink-faint)' }}>
+          Showing the latest {LIVE_RENDER_CAP} entries — the full transcript is saved.
+        </div>
+      )}
+      {visibleGroups.map((group, i) => (
         <div key={i}>
           <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
             <b>{group.speaker}</b>

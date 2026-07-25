@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { vi } from 'vitest'
+import { beforeEach, vi } from 'vitest'
 import { demoTranscript } from '../data/demo'
+import type { TranscriptSegment } from '../types'
 import { TranscriptList, type TranscriptListProps } from './TranscriptList'
 
 function makeProps(overrides: Partial<TranscriptListProps> = {}): TranscriptListProps {
@@ -11,6 +12,18 @@ function makeProps(overrides: Partial<TranscriptListProps> = {}): TranscriptList
     seekable: true,
     ...overrides,
   }
+}
+
+/** Builds `count` synthetic segments — enough to exercise the virtualized (> 150 segments) path. */
+function makeSegments(count: number): TranscriptSegment[] {
+  return Array.from({ length: count }, (_, i) => ({
+    initials: 'S1',
+    speaker: 'Speaker 1',
+    time: `${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`,
+    text: `Segment number ${i} of the transcript.`,
+    start: i,
+    end: i + 1,
+  }))
 }
 
 describe('TranscriptList', () => {
@@ -67,5 +80,56 @@ describe('TranscriptList', () => {
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(onSeek).not.toHaveBeenCalled()
+  })
+
+  describe('virtualization (long transcripts)', () => {
+    // jsdom never computes real layout — `offsetHeight`/`offsetWidth` (what
+    // @tanstack/react-virtual reads for both the scroll container's viewport
+    // size and each row's measured height — see `getRect`/`measureElement`
+    // in its source) are always 0 by default, which would collapse the
+    // virtualizer's whole notion of "visible window" to nothing. Stubbed
+    // here (not globally in `src/test/setup.ts` — nothing outside this describe
+    // block needs it) via the scroll container's `data-testid` to tell it
+    // apart from an individual row.
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+        configurable: true,
+        get() {
+          return this.dataset.testid === 'transcript-virtual-scroll' ? 600 : 80
+        },
+      })
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+        configurable: true,
+        get() {
+          return this.dataset.testid === 'transcript-virtual-scroll' ? 700 : 700
+        },
+      })
+    })
+
+    it('renders the plain (non-virtualized) path at exactly the threshold (150 segments)', () => {
+      const { container } = render(<TranscriptList {...makeProps({ segments: makeSegments(150) })} />)
+      expect(container.querySelector('[data-testid="transcript-virtual-scroll"]')).not.toBeInTheDocument()
+      expect(screen.getAllByRole('button', { name: /^Play from/ })).toHaveLength(150)
+    })
+
+    it('switches to the virtualized path just past the threshold (151 segments)', () => {
+      const { container } = render(<TranscriptList {...makeProps({ segments: makeSegments(151) })} />)
+      expect(container.querySelector('[data-testid="transcript-virtual-scroll"]')).toBeInTheDocument()
+    })
+
+    it('renders only a windowed subset of rows for a long transcript, not all of them', () => {
+      render(<TranscriptList {...makeProps({ segments: makeSegments(300) })} />)
+      const buttons = screen.getAllByRole('button', { name: /^Play from/ })
+      expect(buttons.length).toBeGreaterThan(0)
+      expect(buttons.length).toBeLessThan(300)
+    })
+
+    it('a rendered row’s seek button still calls onSeek in the virtualized path', () => {
+      const onSeek = vi.fn()
+      render(<TranscriptList {...makeProps({ segments: makeSegments(300), onSeek })} />)
+      // The very first segment is always within the initial visible window.
+      fireEvent.click(screen.getByRole('button', { name: 'Play from 00:00' }))
+      expect(onSeek).toHaveBeenCalledWith(0)
+    })
   })
 })

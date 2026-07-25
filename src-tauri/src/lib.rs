@@ -366,7 +366,7 @@ pub fn run() {
       // Managed state guarding the single loaded summarization LLM — see
       // `llm::SharedLlmEngine`.
       let llm_engine: SharedLlmEngine = llm::open_shared();
-      app.manage(llm_engine);
+      app.manage(llm_engine.clone());
 
       // Single-generation-at-a-time gate, app-wide (a summarize and an ask
       // share it — see `llm::LlmBusy`'s docs), deliberately a separate
@@ -374,7 +374,17 @@ pub fn run() {
       // concurrency note) — checking or claiming it never blocks on a
       // long-running generation.
       let llm_busy: LlmBusy = llm::open_busy_flag();
-      app.manage(llm_busy);
+      app.manage(llm_busy.clone());
+
+      // Idle-unload janitor (Stage 4 Task 7): a detached thread that drops
+      // the loaded LLM after `llm::IDLE_UNLOAD_AFTER` of inactivity, freeing
+      // its ~2.6 GB until the next `summarize_note`/`ask_note` transparently
+      // reloads it — see `llm::spawn_janitor`/`llm::janitor_pass`. Takes the
+      // original `llm_engine`/`llm_busy` handles (never joined, same
+      // fire-and-forget shape as the audio sweep thread above); the clones
+      // `app.manage`d just above are what the rest of the app (commands,
+      // `finalize_active_recording_on_exit`) resolves via `State`/`app.state`.
+      llm::spawn_janitor(llm_engine, llm_busy);
 
       // Tracks in-flight model downloads so `cancel_download` can signal
       // them and `list_models` can report `Downloading` state — see
