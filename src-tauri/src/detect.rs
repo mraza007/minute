@@ -270,6 +270,11 @@ impl DetectorCore {
             }
         }
         if let Phase::Prompted { since } = self.phase {
+            // `Instant` is documented monotonic, so `since` should never be
+            // ahead of `now` here; `saturating_duration_since` (over plain
+            // `-`/`duration_since`) costs nothing in the common case and
+            // just keeps this panic-free if that guarantee were ever
+            // violated (a platform bug, a mocked clock in some future test).
             if now.saturating_duration_since(since) >= PROMPT_AUTO_TIMEOUT {
                 self.phase = Phase::Cooldown(now + COOLDOWN);
             }
@@ -287,6 +292,9 @@ impl DetectorCore {
         let Some(hot_since) = self.mic_hot_since else {
             return Action::None;
         };
+        // Same `saturating_duration_since` rationale as above: `Instant`'s
+        // monotonicity guarantee means this never actually saturates, it's
+        // just cost-free insurance against panicking if it somehow did.
         if now.saturating_duration_since(hot_since) < DEBOUNCE {
             return Action::None;
         }
@@ -376,6 +384,56 @@ mod core_tests {
                 meeting_app_present: Some("Zoom".to_string()),
             },
             base + Duration::from_millis(9900),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn mic_flap_with_a_genuine_gap_requires_a_fresh_independent_5s_streak() {
+        // Same shape as the test above, but with an actual gap where the mic
+        // is genuinely inactive for a beat (4s active, 1s off, 4s active)
+        // rather than an instantaneous stop-then-restart at the same
+        // instant — the second streak still can't inherit any credit from
+        // the first, and nothing fires while the mic is inactive either.
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        core.process(DetectorEvent::MicStarted, base);
+        core.process(DetectorEvent::MicStopped, base + secs(4));
+
+        // Mid-gap: mic is genuinely off — no prompt regardless of app
+        // presence.
+        let during_gap = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + Duration::from_millis(4_500),
+        );
+        assert_eq!(during_gap, Action::None);
+
+        core.process(DetectorEvent::MicStarted, base + secs(5));
+
+        // 4s into the second streak — not yet at its own 5s mark.
+        let too_early = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5) + secs(4),
+        );
+        assert_eq!(too_early, Action::None);
+
+        // 5s into the second streak — fires on its own merits, independent
+        // of the first (unrelated) 4s streak before the gap.
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5) + secs(5),
         );
         assert_eq!(
             action,
@@ -763,6 +821,115 @@ mod core_tests {
             base + secs(11) + secs(5),
         );
         assert_eq!(blocked, Action::None);
+    }
+
+    // --- SetEnabled(false) forces a return to Watching from every other
+    // phase --------------------------------------------------------------
+    //
+    // `Phase` is private, so each of these pins the reset indirectly: a
+    // quick re-enable (well inside the 12s auto-timeout / 900s cooldown
+    // windows those phases would otherwise still be blocking on) reprompts
+    // as soon as its own fresh 5s debounce elapses — which is only possible
+    // if `SetEnabled(false)` actually forced `Watching`, not left the prior
+    // phase (`Prompted`/`Cooldown`/`SuppressedUntilMicDrop`) in place.
+
+    #[test]
+    fn disabling_while_prompted_forces_watching() {
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        core.process(DetectorEvent::MicStarted, base);
+        let shown = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        assert!(matches!(shown, Action::ShowPrompt { .. }));
+
+        // Still `Prompted`, well inside the 12s auto-timeout window —
+        // disabling here must reset the phase itself, not just wait it out.
+        core.process(DetectorEvent::SetEnabled(false), base + secs(6));
+        core.process(DetectorEvent::SetEnabled(true), base + secs(7));
+
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(7) + secs(5),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn disabling_during_cooldown_forces_watching() {
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        core.process(DetectorEvent::MicStarted, base);
+        core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        core.process(DetectorEvent::Outcome(PromptOutcome::Dismissed), base + secs(5));
+
+        // Well inside what would otherwise be a 900s cooldown — disabling
+        // must clear it outright, not just pause the countdown.
+        core.process(DetectorEvent::SetEnabled(false), base + secs(6));
+        core.process(DetectorEvent::SetEnabled(true), base + secs(7));
+
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(7) + secs(5),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn disabling_while_suppressed_until_mic_drop_forces_watching() {
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+
+        core.process(DetectorEvent::MicStarted, base);
+        core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(5),
+        );
+        core.process(DetectorEvent::Outcome(PromptOutcome::Accepted), base + secs(5));
+
+        // Mic never drops (the call is still ongoing) — disabling must
+        // still lift the suppression itself, without needing a `MicStopped`.
+        core.process(DetectorEvent::SetEnabled(false), base + secs(6));
+        core.process(DetectorEvent::SetEnabled(true), base + secs(7));
+
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Zoom".to_string()),
+            },
+            base + secs(7) + secs(5),
+        );
+        assert_eq!(
+            action,
+            Action::ShowPrompt {
+                app_name: "Zoom".to_string()
+            }
+        );
     }
 }
 
@@ -1184,6 +1351,21 @@ mod macos {
                 find_allowlisted(&["com.microsoft.teams".to_string()]),
                 Some("Microsoft Teams".to_string())
             );
+        }
+
+        #[test]
+        fn find_allowlisted_is_deterministic_when_two_real_meeting_apps_are_both_running() {
+            // Teams listed *before* Zoom in the running-apps order — proves
+            // the result comes from `MEETING_APPS`'s own priority order
+            // (Zoom first), not merely from whichever happened to appear
+            // first in `NSWorkspace.runningApplications`'s (otherwise
+            // unspecified, per Apple's own docs) ordering.
+            let running = vec!["com.microsoft.teams2".to_string(), "us.zoom.xos".to_string()];
+            assert_eq!(find_allowlisted(&running), Some("Zoom".to_string()));
+
+            // Same two apps, running-list order flipped — still Zoom.
+            let running_reversed = vec!["us.zoom.xos".to_string(), "com.microsoft.teams2".to_string()];
+            assert_eq!(find_allowlisted(&running_reversed), Some("Zoom".to_string()));
         }
 
         #[test]

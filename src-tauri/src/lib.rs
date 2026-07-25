@@ -433,6 +433,17 @@ pub fn run() {
       // `detect::DetectorHandle`'s docs. Empty (no thread) until started
       // just below (if enabled at launch) or later via `set_settings`
       // toggling `meetingDetection` live.
+      // Note: unlike the recorder, there's no matching `detect::stop` call
+      // anywhere in this file's app-exit handling — the detector thread (if
+      // running) is never explicitly joined on quit. That's a deliberate
+      // reliance on process teardown rather than an oversight: quitting
+      // ends the process, which drops the `MicMonitor` (removing both
+      // CoreAudio property listeners) same as any other thread-local
+      // resource; and even short of that, CoreAudio's HAL itself cleans up
+      // listeners registered by a client process that has gone away. There
+      // is no in-progress work here (unlike `finalize_active_recording_on_exit`,
+      // which exists precisely because a recording *does* have state to
+      // flush) that would make an unclean detector-thread exit lossy.
       let detector_handle: detect::SharedDetectorHandle = detect::open_shared();
       app.manage(detector_handle.clone());
       if meeting_detection_enabled {
