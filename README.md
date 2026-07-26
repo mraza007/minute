@@ -5,7 +5,7 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-0.4.0-e04430)
+![version](https://img.shields.io/badge/version-0.5.0-e04430)
 
 ![Minute — note view with live transcript and AI-generated summary](docs/screenshots/hero.png)
 
@@ -27,11 +27,38 @@ record a meeting — it transcribes, summarizes, and answers questions about
 it exactly the same as it does online, because it never used the network in
 the first place.
 
+## Meeting detection, without a permission prompt
+
+When another app starts using your microphone — Zoom, Teams, Webex, Slack,
+FaceTime, Discord, or a browser call — Minute notices and offers a quiet
+pill above whatever you're looking at: one click starts recording, one
+click (or 12 seconds of silence) dismisses it. It's off by default; turn
+it on in Settings.
+
+This is the honest version of what that pill is doing: it checks whether
+the default microphone is in use and which apps are currently running —
+both things any app on the system can already see, neither one requiring
+a permission dialog. It never opens the microphone itself and never
+listens to audio to decide whether to show up. Turn the toggle off and
+the detector thread stops existing, not just stops firing.
+
+![Minute — the meeting-detected pill, one click from recording](docs/screenshots/popup.png)
+
 ## Recording, transcribed as it happens
 
 Hit record and Whisper starts transcribing in real time, grouped by speaker,
 scrolling live as the meeting runs. Pause and resume freely; nothing is sent
 anywhere while you do.
+
+Turn on **Capture system audio** in Settings and a recording captures both
+sides of the call — your microphone and what your Mac is playing — so the
+other participants land in the transcript too, not just you. It needs
+macOS 13 or later and Screen Recording permission (the one system prompt
+this whole feature ever triggers); say no, or run an older macOS, and
+recording still works exactly as before, mic-only. One caveat worth
+knowing: if you're on speakers rather than headphones, your own voice can
+get picked up twice — once by the mic, once by the system-audio stream
+playing it back out — there's no echo cancellation between the two yet.
 
 ![Minute — a live recording in progress, transcript streaming in](docs/screenshots/recording.png)
 
@@ -125,7 +152,8 @@ requirements shown up front.
 ## Requirements
 
 - Apple Silicon Mac (M1 or later)
-- macOS 11 or later
+- macOS 11 or later (macOS 13 or later for system-audio capture; everything
+  else works down to 11)
 - ~3 GB of free disk space for the default Whisper small + Qwen3.5-4B pair
 
 ## Install
@@ -167,8 +195,12 @@ Honestly, in rough priority order:
   next step.
 - **More models** — the catalog grows as good on-device options do; nothing
   about the architecture is tied to the current lineup.
-- **System audio capture** — recording currently covers the microphone;
-  capturing call audio directly is scoped but not built.
+- **Calendar-aware nudges** — meeting detection currently reacts to the mic
+  going hot in a known app; reading your calendar to know a meeting's name
+  and attendees ahead of time is scoped but parked for a later release.
+- **Per-app audio taps** — system audio currently captures the whole
+  machine's output; Apple's newer CATap API would let capture target a
+  single app's audio instead, once it's broadly available to build against.
 - **Signed, notarized releases** — so `npm run tauri build` from source
   isn't the only way to install it.
 

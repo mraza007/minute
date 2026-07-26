@@ -103,6 +103,15 @@ async function waitForSelector<T extends Element>(selector: string): Promise<T |
   return found
 }
 
+async function drivePopup(): Promise<void> {
+  await waitFor(() => document.querySelector('[role="dialog"][aria-label="Meeting detected"]') !== null)
+  // Same event the real detector (detect.rs) fires into the popup webview —
+  // see src/ipc/events.ts's `onMeetingPopupPayload`. "Zoom" mirrors the
+  // allowlisted app named in the detection engine's own bundle-id list.
+  await emit('meeting-popup-payload', { appName: 'Zoom' })
+  await waitFor(() => document.body.textContent?.includes('Zoom is using the microphone') ?? false)
+}
+
 async function driveSettings(): Promise<void> {
   const settingsButton = await waitForButtonByText('Settings')
   settingsButton?.click()
@@ -152,6 +161,8 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
     await driveSettings()
   } else if (state === 'onboarding') {
     await waitFor(() => document.body.textContent?.includes('Start using Minute') ?? false)
+  } else if (state === 'popup') {
+    await drivePopup()
   } else {
     await driveNote(params)
   }

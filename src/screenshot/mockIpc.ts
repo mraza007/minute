@@ -23,7 +23,7 @@ import {
   STORAGE,
 } from './demoData'
 
-export type ScreenshotState = 'note' | 'recording' | 'palette' | 'settings' | 'onboarding'
+export type ScreenshotState = 'note' | 'recording' | 'palette' | 'settings' | 'onboarding' | 'popup'
 
 function buildModels(state: ScreenshotState): ModelStatus[] {
   const onboarding = state === 'onboarding'
@@ -122,6 +122,13 @@ export function installMockIpc(state: ScreenshotState): void {
           return noteWithTranscript(meta).summary
         }
         case 'ask_note':
+          return null
+        case 'popup_start':
+        case 'popup_dismiss':
+          // The `popup` marketing shot never clicks through (nothing to
+          // navigate to in this dev-only harness) — mocked just so Pill's
+          // click handlers don't throw if the capture script or a stray
+          // interaction ever calls them.
           return null
         default:
           return null

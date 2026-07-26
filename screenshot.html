@@ -140,6 +140,62 @@
       .traffic-lights .tl-zoom {
         background: #28c840;
       }
+
+      /* `?state=popup` marketing frame — the pill isn't an app window, it's
+         a panel that floats over *whatever* the user's looking at (per
+         popup.rs: top-center of the active display, non-activating). There's
+         no real "app window" to depict behind it honestly, so this reuses
+         the same paper-warm backdrop as the other six shots (keeps the set
+         visually one family) plus a plain, unbranded glassy rectangle
+         standing in for "some call window behind it" — no logos, no invented
+         chrome — and a soft vignette so the floating pill reads as the
+         subject of the shot instead of the backdrop. */
+      body.state-popup .window-chrome,
+      body.state-popup .traffic-lights {
+        display: none;
+      }
+      .vignette {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at 50% 38%, transparent 40%, rgba(0, 0, 0, 0.16) 100%);
+      }
+      html[data-theme='dark'] .vignette {
+        background: radial-gradient(ellipse at 50% 38%, transparent 35%, rgba(0, 0, 0, 0.4) 100%);
+      }
+      .desktop-window {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -44%);
+        width: 1100px;
+        height: 620px;
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.32);
+        border: 1px solid var(--window-border);
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.05),
+          0 20px 60px rgba(0, 0, 0, 0.18);
+      }
+      html[data-theme='dark'] .desktop-window {
+        background: rgba(255, 255, 255, 0.045);
+      }
+      .pill-frame-wrap {
+        position: absolute;
+        top: 86px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 400px;
+        height: 96px;
+        filter: drop-shadow(0 14px 32px rgba(0, 0, 0, 0.28));
+      }
+      .pill-frame-wrap iframe {
+        display: block;
+        width: 400px;
+        height: 96px;
+        border: none;
+        background: transparent;
+      }
     </style>
   </head>
   <body>
@@ -156,6 +212,11 @@
         </div>
         <iframe id="app-frame" title="Minute"></iframe>
       </div>
+      <div class="desktop-window" id="desktop-window" hidden></div>
+      <div class="vignette" id="vignette" hidden></div>
+      <div class="pill-frame-wrap" id="pill-frame-wrap" hidden>
+        <iframe id="pill-frame" title="Minute — meeting detected"></iframe>
+      </div>
     </div>
     <script>
       // Forwards every query param this page was loaded with straight to
@@ -167,7 +228,16 @@
       if (params.get('theme') === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark')
       }
-      document.getElementById('app-frame').src = '/screenshot-app.html?' + params.toString()
+      var qs = params.toString()
+      if (params.get('state') === 'popup') {
+        document.body.classList.add('state-popup')
+        document.getElementById('desktop-window').hidden = false
+        document.getElementById('vignette').hidden = false
+        document.getElementById('pill-frame-wrap').hidden = false
+        document.getElementById('pill-frame').src = '/screenshot-app.html?' + qs
+      } else {
+        document.getElementById('app-frame').src = '/screenshot-app.html?' + qs
+      }
     </script>
   </body>
 </html>

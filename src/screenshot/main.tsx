@@ -14,6 +14,7 @@ import { createRoot } from 'react-dom/client'
 import { mockConvertFileSrc } from '@tauri-apps/api/mocks'
 import '../index.css'
 import App from '../App'
+import { Pill } from '../popup/Pill'
 import { installFakeAudio } from './fakeAudio'
 import { installMockIpc, type ScreenshotState } from './mockIpc'
 import { driveScenario } from './scenario'
@@ -29,7 +30,10 @@ installMockIpc(state)
 
 const root = document.getElementById('root')
 if (!root) throw new Error('screenshot harness: #root not found')
-createRoot(root).render(<App />)
+// `popup` mounts the real Pill component directly (see src/popup/main.tsx)
+// instead of `<App/>` — it's the actual popup window's content, not the
+// main app shell, so this harness renders exactly what that window renders.
+createRoot(root).render(state === 'popup' ? <Pill /> : <App />)
 
 // Always forced (not just for `theme=dark`) — see themeOverride.ts's docs
 // on why relying on the capturing machine's own OS appearance would make
