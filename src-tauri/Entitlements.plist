@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Apple Silicon forces library validation on ad-hoc signed binaries, which
+    refuses to load any dylib whose Team ID doesn't match the main executable.
+    The bundled ggml/llama dylibs (see scripts/stage-frameworks.sh) are ad-hoc
+    signed with no Team ID, so without this the app dies at launch with
+    "Library not loaded: @rpath/libggml-base.0.dylib ... different Team IDs".
+    A Developer ID signature would sign the app and every dylib under one team
+    and make this unnecessary.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

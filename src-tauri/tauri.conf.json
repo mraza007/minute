@@ -29,7 +29,9 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self' asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/notes/**"]
+        "scope": [
+          "$APPDATA/notes/**"
+        ]
       }
     }
   },
@@ -49,6 +51,8 @@
     "macOS": {
       "infoPlist": "Info.plist",
       "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
       "frameworks": [
         "frameworks/libggml-base.0.dylib",
         "frameworks/libggml-cpu.0.dylib",

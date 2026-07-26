@@ -13,7 +13,12 @@
 
 or grab the DMG directly: [Minute_0.5.0_aarch64.dmg](https://github.com/mraza007/minute/releases/download/v0.5.0/Minute_0.5.0_aarch64.dmg)
 
-It's an unsigned build, so on first launch: right-click the app → **Open**.
+Drag Minute to Applications, then run this once — the build isn't notarized,
+so macOS quarantines it and refuses to open it until the flag is cleared:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Minute.app
+```
 
 </div>
 
@@ -175,8 +180,9 @@ npm run tauri build
 ```
 
 This produces a `.app` (and a `.dmg`) under `src-tauri/target/release/bundle/`.
-Minute isn't notarized yet either way, so macOS will flag it as from an
-unidentified developer — right-click → **Open** past that once. On first
+Builds are ad-hoc signed, not notarized, so a copy that macOS has
+quarantined (anything downloaded) needs `xattr -dr com.apple.quarantine`
+pointed at it once before it will open. On first
 launch, Minute walks you through picking and downloading a transcription +
 summary model pair sized to your hardware — that's the only thing that
 touches the network, ever.
