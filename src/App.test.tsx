@@ -172,10 +172,10 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByText('Nothing leaves this machine.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
-    expect(screen.queryByText('Nothing leaves this machine.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
   })
 
@@ -231,7 +231,7 @@ describe('App', () => {
     // recording") must still be showing, proving `isRecording` survived
     // the view change instead of collapsing back to false.
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByText('Nothing leaves this machine.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /new recording/i })).not.toBeInTheDocument()
 

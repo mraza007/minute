@@ -71,11 +71,6 @@ const base = {
 describe('SettingsView', () => {
   afterEach(() => vi.useRealTimers())
 
-  it('shows the privacy hero text', () => {
-    render(<SettingsView {...base} />)
-    expect(screen.getByText('Nothing leaves this machine.')).toBeInTheDocument()
-  })
-
   it('groups the transcription models under a radiogroup with one radio per STT entry', () => {
     render(<SettingsView {...base} />)
     const group = screen.getByRole('radiogroup', { name: /transcription model/i })

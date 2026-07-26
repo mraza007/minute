@@ -290,13 +290,6 @@ export function SettingsView({
       <div style={{ maxWidth: 760, padding: '28px 36px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Settings</h1>
 
-        <div style={{ background: 'var(--banner-bg)', color: 'var(--banner-text)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-lg)', padding: '24px 28px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
-          <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.02em' }}>Nothing leaves this machine.</div>
-          <div style={{ marginTop: 6, fontSize: 13, lineHeight: 1.6, color: 'var(--banner-text-muted)', maxWidth: 520 }}>
-            No account. No cloud. No network permission. Transcription and summarization run entirely on your hardware — pull the Wi-Fi and everything still works.
-          </div>
-        </div>
-
         <div style={cardStyle}>
           <h2 style={cardHeaderStyle}>Transcription model</h2>
           <div
