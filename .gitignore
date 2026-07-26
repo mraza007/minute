@@ -28,5 +28,5 @@ src-tauri/target
 /target
 
 # Local planning docs (never committed)
-docs/plans/
+docs/
 .impeccable.md

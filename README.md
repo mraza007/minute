@@ -7,7 +7,7 @@
 ![platform](https://img.shields.io/badge/platform-macOS-black)
 ![version](https://img.shields.io/badge/version-0.5.0-e04430)
 
-![Minute — note view with live transcript and AI-generated summary](docs/screenshots/hero.png)
+![Minute — note view with live transcript and AI-generated summary](screenshots/hero.png)
 
 </div>
 
@@ -42,7 +42,7 @@ a permission dialog. It never opens the microphone itself and never
 listens to audio to decide whether to show up. Turn the toggle off and
 the detector thread stops existing, not just stops firing.
 
-![Minute — the meeting-detected pill, one click from recording](docs/screenshots/popup.png)
+![Minute — the meeting-detected pill, one click from recording](screenshots/popup.png)
 
 ## Recording, transcribed as it happens
 
@@ -60,7 +60,7 @@ knowing: if you're on speakers rather than headphones, your own voice can
 get picked up twice — once by the mic, once by the system-audio stream
 playing it back out — there's no echo cancellation between the two yet.
 
-![Minute — a live recording in progress, transcript streaming in](docs/screenshots/recording.png)
+![Minute — a live recording in progress, transcript streaming in](screenshots/recording.png)
 
 ## A summary you can act on
 
@@ -77,7 +77,7 @@ the launch date?" — and Minute answers from the transcript, with inline
 recording. It's a conversation with your own notes, not a chatbot guessing
 from a summary.
 
-![Minute — ask-your-notes answering with clickable timestamp citations](docs/screenshots/ask.png)
+![Minute — ask-your-notes answering with clickable timestamp citations](screenshots/ask.png)
 
 ## Find anything, instantly
 
@@ -85,7 +85,7 @@ from a summary.
 with matches highlighted and playback ready to seek straight to the moment
 someone said the thing you're looking for.
 
-![Minute — the ⌘K search palette showing title and transcript hits](docs/screenshots/search.png)
+![Minute — the ⌘K search palette showing title and transcript hits](screenshots/search.png)
 
 ## Dark mode that still feels like paper
 
@@ -93,7 +93,7 @@ Minute follows macOS's appearance setting. The dark theme isn't an inverted
 light theme — it's its own warm, ink-on-dark-paper palette, built to the
 same calm, analog feel as the light one.
 
-![Minute — note view in dark mode](docs/screenshots/dark.png)
+![Minute — note view in dark mode](screenshots/dark.png)
 
 ## Models sized to your Mac
 
@@ -103,7 +103,7 @@ what fits your hardware and disk budget, or let Minute suggest a pair based
 on your RAM and chip. Everything downloads once, runs entirely offline
 after that, and can be removed just as easily.
 
-![Minute — the model manager, showing installed and available models](docs/screenshots/models.png)
+![Minute — the model manager, showing installed and available models](screenshots/models.png)
 
 ## How it works
 
