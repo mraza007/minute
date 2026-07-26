@@ -51,7 +51,49 @@ const APP_COMMANDS: &[&str] = &[
   "request_sys_audio_permission",
 ];
 
+// Stage 5 Task 4: `ScreenCaptureKit.framework` doesn't exist before macOS
+// 12.3 (13.0 for the audio capture `syscap.rs` actually uses), well above
+// this crate's declared 11.0 floor (`tauri.conf.json`'s
+// `minimumSystemVersion`). `objc2-screen-capture-kit`'s generated bindings
+// link it the normal way — a `#[link(name = "ScreenCaptureKit", kind =
+// "framework")]` attribute, which rustc/the linker treat exactly like
+// `-framework ScreenCaptureKit`: a *hard* `LC_LOAD_DYLIB`. dyld refuses to
+// even launch a process whose hard-linked framework is missing — on macOS
+// 11/12 that would break the *entire app* at launch, not just gracefully
+// report `syscap::SysAudioAvailability::Unsupported` (system-audio's own
+// runtime gate; see that module's docs). Passing `-weak_framework` here
+// instead makes the linker emit a *weak* `LC_LOAD_WEAK_DYLIB` for the same
+// framework, which wins over the dependency's own hard link (confirmed
+// empirically: a throwaway binary linking `objc2-screen-capture-kit` both
+// with and without this override, inspected via `otool -l`/`otool -L` —
+// without it, `ScreenCaptureKit.framework` shows as a plain hard-linked
+// dylib; with it, the *same* entry shows `(weak)` / `LC_LOAD_WEAK_DYLIB`,
+// with no duplicate hard entry left over). dyld resolves a weak dylib
+// lazily and simply leaves it unbound if absent — exactly what a
+// runtime-gated feature needs. `syscap.rs` never touches any
+// `ScreenCaptureKit` symbol (including class lookups, which fault under
+// weak linking if the framework is genuinely missing) unless
+// `sys_audio_status` has already reported `Ready`, so this weak link is
+// never actually exercised below macOS 13 in the first place — this
+// override exists purely so the *link itself* can never be the thing that
+// breaks the app on an older OS.
+//
+// Every other framework this crate (transitively, via `objc2-core-media`/
+// `objc2-core-audio-types`/`dispatch2`/`block2`/Task 1's `objc2-app-kit`/
+// `objc2-core-audio`/`objc2-core-graphics`) links predates macOS 11 and is
+// left as an ordinary hard link, unchanged.
+#[cfg(target_os = "macos")]
+fn weak_link_macos_13_only_frameworks() {
+  println!("cargo:rustc-link-arg=-weak_framework");
+  println!("cargo:rustc-link-arg=ScreenCaptureKit");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn weak_link_macos_13_only_frameworks() {}
+
 fn main() {
+  weak_link_macos_13_only_frameworks();
+
   let attributes =
     tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
   tauri_build::try_build(attributes).expect("failed to run tauri-build");

@@ -79,19 +79,48 @@ objc2-core-audio = "=0.3.2"
 # block's other pinned dependencies already follow.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
-# Stage 5 Task 4: system-audio capture (ScreenCaptureKit). MIT OR Apache-2.0
-# (confirmed against crates.io) — permissive, no attribution/copyleft
-# obligations beyond what's already carried by every other MIT/Apache dep
-# here. `default-features = false` (the crate's own `default = []` anyway,
-# so this is just explicit) — none of the `macos_1x_0` feature-gated extras
-# (HDR presets, content-rect, included-displays introspection, ...) are
-# used; only the unconditionally-compiled base API (SCStream,
-# SCContentFilter, SCStreamConfiguration's audio/exclude-current-process
-# knobs) is needed. See syscap.rs's module docs for the full API notes, and
-# this file's own `[patch.crates-io]` section below for why this (and its
-# transitive `apple-metal` dependency) are vendored rather than pulled
-# straight from crates.io.
-screencapturekit = { version = "=8.0.1", default-features = false }
+# Stage 5 Task 4: system-audio capture (ScreenCaptureKit), via objc2's own
+# header-generated framework bindings — NOT the `screencapturekit` crate
+# (Swift-Package-Manager-based; reverted — its build script requires a full
+# Xcode.app to compile at all, which broke `cargo build`/`cargo test` on any
+# machine with only Command Line Tools installed, verified on this machine).
+# `objc2-screen-capture-kit` and friends below are plain Objective-C header
+# bindings (same shape as the already-present `objc2-app-kit`/
+# `objc2-core-audio`) — no Swift toolchain involved at all, confirmed by a
+# clean `cargo build` here with only Command Line Tools. All pinned exact at
+# `=0.3.2`, matching the rest of the objc2-* family in this file.
+objc2-screen-capture-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "SCStream",
+  "SCShareableContent",
+  "block2",
+  "dispatch2",
+  "objc2-core-media",
+] }
+# CMSampleBuffer + the audio_buffer_list_with_retained_block_buffer accessor
+# `syscap.rs`'s capture callback uses to pull raw audio bytes out of what
+# `SCStreamOutput` delivers.
+objc2-core-media = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "objc2",
+  "CMBase",
+  "CMSampleBuffer",
+  "CMBlockBuffer",
+  "objc2-core-audio-types",
+  "block2",
+] }
+# The classic Core Audio `AudioBufferList`/`AudioBuffer` C structs
+# `CMSampleBuffer::audio_buffer_list_with_retained_block_buffer` fills in —
+# already resolved transitively at this exact version via `cpal`/
+# `objc2-core-audio` (Task 1), same "pin what's already there" rationale as
+# every other entry in this file.
+objc2-core-audio-types = "=0.3.2"
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std", "objc2"] }
+# `block2::RcBlock` — building the completion-handler blocks the async SCK
+# APIs (`getShareableContentWithCompletionHandler`/`startCaptureWithCompletionHandler`/
+# `stopCaptureWithCompletionHandler`) require. Already resolved transitively
+# at this exact version via the crates above.
+block2 = "=0.6.2"
 # `CGPreflightScreenCaptureAccess`/`CGRequestScreenCaptureAccess` (the Screen
 # Recording TCC check/request pair, predating ScreenCaptureKit itself —
 # available since macOS 10.15, safe to call unconditionally on this crate's
@@ -107,7 +136,15 @@ objc2-core-graphics = { version = "=0.3.2", default-features = false, features =
 # every other objc2-* entry in this file. `features = ["std", "NSProcessInfo"]`:
 # `std` is required unconditionally by this crate's own `lib.rs` (verified by
 # a local build — omitting it is a hard compile error, not just unused code);
-# `NSProcessInfo` gates the one type this crate actually calls into.
+# `NSProcessInfo` gates the one type this crate actually calls into. Note:
+# `syscap.rs`'s `mod capture` also uses `NSArray`/`NSError`/`NSString` (empty
+# window array, completion-handler error formatting, bundle-id/description
+# `.to_string()`) without listing those features here — they're already
+# unconditionally pulled in by `objc2-screen-capture-kit`'s own `SCStream`/
+# `SCShareableContent` features above (Cargo unifies a crate's features
+# across the whole dependency graph), confirmed by the crate's own
+# `Cargo.toml`. If those SCK features are ever narrowed, this entry would
+# need `"NSArray"`/`"NSError"`/`"NSString"` added explicitly.
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
 
 [dev-dependencies]
@@ -124,34 +161,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # nothing else changed. Drop this patch if a future llama-cpp-2 release
 # fixes it upstream.
 #
-# screencapturekit 8.0.1 / apple-metal 0.8.8 (Stage 5 Task 4): both link
-# one framework unconditionally via the plain `cargo:rustc-link-lib=
-# framework=X` directive — `ScreenCaptureKit.framework` (screencapturekit's
-# own build.rs) and `MetalFX.framework` (apple-metal's, a transitive dep
-# `screencapturekit` pulls in unconditionally for its Metal-texture
-# screenshot helpers, unrelated to anything this task actually uses). That
-# directive produces a *hard* `LC_LOAD_DYLIB` — dyld refuses to launch the
-# whole process if the named framework isn't present on disk. Both
-# frameworks are macOS-13+-only (ScreenCaptureKit: 12.3 for video, 13.0 for
-# audio; MetalFX: 13.0), which sits well above this crate's own declared
-# floor (`tauri.conf.json`'s `minimumSystemVersion: "11.0"`). Per the Stage
-# 5 plan, system-audio support is meant to be a *runtime* feature gate
-# (`syscap.rs` reports `unsupported` below macOS 13 — see that module's
-# docs) — a hard link on either framework would silently defeat that by
-# preventing the entire app (every feature, not just system audio) from
-# launching at all on macOS 11/12, regardless of any Rust-level version
-# check. vendor/screencapturekit-8.0.1 and vendor/apple-metal-0.8.8 are
-# those crates unchanged except swapping each risky framework link for
-# `-weak_framework` (an `LC_LOAD_WEAK_DYLIB` — dyld resolves it lazily and
-# simply leaves it unbound if absent, exactly what "runtime-gated" needs);
-# every other linked framework in both build scripts (Metal, Foundation,
-# IOSurface, CoreGraphics, CoreMedia, ...) predates macOS 11 and is left as
-# a normal hard link, unchanged. Verified empirically (not just by reading
-# ld64's docs): a throwaway binary linked with `-weak_framework
-# ScreenCaptureKit` shows `LC_LOAD_WEAK_DYLIB` (not `LC_LOAD_DYLIB`) for
-# that entry under `otool -l`. Drop these patches if a future release of
-# either crate weak-links these itself.
+# (Stage 5 Task 4 no longer needs a patch here: the `screencapturekit`/
+# `apple-metal` Swift-based crates and their vendor patches were reverted —
+# see `build.rs`'s weak-link comment for where that concern lives now that
+# system audio uses plain objc2 framework bindings instead.)
 [patch.crates-io]
 llama-cpp-2 = { path = "vendor/llama-cpp-2-0.1.152" }
-screencapturekit = { path = "vendor/screencapturekit-8.0.1" }
-apple-metal = { path = "vendor/apple-metal-0.8.8" }

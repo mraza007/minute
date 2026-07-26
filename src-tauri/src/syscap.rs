@@ -17,38 +17,39 @@
 //!    is the same effective visibility a `pub(crate)` marker would give,
 //!    just without the redundant keyword — see `audio.rs`'s own items).
 //! 3. **Thin macOS glue** (`mod capture`, `#[cfg(target_os = "macos")]`):
-//!    [`SysCapture`] — owns a real `screencapturekit::SCStream` configured
-//!    audio-only, wires its callback through the pure pipeline above, and
-//!    forwards fixed-size mono-at-16kHz blocks over a bounded
-//!    `SyncSender<Arc<Vec<f32>>>` — the exact channel shape `Recorder`'s mic
-//!    path already uses (see `audio.rs`'s `sample_tx`). A non-macOS stub
-//!    keeps the crate compiling everywhere, mirroring `detect.rs`'s
-//!    `MicMonitor` split (this app only ships for macOS in practice, but
-//!    nothing else in the crate has to `#[cfg]` around referencing this
-//!    module).
+//!    [`SysCapture`] — owns a real `SCStream` (via `objc2-screen-capture-kit`,
+//!    a plain header-generated Objective-C framework binding — no Swift
+//!    toolchain involved, same shape as the already-present
+//!    `objc2-app-kit`/`objc2-core-audio`) configured audio-only, wires its
+//!    callback through the pure pipeline above, and forwards fixed-size
+//!    mono-at-16kHz blocks over a bounded `SyncSender<Arc<Vec<f32>>>` — the
+//!    exact channel shape `Recorder`'s mic path already uses (see
+//!    `audio.rs`'s `sample_tx`). A non-macOS stub keeps the crate compiling
+//!    everywhere, mirroring `detect.rs`'s `MicMonitor` split (this app only
+//!    ships for macOS in practice, but nothing else in the crate has to
+//!    `#[cfg]` around referencing this module).
 //!
-//! ## What ScreenCaptureKit actually delivers (verified against the
-//! `screencapturekit` crate's own source and bundled examples — its public
-//! docs don't pin this down anywhere)
+//! ## What ScreenCaptureKit actually delivers
 //!
-//! `SCStreamConfiguration::with_sample_rate`/`with_channel_count` configure
-//! the *requested* format (this module asks for 48kHz stereo — the crate's
-//! own documented default and every one of its examples' choice). What
-//! actually arrives per callback is a `CMSampleBuffer` whose
-//! `audio_buffer_list()` yields one or more `AudioBuffer`s of raw
-//! little-endian `Float32` bytes (confirmed by reading
-//! `examples/16_full_metal_app/capture.rs` upstream, the one place in the
-//! whole crate — including its own doc comments — that actually decodes an
-//! audio buffer's bytes: `data.chunks_exact(4).map(f32::from_le_bytes)`).
-//! What's genuinely *not* pinned down anywhere (crate source, its own
-//! examples, or its docs) is **interleaving**: Core Audio's two possible
-//! shapes for a requested 2-channel stream are (a) one buffer with
-//! `number_channels == 2`, samples interleaved L/R/L/R/…, or (b) two
-//! buffers each with `number_channels == 1` (planar/non-interleaved — Core
-//! Audio's own canonical internal format, and the shape every independent
-//! third-party report of `SCStream`'s audio output describes). Rather than
-//! assume either, [`downmix_sck_buffers_to_mono`] handles both shapes
-//! explicitly — see its own docs.
+//! `SCStreamConfiguration.sampleRate`/`.channelCount` configure the
+//! *requested* format (this module asks for 48kHz stereo — Apple's own
+//! documented default). What actually arrives per callback is a
+//! `CMSampleBuffer` whose `AudioBufferList` (read via
+//! `CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer`) yields one or
+//! more `AudioBuffer`s of raw little-endian `Float32` bytes — Apple's own
+//! `ScreenCaptureKit`/`CoreMedia` documentation doesn't pin down
+//! **interleaving** for a requested 2-channel stream: Core Audio's two
+//! possible shapes are (a) one buffer with `mNumberChannels == 2`, samples
+//! interleaved L/R/L/R/…, or (b) two buffers each with `mNumberChannels ==
+//! 1` (planar/non-interleaved — Core Audio's own canonical internal format,
+//! and the shape most independent third-party reports of `SCStream`'s audio
+//! output describe). Rather than assume either,
+//! [`downmix_sck_buffers_to_mono`] handles both shapes explicitly (see its
+//! own docs), and `mod capture`'s `SCStreamOutput` callback logs the
+//! actually-observed shape once per session (buffer count +
+//! channels-per-buffer) so this is verified from real runtime logs rather
+//! than left as a permanent assumption — see this task's e2e test docs for
+//! what was actually observed on this machine.
 //!
 //! ## Feedback prevention: `excludesCurrentProcessAudio`, not app-exclusion
 //!
@@ -56,11 +57,11 @@
 //! `SCContentFilter`'s `excludingApplications` (looking up Minute's own
 //! `SCRunningApplication` by bundle id). `SCStreamConfiguration` instead
 //! exposes `excludesCurrentProcessAudio` directly — a purpose-built flag for
-//! exactly this ("prevents feedback loops in recording applications" per
-//! the crate's own doc comment) that needs no bundle-id lookup and can't
-//! fail to find "self" in the shareable-content snapshot. Used here instead
-//! as a strictly more robust equivalent — same effect, simpler and one
-//! fewer failure mode.
+//! exactly this (Apple's own header doc: prevents feedback loops in
+//! recording applications) that needs no bundle-id lookup and can't fail to
+//! find "self" in the shareable-content snapshot. Used here instead as a
+//! strictly more robust equivalent — same effect, simpler and one fewer
+//! failure mode.
 //!
 //! ## Video: never consumed, deliberately minimized
 //!
@@ -73,19 +74,23 @@
 //! macOS version — untested in this environment, see the module's e2e
 //! test docs for why).
 //!
-//! ## A load-time risk this task's dependency addition uncovered (fixed,
-//! not just noted — see `Cargo.toml`'s `[patch.crates-io]` comment)
+//! ## macOS 11/12 launchability
 //!
-//! `screencapturekit`'s own `build.rs` (and its transitive `apple-metal`
-//! dependency's) link `ScreenCaptureKit.framework`/`MetalFX.framework`
-//! unconditionally via a plain hard framework link. Both frameworks are
-//! macOS-13+-only, which sits above this crate's declared 11.0 floor — a
-//! hard link would make dyld refuse to launch the *entire app* on macOS
-//! 11/12, not just gracefully report [`SysAudioAvailability::Unsupported`]
-//! here. Both crates are vendored with a one-line fix (weak-link instead)
-//! rather than left as a latent regression; see `Cargo.toml` for the full
-//! writeup and the empirical proof the fix actually changes the emitted
-//! Mach-O load command type.
+//! `ScreenCaptureKit.framework` doesn't exist before macOS 12.3 (13.0 for
+//! audio) — well above this crate's declared 11.0 floor
+//! (`tauri.conf.json`'s `minimumSystemVersion`). Objective-C framework
+//! bindings like `objc2-screen-capture-kit` link the framework the normal
+//! (hard) way; a hard `LC_LOAD_DYLIB` on a framework absent on macOS 11/12
+//! would make dyld refuse to launch the *entire app* there, not just
+//! gracefully report [`SysAudioAvailability::Unsupported`] here — this is
+//! solved on this crate's own side, not by vendoring a dependency: see
+//! `build.rs`'s `cargo:rustc-link-arg=-weak_framework` lines (weak-linking
+//! `ScreenCaptureKit.framework`, verified via `otool -l` on the actual
+//! built binary — see that build script's comment for the full writeup).
+//! Every `SCK` symbol this module touches (including class lookups, which
+//! themselves fault under weak linking if the framework is genuinely
+//! absent) stays behind [`sys_audio_status`]'s runtime availability check
+//! — `mod capture` is only ever reached once that reports `Ready`.
 
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -275,15 +280,14 @@ pub fn sys_audio_status() -> SysAudioStatus {
 /// built from) re-checks TCC live and can flip to granted immediately, with
 /// no restart, in this process. But ScreenCaptureKit's own authorization
 /// state for an *already-running* process is a separate, well-documented
-/// quirk: apps that queried shareable content before permission was granted
-/// have historically needed a relaunch before `SCStream` will actually
-/// start capturing, even once `CGPreflightScreenCaptureAccess` itself
-/// already reports `true` (the `screencapturekit` crate's own bundled
-/// Tauri example tells users exactly this: "Enable the app… Restart the
-/// app" — see its `examples/22_tauri_app/README.md`). This command cannot
-/// paper over that; it reports the honest TCC-level state, and a caller
-/// that gets `Ready` back but then has `SysCapture::start` fail anyway
-/// should suggest a restart, not treat it as a bug.
+/// quirk (widely reported across ScreenCaptureKit-based recording apps):
+/// apps that queried shareable content before permission was granted have
+/// historically needed a relaunch before `SCStream` will actually start
+/// capturing, even once `CGPreflightScreenCaptureAccess` itself already
+/// reports `true`. This command cannot paper over that; it reports the
+/// honest TCC-level state, and a caller that gets `Ready` back but then has
+/// `SysCapture::start` fail anyway should suggest a restart, not treat it
+/// as a bug.
 #[tauri::command]
 pub fn request_sys_audio_permission() -> SysAudioStatus {
     let _granted_immediately = availability_shim::request_screen_recording();
@@ -560,8 +564,8 @@ const SYS_BLOCK_SAMPLES: usize = 8_000;
 const SYS_CHANNEL_CAPACITY: usize = 256;
 
 /// Requested (not necessarily exactly what's delivered — see the module
-/// docs) audio format. 48kHz stereo: the `screencapturekit` crate's own
-/// documented default and every one of its examples' choice.
+/// docs) audio format. 48kHz stereo: `SCStreamConfiguration`'s own
+/// documented Apple default.
 ///
 /// `#[allow(dead_code)]` on both — see [`DecodedAudioBuffer`]'s docs for why
 /// (only used inside `mod capture::SysCapture::start`).
@@ -612,16 +616,53 @@ fn try_send_sys_block(tx: &SyncSender<Arc<Vec<f32>>>, block: Vec<f32>, dropped: 
 
 #[cfg(target_os = "macos")]
 mod capture {
-    //! Real `SCStream`-backed capture engine. Deliberately thin: every byte
-    //! of actual decode/downmix/resample/batch logic lives in this file's
-    //! pure pipeline section above — this module's own job is limited to
-    //! configuring the stream, adapting its callback shape, and lifecycle
+    //! Real `SCStream`-backed capture engine, built directly on objc2's
+    //! header-generated `ScreenCaptureKit`/`CoreMedia`/`CoreAudioTypes`
+    //! bindings (`objc2-screen-capture-kit` et al. — plain Objective-C
+    //! framework bindings, the same shape as the already-present
+    //! `objc2-app-kit`/`objc2-core-audio`, no Swift toolchain involved at
+    //! all). Deliberately thin: every byte of actual decode/downmix/
+    //! resample/batch logic lives in this file's pure pipeline section
+    //! above — this module's own job is limited to configuring the stream,
+    //! implementing the `SCStreamOutput` protocol, and lifecycle
     //! (start/stop).
+    //!
+    //! ## Why not the `screencapturekit` crate
+    //!
+    //! An earlier version of this module used the `screencapturekit` crate
+    //! (a Swift-Package-Manager-based wrapper). Reverted: its build script
+    //! requires a full Xcode.app install to compile at all (confirmed on
+    //! this machine — Command Line Tools alone fail at the Swift manifest
+    //! compile step), which broke `cargo build`/`cargo test` for the whole
+    //! crate on any machine (or CI runner) without one. Everything in this
+    //! module compiles with Command Line Tools alone.
+    //!
+    //! ## Async APIs, made synchronous
+    //!
+    //! `getShareableContentWithCompletionHandler`/`startCaptureWithCompletionHandler`/
+    //! `stopCaptureWithCompletionHandler` are all completion-handler-based
+    //! (their callback can run on a different thread than the caller).
+    //! [`first_display`]/[`SysCapture::start`]/[`SysCapture::stop`] each
+    //! wrap the relevant call in a bounded `mpsc` channel + blocking `recv`
+    //! to give this module's callers the same synchronous `Result`-return
+    //! shape the rest of this crate (and `audio.rs`'s `Recorder`) uses.
 
+    use std::mem::size_of;
     use std::sync::mpsc::SyncSender;
     use std::sync::{Arc, Mutex};
 
-    use screencapturekit::prelude::*;
+    use block2::RcBlock;
+    use dispatch2::DispatchQueue;
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
+    use objc2::{define_class, msg_send, AnyThread, DefinedClass};
+    use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
+    use objc2_core_media::{CMSampleBuffer, CMTime};
+    use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
+    use objc2_screen_capture_kit::{
+        SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
+        SCStreamOutput, SCStreamOutputType, SCWindow,
+    };
 
     use super::{
         bytes_to_f32_le, downmix_sck_buffers_to_mono, lock, resolve_availability, try_send_sys_block,
@@ -631,70 +672,331 @@ mod capture {
     use crate::audio::{LinearResampler, TARGET_SAMPLE_RATE};
     use crate::error::{MinuteError, Result};
 
-    /// The `SCStreamOutputTrait` implementation wired to `SCStream`'s Audio
-    /// output. Holds only what the realtime callback needs: the resampler
-    /// (stateful — carries fractional position across calls, see
-    /// `LinearResampler`'s docs), the block batcher, a running dropped-block
-    /// counter, and the outgoing channel. `Mutex`-wrapped per-field (rather
-    /// than one big `Mutex<Inner>`) is unnecessary here — a single
-    /// `Mutex<CallbackState>` is simpler and no less correct, since
-    /// `ScreenCaptureKit` serialises Audio-type callbacks per its own
-    /// dispatch queue in practice (this crate's own `SCStream` doc comment:
-    /// "independent dispatch queues" — plural, one *per output type*, not
-    /// per callback) — but `SCStreamOutputTrait` still requires `Sync`
-    /// regardless (see that trait's docs), so a lock is required either way.
+    /// Maximum planar audio buffers [`extract_audio_buffers`] makes room
+    /// for — comfortably above the stereo (`SYS_AUDIO_CHANNELS == 2`) this
+    /// module requests, so a single interleaved buffer or up to this many
+    /// planar mono buffers both fit in one call, no size-probe round trip
+    /// needed.
+    const MAX_AUDIO_BUFFERS: usize = 8;
+
+    /// Reads the audio buffers out of `sample`'s underlying
+    /// `AudioBufferList` (`CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer`,
+    /// exposed here as `audio_buffer_list_with_retained_block_buffer`) into
+    /// this crate's pipeline-neutral [`DecodedAudioBuffer`] shape.
     ///
-    /// Both this and [`SysAudioHandler`] are `#[allow(dead_code)]`: neither
-    /// is constructed anywhere the ordinary (non-test) build can reach yet
-    /// — `SysCapture::start` (which builds both) has no caller until Task
-    /// 5's mixer exists; same pending-Task-5 rationale as the outer
-    /// `syscap` module's `DecodedAudioBuffer`/`BlockBatcher`/`channel`/`lock`.
-    #[allow(dead_code)]
+    /// `AudioBufferList` is the classic Core Audio variable-length-array C
+    /// struct: its Rust binding declares `mBuffers: [AudioBuffer; 1]`
+    /// (storage for exactly one entry), but the real struct can carry more
+    /// — the actual buffer count lives in `mNumberBuffers`, with entries
+    /// packed contiguously starting at `mBuffers`' own offset. This
+    /// allocates a raw byte buffer sized for up to [`MAX_AUDIO_BUFFERS`]
+    /// entries, lets Core Media fill it in, then re-derives a proper slice
+    /// over exactly `mNumberBuffers` entries via `mem::offset_of!` pointer
+    /// arithmetic — the standard, documented way to handle this C idiom
+    /// from Rust.
+    ///
+    /// Returns `None` (logged) on any unexpected result — a malformed or
+    /// larger-than-expected buffer must never panic the SCK callback
+    /// thread.
+    fn extract_audio_buffers(sample: &CMSampleBuffer) -> Option<Vec<DecodedAudioBuffer>> {
+        let mbuffers_offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+        let total_size = mbuffers_offset + MAX_AUDIO_BUFFERS * size_of::<AudioBuffer>();
+        let mut raw = vec![0u8; total_size];
+        let list_ptr = raw.as_mut_ptr().cast::<AudioBufferList>();
+        let mut size_needed: usize = 0;
+
+        // SAFETY: `list_ptr` points into `raw`, which is `total_size` bytes
+        // (exactly the `buffer_list_size` passed below) and stays alive for
+        // the rest of this function. `block_buffer_out` is null — this
+        // module never needs the audio bytes to outlive `sample` itself
+        // (everything is copied out into owned `Vec<f32>`s before this
+        // function returns), so there's no retained `CMBlockBuffer` to
+        // manage/release.
+        let status = unsafe {
+            sample.audio_buffer_list_with_retained_block_buffer(
+                &mut size_needed,
+                list_ptr,
+                total_size,
+                None,
+                None,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if status != 0 {
+            log::warn!(
+                "CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer failed: status {status}"
+            );
+            return None;
+        }
+        if size_needed > total_size {
+            log::warn!(
+                "system-audio buffer list needed {size_needed} bytes, only {total_size} \
+                 allocated (more channels than the configured {SYS_AUDIO_CHANNELS}?) — \
+                 skipping this callback"
+            );
+            return None;
+        }
+
+        // SAFETY: `status == noErr` (checked above) guarantees `list_ptr`
+        // was filled in, including its leading `mNumberBuffers` field.
+        let num_buffers = unsafe { (*list_ptr).mNumberBuffers } as usize;
+        if num_buffers == 0 || num_buffers > MAX_AUDIO_BUFFERS {
+            log::warn!("system-audio buffer list reported {num_buffers} buffers — skipping");
+            return None;
+        }
+
+        // SAFETY: see this function's own doc comment — `num_buffers`
+        // contiguous `AudioBuffer` entries live at `mBuffers`' offset,
+        // guaranteed by the successful call above plus the `size_needed`
+        // check just before it.
+        let buffers_ptr = unsafe { raw.as_ptr().add(mbuffers_offset).cast::<AudioBuffer>() };
+        let buffers = unsafe { std::slice::from_raw_parts(buffers_ptr, num_buffers) };
+
+        Some(
+            buffers
+                .iter()
+                .map(|buffer| {
+                    let samples = if buffer.mDataByteSize == 0 || buffer.mData.is_null() {
+                        Vec::new()
+                    } else {
+                        // SAFETY: Core Media guarantees `mData` points to
+                        // `mDataByteSize` valid bytes for a successfully
+                        // filled-in `AudioBuffer`.
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts(
+                                buffer.mData.cast::<u8>(),
+                                buffer.mDataByteSize as usize,
+                            )
+                        };
+                        bytes_to_f32_le(bytes)
+                    };
+                    DecodedAudioBuffer {
+                        number_channels: buffer.mNumberChannels as u16,
+                        samples,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// Per-callback mutable state for [`SysAudioHandler`] — see that type's
+    /// docs for why this is one `Mutex<CallbackState>` rather than a lock
+    /// per field.
     struct CallbackState {
         resampler: LinearResampler,
         batcher: BlockBatcher,
         dropped: u64,
+        /// Whether [`SysAudioHandler`]'s callback has already logged the
+        /// delivered buffer shape once (sample rate/channel layout) — see
+        /// that callback's own docs. A field (not a `once_cell`/`Once`)
+        /// since this state is already per-instance and already behind a
+        /// lock; a global `Once` would wrongly persist across separate
+        /// `SysCapture` sessions within the same process.
+        format_logged: bool,
     }
 
-    #[allow(dead_code)]
-    struct SysAudioHandler {
+    struct HandlerIvars {
         tx: SyncSender<Arc<Vec<f32>>>,
         state: Mutex<CallbackState>,
     }
 
-    impl SCStreamOutputTrait for SysAudioHandler {
-        fn did_output_sample_buffer(&self, sample: CMSampleBuffer, of_type: SCStreamOutputType) {
-            if of_type != SCStreamOutputType::Audio {
-                return;
-            }
-            let Some(buffer_list) = sample.audio_buffer_list() else {
-                return;
-            };
-            let decoded: Vec<DecodedAudioBuffer> = buffer_list
-                .iter()
-                .map(|buffer| DecodedAudioBuffer {
-                    number_channels: buffer.number_channels as u16,
-                    samples: bytes_to_f32_le(buffer.data()),
-                })
-                .collect();
-            let mono = downmix_sck_buffers_to_mono(&decoded);
-            if mono.is_empty() {
-                return;
-            }
+    define_class!(
+        // SAFETY: `NSObject` has no subclassing requirements, and
+        // `SysAudioHandler` does not implement `Drop`.
+        #[unsafe(super(NSObject))]
+        #[ivars = HandlerIvars]
+        struct SysAudioHandler;
 
-            let mut state = lock(&self.state);
-            let resampled = state.resampler.resample(&mono);
-            if resampled.is_empty() {
-                return;
+        unsafe impl NSObjectProtocol for SysAudioHandler {}
+
+        unsafe impl SCStreamOutput for SysAudioHandler {
+            /// Realtime audio callback: decode → downmix → resample →
+            /// batch → forward, entirely via this file's pure, unit-tested
+            /// pipeline functions (see the module docs) — this method
+            /// itself does no signal processing, only FFI-boundary
+            /// decoding and gluing the pipeline stages together.
+            ///
+            /// Logs the delivered buffer shape exactly once per session
+            /// (buffer count + channels-per-buffer, alongside this
+            /// module's own requested sample rate/channel count) — Apple's
+            /// own `ScreenCaptureKit`/`CoreMedia` docs never pin down
+            /// whether a requested-stereo stream arrives as one
+            /// interleaved buffer or two planar ones (see this file's
+            /// module docs' "What ScreenCaptureKit actually delivers"
+            /// section); [`super::downmix_sck_buffers_to_mono`] already
+            /// handles both, but logging the actually-observed shape once
+            /// documents it honestly for whoever reads the logs later,
+            /// rather than leaving it as an unverified assumption forever.
+            //
+            // `#[allow(non_snake_case)]`: this method's name must match
+            // `SCStreamOutput`'s own trait method name exactly (derived by
+            // `objc2`'s header-translator from the Objective-C selector
+            // `stream:didOutputSampleBuffer:ofType:`, the same
+            // underscore-joined-camelCase convention every generated
+            // binding in this dependency tree already uses, e.g.
+            // `initWithDisplay_excludingWindows` above) — it isn't a name
+            // this code gets to choose.
+            #[allow(non_snake_case)]
+            #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
+            fn stream_didOutputSampleBuffer_ofType(
+                &self,
+                _stream: &SCStream,
+                sample_buffer: &CMSampleBuffer,
+                of_type: SCStreamOutputType,
+            ) {
+                if of_type != SCStreamOutputType::Audio {
+                    return;
+                }
+                let Some(decoded) = extract_audio_buffers(sample_buffer) else {
+                    return;
+                };
+                let mono = downmix_sck_buffers_to_mono(&decoded);
+                if mono.is_empty() {
+                    return;
+                }
+
+                let mut state = lock(&self.ivars().state);
+                if !state.format_logged {
+                    state.format_logged = true;
+                    let channels_per_buffer: Vec<u16> =
+                        decoded.iter().map(|b| b.number_channels).collect();
+                    log::info!(
+                        "system-audio format observed: {} buffer(s), channels-per-buffer \
+                         {channels_per_buffer:?} (requested {SYS_AUDIO_SAMPLE_RATE_HZ}Hz / \
+                         {SYS_AUDIO_CHANNELS} channel(s))",
+                        decoded.len(),
+                    );
+                }
+
+                let resampled = state.resampler.resample(&mono);
+                if resampled.is_empty() {
+                    return;
+                }
+                let blocks = state.batcher.push(&resampled);
+                for block in blocks {
+                    try_send_sys_block(&self.ivars().tx, block, &mut state.dropped);
+                }
             }
-            let blocks = state.batcher.push(&resampled);
-            for block in blocks {
-                try_send_sys_block(&self.tx, block, &mut state.dropped);
-            }
+        }
+    );
+
+    impl SysAudioHandler {
+        /// `#[allow(dead_code)]`: `SysCapture::start` (this fn's only
+        /// caller) has no caller of its own in the ordinary (non-test)
+        /// build graph yet — see `SysCapture`'s own doc comment for the
+        /// shared pending-Task-5 rationale.
+        #[allow(dead_code)]
+        fn new(tx: SyncSender<Arc<Vec<f32>>>) -> Retained<Self> {
+            let this = Self::alloc().set_ivars(HandlerIvars {
+                tx,
+                state: Mutex::new(CallbackState {
+                    resampler: LinearResampler::new(SYS_AUDIO_SAMPLE_RATE_HZ as u32, TARGET_SAMPLE_RATE),
+                    batcher: BlockBatcher::new(SYS_BLOCK_SAMPLES),
+                    dropped: 0,
+                    format_logged: false,
+                }),
+            });
+            // SAFETY: `NSObject::init` has no preconditions beyond a freshly
+            // `alloc`'d instance, which `set_ivars` returns.
+            unsafe { msg_send![super(this), init] }
         }
     }
 
-    /// A live system-audio capture session: owns the real `SCStream` for as
+    /// A retained ObjC object, asserted `Send` for exactly one narrow,
+    /// documented purpose: carrying the single `SCDisplay` result of
+    /// `getShareableContentWithCompletionHandler`'s completion block (which
+    /// ScreenCaptureKit invokes on its own internal queue, not necessarily
+    /// the thread that registered it) back to the thread blocked waiting
+    /// on it in [`first_display`]. `SCDisplay` is an immutable content-
+    /// metadata snapshot (id/dimensions), not a live stream or UI object
+    /// with thread affinity — the entire point of this completion-handler
+    /// API shape is that the result is handed across a queue boundary by
+    /// design. Never used for anything beyond this one hand-off, and never
+    /// returned from any public API of this module.
+    ///
+    /// `#[allow(dead_code)]`: only constructed inside [`first_display`],
+    /// itself pending-Task-5 unreachable in the ordinary build — see
+    /// `SysCapture`'s doc comment.
+    #[allow(dead_code)]
+    struct SendableRetained<T>(Retained<T>);
+    // SAFETY: see the doc comment above.
+    #[allow(dead_code)]
+    unsafe impl<T> Send for SendableRetained<T> {}
+
+    /// Blocks the calling thread until `getShareableContentWithCompletionHandler`'s
+    /// completion block fires (see the module docs' "Async APIs, made
+    /// synchronous" section), returning the first available display.
+    ///
+    /// `#[allow(dead_code)]`: only called from `SysCapture::start` — see
+    /// that type's doc comment for the shared pending-Task-5 rationale.
+    #[allow(dead_code)]
+    fn first_display() -> Result<Retained<SCDisplay>> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<SendableRetained<SCDisplay>, String>>(1);
+        let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
+            // SAFETY: both are the raw pointer pair
+            // `getShareableContentWithCompletionHandler` hands to its
+            // completion block; each is either null or valid for the
+            // duration of this call, per Apple's documented contract.
+            let result = if let Some(error) = unsafe { error.as_ref() } {
+                Err(error.localizedDescription().to_string())
+            } else if let Some(content) = unsafe { content.as_ref() } {
+                // SAFETY: `content` is a valid `SCShareableContent` (just
+                // checked above); `displays()` has no further preconditions.
+                match unsafe { content.displays() }.firstObject() {
+                    Some(display) => Ok(SendableRetained(display)),
+                    None => Err("no displays available to build a content filter".to_string()),
+                }
+            } else {
+                Err("getShareableContentWithCompletionHandler returned neither content nor an \
+                     error"
+                    .to_string())
+            };
+            let _ = tx.send(result);
+        });
+        // SAFETY: `block` is a valid block; ScreenCaptureKit copies its own
+        // reference internally per the standard Cocoa completion-handler
+        // contract, so it's sound for `block` to be dropped once this
+        // function returns (which only happens after `rx.recv()` below has
+        // already observed the completion firing).
+        unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&block) };
+
+        let result = rx.recv().map_err(|_| {
+            MinuteError::Other("shareable-content completion handler never fired".to_string())
+        })?;
+        result.map(|wrapped| wrapped.0).map_err(|e| {
+            MinuteError::Other(format!(
+                "failed to query shareable content (Screen Recording permission may need an app \
+                 restart to take effect — see request_sys_audio_permission's docs): {e}"
+            ))
+        })
+    }
+
+    /// Blocks on a `(completionHandler: ^(NSError *))`-shaped async call —
+    /// the same synchronous-wrapper shape [`first_display`] uses, factored
+    /// out since `startCaptureWithCompletionHandler`/
+    /// `stopCaptureWithCompletionHandler` both have this exact signature.
+    /// `register` is handed the block to pass into the real SCK call; its
+    /// return value is ignored (the block itself, not `register`'s return,
+    /// is how the result comes back).
+    fn block_on_error_completion(register: impl FnOnce(&RcBlock<dyn Fn(*mut NSError)>)) -> std::result::Result<(), String> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
+        let block = RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: `error` is the pointer SCK's completion handler hands
+            // back, valid (or null) for the duration of this call.
+            let msg = unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
+            let _ = tx.send(msg);
+        });
+        register(&block);
+        match rx.recv() {
+            Ok(None) => Ok(()),
+            Ok(Some(msg)) => Err(msg),
+            Err(_) => Err("completion handler never fired".to_string()),
+        }
+    }
+
+    /// A live system-audio capture session: owns the real `SCStream` (plus
+    /// the dispatch queue and output handler it needs kept alive) for as
     /// long as this handle lives.
     ///
     /// `#[allow(dead_code)]` on the struct and its `impl` below: pending
@@ -703,8 +1005,23 @@ mod capture {
     /// other item this module docs' `DecodedAudioBuffer` entry explains.
     #[allow(dead_code)]
     pub struct SysCapture {
-        stream: SCStream,
+        stream: Retained<SCStream>,
+        queue: dispatch2::DispatchRetained<DispatchQueue>,
+        handler: Retained<SysAudioHandler>,
     }
+
+    // SAFETY: once configured, `SCStream` is designed to be started/
+    // stopped/queried from any thread — its entire public API surface past
+    // construction is completion-handler-based async calls, exactly the
+    // pattern Cocoa uses when a type has no main-thread affinity (contrast
+    // with e.g. `NSView`, which objc2 bindings mark `MainThreadOnly`
+    // instead). `queue`/`handler` are already `Send` on their own (dispatch
+    // objects are unconditionally `Send`+`Sync`; `SysAudioHandler` derives
+    // both automatically per `define_class!`'s thread-safety rules, since
+    // its ivars are `Send`+`Sync` and its superclass is plain `NSObject`)
+    // — `stream` is the only field this impl actually needs to vouch for.
+    #[allow(dead_code)]
+    unsafe impl Send for SysCapture {}
 
     #[allow(dead_code)]
     impl SysCapture {
@@ -734,66 +1051,118 @@ mod capture {
                 SysAudioAvailability::Ready => {}
             }
 
-            let content = SCShareableContent::get().map_err(|e| {
-                MinuteError::Other(format!(
-                    "failed to query shareable content (Screen Recording permission may need an \
-                     app restart to take effect — see request_sys_audio_permission's docs): {e}"
-                ))
-            })?;
-            let displays = content.displays();
-            let display = displays.first().ok_or_else(|| {
-                MinuteError::Other("no displays available to build a content filter".to_string())
-            })?;
+            let display = first_display()?;
 
-            let filter = SCContentFilter::create()
-                .with_display(display)
-                .with_excluding_windows(&[])
-                .build();
-
-            // Video is never consumed (no Screen output handler registered
-            // below) — 2x2 @ 1fps is the smallest practical footprint for
-            // the internal video track SCStream always produces, rather
-            // than 0x0 (untested whether every supported macOS version
-            // accepts a zero-size configuration). See the module docs'
-            // "Video: never consumed, deliberately minimized" section.
-            let config = SCStreamConfiguration::new()
-                .with_width(2)
-                .with_height(2)
-                .with_fps(1)
-                .with_captures_audio(true)
-                .with_sample_rate(SYS_AUDIO_SAMPLE_RATE_HZ)
-                .with_channel_count(SYS_AUDIO_CHANNELS)
-                .with_excludes_current_process_audio(true);
-
-            let handler = SysAudioHandler {
-                tx,
-                state: Mutex::new(CallbackState {
-                    resampler: LinearResampler::new(SYS_AUDIO_SAMPLE_RATE_HZ as u32, TARGET_SAMPLE_RATE),
-                    batcher: BlockBatcher::new(SYS_BLOCK_SAMPLES),
-                    dropped: 0,
-                }),
+            let excluded: Retained<NSArray<SCWindow>> = NSArray::from_slice(&[]);
+            // SAFETY: `SCContentFilter::alloc()` is a fresh, uninitialized
+            // instance; `initWithDisplay:excludingWindows:` is the correct
+            // (and only) designated initializer for this filter shape.
+            let filter = unsafe {
+                SCContentFilter::initWithDisplay_excludingWindows(
+                    SCContentFilter::alloc(),
+                    &display,
+                    &excluded,
+                )
             };
 
-            let mut stream = SCStream::new(&filter, &config);
-            stream.add_output_handler(handler, SCStreamOutputType::Audio);
-            stream
-                .start_capture()
-                .map_err(|e| MinuteError::Other(format!("failed to start system-audio capture: {e}")))?;
+            // SAFETY: `new` has no preconditions beyond ordinary
+            // `+alloc]init]`-style construction.
+            let config = unsafe { SCStreamConfiguration::new() };
+            // SAFETY: plain property setters on a freshly-constructed
+            // configuration object — no preconditions beyond `config`
+            // being valid, which it is.
+            unsafe {
+                // Video is never consumed (no `Screen`-type output handler
+                // registered below) — 2x2 @ 1fps is the smallest practical
+                // footprint for the internal video track `SCStream` always
+                // produces (there is no audio-only capture mode), rather
+                // than 0x0 (untested whether every supported macOS version
+                // accepts a zero-size configuration). See the module docs'
+                // "Video: never consumed, deliberately minimized" section.
+                config.setWidth(2);
+                config.setHeight(2);
+                config.setMinimumFrameInterval(CMTime::new(1, 1));
+                config.setCapturesAudio(true);
+                config.setSampleRate(SYS_AUDIO_SAMPLE_RATE_HZ as isize);
+                config.setChannelCount(SYS_AUDIO_CHANNELS as isize);
+                // Prevents feedback if Minute ever plays audio of its own —
+                // see the module docs' "Feedback prevention" section for
+                // why this (not `SCContentFilter` app-exclusion) is used.
+                config.setExcludesCurrentProcessAudio(true);
+            }
 
-            Ok(Self { stream })
+            let handler = SysAudioHandler::new(tx);
+            // A dedicated serial queue for the audio callback — passing
+            // `None` here would deliver on the main dispatch queue, which
+            // this app's UI thread also services; a dedicated queue keeps
+            // the realtime audio callback off of (and never blocked
+            // behind) UI work, matching `audio.rs`'s own mic-callback
+            // discipline of never doing meaningful work on a shared/UI
+            // thread.
+            let queue = DispatchQueue::new("dev.minute.sysaudio", None);
+
+            // SAFETY: `SCStream::alloc()` is a fresh instance;
+            // `initWithFilter:configuration:delegate:` is its designated
+            // initializer. `delegate: None` — this module doesn't need
+            // stream-lifecycle callbacks (stopped-with-error, etc.) today;
+            // `stop()`/dropping this handle are the only stop paths.
+            let stream = unsafe {
+                SCStream::initWithFilter_configuration_delegate(
+                    SCStream::alloc(),
+                    &filter,
+                    &config,
+                    None,
+                )
+            };
+
+            // SAFETY: `queue` outlives this call (stored on `Self` below);
+            // `handler` is a valid, fully-initialized `SCStreamOutput`
+            // conformer.
+            unsafe {
+                stream.addStreamOutput_type_sampleHandlerQueue_error(
+                    ProtocolObject::from_ref(&*handler),
+                    SCStreamOutputType::Audio,
+                    Some(&queue),
+                )
+            }
+            .map_err(|e| {
+                MinuteError::Other(format!(
+                    "failed to add system-audio stream output: {}",
+                    e.localizedDescription()
+                ))
+            })?;
+
+            // SAFETY: `stream` is a valid, fully-configured `SCStream`.
+            block_on_error_completion(|block| unsafe {
+                stream.startCaptureWithCompletionHandler(Some(block))
+            })
+            .map_err(|msg| MinuteError::Other(format!("failed to start system-audio capture: {msg}")))?;
+
+            Ok(Self {
+                stream,
+                queue,
+                handler,
+            })
         }
 
         /// Stops the stream cleanly. Not the only teardown path — simply
         /// dropping a [`SysCapture`] without calling this is also safe:
-        /// `SCStream`'s own `Drop` releases the underlying stream and
-        /// context unconditionally (see that type's doc comment on its
-        /// `Drop` impl), so an app-exit/panic path that never gets to call
-        /// `stop()` explicitly still tears down soundly. This method is the
-        /// *graceful* path (blocks briefly for `ScreenCaptureKit`'s own
-        /// async stop to complete) — worth taking when there's time to.
+        /// `Retained<SCStream>`'s own `Drop` releases the underlying
+        /// Objective-C object unconditionally when its reference count
+        /// reaches zero, so an app-exit/panic path that never gets to call
+        /// `stop()` explicitly still tears down soundly (ScreenCaptureKit
+        /// itself stops delivering callbacks once nothing holds a strong
+        /// reference to the stream). This method is the *graceful* path
+        /// (blocks briefly for `ScreenCaptureKit`'s own async stop to
+        /// complete) — worth taking when there's time to.
         pub fn stop(self) {
-            if let Err(e) = self.stream.stop_capture() {
-                log::warn!("failed to cleanly stop system-audio capture (tearing down anyway): {e}");
+            // SAFETY: `self.stream` is a valid `SCStream` that was
+            // successfully started in `start`.
+            let result = block_on_error_completion(|block| unsafe {
+                self.stream.stopCaptureWithCompletionHandler(Some(block))
+            });
+            if let Err(msg) = result {
+                log::warn!("failed to cleanly stop system-audio capture (tearing down anyway): {msg}");
             }
         }
     }
