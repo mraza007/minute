@@ -1643,6 +1643,13 @@ use macos::{MicMonitor, ShimEvent};
 /// meeting-app allowlist while the mic is hot, poll the current recording
 /// state, and notice a shutdown request. Matches the plan's "a 2s re-check
 /// tick while mic stays hot is fine".
+///
+/// Known, accepted race: recording state is snapshotted at the top of each
+/// iteration, so a recording started in the main window during an in-flight
+/// wait can be missed for up to one interval — a prompt may fire for a call
+/// the user just started recording. Harmless: the frontend's
+/// already-recording guard makes `popup_start` a no-op and the pill
+/// auto-dismisses.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
