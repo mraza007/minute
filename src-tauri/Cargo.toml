@@ -115,6 +115,13 @@ objc2-core-media = { version = "=0.3.2", default-features = false, features = [
 # `objc2-core-audio` (Task 1), same "pin what's already there" rationale as
 # every other entry in this file.
 objc2-core-audio-types = "=0.3.2"
+# `CFRetained` — RAII ownership of the `+1`-retained `CMBlockBuffer` that
+# `CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer` hands back (see
+# `syscap.rs::extract_audio_buffers`'s doc comment for why a non-null,
+# retained block buffer turned out to be required, not optional, for that
+# call to succeed at all). Already resolved transitively via
+# `objc2-core-media`; pinned the same way as every other entry here.
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std"] }
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std", "objc2"] }
 # `block2::RcBlock` — building the completion-handler blocks the async SCK
 # APIs (`getShareableContentWithCompletionHandler`/`startCaptureWithCompletionHandler`/

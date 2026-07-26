@@ -563,6 +563,15 @@ const SYS_BLOCK_SAMPLES: usize = 8_000;
 /// revisit once one does.
 const SYS_CHANNEL_CAPACITY: usize = 256;
 
+/// How often a *sustained* run of failures gets logged again, rather than
+/// either spamming on every single occurrence or going silent after the
+/// first — mirrors `audio.rs`'s `STT_DROP_LOG_INTERVAL` cadence exactly
+/// (same rationale: see that constant's docs). Shared by both of this
+/// module's own drop-cadence sites: [`try_send_sys_block`]'s channel-full
+/// counter and `mod capture::extract_audio_buffers`'s extraction-failure
+/// counter.
+const SYS_DROP_LOG_INTERVAL: u64 = 50;
+
 /// Requested (not necessarily exactly what's delivered — see the module
 /// docs) audio format. 48kHz stereo: `SCStreamConfiguration`'s own
 /// documented Apple default.
@@ -606,7 +615,7 @@ fn try_send_sys_block(tx: &SyncSender<Arc<Vec<f32>>>, block: Vec<f32>, dropped: 
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
             *dropped += 1;
-            if *dropped % 50 == 0 {
+            if *dropped % SYS_DROP_LOG_INTERVAL == 0 {
                 log::warn!("sys-audio channel full — dropped {dropped} ~0.5s blocks so far");
             }
         }
@@ -642,14 +651,19 @@ mod capture {
     //! `getShareableContentWithCompletionHandler`/`startCaptureWithCompletionHandler`/
     //! `stopCaptureWithCompletionHandler` are all completion-handler-based
     //! (their callback can run on a different thread than the caller).
-    //! [`first_display`]/[`SysCapture::start`]/[`SysCapture::stop`] each
-    //! wrap the relevant call in a bounded `mpsc` channel + blocking `recv`
-    //! to give this module's callers the same synchronous `Result`-return
-    //! shape the rest of this crate (and `audio.rs`'s `Recorder`) uses.
+    //! [`first_display`]/[`SysCapture::start`]/[`SysCapture::stop`] each wrap
+    //! the relevant call in an `mpsc` channel (capacity 1 — bounded) and a
+    //! [`SCK_COMPLETION_TIMEOUT`]-bounded `recv_timeout` (not an unbounded
+    //! `recv` — a wedged/never-firing completion handler must not hang these
+    //! calls forever) to give this module's callers the same synchronous
+    //! `Result`-return shape the rest of this crate (and `audio.rs`'s
+    //! `Recorder`) uses.
 
     use std::mem::size_of;
+    use std::ptr::NonNull;
     use std::sync::mpsc::SyncSender;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use block2::RcBlock;
     use dispatch2::DispatchQueue;
@@ -657,7 +671,11 @@ mod capture {
     use objc2::runtime::ProtocolObject;
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
-    use objc2_core_media::{CMSampleBuffer, CMTime};
+    use objc2_core_foundation::CFRetained;
+    use objc2_core_media::{
+        kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment, CMBlockBuffer, CMSampleBuffer,
+        CMTime,
+    };
     use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
     use objc2_screen_capture_kit::{
         SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
@@ -667,89 +685,165 @@ mod capture {
     use super::{
         bytes_to_f32_le, downmix_sck_buffers_to_mono, lock, resolve_availability, try_send_sys_block,
         availability_shim, BlockBatcher, DecodedAudioBuffer, SysAudioAvailability, SYS_AUDIO_CHANNELS,
-        SYS_AUDIO_SAMPLE_RATE_HZ, SYS_BLOCK_SAMPLES,
+        SYS_AUDIO_SAMPLE_RATE_HZ, SYS_BLOCK_SAMPLES, SYS_DROP_LOG_INTERVAL,
     };
     use crate::audio::{LinearResampler, TARGET_SAMPLE_RATE};
     use crate::error::{MinuteError, Result};
 
-    /// Maximum planar audio buffers [`extract_audio_buffers`] makes room
-    /// for — comfortably above the stereo (`SYS_AUDIO_CHANNELS == 2`) this
-    /// module requests, so a single interleaved buffer or up to this many
-    /// planar mono buffers both fit in one call, no size-probe round trip
-    /// needed.
-    const MAX_AUDIO_BUFFERS: usize = 8;
+    /// How long [`first_display`]/[`block_on_error_completion`] wait for
+    /// ScreenCaptureKit's completion handler before giving up — a wedged or
+    /// never-firing callback (a real, if rare, failure mode for an XPC-
+    /// backed system framework) must not hang these calls forever.
+    const SCK_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Logs an extraction failure, but only every [`SYS_DROP_LOG_INTERVAL`]
+    /// occurrences (starting with the very first) — a misbehaving stream
+    /// producing bad buffers at the callback's own realtime rate must not
+    /// spam the log on every single one. Mirrors [`try_send_sys_block`]'s
+    /// identical cadence discipline for the channel-full case.
+    fn log_extraction_failure(extraction_failures: &mut u64, reason: &str) {
+        *extraction_failures += 1;
+        if *extraction_failures % SYS_DROP_LOG_INTERVAL == 1 {
+            log::warn!(
+                "system-audio buffer extraction failed ({extraction_failures} time(s) so far): \
+                 {reason}"
+            );
+        }
+    }
 
     /// Reads the audio buffers out of `sample`'s underlying
     /// `AudioBufferList` (`CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer`,
     /// exposed here as `audio_buffer_list_with_retained_block_buffer`) into
     /// this crate's pipeline-neutral [`DecodedAudioBuffer`] shape.
     ///
-    /// `AudioBufferList` is the classic Core Audio variable-length-array C
-    /// struct: its Rust binding declares `mBuffers: [AudioBuffer; 1]`
-    /// (storage for exactly one entry), but the real struct can carry more
-    /// — the actual buffer count lives in `mNumberBuffers`, with entries
-    /// packed contiguously starting at `mBuffers`' own offset. This
-    /// allocates a raw byte buffer sized for up to [`MAX_AUDIO_BUFFERS`]
-    /// entries, lets Core Media fill it in, then re-derives a proper slice
-    /// over exactly `mNumberBuffers` entries via `mem::offset_of!` pointer
-    /// arithmetic — the standard, documented way to handle this C idiom
-    /// from Rust.
+    /// ## The two-call protocol this function relies on
     ///
-    /// Returns `None` (logged) on any unexpected result — a malformed or
-    /// larger-than-expected buffer must never panic the SCK callback
-    /// thread.
-    fn extract_audio_buffers(sample: &CMSampleBuffer) -> Option<Vec<DecodedAudioBuffer>> {
-        let mbuffers_offset = std::mem::offset_of!(AudioBufferList, mBuffers);
-        let total_size = mbuffers_offset + MAX_AUDIO_BUFFERS * size_of::<AudioBuffer>();
-        let mut raw = vec![0u8; total_size];
-        let list_ptr = raw.as_mut_ptr().cast::<AudioBufferList>();
+    /// An earlier version of this function tried a single call with an
+    /// oversized (8-channels-worth) stack buffer and no retained block
+    /// buffer, reasoning that "big enough" should be sufficient. Confirmed
+    /// wrong empirically, against real `SCStream` audio callbacks (not
+    /// simulated): that shape reproducibly fails with `-12737`
+    /// `kCMSampleBufferError_ArrayTooSmall` on every single callback, even
+    /// though the buffer is *larger* than what's actually needed. Probing
+    /// further pinned down the real, undocumented contract:
+    /// - An **exact**-size `buffer_list_out` is required — not merely
+    ///   "big enough". The needed size (the `AudioBufferList` header plus
+    ///   `N` `AudioBuffer` *descriptors* — typically a few dozen bytes,
+    ///   **not** the actual audio sample data, which lives elsewhere and is
+    ///   only pointed to) is learned via a first probe call with a null
+    ///   `buffer_list_out`.
+    /// - A non-null `block_buffer_out` is **required**, not optional
+    ///   despite the type signature allowing null: omitting it (even with
+    ///   an otherwise correctly, exactly-sized list buffer) reproducibly
+    ///   fails with `-12731` `kCMSampleBufferError_RequiredParameterMissing`.
+    ///   The returned `CMBlockBuffer` is `+1`/"Create rule" retained (hence
+    ///   [`CFRetained::from_raw`]) and is what actually backs the
+    ///   `AudioBuffer` entries' `mData` pointers — it's kept alive for the
+    ///   rest of this function (released automatically when it drops) so
+    ///   those pointers stay valid while their bytes are copied out.
+    /// - `kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment` is
+    ///   passed as the `flags` argument, matching Apple's own sample code
+    ///   for this call (e.g. the `AudioCap` reference project).
+    ///
+    /// `AudioBufferList` is *also* the classic Core Audio variable-length-
+    /// array C struct: its Rust binding declares `mBuffers: [AudioBuffer;
+    /// 1]` (storage for exactly one entry), but the real struct can carry
+    /// more — the actual buffer count lives in `mNumberBuffers`, with
+    /// entries packed contiguously starting at `mBuffers`' own offset,
+    /// re-derived here via `mem::offset_of!` pointer arithmetic — the
+    /// standard, documented way to handle this C idiom from Rust.
+    ///
+    /// Returns `None` on any unexpected result — a malformed buffer must
+    /// never panic the SCK callback thread. Failures are logged, but rate-
+    /// limited — see [`log_extraction_failure`].
+    fn extract_audio_buffers(
+        sample: &CMSampleBuffer,
+        extraction_failures: &mut u64,
+    ) -> Option<Vec<DecodedAudioBuffer>> {
+        // Step 1: probe for the exact byte size `AudioBufferList` (header +
+        // N `AudioBuffer` descriptors) needs — a null `buffer_list_out`
+        // means nothing is written, so `buffer_list_size` (0) and
+        // `block_buffer_out` (null) are irrelevant for this call; its own
+        // returned `OSStatus` is intentionally ignored (probing a size this
+        // way is documented, in Apple's own sample code, to report
+        // `kCMSampleBufferError_ArrayTooSmall`-shaped statuses even on
+        // success) — `size_needed` being populated is the actual signal.
         let mut size_needed: usize = 0;
-
-        // SAFETY: `list_ptr` points into `raw`, which is `total_size` bytes
-        // (exactly the `buffer_list_size` passed below) and stays alive for
-        // the rest of this function. `block_buffer_out` is null — this
-        // module never needs the audio bytes to outlive `sample` itself
-        // (everything is copied out into owned `Vec<f32>`s before this
-        // function returns), so there's no retained `CMBlockBuffer` to
-        // manage/release.
-        let status = unsafe {
+        // SAFETY: every out-param here is either null (nothing should be
+        // written) or a valid `&mut` (`size_needed`).
+        let _ = unsafe {
             sample.audio_buffer_list_with_retained_block_buffer(
                 &mut size_needed,
-                list_ptr,
-                total_size,
+                std::ptr::null_mut(),
+                0,
                 None,
                 None,
                 0,
                 std::ptr::null_mut(),
             )
         };
-        if status != 0 {
-            log::warn!(
-                "CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer failed: status {status}"
-            );
-            return None;
-        }
-        if size_needed > total_size {
-            log::warn!(
-                "system-audio buffer list needed {size_needed} bytes, only {total_size} \
-                 allocated (more channels than the configured {SYS_AUDIO_CHANNELS}?) — \
-                 skipping this callback"
+        let mbuffers_offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+        if size_needed < mbuffers_offset + size_of::<AudioBuffer>() {
+            log_extraction_failure(
+                extraction_failures,
+                &format!("size probe reported an implausibly small {size_needed} bytes"),
             );
             return None;
         }
 
-        // SAFETY: `status == noErr` (checked above) guarantees `list_ptr`
-        // was filled in, including its leading `mNumberBuffers` field.
+        // Step 2: the real call — an exactly-`size_needed`-sized buffer,
+        // the alignment flag, and a non-null `block_buffer_out` (see this
+        // function's own doc comment for why all three are load-bearing).
+        let mut raw = vec![0u8; size_needed];
+        let list_ptr = raw.as_mut_ptr().cast::<AudioBufferList>();
+        let mut block_buffer_ptr: *mut CMBlockBuffer = std::ptr::null_mut();
+        let mut size_needed_confirm: usize = 0;
+        // SAFETY: `list_ptr` points into `raw`, exactly `size_needed` bytes
+        // (the `buffer_list_size` passed below), which stays alive for the
+        // rest of this function. `block_buffer_ptr` receives a `+1`-
+        // retained `CMBlockBuffer` on success, adopted into a `CFRetained`
+        // immediately below.
+        let status = unsafe {
+            sample.audio_buffer_list_with_retained_block_buffer(
+                &mut size_needed_confirm,
+                list_ptr,
+                size_needed,
+                None,
+                None,
+                kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+                &mut block_buffer_ptr,
+            )
+        };
+        if status != 0 {
+            log_extraction_failure(
+                extraction_failures,
+                &format!(
+                    "CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer failed: status \
+                     {status}"
+                ),
+            );
+            return None;
+        }
+
+        // SAFETY: `status == noErr` (checked above) is this function's own
+        // documented guarantee of a `+1`-retained `CMBlockBuffer` written to
+        // `block_buffer_ptr` — adopting it here (rather than leaking it)
+        // means it's released automatically when `_block_buffer` drops at
+        // the end of this function, after every buffer's bytes have been
+        // copied out.
+        let _block_buffer = NonNull::new(block_buffer_ptr).map(|ptr| unsafe { CFRetained::from_raw(ptr) });
+
+        // SAFETY: `status == noErr` guarantees `list_ptr` was filled in,
+        // including its leading `mNumberBuffers` field.
         let num_buffers = unsafe { (*list_ptr).mNumberBuffers } as usize;
-        if num_buffers == 0 || num_buffers > MAX_AUDIO_BUFFERS {
-            log::warn!("system-audio buffer list reported {num_buffers} buffers — skipping");
+        if num_buffers == 0 {
+            log_extraction_failure(extraction_failures, "buffer list reported 0 buffers");
             return None;
         }
 
         // SAFETY: see this function's own doc comment — `num_buffers`
         // contiguous `AudioBuffer` entries live at `mBuffers`' offset,
-        // guaranteed by the successful call above plus the `size_needed`
-        // check just before it.
+        // guaranteed by the successful, exactly-sized call above.
         let buffers_ptr = unsafe { raw.as_ptr().add(mbuffers_offset).cast::<AudioBuffer>() };
         let buffers = unsafe { std::slice::from_raw_parts(buffers_ptr, num_buffers) };
 
@@ -760,7 +854,9 @@ mod capture {
                     let samples = if buffer.mDataByteSize == 0 || buffer.mData.is_null() {
                         Vec::new()
                     } else {
-                        // SAFETY: Core Media guarantees `mData` points to
+                        // SAFETY: `_block_buffer` (kept alive above) backs
+                        // this memory for the rest of this function; Core
+                        // Media guarantees `mData` points to
                         // `mDataByteSize` valid bytes for a successfully
                         // filled-in `AudioBuffer`.
                         let bytes = unsafe {
@@ -787,6 +883,11 @@ mod capture {
         resampler: LinearResampler,
         batcher: BlockBatcher,
         dropped: u64,
+        /// Running count of [`extract_audio_buffers`] failures — logged
+        /// every [`SYS_DROP_LOG_INTERVAL`] occurrences (see that
+        /// function's own docs), the same cadence discipline as `dropped`
+        /// above.
+        extraction_failures: u64,
         /// Whether [`SysAudioHandler`]'s callback has already logged the
         /// delivered buffer shape once (sample rate/channel layout) — see
         /// that callback's own docs. A field (not a `once_cell`/`Once`)
@@ -848,7 +949,10 @@ mod capture {
                 if of_type != SCStreamOutputType::Audio {
                     return;
                 }
-                let Some(decoded) = extract_audio_buffers(sample_buffer) else {
+
+                let mut state = lock(&self.ivars().state);
+                let Some(decoded) = extract_audio_buffers(sample_buffer, &mut state.extraction_failures)
+                else {
                     return;
                 };
                 let mono = downmix_sck_buffers_to_mono(&decoded);
@@ -856,7 +960,6 @@ mod capture {
                     return;
                 }
 
-                let mut state = lock(&self.ivars().state);
                 if !state.format_logged {
                     state.format_logged = true;
                     let channels_per_buffer: Vec<u16> =
@@ -894,6 +997,7 @@ mod capture {
                     resampler: LinearResampler::new(SYS_AUDIO_SAMPLE_RATE_HZ as u32, TARGET_SAMPLE_RATE),
                     batcher: BlockBatcher::new(SYS_BLOCK_SAMPLES),
                     dropped: 0,
+                    extraction_failures: 0,
                     format_logged: false,
                 }),
             });
@@ -903,8 +1007,8 @@ mod capture {
         }
     }
 
-    /// A retained ObjC object, asserted `Send` for exactly one narrow,
-    /// documented purpose: carrying the single `SCDisplay` result of
+    /// A retained `SCDisplay`, asserted `Send` for exactly one narrow,
+    /// documented purpose: carrying the single display result of
     /// `getShareableContentWithCompletionHandler`'s completion block (which
     /// ScreenCaptureKit invokes on its own internal queue, not necessarily
     /// the thread that registered it) back to the thread blocked waiting
@@ -912,27 +1016,31 @@ mod capture {
     /// metadata snapshot (id/dimensions), not a live stream or UI object
     /// with thread affinity — the entire point of this completion-handler
     /// API shape is that the result is handed across a queue boundary by
-    /// design. Never used for anything beyond this one hand-off, and never
-    /// returned from any public API of this module.
+    /// design. Not generic — this exists for exactly this one call site,
+    /// not as a general-purpose "make anything Send" escape hatch — never
+    /// used for anything beyond this one hand-off, and never returned from
+    /// any public API of this module.
     ///
     /// `#[allow(dead_code)]`: only constructed inside [`first_display`],
     /// itself pending-Task-5 unreachable in the ordinary build — see
     /// `SysCapture`'s doc comment.
     #[allow(dead_code)]
-    struct SendableRetained<T>(Retained<T>);
+    struct SendableRetained(Retained<SCDisplay>);
     // SAFETY: see the doc comment above.
     #[allow(dead_code)]
-    unsafe impl<T> Send for SendableRetained<T> {}
+    unsafe impl Send for SendableRetained {}
 
-    /// Blocks the calling thread until `getShareableContentWithCompletionHandler`'s
-    /// completion block fires (see the module docs' "Async APIs, made
-    /// synchronous" section), returning the first available display.
+    /// Blocks the calling thread (up to [`SCK_COMPLETION_TIMEOUT`]) until
+    /// `getShareableContentWithCompletionHandler`'s completion block fires
+    /// (see the module docs' "Async APIs, made synchronous" section),
+    /// returning the first available display.
     ///
     /// `#[allow(dead_code)]`: only called from `SysCapture::start` — see
     /// that type's doc comment for the shared pending-Task-5 rationale.
     #[allow(dead_code)]
     fn first_display() -> Result<Retained<SCDisplay>> {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<SendableRetained<SCDisplay>, String>>(1);
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<std::result::Result<SendableRetained, String>>(1);
         let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
             // SAFETY: both are the raw pointer pair
             // `getShareableContentWithCompletionHandler` hands to its
@@ -957,12 +1065,15 @@ mod capture {
         // SAFETY: `block` is a valid block; ScreenCaptureKit copies its own
         // reference internally per the standard Cocoa completion-handler
         // contract, so it's sound for `block` to be dropped once this
-        // function returns (which only happens after `rx.recv()` below has
-        // already observed the completion firing).
+        // function returns (which only happens after `rx.recv_timeout`
+        // below has already observed the completion firing, or timed out).
         unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&block) };
 
-        let result = rx.recv().map_err(|_| {
-            MinuteError::Other("shareable-content completion handler never fired".to_string())
+        let result = rx.recv_timeout(SCK_COMPLETION_TIMEOUT).map_err(|_| {
+            MinuteError::Other(
+                "ScreenCaptureKit did not respond — try toggling system audio off and on"
+                    .to_string(),
+            )
         })?;
         result.map(|wrapped| wrapped.0).map_err(|e| {
             MinuteError::Other(format!(
@@ -972,14 +1083,16 @@ mod capture {
         })
     }
 
-    /// Blocks on a `(completionHandler: ^(NSError *))`-shaped async call —
-    /// the same synchronous-wrapper shape [`first_display`] uses, factored
-    /// out since `startCaptureWithCompletionHandler`/
-    /// `stopCaptureWithCompletionHandler` both have this exact signature.
-    /// `register` is handed the block to pass into the real SCK call; its
-    /// return value is ignored (the block itself, not `register`'s return,
-    /// is how the result comes back).
-    fn block_on_error_completion(register: impl FnOnce(&RcBlock<dyn Fn(*mut NSError)>)) -> std::result::Result<(), String> {
+    /// Blocks (up to [`SCK_COMPLETION_TIMEOUT`]) on a `(completionHandler:
+    /// ^(NSError *))`-shaped async call — the same synchronous-wrapper
+    /// shape [`first_display`] uses, factored out since
+    /// `startCaptureWithCompletionHandler`/`stopCaptureWithCompletionHandler`
+    /// both have this exact signature. `register` is handed the block to
+    /// pass into the real SCK call; its return value is ignored (the block
+    /// itself, not `register`'s return, is how the result comes back).
+    fn block_on_error_completion(
+        register: impl FnOnce(&RcBlock<dyn Fn(*mut NSError)>),
+    ) -> std::result::Result<(), String> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
         let block = RcBlock::new(move |error: *mut NSError| {
             // SAFETY: `error` is the pointer SCK's completion handler hands
@@ -988,10 +1101,13 @@ mod capture {
             let _ = tx.send(msg);
         });
         register(&block);
-        match rx.recv() {
+        match rx.recv_timeout(SCK_COMPLETION_TIMEOUT) {
             Ok(None) => Ok(()),
             Ok(Some(msg)) => Err(msg),
-            Err(_) => Err("completion handler never fired".to_string()),
+            Err(_) => {
+                Err("ScreenCaptureKit did not respond — try toggling system audio off and on"
+                    .to_string())
+            }
         }
     }
 
@@ -1145,16 +1261,21 @@ mod capture {
             })
         }
 
-        /// Stops the stream cleanly. Not the only teardown path — simply
-        /// dropping a [`SysCapture`] without calling this is also safe:
-        /// `Retained<SCStream>`'s own `Drop` releases the underlying
-        /// Objective-C object unconditionally when its reference count
-        /// reaches zero, so an app-exit/panic path that never gets to call
-        /// `stop()` explicitly still tears down soundly (ScreenCaptureKit
-        /// itself stops delivering callbacks once nothing holds a strong
-        /// reference to the stream). This method is the *graceful* path
-        /// (blocks briefly for `ScreenCaptureKit`'s own async stop to
-        /// complete) — worth taking when there's time to.
+        /// Stops the stream gracefully: blocks (up to
+        /// [`SCK_COMPLETION_TIMEOUT`]) for ScreenCaptureKit's own async stop
+        /// to complete, surfacing (logging) any error — the path to prefer
+        /// whenever there's time to wait for it.
+        ///
+        /// Not the *only* teardown path — simply dropping a [`SysCapture`]
+        /// without calling this first also asks ScreenCaptureKit to stop,
+        /// via this type's own [`Drop`] impl. That backstop exists
+        /// precisely *because* releasing the underlying `Retained<SCStream>`
+        /// alone is **not** documented by Apple to guarantee the stream's
+        /// XPC-backed capture session (and the OS's own recording
+        /// indicator) actually stops — dropping the last Objective-C
+        /// reference and *asking ScreenCaptureKit to stop* are two
+        /// different things, and only the latter is what this method (and
+        /// `Drop`) actually do.
         pub fn stop(self) {
             // SAFETY: `self.stream` is a valid `SCStream` that was
             // successfully started in `start`.
@@ -1164,6 +1285,29 @@ mod capture {
             if let Err(msg) = result {
                 log::warn!("failed to cleanly stop system-audio capture (tearing down anyway): {msg}");
             }
+        }
+    }
+
+    /// Unconditional teardown backstop: fires a best-effort, fire-and-
+    /// forget stop request whenever a [`SysCapture`] is dropped without an
+    /// explicit [`SysCapture::stop`] call first (e.g. a panic unwind
+    /// through a future Task 5 caller). Deliberately does **not** block —
+    /// unlike `stop()`'s [`block_on_error_completion`], `Drop` can run in
+    /// arbitrary contexts (including mid-panic-unwind), where blocking on
+    /// an XPC round trip would itself be a hazard — so this passes `None`
+    /// as the completion handler: it asks ScreenCaptureKit to stop and
+    /// moves on without waiting to learn whether it succeeded. See
+    /// `stop()`'s own doc comment for why this exists at all: releasing
+    /// `self.stream`'s last Objective-C reference alone is not documented
+    /// to guarantee the underlying capture session actually stops, and
+    /// leaving the OS's own recording indicator running with no code path
+    /// left to turn it off would be a real, user-visible bug.
+    #[allow(dead_code)]
+    impl Drop for SysCapture {
+        fn drop(&mut self) {
+            // SAFETY: `self.stream` is a valid `SCStream` for as long as
+            // `self` is alive, which it is here.
+            unsafe { self.stream.stopCaptureWithCompletionHandler(None) };
         }
     }
 }
@@ -1216,8 +1360,23 @@ mod e2e_tests {
     /// machine (no Screen Recording grant yet) and is exactly the state
     /// [`sys_audio_status`]'s own state machine already covers via ordinary
     /// unit tests; this test's job is only to prove the *full* real-capture
-    /// path on a machine that has actually granted permission. Run
-    /// manually:
+    /// path on a machine that has actually granted permission.
+    ///
+    /// There's a second, distinct way this test can honestly fail even with
+    /// `Ready` availability and a stream that starts without error: if
+    /// `mod capture::extract_audio_buffers` can't actually decode the
+    /// `CMSampleBuffer`s the callback receives (an `SCStream` audio session
+    /// that starts cleanly but never yields usable samples is a real,
+    /// previously-hit failure mode here — see that function's own doc
+    /// comment for the exact two-call parameterization it took to fix, and
+    /// the specific `OSStatus` codes a wrong one reproducibly hits). If this
+    /// test ever fails again with `Ready` availability, a clean start, but
+    /// `collected.is_empty()`, that (extraction silently never succeeding),
+    /// not a permission problem, is the first thing to check — the
+    /// `system-audio buffer extraction failed` warning (rate-limited via
+    /// `SYS_DROP_LOG_INTERVAL`) is the diagnostic to look for.
+    ///
+    /// Run manually:
     ///
     /// ```sh
     /// cargo test --manifest-path src-tauri/Cargo.toml \
