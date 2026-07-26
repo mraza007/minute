@@ -9,6 +9,12 @@
 
 ![Minute — note view with live transcript and AI-generated summary](screenshots/hero.png)
 
+**[⬇ Download Minute for macOS (Apple Silicon)](https://github.com/mraza007/minute/releases/latest)**
+
+or grab the DMG directly: [Minute_0.5.0_aarch64.dmg](https://github.com/mraza007/minute/releases/download/v0.5.0/Minute_0.5.0_aarch64.dmg)
+
+It's an unsigned build, so on first launch: right-click the app → **Open**.
+
 </div>
 
 Minute is a fully offline meeting notetaker for macOS. It records audio,
@@ -158,20 +164,22 @@ requirements shown up front.
 
 ## Install
 
-Minute isn't notarized or distributed as a signed build yet — build it from
-source:
+Grab the DMG from the [latest release](https://github.com/mraza007/minute/releases/latest)
+(see the download link up top), or build it from source:
 
 ```bash
-git clone https://github.com/<you>/local-transcription-app.git
-cd local-transcription-app
+git clone https://github.com/mraza007/minute.git
+cd minute
 npm install
 npm run tauri build
 ```
 
 This produces a `.app` (and a `.dmg`) under `src-tauri/target/release/bundle/`.
-On first launch, Minute walks you through picking and downloading a
-transcription + summary model pair sized to your hardware — that's the only
-thing that touches the network, ever.
+Minute isn't notarized yet either way, so macOS will flag it as from an
+unidentified developer — right-click → **Open** past that once. On first
+launch, Minute walks you through picking and downloading a transcription +
+summary model pair sized to your hardware — that's the only thing that
+touches the network, ever.
 
 ## Development
 

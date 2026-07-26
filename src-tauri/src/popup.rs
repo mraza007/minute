@@ -64,8 +64,14 @@ use crate::detect::{self, PromptOutcome, SharedDetectorHandle};
 /// listen target (`app.emit_to(PANEL_LABEL, ...)` in `deliver_prompt`).
 pub const PANEL_LABEL: &str = "meeting-popup";
 
-/// Logical pixel size of the pill window — matches the plan's "~380×72".
-const PANEL_WIDTH: f64 = 380.0;
+/// Logical pixel size of the pill window — height matches the plan's
+/// "~380×72"; width was widened from the plan's original 380 to 470 after
+/// confirming the subtitle's ellipsis (see `src/popup/Pill.tsx`) genuinely
+/// clipped real copy ("Another app is using the microphone", "Microsoft
+/// Teams is using the microphone") at 380. Keep this in lockstep with
+/// `Pill.tsx`'s own `width` — that inline style is sized for exactly this
+/// window, not a general-purpose layout.
+const PANEL_WIDTH: f64 = 470.0;
 const PANEL_HEIGHT: f64 = 72.0;
 
 /// Logical-pixel gap between the top of the target display's work area

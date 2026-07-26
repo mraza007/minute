@@ -2,7 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="color-scheme" content="light dark" />
+    <!-- No `<meta name="color-scheme">` here, deliberately — this is the one
+         difference from every other document in the app (index.html,
+         popup.html, screenshot-app.html all declare it). This page's own
+         dark variant is driven entirely by the explicit `html[data-theme]`
+         attribute the inline script below sets (never `prefers-color-scheme`
+         media matching), so the meta tag buys this document nothing — and
+         confirmed (headless Chrome, same-origin nested iframe, both at
+         `--force-device-scale-factor=2`) that declaring it here forces an
+         opaque default canvas paint *behind the `?state=popup` pill's
+         iframe*, defeating that iframe's own `background: transparent` and
+         showing as a solid white rectangle around the pill. Isolated with a
+         battery of minimal repros (a lime backdrop + a same-origin iframe
+         set to transparent): removing just this meta tag from the outer
+         page — nothing about the iframe or its content — was the one change
+         that fixed it. -->
     <title>Minute — marketing capture frame</title>
     <style>
       :root {
@@ -148,8 +162,13 @@
          the same paper-warm backdrop as the other six shots (keeps the set
          visually one family) plus a plain, unbranded glassy rectangle
          standing in for "some call window behind it" — no logos, no invented
-         chrome — and a soft vignette so the floating pill reads as the
-         subject of the shot instead of the backdrop. */
+         chrome. The pill is the subject of this shot, not the rectangle: it
+         renders at 2x scale in the upper-middle of the frame (real marketing
+         convention for a small transient UI element — see e.g. how OS
+         vendors shoot notification/toast captures), and the fake call
+         window behind it is shrunk, pushed into the lower half, and dimmed
+         so it reads as "context this appeared over" rather than competing
+         for attention. A soft vignette reinforces the same read. */
       body.state-popup .window-chrome,
       body.state-popup .traffic-lights {
         display: none;
@@ -158,41 +177,56 @@
         position: absolute;
         inset: 0;
         pointer-events: none;
-        background: radial-gradient(ellipse at 50% 38%, transparent 40%, rgba(0, 0, 0, 0.16) 100%);
+        background: radial-gradient(ellipse at 50% 30%, transparent 32%, rgba(0, 0, 0, 0.18) 100%);
       }
       html[data-theme='dark'] .vignette {
-        background: radial-gradient(ellipse at 50% 38%, transparent 35%, rgba(0, 0, 0, 0.4) 100%);
+        background: radial-gradient(ellipse at 50% 30%, transparent 28%, rgba(0, 0, 0, 0.44) 100%);
       }
+      /* Deliberately smaller than the other shots' `.window-chrome`, parked
+         in the lower half only (its top edge starts past the frame's
+         vertical center) and dimmed via `opacity` — background context for
+         "a call was happening", never mistaken for the actual subject. */
       .desktop-window {
         position: absolute;
-        top: 50%;
+        top: 58%;
         left: 50%;
-        transform: translate(-50%, -44%);
-        width: 1100px;
-        height: 620px;
+        transform: translate(-50%, 0%);
+        width: 860px;
+        height: 480px;
         border-radius: 22px;
-        background: rgba(255, 255, 255, 0.32);
+        background: rgba(255, 255, 255, 0.3);
         border: 1px solid var(--window-border);
+        opacity: 0.5;
         box-shadow:
-          0 1px 2px rgba(0, 0, 0, 0.05),
-          0 20px 60px rgba(0, 0, 0, 0.18);
+          0 1px 2px rgba(0, 0, 0, 0.04),
+          0 16px 48px rgba(0, 0, 0, 0.14);
       }
       html[data-theme='dark'] .desktop-window {
-        background: rgba(255, 255, 255, 0.045);
+        background: rgba(255, 255, 255, 0.04);
+        opacity: 0.6;
       }
+      /* Sized to the pill's real natural footprint (Pill.tsx: 470x72 plus
+         its own 8px outer margin on every side = 486x88 — see Pill.tsx's
+         width comment for why 470, not the plan's original 380) so nothing
+         clips, then scaled 2x from its top edge to sit large and prominent
+         in the upper-middle of the frame. `transform-origin: top center`
+         keeps the scale expanding downward from a fixed top anchor instead
+         of also pushing the top edge upward, which made the vertical
+         placement fiddly to reason about. */
       .pill-frame-wrap {
         position: absolute;
-        top: 86px;
+        top: 150px;
         left: 50%;
-        transform: translateX(-50%);
-        width: 400px;
-        height: 96px;
-        filter: drop-shadow(0 14px 32px rgba(0, 0, 0, 0.28));
+        transform: translateX(-50%) scale(2);
+        transform-origin: top center;
+        width: 486px;
+        height: 88px;
+        filter: drop-shadow(0 26px 52px rgba(0, 0, 0, 0.34));
       }
       .pill-frame-wrap iframe {
         display: block;
-        width: 400px;
-        height: 96px;
+        width: 486px;
+        height: 88px;
         border: none;
         background: transparent;
       }

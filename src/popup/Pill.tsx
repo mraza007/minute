@@ -127,7 +127,18 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        width: 380,
+        // 470, not the plan's original "~380" — at 380 the subtitle's
+        // `textOverflow: ellipsis` (below) genuinely clips real copy in the
+        // shipped app, not just this marketing render: "Another app is
+        // using the microphone" (the default, pre-payload text) and
+        // "Microsoft Teams is using the microphone" (the longest
+        // allowlisted app name — see detect.rs's `find_allowlisted`) both
+        // overflowed the old 380px pill mid-word. Confirmed against a real
+        // `popup.html` render at the window's exact logical size before
+        // widening. Keep in lockstep with `PANEL_WIDTH` in
+        // src-tauri/src/popup.rs — that's the actual native window size
+        // this pill is created into.
+        width: 470,
         height: 72,
         boxSizing: 'border-box',
         padding: '0 14px',
