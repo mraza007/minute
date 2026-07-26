@@ -45,6 +45,17 @@ pub struct Settings {
     /// `settings_json_without_meeting_detection_field_defaults_to_false`.
     #[serde(default)]
     pub meeting_detection: bool,
+    /// Stage 5 Task 5: opt-in "also capture system audio" default for new
+    /// recordings (see `audio::start_recording`'s `includeSystemAudio`
+    /// param, which falls back to this when the frontend doesn't pass an
+    /// explicit override). `#[serde(default)]` so a `settings.json` written
+    /// before this field existed loads as `false` — off by default, same
+    /// opt-in rationale as `meetingDetection` above (and honest regardless:
+    /// even when `true`, `start_recording` only actually honors it once
+    /// `syscap::sys_audio_status()` reports `Ready` — see that command's
+    /// docs).
+    #[serde(default)]
+    pub capture_system_audio: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +67,7 @@ impl Default for Settings {
             llm_model: None,
             delete_audio_after_30d: true,
             meeting_detection: false,
+            capture_system_audio: false,
         }
     }
 }
@@ -75,6 +87,7 @@ pub struct SettingsPatch {
     pub llm_model: Option<String>,
     pub delete_audio_after_30d: Option<bool>,
     pub meeting_detection: Option<bool>,
+    pub capture_system_audio: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -92,6 +105,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.meeting_detection {
         settings.meeting_detection = v;
+    }
+    if let Some(v) = patch.capture_system_audio {
+        settings.capture_system_audio = v;
     }
 }
 
@@ -204,6 +220,7 @@ mod tests {
         assert_eq!(settings.llm_model, None);
         assert!(settings.delete_audio_after_30d);
         assert!(!settings.meeting_detection);
+        assert!(!settings.capture_system_audio);
     }
 
     #[test]
@@ -214,6 +231,7 @@ mod tests {
             llm_model: Some("qwen3.5-4b".to_string()),
             delete_audio_after_30d: false,
             meeting_detection: true,
+            capture_system_audio: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -247,6 +265,7 @@ mod tests {
                 llm_model: None,
                 delete_audio_after_30d: false,
                 meeting_detection: false,
+                capture_system_audio: false,
             }
         );
     }
@@ -279,6 +298,41 @@ mod tests {
                 llm_model: Some("qwen3.5-4b".to_string()),
                 delete_audio_after_30d: false,
                 meeting_detection: false,
+                capture_system_audio: false,
+            }
+        );
+    }
+
+    #[test]
+    fn settings_json_without_capture_system_audio_field_defaults_to_false() {
+        // Stage 5 Task 5's own migration case: a settings.json written by
+        // any pre-Task-5 build has no "captureSystemAudio" key at all —
+        // `#[serde(default)]` must make that load as `false` (opt-in, off),
+        // not fail to parse or fall back to full defaults for the rest of
+        // the file.
+        let dir = tempdir().unwrap();
+        let pre_task5_json = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": false,
+            "meetingDetection": true,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_task5_json).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_settings(dir.path());
+
+        assert_eq!(
+            loaded,
+            Settings {
+                stt_model: Some("whisper-medium".to_string()),
+                llm_model: Some("qwen3.5-4b".to_string()),
+                delete_audio_after_30d: false,
+                meeting_detection: true,
+                capture_system_audio: false,
             }
         );
     }
@@ -308,6 +362,7 @@ mod tests {
             llm_model: None,
             delete_audio_after_30d: true,
             meeting_detection: true,
+            capture_system_audio: true,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -316,6 +371,7 @@ mod tests {
         assert!(raw.contains("\"llmModel\""));
         assert!(raw.contains("\"deleteAudioAfter30d\""));
         assert!(raw.contains("\"meetingDetection\""));
+        assert!(raw.contains("\"captureSystemAudio\""));
         assert!(!raw.contains("\"encryptLibrary\""));
     }
 
@@ -347,6 +403,7 @@ mod tests {
             llm_model: Some("gemma-4-e4b".to_string()),
             delete_audio_after_30d: Some(false),
             meeting_detection: Some(true),
+            capture_system_audio: Some(true),
         };
 
         apply_patch(&mut settings, patch);
@@ -355,6 +412,7 @@ mod tests {
         assert_eq!(settings.llm_model, Some("gemma-4-e4b".to_string()));
         assert!(!settings.delete_audio_after_30d);
         assert!(settings.meeting_detection);
+        assert!(settings.capture_system_audio);
     }
 
     #[test]
@@ -364,12 +422,14 @@ mod tests {
             llm_model: Some("qwen3.5-4b".to_string()),
             delete_audio_after_30d: true,
             meeting_detection: false,
+            capture_system_audio: false,
         };
         let patch = SettingsPatch {
             stt_model: None,
             llm_model: None,
             delete_audio_after_30d: Some(false),
             meeting_detection: None,
+            capture_system_audio: None,
         };
 
         apply_patch(&mut settings, patch);
@@ -378,6 +438,7 @@ mod tests {
         assert_eq!(settings.llm_model, Some("qwen3.5-4b".to_string()));
         assert!(!settings.delete_audio_after_30d);
         assert!(!settings.meeting_detection);
+        assert!(!settings.capture_system_audio);
     }
 
     #[test]
@@ -387,6 +448,7 @@ mod tests {
             llm_model: None,
             delete_audio_after_30d: true,
             meeting_detection: true,
+            capture_system_audio: true,
         };
         let mut settings = original.clone();
 
@@ -478,6 +540,28 @@ mod tests {
         assert!(returned.meeting_detection);
         assert!(lock_settings(&shared).meeting_detection);
         assert!(load_settings(dir.path()).meeting_detection);
+    }
+
+    #[test]
+    fn apply_and_save_toggles_capture_system_audio_and_persists_it() {
+        // Mirrors `apply_and_save_toggles_meeting_detection_and_persists_it`
+        // — the path `set_settings` (lib.rs) drives when the frontend flips
+        // Settings' "Capture system audio" toggle. Confirms the whole round
+        // trip (patch -> shared state -> disk) carries `captureSystemAudio`,
+        // which is what `audio::start_recording` reads as its default when
+        // the frontend doesn't pass an explicit `includeSystemAudio`.
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        let patch = SettingsPatch {
+            capture_system_audio: Some(true),
+            ..SettingsPatch::default()
+        };
+
+        let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+
+        assert!(returned.capture_system_audio);
+        assert!(lock_settings(&shared).capture_system_audio);
+        assert!(load_settings(dir.path()).capture_system_audio);
     }
 
     #[test]

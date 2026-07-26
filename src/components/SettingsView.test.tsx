@@ -62,6 +62,10 @@ const base = {
   toggleDel: vi.fn(),
   meetingDetection: false,
   toggleMeetingDetection: vi.fn(),
+  captureSystemAudio: false,
+  toggleCaptureSystemAudio: vi.fn(),
+  sysAudioAvailability: 'ready' as const,
+  onRequestSysAudioPermission: vi.fn(),
 }
 
 describe('SettingsView', () => {
@@ -282,5 +286,73 @@ describe('SettingsView', () => {
       screen.getByText('When another app starts using the microphone, Minute shows a small prompt. Detection is fully local and never listens to audio.'),
     ).toBeInTheDocument()
     expect(screen.getByText('Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.')).toBeInTheDocument()
+  })
+
+  describe('Recording card — Capture system audio (Stage 5 Task 5)', () => {
+    it('renders the Recording card with its toggle off by default', () => {
+      render(<SettingsView {...base} />)
+      expect(screen.getByText('Recording')).toBeInTheDocument()
+      const toggle = screen.getByRole('switch', { name: /capture system audio/i })
+      expect(toggle).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('reflects an enabled captureSystemAudio setting via aria-checked', () => {
+      render(<SettingsView {...base} captureSystemAudio={true} />)
+      expect(screen.getByRole('switch', { name: /capture system audio/i })).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('wires the toggle to its handler when availability is ready', () => {
+      const toggleCaptureSystemAudio = vi.fn()
+      render(<SettingsView {...base} sysAudioAvailability="ready" toggleCaptureSystemAudio={toggleCaptureSystemAudio} />)
+      fireEvent.click(screen.getByRole('switch', { name: /capture system audio/i }))
+      expect(toggleCaptureSystemAudio).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows the requires-permission caption', () => {
+      render(<SettingsView {...base} />)
+      expect(
+        screen.getByText(/Include what you hear — the other side of calls — in recordings and transcripts\./),
+      ).toBeInTheDocument()
+    })
+
+    it('disables the toggle and shows no Grant button when unsupported (macOS <13)', () => {
+      const toggleCaptureSystemAudio = vi.fn()
+      render(<SettingsView {...base} sysAudioAvailability="unsupported" toggleCaptureSystemAudio={toggleCaptureSystemAudio} />)
+      const toggle = screen.getByRole('switch', { name: /capture system audio/i })
+      expect(toggle).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.click(toggle)
+      expect(toggleCaptureSystemAudio).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /grant permission/i })).not.toBeInTheDocument()
+      expect(screen.getByText('Requires macOS 13 or later.')).toBeInTheDocument()
+    })
+
+    it('disables the toggle and shows a Grant permission affordance when not granted', () => {
+      const toggleCaptureSystemAudio = vi.fn()
+      const onRequestSysAudioPermission = vi.fn()
+      render(
+        <SettingsView
+          {...base}
+          sysAudioAvailability="notGranted"
+          toggleCaptureSystemAudio={toggleCaptureSystemAudio}
+          onRequestSysAudioPermission={onRequestSysAudioPermission}
+        />,
+      )
+      const toggle = screen.getByRole('switch', { name: /capture system audio/i })
+      expect(toggle).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.click(toggle)
+      expect(toggleCaptureSystemAudio).not.toHaveBeenCalled()
+
+      const grantButton = screen.getByRole('button', { name: /grant permission/i })
+      fireEvent.click(grantButton)
+      expect(onRequestSysAudioPermission).toHaveBeenCalledTimes(1)
+      expect(screen.getByText(/may need Minute to restart/)).toBeInTheDocument()
+    })
+
+    it('shows no Grant button and no restart caption when availability is ready', () => {
+      render(<SettingsView {...base} sysAudioAvailability="ready" />)
+      expect(screen.queryByRole('button', { name: /grant permission/i })).not.toBeInTheDocument()
+      expect(screen.queryByText('Requires macOS 13 or later.')).not.toBeInTheDocument()
+      expect(screen.queryByText(/may need Minute to restart/)).not.toBeInTheDocument()
+    })
   })
 })

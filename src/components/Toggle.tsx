@@ -2,14 +2,24 @@ export interface ToggleProps {
   on: boolean
   onToggle: () => void
   label: string
+  /**
+   * Inert but still visible/legible — for a toggle whose precondition isn't
+   * met yet (e.g. Settings' "Capture system audio" before Screen Recording
+   * permission is granted), same `aria-disabled` (not `disabled`) pattern
+   * `SettingsView`'s `SelectableModelRow` already uses for an inert-but-
+   * still-focusable-context row. Defaults to `false` — every existing call
+   * site is unaffected.
+   */
+  disabled?: boolean
 }
 
-export function Toggle({ on, onToggle, label }: ToggleProps) {
+export function Toggle({ on, onToggle, label, disabled = false }: ToggleProps) {
   return (
     <button
       role="switch"
       aria-checked={on}
-      onClick={onToggle}
+      aria-disabled={disabled}
+      onClick={disabled ? undefined : onToggle}
       style={{
         display: 'flex',
         gap: 10,
@@ -21,7 +31,8 @@ export function Toggle({ on, onToggle, label }: ToggleProps) {
         fontSize: 13,
         color: 'inherit',
         textAlign: 'left',
-        cursor: 'pointer',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.55 : 1,
         userSelect: 'none',
       }}
     >

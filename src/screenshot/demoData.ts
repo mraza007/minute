@@ -47,6 +47,7 @@ export const NOTES: NoteMeta[] = [
     status: 'ready',
     speakers: 3,
     audioDeleted: false,
+    sources: ['mic'],
   },
   {
     id: SAM_NOTE_ID,
@@ -57,6 +58,7 @@ export const NOTES: NoteMeta[] = [
     status: 'transcribed',
     speakers: 2,
     audioDeleted: false,
+    sources: ['mic'],
   },
   {
     id: ONBOARDING_REVIEW_NOTE_ID,
@@ -67,6 +69,7 @@ export const NOTES: NoteMeta[] = [
     status: 'ready',
     speakers: 4,
     audioDeleted: false,
+    sources: ['mic'],
   },
   {
     id: Q3_NOTE_ID,
@@ -77,6 +80,7 @@ export const NOTES: NoteMeta[] = [
     status: 'transcribed',
     speakers: 5,
     audioDeleted: false,
+    sources: ['mic'],
   },
   {
     id: PRICING_NOTE_ID,
@@ -87,6 +91,7 @@ export const NOTES: NoteMeta[] = [
     status: 'ready',
     speakers: 3,
     audioDeleted: false,
+    sources: ['mic'],
   },
   {
     id: ALLHANDS_NOTE_ID,
@@ -97,6 +102,7 @@ export const NOTES: NoteMeta[] = [
     status: 'transcribed',
     speakers: 6,
     audioDeleted: false,
+    sources: ['mic'],
   },
 ]
 
@@ -294,6 +300,7 @@ export const SETTINGS: Settings = {
   llmModel: 'qwen3.5-4b',
   deleteAudioAfter30d: true,
   meetingDetection: false,
+  captureSystemAudio: false,
 }
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 

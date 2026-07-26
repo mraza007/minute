@@ -17,6 +17,7 @@ function noteWithTranscriptFixture(overrides: Partial<NoteWithTranscript> = {}):
       status: 'transcribed',
       speakers: 1,
       audioDeleted: false,
+      sources: ['mic'],
     },
     transcript: { segments: [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'hello' }] },
     summary: null,

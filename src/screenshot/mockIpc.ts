@@ -107,6 +107,13 @@ export function installMockIpc(state: ScreenshotState): void {
           return SETTINGS
         case 'set_settings':
           return SETTINGS
+        case 'sys_audio_status':
+        case 'request_sys_audio_permission':
+          // Marketing screenshots don't exercise the Grant-permission flow —
+          // reporting 'ready' here just shows the "Capture system audio"
+          // toggle in its ordinary, enabled state, same as `SETTINGS`'
+          // `captureSystemAudio: false` shows it off but interactive.
+          return { availability: 'ready' }
         case 'summarize_note':
           return null
         case 'toggle_action_item': {

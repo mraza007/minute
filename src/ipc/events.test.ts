@@ -62,7 +62,7 @@ describe('ipc/events', () => {
     const cb = vi.fn()
 
     await events.onRecordingState(cb)
-    const payload: RecordingStateEvent = { noteId: '20260722-120000', state: 'recording', elapsed: 12.5 }
+    const payload: RecordingStateEvent = { noteId: '20260722-120000', state: 'recording', elapsed: 12.5, systemAudioActive: false }
     await emit('recording-state', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)

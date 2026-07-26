@@ -661,6 +661,7 @@ mod capture {
 
     use std::mem::size_of;
     use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::SyncSender;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -900,6 +901,14 @@ mod capture {
     struct HandlerIvars {
         tx: SyncSender<Arc<Vec<f32>>>,
         state: Mutex<CallbackState>,
+        /// Stage 5 Task 5: shared with `audio::Recorder`'s own mic-callback
+        /// pause flag (`SharedState::paused`) so pausing a recording pauses
+        /// system-audio capture too — see `audio::Recorder::start`'s "Pause
+        /// pauses both sources" design note. Checked first thing in the
+        /// callback below, mirroring `audio::build_stream`'s own cpal
+        /// callback exactly: skip entirely (no decode/mix work, no
+        /// forwarded block) while paused.
+        paused: Arc<AtomicBool>,
     }
 
     define_class!(
@@ -949,6 +958,9 @@ mod capture {
                 if of_type != SCStreamOutputType::Audio {
                     return;
                 }
+                if self.ivars().paused.load(Ordering::Relaxed) {
+                    return;
+                }
 
                 let mut state = lock(&self.ivars().state);
                 let Some(decoded) = extract_audio_buffers(sample_buffer, &mut state.extraction_failures)
@@ -990,7 +1002,7 @@ mod capture {
         /// build graph yet — see `SysCapture`'s own doc comment for the
         /// shared pending-Task-5 rationale.
         #[allow(dead_code)]
-        fn new(tx: SyncSender<Arc<Vec<f32>>>) -> Retained<Self> {
+        fn new(tx: SyncSender<Arc<Vec<f32>>>, paused: Arc<AtomicBool>) -> Retained<Self> {
             let this = Self::alloc().set_ivars(HandlerIvars {
                 tx,
                 state: Mutex::new(CallbackState {
@@ -1000,6 +1012,7 @@ mod capture {
                     extraction_failures: 0,
                     format_logged: false,
                 }),
+                paused,
             });
             // SAFETY: `NSObject::init` has no preconditions beyond a freshly
             // `alloc`'d instance, which `set_ivars` returns.
@@ -1148,7 +1161,14 @@ mod capture {
         /// than letting an avoidable case surface as a confusing
         /// `SCShareableContent`/`SCStream` error — see this crate's
         /// module docs' "NEVER crash on denial" requirement.
-        pub fn start(tx: SyncSender<Arc<Vec<f32>>>) -> Result<Self> {
+        ///
+        /// `paused`: shared with the owning recording's mic-callback pause
+        /// flag (Stage 5 Task 5 — see `HandlerIvars::paused`'s docs) so a
+        /// paused recording pauses system-audio capture too, not just the
+        /// mic. A caller with no mic side to share a flag with (this
+        /// module's own e2e test) can simply pass a fresh, never-toggled
+        /// `Arc::new(AtomicBool::new(false))`.
+        pub fn start(tx: SyncSender<Arc<Vec<f32>>>, paused: Arc<AtomicBool>) -> Result<Self> {
             let availability = resolve_availability(
                 availability_shim::macos_major_version(),
                 availability_shim::screen_recording_granted(),
@@ -1207,7 +1227,7 @@ mod capture {
                 config.setExcludesCurrentProcessAudio(true);
             }
 
-            let handler = SysAudioHandler::new(tx);
+            let handler = SysAudioHandler::new(tx, paused);
             // A dedicated serial queue for the audio callback — passing
             // `None` here would deliver on the main dispatch queue, which
             // this app's UI thread also services; a dedicated queue keeps
@@ -1314,6 +1334,7 @@ mod capture {
 
 #[cfg(not(target_os = "macos"))]
 mod capture {
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::SyncSender;
     use std::sync::Arc;
 
@@ -1322,7 +1343,7 @@ mod capture {
     pub struct SysCapture;
 
     impl SysCapture {
-        pub fn start(_tx: SyncSender<Arc<Vec<f32>>>) -> Result<Self> {
+        pub fn start(_tx: SyncSender<Arc<Vec<f32>>>, _paused: Arc<AtomicBool>) -> Result<Self> {
             Err(MinuteError::Other(
                 "system audio capture is macOS-only".to_string(),
             ))
@@ -1397,7 +1418,9 @@ mod e2e_tests {
         }
 
         let (tx, rx) = channel();
-        let capture = SysCapture::start(tx).expect("SysCapture::start failed despite Ready availability");
+        let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let capture =
+            SysCapture::start(tx, paused).expect("SysCapture::start failed despite Ready availability");
 
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.wav");
         assert!(fixture.exists(), "expected fixture at {fixture:?}");

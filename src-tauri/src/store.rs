@@ -38,6 +38,25 @@ pub struct NoteMeta {
     /// still has its audio.wav sitting on disk untouched.
     #[serde(default)]
     pub audio_deleted: bool,
+    /// Which audio source(s) fed this note's recording — `["mic"]` (the
+    /// overwhelming common case) or `["mic", "system"]` once Stage 5 Task
+    /// 5's two-source pipeline actually mixed in system audio. Written once,
+    /// at `stop_recording` finalize time (see `audio::stop_recording`'s
+    /// `set_note_sources` call) — never mutated afterward, since a note's
+    /// audio source can't change after the fact. `#[serde(default =
+    /// "default_sources")]` so a `meta.json` written before this field
+    /// existed still parses — it defaults to `["mic"]`, the correct
+    /// interpretation: every pre-Stage-5 recording was mic-only by
+    /// construction (system audio didn't exist as a capture path yet).
+    #[serde(default = "default_sources")]
+    pub sources: Vec<String>,
+}
+
+/// Default for [`NoteMeta::sources`] — see that field's own docs for why
+/// `["mic"]` (not an empty vec) is the correct default for both a freshly
+/// created note and a pre-Stage-5 `meta.json` with no `sources` key at all.
+fn default_sources() -> Vec<String> {
+    vec!["mic".to_string()]
 }
 
 /// One transcript segment, as stored in `transcript.json`.
@@ -326,6 +345,7 @@ impl Store {
             status: NoteStatus::Recording,
             speakers: 1,
             audio_deleted: false,
+            sources: default_sources(),
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -342,6 +362,24 @@ impl Store {
         meta.status = NoteStatus::Transcribed;
         meta.duration_sec = duration_sec;
         meta.speakers = speakers;
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Overwrites a note's `sources` field — called once, right after
+    /// `finalize_note`, from `audio::stop_recording` (only when system audio
+    /// was actually part of this recording's mix; `create_note`'s own
+    /// `["mic"]` default is already correct otherwise, so that common case
+    /// never needs this second write at all). See [`NoteMeta::sources`]'s
+    /// docs for why this is a dedicated method rather than a parameter on
+    /// `finalize_note` itself: `finalize_note`'s signature is depended on by
+    /// dozens of existing call sites (this store's own tests, `llm.rs`,
+    /// `stt.rs`) that have nothing to do with system audio — widening it
+    /// would force every one of them to thread through a value they don't
+    /// care about, whereas this is purely additive.
+    pub fn set_note_sources(&self, id: &str, sources: Vec<String>) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        meta.sources = sources;
         self.write_meta(&meta)?;
         Ok(meta)
     }
@@ -1198,6 +1236,95 @@ mod tests {
         assert_eq!(finalized.created_at, meta.created_at);
     }
 
+    // --- NoteMeta::sources (Stage 5 Task 5) ---------------------------------
+
+    #[test]
+    fn create_note_defaults_sources_to_mic_only() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        assert_eq!(meta.sources, vec!["mic".to_string()]);
+    }
+
+    #[test]
+    fn set_note_sources_overwrites_and_persists_it() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        assert_eq!(meta.sources, vec!["mic".to_string()]);
+
+        let updated = store
+            .set_note_sources(&meta.id, vec!["mic".to_string(), "system".to_string()])
+            .unwrap();
+        assert_eq!(updated.sources, vec!["mic".to_string(), "system".to_string()]);
+
+        // Persisted, not just returned — a fresh read confirms the write.
+        let (read_back, _) = store.get_note(&meta.id).unwrap();
+        assert_eq!(read_back.sources, vec!["mic".to_string(), "system".to_string()]);
+    }
+
+    #[test]
+    fn set_note_sources_leaves_every_other_field_untouched() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        let finalized = store.finalize_note(&meta.id, 42.5, 2).unwrap();
+
+        let updated = store
+            .set_note_sources(&meta.id, vec!["mic".to_string(), "system".to_string()])
+            .unwrap();
+
+        assert_eq!(updated.id, finalized.id);
+        assert_eq!(updated.title, finalized.title);
+        assert_eq!(updated.created_at, finalized.created_at);
+        assert_eq!(updated.duration_sec, finalized.duration_sec);
+        assert_eq!(updated.status, finalized.status);
+        assert_eq!(updated.speakers, finalized.speakers);
+    }
+
+    #[test]
+    fn note_meta_without_sources_field_parses_as_mic_only_default() {
+        // A meta.json written by any pre-Stage-5-Task-5 build has no
+        // "sources" key at all — `#[serde(default = "default_sources")]`
+        // must make that load as `["mic"]`, the correct interpretation
+        // (every note recorded before this field existed was mic-only by
+        // construction), not fail to parse.
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = "20260723-101530";
+        fs::create_dir_all(store.note_dir(id)).unwrap();
+        let legacy_json = serde_json::json!({
+            "id": id,
+            "title": "Standup",
+            "createdAt": "2026-07-23T10:15:30.000Z",
+            "durationSec": 60.0,
+            "model": "whisper-small",
+            "status": "transcribed",
+            "speakers": 1,
+        });
+        fs::write(store.meta_path(id), serde_json::to_string(&legacy_json).unwrap()).unwrap();
+
+        let (meta, _) = store.get_note(id).unwrap();
+
+        assert_eq!(meta.sources, vec!["mic".to_string()]);
+    }
+
+    #[test]
+    fn note_meta_wire_shape_includes_camel_case_sources() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        let raw = fs::read_to_string(store.meta_path(&meta.id)).unwrap();
+        assert!(raw.contains("\"sources\""));
+    }
+
     #[test]
     fn rename_preserves_id_and_created_at() {
         let dir = tempdir().unwrap();
@@ -1538,6 +1665,7 @@ mod tests {
             status,
             speakers: 1,
             audio_deleted,
+            sources: default_sources(),
         }
     }
 
@@ -1945,6 +2073,7 @@ mod tests {
             status: NoteStatus::Transcribed,
             speakers: 4,
             audio_deleted: false,
+            sources: default_sources(),
         };
         overrides(&mut meta);
         meta

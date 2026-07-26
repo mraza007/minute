@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: Settings = {
   llmModel: null,
   deleteAudioAfter30d: true,
   meetingDetection: false,
+  captureSystemAudio: false,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

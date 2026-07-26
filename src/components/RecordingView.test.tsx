@@ -11,6 +11,7 @@ const base = {
   sttStatus: 'ready' as const,
   sttError: null as string | null,
   modelName: 'Whisper small',
+  systemAudioActive: false,
 }
 
 describe('RecordingView', () => {
@@ -43,6 +44,27 @@ describe('RecordingView', () => {
   it('shows the model name and "on-device" in the caption', () => {
     render(<RecordingView {...base} modelName="Whisper medium" />)
     expect(screen.getByText('Whisper medium · on-device')).toBeInTheDocument()
+  })
+
+  describe('system audio segmented option (Stage 5 Task 5)', () => {
+    it('reflects aria-checked false and stays display-only when system audio is not active', () => {
+      render(<RecordingView {...base} systemAudioActive={false} />)
+      const radio = screen.getByRole('radio', { name: /system audio/i })
+      expect(radio).toHaveAttribute('aria-checked', 'false')
+      expect(radio).toBeDisabled()
+    })
+
+    it('reflects aria-checked true when system audio is active, and stays display-only', () => {
+      render(<RecordingView {...base} systemAudioActive={true} />)
+      const radio = screen.getByRole('radio', { name: /system audio/i })
+      expect(radio).toHaveAttribute('aria-checked', 'true')
+      expect(radio).toBeDisabled()
+    })
+
+    it('keeps the Microphone option checked regardless of systemAudioActive', () => {
+      render(<RecordingView {...base} systemAudioActive={true} />)
+      expect(screen.getByRole('radio', { name: /microphone/i })).toHaveAttribute('aria-checked', 'true')
+    })
   })
 
   it('renders grouped live segments with speaker, mm:ss start time, and merged text', () => {

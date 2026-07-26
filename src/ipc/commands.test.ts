@@ -104,6 +104,7 @@ describe('ipc/commands', () => {
         status: 'transcribed',
         speakers: 1,
         audioDeleted: false,
+        sources: ['mic'],
       },
     ]
     const calls = captureIPC(() => fixture)
@@ -125,6 +126,7 @@ describe('ipc/commands', () => {
         status: 'transcribed',
         speakers: 1,
         audioDeleted: false,
+        sources: ['mic'],
       },
       transcript: {
         segments: [{ speaker: 'Speaker 1', start: 0, end: 3.2, text: 'Hello there.' }],
@@ -223,6 +225,7 @@ describe('ipc/commands', () => {
       status: 'transcribed',
       speakers: 1,
       audioDeleted: false,
+      sources: ['mic'],
     }
     const calls = captureIPC(() => meta)
 
@@ -288,6 +291,7 @@ describe('ipc/commands', () => {
       llmModel: null,
       deleteAudioAfter30d: true,
       meetingDetection: false,
+      captureSystemAudio: false,
     }
     const calls = captureIPC(() => settings)
 
@@ -304,6 +308,7 @@ describe('ipc/commands', () => {
       llmModel: null,
       deleteAudioAfter30d: true,
       meetingDetection: false,
+      captureSystemAudio: false,
     }
     const calls = captureIPC(() => updated)
 

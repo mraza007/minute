@@ -13,6 +13,7 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
     status: 'transcribed',
     speakers: 4,
     audioDeleted: false,
+    sources: ['mic'],
     ...overrides,
   }
 }
@@ -81,6 +82,17 @@ describe('NoteView', () => {
     const meta = noteFixture({ speakers: 1 })
     render(<NoteView {...makeProps({ meta, selectedMeta: meta })} />)
     expect(screen.getByText('48 min · May 21, 2026 · stored locally')).toBeInTheDocument()
+  })
+
+  it('does not mention system audio in the meta line for a mic-only note', () => {
+    render(<NoteView {...makeProps()} />)
+    expect(screen.getByText('48 min · 4 speakers · May 21, 2026 · stored locally')).toBeInTheDocument()
+  })
+
+  it('subtly notes system audio in the meta line when sources includes "system"', () => {
+    const meta = noteFixture({ sources: ['mic', 'system'] })
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta })} />)
+    expect(screen.getByText('48 min · 4 speakers · May 21, 2026 · stored locally · mic + system audio')).toBeInTheDocument()
   })
 
   it('calls setNoteTab with md when Markdown is clicked, and transcript when Transcript is clicked', () => {

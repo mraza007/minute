@@ -31,6 +31,18 @@ interface RecordingViewProps {
   sttStatus: SttStatus
   sttError: string | null
   modelName: string
+  /**
+   * Stage 5 Task 5: whether this recording is actually mixing in system
+   * audio right now — the real, backend-confirmed state from
+   * `recording-state`'s `systemAudioActive` field, not merely what the
+   * Settings toggle happens to be set to (those can disagree: e.g.
+   * permission denied after the setting was turned on). Display-only here —
+   * a recording's audio source can't change once it's started, so the
+   * segmented control below reflects this but never lets it be clicked;
+   * see `SettingsView`'s "Capture system audio" toggle for where that
+   * setting is actually changed, ahead of the *next* recording.
+   */
+  systemAudioActive: boolean
 }
 
 // Persistent `role="status"` container — always mounted for the whole
@@ -241,6 +253,7 @@ export const RecordingView = memo(function RecordingView({
   sttStatus,
   sttError,
   modelName,
+  systemAudioActive,
 }: RecordingViewProps) {
   return (
     <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
@@ -276,20 +289,25 @@ export const RecordingView = memo(function RecordingView({
             <button
               type="button"
               role="radio"
-              aria-checked="false"
+              aria-checked={systemAudioActive}
               aria-disabled="true"
               disabled
               tabIndex={-1}
-              title="System audio arrives in a later update."
+              title={
+                systemAudioActive
+                  ? 'Recording system audio — the other side of the call. The source can’t change mid-recording.'
+                  : 'System audio isn’t part of this recording. Turn it on for the next one in Settings.'
+              }
               style={{
                 padding: '6px 14px',
                 borderRadius: 7,
                 border: 'none',
-                background: 'transparent',
+                background: systemAudioActive ? 'var(--card)' : 'transparent',
+                boxShadow: systemAudioActive ? '0 1px 3px rgba(0,0,0,.1)' : 'none',
                 fontFamily: 'inherit',
                 fontSize: 13,
                 fontWeight: 600,
-                color: 'var(--ink-muted)',
+                color: systemAudioActive ? 'inherit' : 'var(--ink-muted)',
                 display: 'flex',
                 gap: 7,
                 alignItems: 'center',

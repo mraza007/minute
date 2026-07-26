@@ -16,6 +16,7 @@ import type {
   SttStatusEvent,
   SummaryDoc,
   SummaryStatusEvent,
+  SysAudioAvailability,
   TranscriptSegmentEvent,
 } from '../ipc/types'
 import { useAppState } from './useAppState'
@@ -30,6 +31,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     llmModel: null,
     deleteAudioAfter30d: true,
     meetingDetection: false,
+    captureSystemAudio: false,
     ...overrides,
   }
 }
@@ -76,6 +78,7 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
     status: 'transcribed',
     speakers: 2,
     audioDeleted: false,
+    sources: ['mic'],
     ...overrides,
   }
 }
@@ -109,6 +112,10 @@ interface SetupOpts {
   summarizeNoteReject?: string
   /** `search_notes(query)`'s response — defaults to `[]`. */
   searchNotes?: (query: string) => SearchHit[] | Promise<SearchHit[]>
+  /** `sys_audio_status`'s initial-load response — defaults to `'unsupported'`. */
+  sysAudioAvailability?: SysAudioAvailability
+  /** `request_sys_audio_permission`'s response — defaults to whatever `sysAudioAvailability` currently is (a no-op re-check); override to simulate the prompt actually changing the result. */
+  requestSysAudioPermissionResult?: SysAudioAvailability
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -179,6 +186,10 @@ function setupIPC(opts: SetupOpts = {}) {
           const { query } = args as { query: string }
           return opts.searchNotes ? opts.searchNotes(query) : []
         }
+        case 'sys_audio_status':
+          return { availability: opts.sysAudioAvailability ?? 'unsupported' }
+        case 'request_sys_audio_permission':
+          return { availability: opts.requestSysAudioPermissionResult ?? opts.sysAudioAvailability ?? 'unsupported' }
         default:
           return null
       }
@@ -417,11 +428,71 @@ describe('useAppState', () => {
     ).toBe(false)
   })
 
+  // --- captureSystemAudio / sysAudioAvailability (Stage 5 Task 5) ---------
+
+  it('initializes sysAudioAvailability from the initial sys_audio_status load', async () => {
+    setupIPC({ sysAudioAvailability: 'ready' })
+    const result = await loaded()
+    expect(result.current.sysAudioAvailability).toBe('ready')
+  })
+
+  it('defaults sysAudioAvailability to unsupported when not otherwise specified', async () => {
+    setupIPC()
+    const result = await loaded()
+    expect(result.current.sysAudioAvailability).toBe('unsupported')
+  })
+
+  it('initializes tCaptureSystemAudio from persisted settings rather than the hardcoded default', async () => {
+    setupIPC({ settings: settingsFixture({ captureSystemAudio: true }) })
+    const result = await loaded()
+    expect(result.current.tCaptureSystemAudio).toBe(true)
+  })
+
+  it('toggleCaptureSystemAudio flips local state and persists it via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+
+    expect(result.current.tCaptureSystemAudio).toBe(false)
+    act(() => result.current.toggleCaptureSystemAudio())
+    expect(result.current.tCaptureSystemAudio).toBe(true)
+    expect(
+      calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.captureSystemAudio === true),
+    ).toBe(true)
+  })
+
+  it('requestSysAudioPermission updates sysAudioAvailability with the resulting status', async () => {
+    setupIPC({ sysAudioAvailability: 'notGranted', requestSysAudioPermissionResult: 'ready' })
+    const result = await loaded()
+    expect(result.current.sysAudioAvailability).toBe('notGranted')
+
+    await act(async () => {
+      result.current.requestSysAudioPermission()
+    })
+    await waitFor(() => expect(result.current.sysAudioAvailability).toBe('ready'))
+  })
+
+  it('requestSysAudioPermission reports an error and leaves sysAudioAvailability unchanged on rejection', async () => {
+    setupIPC({
+      sysAudioAvailability: 'notGranted',
+      onCmd: cmd => {
+        if (cmd === 'request_sys_audio_permission') throw new Error('permission check unavailable')
+      },
+    })
+    const result = await loaded()
+
+    await act(async () => {
+      result.current.requestSysAudioPermission()
+    })
+    await waitFor(() => expect(result.current.lastError).toContain('permission check unavailable'))
+    expect(result.current.sysAudioAvailability).toBe('notGranted')
+  })
+
   describe('recording flow', () => {
     const noteId = '20260722-130000'
 
     function recordingState(overrides: Partial<RecordingStateEvent> = {}): RecordingStateEvent {
-      return { noteId, state: 'recording', elapsed: 0, ...overrides }
+      return { noteId, state: 'recording', elapsed: 0, systemAudioActive: false, ...overrides }
     }
 
     function segment(overrides: Partial<TranscriptSegmentEvent> = {}): TranscriptSegmentEvent {
@@ -554,6 +625,38 @@ describe('useAppState', () => {
         await emit('recording-state', recordingState({ noteId: 'some-other-note', elapsed: 99 }))
       })
       expect(result.current.recElapsed).toBe(0)
+    })
+
+    it('recording-state events drive systemAudioActive from the real, backend-confirmed field', async () => {
+      const result = await loadedAndRecording()
+      expect(result.current.systemAudioActive).toBe(false)
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ state: 'recording', elapsed: 1, systemAudioActive: true }))
+      })
+      expect(result.current.systemAudioActive).toBe(true)
+    })
+
+    it('a systemAudioActive recording-state event for a different noteId is ignored', async () => {
+      const result = await loadedAndRecording()
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ noteId: 'some-other-note', systemAudioActive: true }))
+      })
+      expect(result.current.systemAudioActive).toBe(false)
+    })
+
+    it('resets systemAudioActive to false once a recording stops', async () => {
+      const result = await loadedAndRecording()
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ state: 'recording', elapsed: 1, systemAudioActive: true }))
+      })
+      expect(result.current.systemAudioActive).toBe(true)
+
+      act(() => result.current.stopRec())
+      await waitFor(() => expect(result.current.view).toBe('notes'))
+      expect(result.current.systemAudioActive).toBe(false)
     })
 
     it('stt-status events update sttStatus/sttError for the active note', async () => {

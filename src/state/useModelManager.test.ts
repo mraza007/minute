@@ -15,6 +15,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     llmModel: null,
     deleteAudioAfter30d: true,
     meetingDetection: false,
+    captureSystemAudio: false,
     ...overrides,
   }
 }

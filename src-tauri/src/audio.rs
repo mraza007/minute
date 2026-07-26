@@ -6,6 +6,7 @@
 //! its pure filesystem/throttling helpers from `execute_download`'s real
 //! network I/O — see that module's header comment for the rationale.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
@@ -22,6 +23,7 @@ use crate::llm::{self, LlmBusy, SharedLlmEngine};
 use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, NoteMeta, SharedStore};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
+use crate::syscap::{self, SysAudioAvailability, SysCapture};
 
 /// Size (in samples, at [`TARGET_SAMPLE_RATE`]) of each block the writer
 /// thread batches downmixed/resampled audio into before forwarding it to
@@ -82,6 +84,51 @@ pub fn downmix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
         .chunks(ch)
         .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// mix_into (Stage 5 Task 5: two-source recording pipeline)
+// ---------------------------------------------------------------------------
+
+/// Additively mixes `mic` and `system` (both already resampled to
+/// [`TARGET_SAMPLE_RATE`] mono by the time either reaches this function —
+/// see `run_writer_thread_with_system`'s docs) into `out`, sample-for-sample.
+///
+/// **Clip guard: a hard clamp to `[-1.0, 1.0]`, not a `tanh`-style soft
+/// clip.** Both were considered (per the plan's own callout); a hard clamp
+/// was chosen because it's the only shape that satisfies *both* of this
+/// function's contractual properties simultaneously: (1) two full-scale
+/// inputs must not wrap/alias past `[-1.0, 1.0]`, and (2) silence plus a
+/// signal must reproduce that signal *exactly* — a curve like `tanh` is
+/// nonlinear everywhere, so it would quietly recolor every quiet passage
+/// (e.g. `tanh(0.5) ≈ 0.4621`, not `0.5`) even when nothing is actually
+/// clipping, and a curve applied only above some threshold would be
+/// *discontinuous* at that threshold (a jump, not a knee). A hard clamp only
+/// ever touches the rare sample where the summed mic+system signal actually
+/// exceeds full scale — the same clamp `WavWriter::append` already applies
+/// unconditionally to every sample regardless (see its docs), so this is
+/// consistent with, not a departure from, this crate's existing audio-level
+/// handling. The audible cost is ordinary hard-clipping distortion on the
+/// rare loud-both-at-once sample, accepted as the honest trade for leaving
+/// every other sample bit-exact.
+///
+/// **Length handling — underrun, not an error.** `mic` and `system` are
+/// almost never exactly the same length in practice (see
+/// `run_writer_thread_with_system`'s docs on why the system side can run
+/// short) — `out` is sized to the *longer* of the two, and whichever side
+/// ran short is treated as silence (`0.0`) for its missing tail, not
+/// truncated or padded with anything else. `out` is cleared and reused
+/// (not appended to) so repeated calls against the same scratch buffer never
+/// accumulate stale samples from a previous call.
+pub fn mix_into(mic: &[f32], system: &[f32], out: &mut Vec<f32>) {
+    out.clear();
+    let len = mic.len().max(system.len());
+    out.reserve(len);
+    for i in 0..len {
+        let m = mic.get(i).copied().unwrap_or(0.0);
+        let s = system.get(i).copied().unwrap_or(0.0);
+        out.push((m + s).clamp(-1.0, 1.0));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +352,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// never touches a mutex guarding filesystem state.
 struct SharedState {
     tracker: Mutex<ElapsedTracker>,
-    paused: AtomicBool,
+    /// `Arc<AtomicBool>` (not a bare `AtomicBool`) so the exact same flag can
+    /// be handed to a concurrently-running [`SysCapture`]'s audio callback
+    /// too (see `Recorder::start`'s system-audio branch) — pausing the mic
+    /// stream and pausing system-audio capture are then one atomic store,
+    /// not two independently-toggled flags that could drift apart. Mirrors
+    /// the cpal callback's own discipline exactly: [`SysCapture::start`]'s
+    /// callback checks this the same way `build_stream`'s does, skipping
+    /// entirely (no decode/mix work, no forwarded block) while paused —
+    /// see this module's "pause pauses both sources" design note on
+    /// `Recorder::start`.
+    paused: Arc<AtomicBool>,
     /// cpal's data/error callbacks can't return a `Result` — errors raised
     /// from inside them (a device error) are stashed here (and
     /// `log::warn!`'d at the call site) instead, for a caller to surface
@@ -394,12 +451,43 @@ fn try_send_stt_block(stt_tx: &SyncSender<Arc<Vec<f32>>>, block: Vec<f32>, dropp
     }
 }
 
-/// Drains `chunk_rx`, appending each chunk to `writer` immediately (so WAV
-/// durability never depends on the STT side), while separately batching
-/// the same samples into `STT_BLOCK_SAMPLES`-sized (~0.5s) blocks and
-/// forwarding *those* — via [`try_send_stt_block`] — to the `SttWorker`.
-/// Runs on a dedicated OS thread spawned from `Recorder::start`, so this —
-/// not the realtime cpal callback — is where WAV file I/O actually happens.
+/// Appends `samples` to `writer` immediately (so WAV durability never
+/// depends on the STT side), stashing any append error onto `shared` the
+/// same way `SharedState::last_error`'s docs describe, then batches the
+/// same samples into `STT_BLOCK_SAMPLES`-sized (~0.5s) blocks in `block_buf`
+/// and forwards each full one — via [`try_send_stt_block`] — to the
+/// `SttWorker`. Factored out of `run_writer_thread`/
+/// `run_writer_thread_with_system` so both share this one append+batch+
+/// forward path byte-for-byte: the *only* difference between the two is
+/// what `samples` slice each iteration of their own loop passes in (the raw
+/// mic chunk for the former, this iteration's mixed mic+system block for
+/// the latter) — see those two functions' own docs.
+fn append_and_forward(
+    writer: &mut WavWriter,
+    stt_tx: &SyncSender<Arc<Vec<f32>>>,
+    shared: &Arc<SharedState>,
+    block_buf: &mut Vec<f32>,
+    dropped: &mut u64,
+    samples: &[f32],
+) {
+    if let Err(e) = writer.append(samples) {
+        log::warn!("failed to append recorded samples to wav: {e}");
+        *lock(&shared.last_error) = Some(e.to_string());
+    }
+
+    block_buf.extend_from_slice(samples);
+    while block_buf.len() >= STT_BLOCK_SAMPLES {
+        let full_block: Vec<f32> = block_buf.drain(..STT_BLOCK_SAMPLES).collect();
+        try_send_stt_block(stt_tx, full_block, dropped);
+    }
+}
+
+/// Drains `chunk_rx`, appending each chunk to `writer` and batching/
+/// forwarding to the `SttWorker` via [`append_and_forward`]. Runs on a
+/// dedicated OS thread spawned from `Recorder::start` (the mic-only path —
+/// no system-audio source active; see `run_writer_thread_with_system` for
+/// the two-source counterpart), so this — not the realtime cpal callback —
+/// is where WAV file I/O actually happens.
 ///
 /// Batching matters for the channel's real buffering headroom: see
 /// `STT_BLOCK_SAMPLES`/`STT_CHANNEL_CAPACITY`'s docs. cpal's own chunk
@@ -413,7 +501,11 @@ fn try_send_stt_block(stt_tx: &SyncSender<Arc<Vec<f32>>>, block: Vec<f32>, dropp
 /// silently lost off the end) and finalizes and closes the WAV file.
 ///
 /// A free function (rather than a method) so it's unit-testable by feeding
-/// it a channel directly, without a real cpal device.
+/// it a channel directly, without a real cpal device. Deliberately kept
+/// byte-for-byte identical to how it behaved before Stage 5 Task 5 added
+/// system audio — no new allocation, no new branch — so every existing test
+/// against it, and every mic-only recording, is completely unaffected by
+/// that feature's existence.
 fn run_writer_thread(
     mut writer: WavWriter,
     chunk_rx: Receiver<Arc<Vec<f32>>>,
@@ -424,23 +516,76 @@ fn run_writer_thread(
     let mut block: Vec<f32> = Vec::with_capacity(STT_BLOCK_SAMPLES);
 
     while let Ok(chunk) = chunk_rx.recv() {
-        if let Err(e) = writer.append(&chunk) {
-            log::warn!("failed to append recorded samples to wav: {e}");
-            *lock(&shared.last_error) = Some(e.to_string());
-        }
-
-        block.extend_from_slice(&chunk);
-        while block.len() >= STT_BLOCK_SAMPLES {
-            let full_block: Vec<f32> = block.drain(..STT_BLOCK_SAMPLES).collect();
-            try_send_stt_block(&stt_tx, full_block, &mut dropped);
-        }
+        append_and_forward(&mut writer, &stt_tx, &shared, &mut block, &mut dropped, &chunk);
     }
 
     // Flush the trailing partial block (if any) rather than dropping it —
     // this is exactly the tail of audio a `stop_recording` call interrupts
     // mid-block.
     if !block.is_empty() {
-        try_send_stt_block(&stt_tx, block, &mut dropped);
+        try_send_stt_block(&stt_tx, std::mem::take(&mut block), &mut dropped);
+    }
+
+    writer.finalize()
+}
+
+/// The two-source counterpart to [`run_writer_thread`]: pulls mic blocks the
+/// same way (blocking `chunk_rx.recv()`), but on every iteration also drains
+/// whatever system-audio blocks have arrived on `sys_rx` so far (non-
+/// blocking `try_recv` — the system stream must never make the mic side
+/// wait) into a small ring (`sys_buf`, a `VecDeque<f32>`), then consumes
+/// exactly `chunk.len()` samples off its front — zero-filling if there
+/// aren't enough yet (an *underrun*: the system stream started slightly
+/// later than the mic one, or is momentarily behind) — before mixing the two
+/// via [`mix_into`] and running the mixed result through the exact same
+/// [`append_and_forward`] both the WAV writer and the STT chunker use.
+///
+/// **Drift-handling design note (acceptable, not sample-accurate sync).**
+/// The plan explicitly doesn't require sample-accurate alignment between the
+/// two hardware-independent streams (a CoreAudio device clock for the mic,
+/// ScreenCaptureKit's own capture clock for system audio — the two are never
+/// perfectly phase-locked even at the same nominal rate). This ring-buffer-
+/// plus-zero-fill approach accepts that: an underrun contributes silence
+/// for the missing system-audio span (heard as “briefly quieter”, not a
+/// glitch or gap in the mic signal itself, since the mic side is never held
+/// up waiting for it) rather than trying to timestamp-align the two exactly.
+/// The buffer only ever grows if the *system* side runs persistently ahead
+/// of the mic side's consumption rate — an unlikely steady-state given both
+/// are captured live at the same wall-clock rate — so no separate cap is
+/// applied here (unlike `STT_CHANNEL_CAPACITY`'s bound on the channel
+/// upstream of `sys_rx`, which is what actually protects memory if the
+/// producer side ever really did run away).
+fn run_writer_thread_with_system(
+    mut writer: WavWriter,
+    chunk_rx: Receiver<Arc<Vec<f32>>>,
+    sys_rx: Receiver<Arc<Vec<f32>>>,
+    stt_tx: SyncSender<Arc<Vec<f32>>>,
+    shared: Arc<SharedState>,
+) -> Result<u64> {
+    let mut dropped: u64 = 0;
+    let mut block: Vec<f32> = Vec::with_capacity(STT_BLOCK_SAMPLES);
+    let mut sys_buf: VecDeque<f32> = VecDeque::new();
+    let mut sys_scratch: Vec<f32> = Vec::new();
+    let mut mixed: Vec<f32> = Vec::new();
+
+    while let Ok(chunk) = chunk_rx.recv() {
+        while let Ok(sys_block) = sys_rx.try_recv() {
+            sys_buf.extend(sys_block.iter().copied());
+        }
+
+        let need = chunk.len();
+        let take = need.min(sys_buf.len());
+        sys_scratch.clear();
+        sys_scratch.reserve(need);
+        sys_scratch.extend(sys_buf.drain(..take));
+        sys_scratch.resize(need, 0.0);
+
+        mix_into(&chunk, &sys_scratch, &mut mixed);
+        append_and_forward(&mut writer, &stt_tx, &shared, &mut block, &mut dropped, &mixed);
+    }
+
+    if !block.is_empty() {
+        try_send_stt_block(&stt_tx, std::mem::take(&mut block), &mut dropped);
     }
 
     writer.finalize()
@@ -459,6 +604,21 @@ pub struct RecorderHandle {
     shared: Arc<SharedState>,
     wav_path: PathBuf,
     writer_thread: std::thread::JoinHandle<Result<u64>>,
+    /// The system-audio capture session, if one is active for this
+    /// recording (`None` for a mic-only recording — see
+    /// [`RecorderHandle::system_audio_active`]'s docs for how the two
+    /// relate). Owned here so its lifetime matches the recording's: started
+    /// in `Recorder::start`, stopped in [`RecorderHandle::stop`].
+    sys_capture: Option<SysCapture>,
+    /// Whether system audio actually ended up active for this recording —
+    /// `true` only when `include_system_audio` was requested *and*
+    /// `SysCapture::start` actually succeeded (permission/version-gated —
+    /// see that function's docs). Kept as its own field (not just
+    /// `sys_capture.is_some()`) so [`RecorderHandle::system_audio_active`]
+    /// stays a trivial, panic-free accessor regardless of `sys_capture`'s
+    /// state, and so `stop()` can still report it after `sys_capture` is
+    /// consumed by that same call.
+    system_audio_active: bool,
 }
 
 impl Recorder {
@@ -470,7 +630,41 @@ impl Recorder {
     /// extra copy) onto `sample_tx` for the live transcription worker (see
     /// `run_writer_thread`'s docs for why this hand-off is bounded and
     /// drop-on-full).
-    pub fn start(note_dir: PathBuf, sample_tx: SyncSender<Arc<Vec<f32>>>) -> Result<RecorderHandle> {
+    ///
+    /// **System audio (Stage 5 Task 5).** When `include_system_audio` is
+    /// `true`, this also starts a [`SysCapture`] session and switches the
+    /// writer thread over to [`run_writer_thread_with_system`] (mic +
+    /// system, mixed via [`mix_into`]) instead of the plain
+    /// [`run_writer_thread`] — see that function's own docs for the mixing/
+    /// drift-handling design. `SysCapture::start` failing (permission
+    /// revoked between `start_recording`'s own pre-check and this call,
+    /// `SCStream` XPC hiccup, ...) is **not** fatal to the recording as a
+    /// whole: it's logged and this degrades to an ordinary mic-only
+    /// recording, exactly as if `include_system_audio` had been `false` —
+    /// see [`RecorderHandle::system_audio_active`] for how a caller learns
+    /// which actually happened. `include_system_audio: false` (the common
+    /// case, and the *only* case before this task existed) takes the
+    /// original code path with zero extra allocation or branching — see
+    /// `run_writer_thread`'s own docs for that byte-for-byte guarantee.
+    ///
+    /// **Pause pauses both sources.** `shared.paused` is an `Arc<AtomicBool>`
+    /// (see `SharedState::paused`'s docs) handed to *both* the cpal
+    /// callback (`build_stream`, unchanged) and, when active, `SysCapture`'s
+    /// own callback — so [`RecorderHandle::pause`]/[`RecorderHandle::resume`]
+    /// flip one flag that gates both realtime callbacks identically, rather
+    /// than the mic and system streams drifting in and out of sync with
+    /// each other across a pause. This mirrors (doesn't diverge from) how
+    /// mic-only pause already worked before this task: `RecorderHandle::
+    /// pause` was already a software-level "stop forwarding samples" flag
+    /// checked inside the realtime callback, not a hardware-level
+    /// `cpal::Stream::pause()` call — extending the exact same mechanism to
+    /// gate a second callback is simpler, and more consistent, than
+    /// inventing a different pause primitive for system audio specifically.
+    pub fn start(
+        note_dir: PathBuf,
+        sample_tx: SyncSender<Arc<Vec<f32>>>,
+        include_system_audio: bool,
+    ) -> Result<RecorderHandle> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -487,18 +681,47 @@ impl Recorder {
         let wav_path = note_dir.join("audio.wav");
         let wav_writer = WavWriter::create(&wav_path)?;
 
+        let paused = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(SharedState {
             tracker: Mutex::new(ElapsedTracker::new()),
-            paused: AtomicBool::new(false),
+            paused: paused.clone(),
             last_error: Mutex::new(None),
         });
         lock(&shared.tracker).start(Instant::now());
 
         let (writer_tx, writer_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+
+        // `sys_rx_opt` and `sys_capture` are set together (`Some`/`Some` or
+        // `None`/`None`) in every branch below — `system_audio_active` reads
+        // off `sys_capture` alone once both are settled, so the two can
+        // never disagree about whether system audio actually started.
+        let (sys_capture, sys_rx_opt) = if include_system_audio {
+            let (sys_tx, sys_rx) = syscap::channel();
+            match SysCapture::start(sys_tx, paused.clone()) {
+                Ok(capture) => (Some(capture), Some(sys_rx)),
+                Err(e) => {
+                    log::warn!(
+                        "system audio capture failed to start ({e}) — continuing with a \
+                         mic-only recording"
+                    );
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+        let system_audio_active = sys_capture.is_some();
+
         let writer_shared = shared.clone();
-        let writer_thread = std::thread::spawn(move || {
-            run_writer_thread(wav_writer, writer_rx, sample_tx, writer_shared)
-        });
+        let writer_thread = if let Some(sys_rx) = sys_rx_opt {
+            std::thread::spawn(move || {
+                run_writer_thread_with_system(wav_writer, writer_rx, sys_rx, sample_tx, writer_shared)
+            })
+        } else {
+            std::thread::spawn(move || {
+                run_writer_thread(wav_writer, writer_rx, sample_tx, writer_shared)
+            })
+        };
 
         let resampler = LinearResampler::new(from_hz, TARGET_SAMPLE_RATE);
 
@@ -543,6 +766,8 @@ impl Recorder {
             shared,
             wav_path,
             writer_thread,
+            sys_capture,
+            system_audio_active,
         })
     }
 }
@@ -550,13 +775,15 @@ impl Recorder {
 impl RecorderHandle {
     /// Pauses capture: the audio callback starts dropping incoming samples
     /// (stream stays alive/open) and the elapsed-time tracker stops
-    /// counting from this instant.
+    /// counting from this instant. When system audio is active, its own
+    /// callback observes the same shared flag and pauses identically — see
+    /// `Recorder::start`'s "Pause pauses both sources" design note.
     pub fn pause(&self) {
         self.shared.paused.store(true, Ordering::SeqCst);
         lock(&self.shared.tracker).pause(Instant::now());
     }
 
-    /// Resumes capture after a `pause()`.
+    /// Resumes capture after a `pause()` (both sources — see `pause`'s docs).
     pub fn resume(&self) {
         self.shared.paused.store(false, Ordering::SeqCst);
         lock(&self.shared.tracker).resume(Instant::now());
@@ -574,14 +801,34 @@ impl RecorderHandle {
         lock(&self.shared.last_error).clone()
     }
 
+    /// Whether system audio actually ended up part of this recording's mix
+    /// — see `Recorder::start`'s docs for why this can be `false` even when
+    /// `include_system_audio: true` was requested (a failed `SysCapture::
+    /// start` degrades silently to mic-only). This is fixed for the whole
+    /// recording session: there's no way to change audio sources mid-
+    /// recording, so callers (`start_recording`'s initial `recording-state`
+    /// emit, `stop_recording`'s `sources` write) only ever need to read it
+    /// once each.
+    pub fn system_audio_active(&self) -> bool {
+        self.system_audio_active
+    }
+
     /// Stops capture and finalizes the WAV file. Drops the cpal stream
     /// first — that drops the audio callback's `writer_tx` sender clone,
     /// which (once the writer thread drains whatever was already queued)
-    /// ends `run_writer_thread`'s loop and lets it finalize the file — then
+    /// ends the writer thread's loop and lets it finalize the file — then
     /// joins that thread to make sure the file is actually closed before
-    /// returning.
-    pub fn stop(self) -> Result<(f64, PathBuf)> {
+    /// returning. Also stops the system-audio session, if one was active
+    /// (`SysCapture::stop`, best-effort — see that method's own docs) —
+    /// after dropping the stream but before joining the writer thread is
+    /// fine either way, since (see `run_writer_thread_with_system`'s docs)
+    /// the writer thread's loop termination depends only on the mic
+    /// channel closing, never on `sys_rx`.
+    pub fn stop(self) -> Result<(f64, PathBuf, bool)> {
         drop(self.stream);
+        if let Some(capture) = self.sys_capture {
+            capture.stop();
+        }
 
         let elapsed_ms = lock(&self.shared.tracker).elapsed_ms(Instant::now());
 
@@ -590,7 +837,7 @@ impl RecorderHandle {
             .join()
             .map_err(|_| MinuteError::Other("wav writer thread panicked".to_string()))??;
 
-        Ok((elapsed_ms as f64 / 1000.0, self.wav_path))
+        Ok((elapsed_ms as f64 / 1000.0, self.wav_path, self.system_audio_active))
     }
 }
 
@@ -611,6 +858,12 @@ struct ActiveRecording {
     /// The 1s `recording-state` ticker spawned in `start_recording`,
     /// aborted in `stop_recording`.
     tick_handle: tokio::task::JoinHandle<()>,
+    /// Mirrors `handle.system_audio_active()`, cached here so `pause_recording`/
+    /// `resume_recording`/the ticker can read it without needing a method
+    /// call threaded through `RecorderState`'s lock — fixed for the whole
+    /// session (see that method's own docs), so caching it up front is
+    /// exactly as correct as calling it fresh every time.
+    system_audio_active: bool,
 }
 
 /// Managed state: at most one active recording at a time.
@@ -648,13 +901,27 @@ struct RecordingStateEvent {
     note_id: String,
     state: &'static str,
     elapsed: f64,
+    /// Stage 5 Task 5: whether this recording is actually mixing in system
+    /// audio right now — fixed for the whole session (see
+    /// `RecorderHandle::system_audio_active`'s docs), so every event for a
+    /// given `note_id` carries the same value. Lets the frontend show the
+    /// real, honest state (`RecordingView`'s "System audio" segmented
+    /// option) rather than assuming the requested setting took effect.
+    system_audio_active: bool,
 }
 
-fn emit_recording_state(app: &AppHandle, note_id: &str, state: &'static str, elapsed_secs: f64) {
+fn emit_recording_state(
+    app: &AppHandle,
+    note_id: &str,
+    state: &'static str,
+    elapsed_secs: f64,
+    system_audio_active: bool,
+) {
     let event = RecordingStateEvent {
         note_id: note_id.to_string(),
         state,
         elapsed: elapsed_secs,
+        system_audio_active,
     };
     if let Err(e) = app.emit("recording-state", event) {
         log::warn!("failed to emit recording-state for {note_id}: {e}");
@@ -672,6 +939,26 @@ fn emit_recording_state(app: &AppHandle, note_id: &str, state: &'static str, ela
 /// the catalog is treated exactly the same way as "not installed", see
 /// `spawn_stt_worker_if_model_installed`), and spawns the 1s ticker that
 /// keeps emitting `recording-state` while active. Returns the new note's id.
+///
+/// **System audio (Stage 5 Task 5).** `include_system_audio` resolves the
+/// same way `model_id` does: the caller-supplied value if given, else the
+/// persisted `settings.captureSystemAudio` default (see
+/// `settings::resolve_stt_model`'s identical explicit-then-settings-default
+/// shape — there's no dedicated `settings::resolve_*` helper for this one
+/// since it's a plain `bool` with no third hardcoded-fallback tier to
+/// factor out). That resolved intent is honored **only** when
+/// `syscap::sys_audio_status()` currently reports
+/// [`SysAudioAvailability::Ready`] — otherwise this proceeds mic-only
+/// without even attempting `Recorder::start`'s system-audio branch,
+/// regardless of what was requested (macOS <13, permission never granted,
+/// or explicitly denied — see that enum's docs for why those last two
+/// aren't distinguishable). `Recorder::start` itself has its own,
+/// second-layer fallback (a `SysCapture::start` failure *after* this
+/// pre-check still degrades to mic-only rather than failing the whole
+/// recording) — see its docs. Either way, the actually-realized outcome is
+/// read back off the returned `RecorderHandle::system_audio_active()`, never
+/// assumed from what was requested, so the very first `recording-state`
+/// event (emitted below) and the frontend's toggle both reflect the truth.
 #[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
@@ -680,6 +967,7 @@ pub async fn start_recording(
     settings: State<'_, SharedSettings>,
     llm_busy: State<'_, LlmBusy>,
     model_id: Option<String>,
+    include_system_audio: Option<bool>,
 ) -> std::result::Result<String, String> {
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
@@ -701,6 +989,11 @@ pub async fn start_recording(
     }
 
     let model_id = settings::resolve_stt_model(model_id, &settings::lock_settings(&settings));
+    let want_system_audio =
+        include_system_audio.unwrap_or_else(|| settings::lock_settings(&settings).capture_system_audio);
+    let system_audio_ready = syscap::sys_audio_status().availability == SysAudioAvailability::Ready;
+    let attempt_system_audio = want_system_audio && system_audio_ready;
+
     let meta = lock_store(&store)
         .create_note_now("New recording", &model_id)
         .map_err(|e| e.to_string())?;
@@ -708,7 +1001,7 @@ pub async fn start_recording(
 
     let (sample_tx, sample_rx) =
         std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
-    let handle = match Recorder::start(note_dir.clone(), sample_tx) {
+    let handle = match Recorder::start(note_dir.clone(), sample_tx, attempt_system_audio) {
         Ok(handle) => handle,
         Err(e) => {
             // The note directory was already created by `create_note_now`
@@ -729,6 +1022,7 @@ pub async fn start_recording(
     };
 
     let note_id = meta.id.clone();
+    let system_audio_active = handle.system_audio_active();
 
     let stt_worker = spawn_stt_worker_if_model_installed(&app, &store, &note_id, &model_id, sample_rx);
 
@@ -746,7 +1040,7 @@ pub async fn start_recording(
             let paused = tick_shared.paused.load(Ordering::SeqCst);
             let elapsed_ms = lock(&tick_shared.tracker).elapsed_ms(Instant::now());
             let state = if paused { "paused" } else { "recording" };
-            emit_recording_state(&tick_app, &tick_note_id, state, elapsed_ms as f64 / 1000.0);
+            emit_recording_state(&tick_app, &tick_note_id, state, elapsed_ms as f64 / 1000.0, system_audio_active);
         }
     });
 
@@ -755,9 +1049,10 @@ pub async fn start_recording(
         handle,
         stt_worker,
         tick_handle,
+        system_audio_active,
     });
 
-    emit_recording_state(&app, &note_id, "recording", 0.0);
+    emit_recording_state(&app, &note_id, "recording", 0.0, system_audio_active);
     Ok(note_id)
 }
 
@@ -836,8 +1131,9 @@ pub fn pause_recording(
     active.handle.pause();
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
+    let system_audio_active = active.system_audio_active;
     drop(guard);
-    emit_recording_state(&app, &note_id, "paused", elapsed_secs);
+    emit_recording_state(&app, &note_id, "paused", elapsed_secs, system_audio_active);
     Ok(())
 }
 
@@ -855,8 +1151,9 @@ pub fn resume_recording(
     active.handle.resume();
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
+    let system_audio_active = active.system_audio_active;
     drop(guard);
-    emit_recording_state(&app, &note_id, "recording", elapsed_secs);
+    emit_recording_state(&app, &note_id, "recording", elapsed_secs, system_audio_active);
     Ok(())
 }
 
@@ -904,10 +1201,11 @@ pub fn stop_recording(
     }
 
     let note_id = active.note_id;
+    let system_audio_active = active.system_audio_active;
     let fallback_elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
 
     let duration_sec = match active.handle.stop() {
-        Ok((duration_sec, _wav_path)) => duration_sec,
+        Ok((duration_sec, _wav_path, _system_audio_active)) => duration_sec,
         Err(e) => {
             log::warn!(
                 "failed to cleanly stop recording {note_id}: {e}; finalizing the note anyway \
@@ -942,6 +1240,26 @@ pub fn stop_recording(
         .finalize_note(&note_id, duration_sec, 1)
         .map_err(|e| e.to_string())?;
 
+    // `create_note`'s own `["mic"]` default is already correct for the
+    // overwhelmingly common case — this second write only actually happens
+    // when system audio was part of the mix, per `NoteMeta::sources`'/
+    // `set_note_sources`'s docs. Best-effort in the same spirit as the
+    // `note.md` write just below: a failure here leaves the note's
+    // `sources` at the (still honest, if incomplete) `["mic"]` default
+    // rather than failing the whole `stop_recording` call over a purely
+    // descriptive metadata field.
+    let meta = if system_audio_active {
+        match lock_store(&store).set_note_sources(&note_id, vec!["mic".to_string(), "system".to_string()]) {
+            Ok(updated) => updated,
+            Err(e) => {
+                log::warn!("failed to record system-audio source for note {note_id}: {e}");
+                meta
+            }
+        }
+    } else {
+        meta
+    };
+
     // Best-effort: note.md is a derived convenience file (single source of
     // truth lives in meta.json/transcript.json), so a write failure here
     // shouldn't fail the whole stop_recording call — it just leaves note.md
@@ -952,7 +1270,7 @@ pub fn stop_recording(
         log::warn!("failed to write note.md for {note_id}: {e}");
     }
 
-    emit_recording_state(&app, &note_id, "stopped", duration_sec);
+    emit_recording_state(&app, &note_id, "stopped", duration_sec, system_audio_active);
 
     auto_trigger_summarize(&app, &store, &settings, &engine, &llm_busy, &note_id);
 
@@ -1161,6 +1479,64 @@ mod tests {
         assert_eq!(mono, samples.to_vec());
     }
 
+    // --- mix_into (Stage 5 Task 5) ------------------------------------------
+
+    #[test]
+    fn mix_two_full_scale_signals_clamps_rather_than_wraps() {
+        let mut out = Vec::new();
+        mix_into(&[1.0, -1.0], &[1.0, -1.0], &mut out);
+        // 1.0 + 1.0 = 2.0 clamps to 1.0, not wraps around to -1.0 or similar.
+        assert_eq!(out, vec![1.0, -1.0]);
+    }
+
+    #[test]
+    fn mix_silence_plus_signal_reproduces_the_signal_exactly() {
+        let mut out = Vec::new();
+        mix_into(&[0.0, 0.0, 0.0], &[0.2, -0.3, 0.5], &mut out);
+        assert_eq!(out, vec![0.2, -0.3, 0.5]);
+
+        let mut out2 = Vec::new();
+        mix_into(&[0.2, -0.3, 0.5], &[0.0, 0.0, 0.0], &mut out2);
+        assert_eq!(out2, vec![0.2, -0.3, 0.5]);
+    }
+
+    #[test]
+    fn mix_adds_two_ordinary_signals() {
+        let mic = [0.1f32, 0.2, -0.1];
+        let system = [0.05f32, -0.1, 0.05];
+        let mut out = Vec::new();
+        mix_into(&mic, &system, &mut out);
+        let expected: Vec<f32> = mic.iter().zip(system.iter()).map(|(m, s)| m + s).collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn mix_unequal_lengths_treats_the_missing_tail_as_silence() {
+        // mic longer than system: the system side's missing tail is zeros.
+        let mut out = Vec::new();
+        mix_into(&[0.1f32, 0.2, 0.3, 0.4], &[0.5f32, 0.5], &mut out);
+        assert_eq!(out, vec![0.1f32 + 0.5, 0.2 + 0.5, 0.3, 0.4]);
+
+        // system longer than mic: same rule, mirrored.
+        let mut out2 = Vec::new();
+        mix_into(&[0.5f32, 0.5], &[0.1f32, 0.2, 0.3, 0.4], &mut out2);
+        assert_eq!(out2, vec![0.5f32 + 0.1, 0.5 + 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn mix_both_empty_is_empty() {
+        let mut out = Vec::new();
+        mix_into(&[], &[], &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn mix_into_clears_and_reuses_the_scratch_buffer_rather_than_appending() {
+        let mut out = vec![9.0, 9.0, 9.0];
+        mix_into(&[0.1], &[0.2], &mut out);
+        assert_eq!(out, vec![0.3]);
+    }
+
     // --- LinearResampler --------------------------------------------------
 
     #[test]
@@ -1322,7 +1698,7 @@ mod tests {
     fn test_shared_state() -> Arc<SharedState> {
         Arc::new(SharedState {
             tracker: Mutex::new(ElapsedTracker::new()),
-            paused: AtomicBool::new(false),
+            paused: Arc::new(AtomicBool::new(false)),
             last_error: Mutex::new(None),
         })
     }
@@ -1473,6 +1849,153 @@ mod tests {
         assert_eq!(stt_rx.try_iter().count(), 1);
     }
 
+    // --- run_writer_thread_with_system (Stage 5 Task 5) ----------------------
+
+    #[test]
+    fn writer_thread_with_system_mixes_known_mic_and_system_sequences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx, sys_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        // System audio for this mic chunk already arrived before the mic
+        // chunk is sent, matching the same-length, no-underrun case.
+        sys_tx.send(Arc::new(vec![0.1f32, 0.2, 0.3])).unwrap();
+        chunk_tx.send(Arc::new(vec![0.4f32, 0.5, 0.6])).unwrap();
+        drop(chunk_tx);
+        drop(sys_tx);
+
+        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 3);
+
+        let forwarded = stt_rx.recv().unwrap();
+        assert_eq!(*forwarded, vec![0.4f32 + 0.1, 0.5 + 0.2, 0.6 + 0.3]);
+
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
+        let expected: Vec<i16> = [0.4f32 + 0.1, 0.5 + 0.2, 0.6 + 0.3]
+            .iter()
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16)
+            .collect();
+        assert_eq!(samples, expected);
+    }
+
+    #[test]
+    fn writer_thread_with_system_zero_fills_an_underrun() {
+        // System audio hasn't produced anything at all yet by the time the
+        // first (and only) mic chunk arrives — e.g. `SysCapture` starting
+        // slightly later than the mic stream. The mic side must never wait
+        // for it: the shortfall is treated as silence, not a stall.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx, sys_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        chunk_tx.send(Arc::new(vec![0.3f32, -0.2, 0.1])).unwrap();
+        drop(chunk_tx);
+        drop(sys_tx);
+
+        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 3);
+
+        // Mixing with all-silence system audio reproduces the mic signal
+        // exactly — see `mix_silence_plus_signal_reproduces_the_signal_exactly`.
+        let forwarded = stt_rx.recv().unwrap();
+        assert_eq!(*forwarded, vec![0.3f32, -0.2, 0.1]);
+    }
+
+    #[test]
+    fn writer_thread_with_system_zero_fills_a_partial_underrun() {
+        // System audio delivered *some* samples for this mic chunk, but
+        // fewer than the mic side's length — the missing tail is zero-filled,
+        // not misaligned or truncated.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx, sys_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        sys_tx.send(Arc::new(vec![0.2f32])).unwrap();
+        chunk_tx.send(Arc::new(vec![0.1f32, 0.1, 0.1, 0.1])).unwrap();
+        drop(chunk_tx);
+        drop(sys_tx);
+
+        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 4);
+
+        let forwarded = stt_rx.recv().unwrap();
+        assert_eq!(*forwarded, vec![0.1f32 + 0.2, 0.1, 0.1, 0.1]);
+    }
+
+    #[test]
+    fn writer_thread_with_system_accumulates_system_blocks_smaller_than_a_mic_chunk() {
+        // The system side can deliver in a different chunking than the mic
+        // side — several small system blocks accumulate in the ring buffer
+        // (`sys_buf`) before a single larger mic chunk consumes them.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx, sys_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        sys_tx.send(Arc::new(vec![0.1f32])).unwrap();
+        sys_tx.send(Arc::new(vec![0.2f32])).unwrap();
+        sys_tx.send(Arc::new(vec![0.3f32])).unwrap();
+        chunk_tx.send(Arc::new(vec![0.0f32, 0.0, 0.0])).unwrap();
+        drop(chunk_tx);
+        drop(sys_tx);
+
+        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        assert_eq!(total, 3);
+
+        let forwarded = stt_rx.recv().unwrap();
+        assert_eq!(*forwarded, vec![0.1f32, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn writer_thread_with_system_and_no_system_audio_at_all_matches_mic_only_wav_bytes() {
+        // A `sys_rx` that never receives anything for the whole session
+        // (system capture failed to start after the fact, or produced
+        // nothing) must degrade to byte-identical output with the plain
+        // mic-only `run_writer_thread` — mixing with all-silence reproduces
+        // the mic signal exactly (see `mix_into`'s docs).
+        let mic_samples = vec![0.1f32, -0.2, 0.3, -0.4, 0.5];
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let path_a = dir_a.path().join("audio.wav");
+        let writer_a = WavWriter::create(&path_a).unwrap();
+        let (chunk_tx_a, chunk_rx_a) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (stt_tx_a, _stt_rx_a) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        chunk_tx_a.send(Arc::new(mic_samples.clone())).unwrap();
+        drop(chunk_tx_a);
+        run_writer_thread(writer_a, chunk_rx_a, stt_tx_a, test_shared_state()).unwrap();
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let path_b = dir_b.path().join("audio.wav");
+        let writer_b = WavWriter::create(&path_b).unwrap();
+        let (chunk_tx_b, chunk_rx_b) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx_b, sys_rx_b) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx_b, _stt_rx_b) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        chunk_tx_b.send(Arc::new(mic_samples)).unwrap();
+        drop(chunk_tx_b);
+        drop(sys_tx_b);
+        run_writer_thread_with_system(writer_b, chunk_rx_b, sys_rx_b, stt_tx_b, test_shared_state()).unwrap();
+
+        let bytes_a = std::fs::read(&path_a).unwrap();
+        let bytes_b = std::fs::read(&path_b).unwrap();
+        assert_eq!(bytes_a, bytes_b);
+    }
+
     // --- ElapsedTracker -------------------------------------------------------
 
     #[test]
@@ -1617,7 +2140,7 @@ mod tests {
 
         let (sample_tx, sample_rx) =
             std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
-        let handle = Recorder::start(note_dir.clone(), sample_tx)
+        let handle = Recorder::start(note_dir.clone(), sample_tx, false)
             .expect("Recorder::start failed — check mic permission / input device availability");
 
         let events: Arc<Mutex<Vec<stt::SttEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1631,7 +2154,7 @@ mod tests {
 
         std::thread::sleep(Duration::from_secs(10));
 
-        let (duration_sec, wav_path) = handle.stop().expect("Recorder::stop failed");
+        let (duration_sec, wav_path, _system_audio_active) = handle.stop().expect("Recorder::stop failed");
         worker.join().expect("stt worker thread panicked");
         let final_meta = lock_store(&store)
             .finalize_note(&meta.id, duration_sec, 1)
@@ -1675,5 +2198,144 @@ mod tests {
             "expected non-trivial transcribed text (>10 chars), got {total_text_len}: {:?}",
             transcript.segments
         );
+    }
+
+    /// End-to-end smoke test for the two-source pipeline (Stage 5 Task 5):
+    /// records 4s with `include_system_audio: true` while `afplay` plays
+    /// `tests/fixtures/hello.wav` through the system's default output, then
+    /// asserts (a) system audio actually activated (`Ready` availability —
+    /// this machine has Screen Recording granted) and (b) the resulting
+    /// `audio.wav` is non-silent. Mirrors `real_recording_end_to_end`'s
+    /// real-app-data-dir/cleanup-guard shape, plus `syscap.rs`'s own e2e
+    /// test's `afplay`-a-fixture technique.
+    ///
+    /// Transcript non-emptiness is asserted as a *bonus*, not the primary
+    /// signal — per this task's own honesty requirement, whisper
+    /// transcribing `afplay`'d system audio (routed back in through
+    /// whatever the mic happens to also pick up acoustically, since there's
+    /// no synthetic-input injection here) is measurably more failure-prone
+    /// run to run than "the wav file actually contains non-silent audio",
+    /// which is what the mix pipeline itself is actually responsible for.
+    /// A failing transcript assertion would conflate "the mixer/capture
+    /// pipeline is broken" with "whisper had an off run on this particular
+    /// take", which this test is not in a position to tell apart — so it's
+    /// logged, not asserted, and reported honestly in this task's summary.
+    ///
+    /// Run manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///     real_system_audio_recording_end_to_end -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_system_audio_recording_end_to_end() {
+        let status = syscap::sys_audio_status();
+        if status.availability != SysAudioAvailability::Ready {
+            eprintln!(
+                "skipping: sys_audio_status() = {:?} (needs Screen Recording permission granted \
+                 to this test binary)",
+                status.availability
+            );
+            return;
+        }
+
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let app_data_dir = PathBuf::from(&home).join("Library/Application Support/dev.minute.app");
+
+        let catalog = catalog::load_catalog().expect("catalog.json should parse");
+        let entry = catalog
+            .into_iter()
+            .find(|e| e.id == "whisper-small")
+            .expect("catalog.json must contain whisper-small");
+        let model_path = catalog::installed_path(&entry, &app_data_dir);
+        assert!(
+            model_path.exists(),
+            "expected whisper-small installed at {model_path:?} (run Task 4's \
+             real_download_of_whisper_small test first)"
+        );
+
+        let store = crate::store::open_shared(app_data_dir.clone());
+        let meta = lock_store(&store)
+            .create_note_now("System audio smoke test", "whisper-small")
+            .expect("failed to create note");
+        let note_dir = lock_store(&store).note_dir(&meta.id);
+        eprintln!("recording into {note_dir:?}");
+        let _cleanup = NoteDirCleanupGuard(note_dir.clone());
+
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.wav");
+        assert!(fixture.exists(), "expected fixture at {fixture:?}");
+        let mut afplay = std::process::Command::new("afplay")
+            .arg(&fixture)
+            .spawn()
+            .expect("failed to spawn afplay");
+
+        let (sample_tx, sample_rx) =
+            std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let handle = Recorder::start(note_dir.clone(), sample_tx, true)
+            .expect("Recorder::start failed — check mic permission / input device availability");
+        assert!(
+            handle.system_audio_active(),
+            "expected system audio to actually activate given Ready availability"
+        );
+
+        let events: Arc<Mutex<Vec<stt::SttEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let worker_ctx = WorkerCtx {
+            note_id: meta.id.clone(),
+            store: store.clone(),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        };
+        let worker = stt::SttWorker::spawn(model_path, sample_rx, worker_ctx);
+
+        std::thread::sleep(Duration::from_secs(4));
+
+        let _ = afplay.wait();
+
+        let (duration_sec, wav_path, system_audio_active) =
+            handle.stop().expect("Recorder::stop failed");
+        assert!(system_audio_active, "system audio should have stayed active for the whole recording");
+        worker.join().expect("stt worker thread panicked");
+        lock_store(&store)
+            .finalize_note(&meta.id, duration_sec, 1)
+            .expect("finalize_note failed");
+        let final_meta = lock_store(&store)
+            .set_note_sources(&meta.id, vec!["mic".to_string(), "system".to_string()])
+            .expect("set_note_sources failed");
+
+        eprintln!("recorded {duration_sec:.1}s, wav at {wav_path:?}");
+        eprintln!("final note sources: {:?}", final_meta.sources);
+        assert_eq!(final_meta.sources, vec!["mic".to_string(), "system".to_string()]);
+
+        assert!(wav_path.exists(), "audio.wav should exist");
+        let mut reader = hound::WavReader::open(&wav_path).expect("failed to open recorded wav");
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / i16::MAX as f32)
+            .collect();
+        eprintln!("recorded {} samples ({:.2}s at 16kHz)", samples.len(), samples.len() as f64 / 16_000.0);
+
+        // Primary assertion: the mixed wav actually contains non-silent
+        // audio (proves the mic+system mixing pipeline delivered real
+        // signal into the file), not merely that recording "ran".
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+        eprintln!("wav RMS = {rms}");
+        assert!(rms > 1e-4, "expected non-silent recorded audio, got RMS {rms}");
+
+        // Bonus signal, not asserted — see this test's own doc comment for
+        // why a transcript miss here is reported, not failed.
+        let (_meta, transcript) = lock_store(&store).get_note(&meta.id).unwrap();
+        let total_text_len: usize = transcript.segments.iter().map(|s| s.text.len()).sum();
+        eprintln!(
+            "transcript.json segments: {:?} (total text length {total_text_len})",
+            transcript.segments
+        );
+        if transcript.segments.is_empty() {
+            eprintln!(
+                "note: transcript came back empty — reported honestly, not asserted (see this \
+                 test's doc comment); the wav-non-silence assertion above is this test's \
+                 real pass/fail signal"
+            );
+        }
     }
 }

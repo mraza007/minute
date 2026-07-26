@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
-import type { ModelStatus, StorageStats } from '../ipc/types'
+import type { ModelStatus, StorageStats, SysAudioAvailability } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
 import { Toggle } from './Toggle'
@@ -22,6 +22,12 @@ export interface SettingsViewProps {
   toggleDel: () => void
   meetingDetection: boolean
   toggleMeetingDetection: () => void
+  /** Stage 5 Task 5: the "Capture system audio" default for the *next* recording — see the "Recording" card below. */
+  captureSystemAudio: boolean
+  toggleCaptureSystemAudio: () => void
+  /** Screen Recording permission/macOS-version gate for the toggle above — see `sysAudioStatus`'s docs for what each state means. */
+  sysAudioAvailability: SysAudioAvailability
+  onRequestSysAudioPermission: () => void
 }
 
 const cardStyle: CSSProperties = {
@@ -242,6 +248,10 @@ export function SettingsView({
   toggleDel,
   meetingDetection,
   toggleMeetingDetection,
+  captureSystemAudio,
+  toggleCaptureSystemAudio,
+  sysAudioAvailability,
+  onRequestSysAudioPermission,
 }: SettingsViewProps) {
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
@@ -346,6 +356,51 @@ export function SettingsView({
               When another app starts using the microphone, Minute shows a small prompt. Detection is fully local and never listens to audio.
             </div>
             <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.</div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          {/*
+            Placement decision (Stage 5 Task 5): its own "Recording" card,
+            not folded into "Meeting detection" above — system audio applies
+            to every recording (manually started or popup-triggered), not
+            just meeting-detected ones, so nesting it under that card would
+            misleadingly imply a dependency between the two features that
+            doesn't exist. A dedicated card also leaves room for future
+            recording-only settings without overloading either existing
+            card's scope.
+          */}
+          <h2 style={cardHeaderStyle}>Recording</h2>
+          <div style={{ padding: '12px 20px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <Toggle
+                on={captureSystemAudio}
+                onToggle={toggleCaptureSystemAudio}
+                label="Capture system audio"
+                disabled={sysAudioAvailability !== 'ready'}
+              />
+              {sysAudioAvailability === 'notGranted' && (
+                <button
+                  className="btn-light"
+                  onClick={onRequestSysAudioPermission}
+                  style={{ ...secondaryBtnStyle, flex: 'none' }}
+                >
+                  Grant permission…
+                </button>
+              )}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-faint)' }}>
+              Include what you hear — the other side of calls — in recordings and transcripts.
+              Requires Screen Recording permission.
+            </div>
+            {sysAudioAvailability === 'unsupported' && (
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>Requires macOS 13 or later.</div>
+            )}
+            {sysAudioAvailability === 'notGranted' && (
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>
+                A freshly granted permission may need Minute to restart before it takes effect.
+              </div>
+            )}
           </div>
         </div>
 

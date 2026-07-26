@@ -136,6 +136,7 @@ export default function App() {
               sttStatus={s.sttStatus}
               sttError={s.sttError}
               modelName={s.sttModelDisplayName}
+              systemAudioActive={s.systemAudioActive}
             />
           )}
           {s.view === 'settings' && (
@@ -155,6 +156,10 @@ export default function App() {
               toggleDel={s.toggleDel}
               meetingDetection={s.tMeetingDetection}
               toggleMeetingDetection={s.toggleMeetingDetection}
+              captureSystemAudio={s.tCaptureSystemAudio}
+              toggleCaptureSystemAudio={s.toggleCaptureSystemAudio}
+              sysAudioAvailability={s.sysAudioAvailability}
+              onRequestSysAudioPermission={s.requestSysAudioPermission}
             />
           )}
         </div>

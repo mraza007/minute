@@ -65,7 +65,12 @@ export type NoteStatus = 'recording' | 'transcribed' | 'ready'
  * parse as `false`) — set `true` once the 30-day sweep has deleted this
  * note's `audio.wav`; `get_note`'s `audioPath` is `null` whenever this is
  * `true`, regardless of what's actually on disk (see `NoteWithTranscript`'s
- * docs).
+ * docs). `sources` (Stage 5 Task 5) is `#[serde(default = "default_sources")]`
+ * on the Rust side (old `meta.json` files without it parse as `["mic"]`,
+ * the correct interpretation — every note recorded before system audio
+ * existed was mic-only by construction) — `["mic", "system"]` once a
+ * recording actually mixed in system audio, never mutated after
+ * `stop_recording` writes it once at finalize time.
  */
 export interface NoteMeta {
   id: string
@@ -76,6 +81,7 @@ export interface NoteMeta {
   status: NoteStatus
   speakers: number
   audioDeleted: boolean
+  sources: string[]
 }
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */
@@ -180,13 +186,18 @@ export interface StorageStats {
  * (`#[serde(default)]` on the Rust side, so it's always present here too —
  * `false` for both a fresh install and any settings.json written before
  * this field existed); the toggle UI itself is Task 3, this file only adds
- * the wire type.
+ * the wire type. `captureSystemAudio` (Stage 5 Task 5) is the persisted
+ * default for `startRecording`'s `includeSystemAudio` — same
+ * `#[serde(default)]`/off-by-default shape as `meetingDetection`, and
+ * honored backend-side only when `sysAudioStatus()` reports `'ready'`
+ * regardless of this value (see that command's docs).
  */
 export interface Settings {
   sttModel: string | null
   llmModel: string | null
   deleteAudioAfter30d: boolean
   meetingDetection: boolean
+  captureSystemAudio: boolean
 }
 
 /**
@@ -200,6 +211,7 @@ export interface SettingsPatch {
   llmModel?: string
   deleteAudioAfter30d?: boolean
   meetingDetection?: boolean
+  captureSystemAudio?: boolean
 }
 
 // --- events ----------------------------------------------------------------
@@ -219,11 +231,19 @@ export interface ModelDownloadDoneEvent {
   error: string | null
 }
 
-/** `audio.rs::RecordingStateEvent` — event `recording-state`. */
+/**
+ * `audio.rs::RecordingStateEvent` — event `recording-state`.
+ * `systemAudioActive` (Stage 5 Task 5) is fixed for the whole recording
+ * session (there's no way to change audio sources mid-recording) — the
+ * real, backend-confirmed state (whether `includeSystemAudio` was actually
+ * honored, not just requested — see `start_recording`'s docs), never just
+ * an echo of what the frontend asked for.
+ */
 export interface RecordingStateEvent {
   noteId: string
   state: 'recording' | 'paused' | 'stopped'
   elapsed: number
+  systemAudioActive: boolean
 }
 
 /** `stt.rs::TranscriptSegmentPayload` — event `transcript-segment`. */

@@ -33,4 +33,18 @@ describe('Toggle', () => {
     render(<Toggle on={false} onToggle={vi.fn()} label="Encrypt note library with FileVault key" />)
     expect(screen.getByText('Encrypt note library with FileVault key')).toBeInTheDocument()
   })
+
+  it('is not disabled by default', () => {
+    render(<Toggle on={false} onToggle={vi.fn()} label="Delete original audio" />)
+    expect(screen.getByRole('switch', { name: /delete original audio/i })).toHaveAttribute('aria-disabled', 'false')
+  })
+
+  it('sets aria-disabled and does not call onToggle when clicked while disabled', () => {
+    const onToggle = vi.fn()
+    render(<Toggle on={false} onToggle={onToggle} label="Capture system audio" disabled />)
+    const el = screen.getByRole('switch', { name: /capture system audio/i })
+    expect(el).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(el)
+    expect(onToggle).not.toHaveBeenCalled()
+  })
 })

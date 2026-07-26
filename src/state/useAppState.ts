@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
-import type { Hardware, NoteMeta, StorageStats, TranscriptSegmentEvent } from '../ipc/types'
+import type { Hardware, NoteMeta, StorageStats, SysAudioAvailability, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { useModelManager } from './useModelManager'
@@ -44,6 +44,15 @@ export function useAppState() {
   const [recElapsed, setRecElapsed] = useState(0)
   const [paused, setPaused] = useState(false)
   const [stopping, setStopping] = useState(false)
+  // Stage 5 Task 5: the *active* recording's real system-audio state, from
+  // `recording-state`'s `systemAudioActive` field — distinct from
+  // `tCaptureSystemAudio` (the pre-recording *setting*, below) since
+  // `start_recording` can honor, degrade, or ignore that setting depending
+  // on live permission/version gating (see that command's docs); this is
+  // always the backend-confirmed truth for whichever recording is active
+  // right now, reset alongside the rest of the recording-lifecycle fields
+  // in `startRec`/`stopRec`.
+  const [systemAudioActive, setSystemAudioActive] = useState(false)
   const [sttStatus, setSttStatus] = useState<SttStatus>('idle')
   const [sttError, setSttError] = useState<string | null>(null)
   // The note id the most recent onSttStatus event was actually about —
@@ -73,6 +82,16 @@ export function useAppState() {
   // (once, at most) by `completeOnboarding` if the onboarding opt-in row was
   // checked — see that callback's docs.
   const [tMeetingDetection, setTMeetingDetection] = useState(false)
+
+  // Settings-backed "capture system audio" default (Stage 5 Task 5) — same
+  // optimistic-flip-then-persist shape as `tMeetingDetection`/
+  // `toggleMeetingDetection` above. `sysAudioAvailability` is the read-only
+  // permission/version state (`sys_audio_status`, seeded in the initial
+  // load effect below and refreshed by `requestSysAudioPermission`) that
+  // gates whether the toggle can actually be turned on at all — see
+  // `SettingsView`'s own handling of the two together.
+  const [tCaptureSystemAudio, setTCaptureSystemAudio] = useState(false)
+  const [sysAudioAvailability, setSysAudioAvailability] = useState<SysAudioAvailability>('unsupported')
 
   // --- ⌘K search palette + sidebar filter ---------------------------------
   //
@@ -356,19 +375,29 @@ export function useAppState() {
       ipc.recommendedModels(),
       ipc.storageStats(),
       ipc.getSettings(),
+      ipc.sysAudioStatus(),
     ])
-      .then(([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage, loadedSettings]) => {
-        if (cancelled) return
-        modelManager.applyInitialLoad(loadedModels, loadedRecommendation, loadedSettings)
-        setNotes(loadedNotes)
-        setHardware(loadedHardware)
-        setStorage(loadedStorage)
-        setTDel(loadedSettings.deleteAudioAfter30d)
-        setTMeetingDetection(loadedSettings.meetingDetection)
-        const hasInstalledStt = loadedModels.some(m => m.kind === 'stt' && m.state === 'installed')
-        setView(hasInstalledStt ? 'notes' : 'onboarding')
-        setLoaded(true)
-      })
+      .then(
+        ([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage, loadedSettings, loadedSysAudioStatus]) => {
+          if (cancelled) return
+          modelManager.applyInitialLoad(loadedModels, loadedRecommendation, loadedSettings)
+          setNotes(loadedNotes)
+          setHardware(loadedHardware)
+          setStorage(loadedStorage)
+          setTDel(loadedSettings.deleteAudioAfter30d)
+          setTMeetingDetection(loadedSettings.meetingDetection)
+          setTCaptureSystemAudio(loadedSettings.captureSystemAudio)
+          // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
+          // at all (e.g. a test fixture with only a `default: return null`
+          // fallback) resolves this to `null`/`undefined` rather than a real
+          // `SysAudioStatus`; falling back to `'unsupported'` is honest either
+          // way (the toggle simply shows as unavailable) rather than crashing.
+          setSysAudioAvailability(loadedSysAudioStatus?.availability ?? 'unsupported')
+          const hasInstalledStt = loadedModels.some(m => m.kind === 'stt' && m.state === 'installed')
+          setView(hasInstalledStt ? 'notes' : 'onboarding')
+          setLoaded(true)
+        },
+      )
       .catch(err => {
         if (cancelled) return
         reportError(err)
@@ -395,6 +424,7 @@ export function useAppState() {
       if (payload.noteId !== activeNoteId) return
       setRecElapsed(payload.elapsed)
       setPaused(payload.state === 'paused')
+      setSystemAudioActive(payload.systemAudioActive)
     },
     [],
   )
@@ -461,6 +491,12 @@ export function useAppState() {
         setSttStatus('idle')
         setSttError(null)
         setSttStatusNoteId(null)
+        // The very first `recording-state` event (emitted synchronously by
+        // `start_recording` itself before this call even resolves) reconciles
+        // this to the real, backend-confirmed value almost immediately —
+        // `false` here is just the safe starting point for the instant
+        // between "we have a note id" and that event arriving.
+        setSystemAudioActive(false)
         setView('recording')
       })
       .catch(reportError)
@@ -600,6 +636,7 @@ export function useAppState() {
             setSttStatus('idle')
             setSttError(null)
             setSttStatusNoteId(null)
+            setSystemAudioActive(false)
             setStopping(false)
           })
       })
@@ -642,6 +679,39 @@ export function useAppState() {
       ipc.setSettings({ meetingDetection: flipped }).catch(reportError)
       return flipped
     })
+  }, [reportError])
+
+  /**
+   * Settings screen's "Capture system audio" toggle — identical optimistic-
+   * flip-then-persist shape as `toggleMeetingDetection` above.
+   * `SettingsView` is responsible for only ever wiring this to a click when
+   * `sysAudioAvailability === 'ready'` (see that component's docs) — this
+   * callback itself has no guard, same as `toggleDel`/`toggleMeetingDetection`
+   * not guarding their own preconditions either; the backend
+   * (`start_recording`) is the actual, final gate regardless of what's
+   * persisted here (see `Settings.captureSystemAudio`'s docs).
+   */
+  const toggleCaptureSystemAudio = useCallback(() => {
+    setTCaptureSystemAudio(next => {
+      const flipped = !next
+      ipc.setSettings({ captureSystemAudio: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  /**
+   * Settings screen's "Grant permission…" affordance for system audio:
+   * triggers the Screen Recording consent prompt (a no-op re-check, not a
+   * re-prompt, if already decided — see `requestSysAudioPermission`'s own
+   * backend docs) and updates `sysAudioAvailability` with the resulting
+   * state. `useCallback` with no deps (only touches a stable setter and
+   * `reportError`, itself stable) — permanently stable identity.
+   */
+  const requestSysAudioPermission = useCallback(() => {
+    ipc
+      .requestSysAudioPermission()
+      .then(status => setSysAudioAvailability(status.availability))
+      .catch(reportError)
   }, [reportError])
 
   /**
@@ -753,6 +823,11 @@ export function useAppState() {
     tDel,
     tMeetingDetection,
     toggleMeetingDetection,
+    tCaptureSystemAudio,
+    toggleCaptureSystemAudio,
+    sysAudioAvailability,
+    requestSysAudioPermission,
+    systemAudioActive,
     noteTab,
     sidebarNotes,
     statsLine,

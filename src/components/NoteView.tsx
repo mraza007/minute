@@ -511,6 +511,11 @@ export function NoteView({
 
   const metaLine = noteMetaToListItem(meta, new Date()).meta
   const dateLabel = new Date(meta.createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+  // Stage 5 Task 5: surfaced subtly — one more clause on the existing meta
+  // line, not a separate badge/pill — only when system audio was actually
+  // part of this note's recording (`sources` defaults to `["mic"]` for
+  // every note, including every one recorded before this field existed).
+  const includedSystemAudio = meta.sources.includes('system')
 
   // Two-item roving-focus tablist: Left/Right just toggles between the only
   // two tabs (Transcript/Markdown) — moves selection *and* focus, per the
@@ -542,7 +547,7 @@ export function NoteView({
               <StatusPill meta={meta} sttStatus={sttStatus} sttStatusNoteId={sttStatusNoteId} summaryStatus={summaryStatus} />
             </div>
             <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ink-muted)' }}>
-              {metaLine} · {dateLabel} · stored locally
+              {metaLine} · {dateLabel} · stored locally{includedSystemAudio ? ' · mic + system audio' : ''}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 'none' }}>
