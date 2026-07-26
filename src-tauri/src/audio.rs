@@ -529,6 +529,28 @@ fn run_writer_thread(
     writer.finalize()
 }
 
+/// Upper bound, in samples, on how far `sys_buf` (the system-audio ring in
+/// [`run_writer_thread_with_system`]) is ever allowed to run *ahead* of what
+/// the mic side has consumed so far. `2 * STT_BLOCK_SAMPLES` — 1s at
+/// [`TARGET_SAMPLE_RATE`]: double this module's only other named "how much
+/// audio is one unit" constant, as generous slack above ordinary operation
+/// (a real mic chunk handed to the writer thread is one cpal callback's own
+/// ~10-20ms burst — one to two orders of magnitude smaller than this) while
+/// still bounding a post-stall resync (see that function's docs) to at most
+/// 1s of dropped system audio, never the raw stall duration itself.
+const SYS_BUF_MAX_LEAD_SAMPLES: usize = 2 * STT_BLOCK_SAMPLES;
+
+/// How often a sustained *run* of stall-recovery resyncs gets logged again,
+/// rather than spamming on every single one — same cadence discipline as
+/// `STT_DROP_LOG_INTERVAL`/`syscap::SYS_DROP_LOG_INTERVAL` (see those
+/// constants' docs), specifically the "log the very first occurrence, then
+/// every Nth after that" variant `syscap.rs::log_extraction_failure` already
+/// uses (`% == 1`, not `% == 0`) — a *single* resync is the ordinary,
+/// expected recovery from one real mic stall (a Bluetooth device switch,
+/// ...) and is worth surfacing immediately, not held back; this only
+/// throttles a pathological run of many resyncs in a row.
+const SYS_RESYNC_LOG_INTERVAL: u64 = 10;
+
 /// The two-source counterpart to [`run_writer_thread`]: pulls mic blocks the
 /// same way (blocking `chunk_rx.recv()`), but on every iteration also drains
 /// whatever system-audio blocks have arrived on `sys_rx` so far (non-
@@ -544,17 +566,38 @@ fn run_writer_thread(
 /// The plan explicitly doesn't require sample-accurate alignment between the
 /// two hardware-independent streams (a CoreAudio device clock for the mic,
 /// ScreenCaptureKit's own capture clock for system audio — the two are never
-/// perfectly phase-locked even at the same nominal rate). This ring-buffer-
-/// plus-zero-fill approach accepts that: an underrun contributes silence
-/// for the missing system-audio span (heard as “briefly quieter”, not a
-/// glitch or gap in the mic signal itself, since the mic side is never held
-/// up waiting for it) rather than trying to timestamp-align the two exactly.
-/// The buffer only ever grows if the *system* side runs persistently ahead
-/// of the mic side's consumption rate — an unlikely steady-state given both
-/// are captured live at the same wall-clock rate — so no separate cap is
-/// applied here (unlike `STT_CHANNEL_CAPACITY`'s bound on the channel
-/// upstream of `sys_rx`, which is what actually protects memory if the
-/// producer side ever really did run away).
+/// perfectly phase-locked even at the same nominal rate). Both are already
+/// resampled to `TARGET_SAMPLE_RATE` before either reaches this function, so
+/// the two nominal-rate clocks disagreeing slightly is a second-order effect
+/// here, not a source of unbounded drift by itself over a long recording —
+/// what *would* be unbounded is a one-directional trend from a real stall
+/// (see below), which the staleness cap this function now enforces also
+/// bounds, for the same reason. This ring-buffer-plus-zero-fill approach
+/// accepts ordinary underrun: an underrun contributes silence for the
+/// missing system-audio span (heard as "briefly quieter", not a glitch or
+/// gap in the mic signal itself, since the mic side is never held up
+/// waiting for it) rather than trying to timestamp-align the two exactly.
+///
+/// **Staleness cap — recovering from a mic stall, not just tolerating an
+/// underrun.** A mic-side stall (e.g. a Bluetooth device switch pausing the
+/// input stream for a couple of seconds) is the mirror-image failure mode
+/// from underrun: `chunk_rx.recv()` simply blocks (no new mic chunk
+/// arrives), while the *system* side keeps flowing and piles up, un-drained,
+/// in the bounded channel upstream of `sys_rx`. Without a cap, the very next
+/// mic chunk's `try_recv` drain loop would dump that *entire* backlog into
+/// `sys_buf` in one shot — and because every subsequent iteration only ever
+/// consumes `chunk.len()` samples per mic chunk (steady-state, not a
+/// catch-up rate), that backlog would never fully drain: system audio would
+/// stay offset by the stall's duration for the rest of the recording,
+/// permanently, not just for the stall itself. [`SYS_BUF_MAX_LEAD_SAMPLES`]
+/// closes that: after every drain, `sys_buf` is trimmed back down to that
+/// cap by dropping from the *front* (the oldest, stalest queued samples) —
+/// so what survives into the mix is always the most recent system audio
+/// available, and the worst-case permanent offset is bounded at
+/// `SYS_BUF_MAX_LEAD_SAMPLES` (~1s), never the raw stall length. Each trim
+/// is logged (rate-limited — see [`SYS_RESYNC_LOG_INTERVAL`]) so a real
+/// stall shows up in the logs as an honest, named event ("system audio
+/// resynced after mic stall"), not a silent, permanent misalignment.
 fn run_writer_thread_with_system(
     mut writer: WavWriter,
     chunk_rx: Receiver<Arc<Vec<f32>>>,
@@ -567,10 +610,27 @@ fn run_writer_thread_with_system(
     let mut sys_buf: VecDeque<f32> = VecDeque::new();
     let mut sys_scratch: Vec<f32> = Vec::new();
     let mut mixed: Vec<f32> = Vec::new();
+    let mut resyncs: u64 = 0;
 
     while let Ok(chunk) = chunk_rx.recv() {
         while let Ok(sys_block) = sys_rx.try_recv() {
             sys_buf.extend(sys_block.iter().copied());
+        }
+
+        // Staleness cap: drop from the front (oldest first) down to the cap
+        // — see this function's own "Staleness cap" doc section above for
+        // the mic-stall scenario this recovers from.
+        if sys_buf.len() > SYS_BUF_MAX_LEAD_SAMPLES {
+            let excess = sys_buf.len() - SYS_BUF_MAX_LEAD_SAMPLES;
+            sys_buf.drain(..excess);
+            resyncs += 1;
+            if resyncs % SYS_RESYNC_LOG_INTERVAL == 1 {
+                let dropped_ms = excess as f64 * 1000.0 / TARGET_SAMPLE_RATE as f64;
+                log::warn!(
+                    "system audio resynced after mic stall: dropped {dropped_ms:.0}ms of stale \
+                     backlog ({resyncs} resync(s) so far this session)"
+                );
+            }
         }
 
         let need = chunk.len();
@@ -940,25 +1000,43 @@ fn emit_recording_state(
 /// `spawn_stt_worker_if_model_installed`), and spawns the 1s ticker that
 /// keeps emitting `recording-state` while active. Returns the new note's id.
 ///
-/// **System audio (Stage 5 Task 5).** `include_system_audio` resolves the
-/// same way `model_id` does: the caller-supplied value if given, else the
-/// persisted `settings.captureSystemAudio` default (see
-/// `settings::resolve_stt_model`'s identical explicit-then-settings-default
-/// shape — there's no dedicated `settings::resolve_*` helper for this one
-/// since it's a plain `bool` with no third hardcoded-fallback tier to
-/// factor out). That resolved intent is honored **only** when
-/// `syscap::sys_audio_status()` currently reports
-/// [`SysAudioAvailability::Ready`] — otherwise this proceeds mic-only
-/// without even attempting `Recorder::start`'s system-audio branch,
-/// regardless of what was requested (macOS <13, permission never granted,
-/// or explicitly denied — see that enum's docs for why those last two
-/// aren't distinguishable). `Recorder::start` itself has its own,
-/// second-layer fallback (a `SysCapture::start` failure *after* this
-/// pre-check still degrades to mic-only rather than failing the whole
-/// recording) — see its docs. Either way, the actually-realized outcome is
-/// read back off the returned `RecorderHandle::system_audio_active()`, never
-/// assumed from what was requested, so the very first `recording-state`
-/// event (emitted below) and the frontend's toggle both reflect the truth.
+/// Resolves whether `start_recording` should actually *attempt* system
+/// audio for this recording: `explicit` (the caller-supplied
+/// `includeSystemAudio`) if given, else `settings_default` (the persisted
+/// `settings.captureSystemAudio`) — mirrors `settings::resolve_stt_model`'s
+/// identical explicit-then-settings-default shape (there's no dedicated
+/// `settings::resolve_*` helper for this one since it's a plain `bool` with
+/// no third hardcoded-fallback tier to factor out, unlike `resolve_stt_model`'s
+/// `"whisper-small"`). That resolved *intent* is then gated on `availability`:
+/// only ever `true` when it's actually [`SysAudioAvailability::Ready`]
+/// (macOS 13+ and Screen Recording granted — see that enum's docs for why
+/// the other two states aren't worth trying to distinguish here). Pure and
+/// free-standing (no `AppHandle`, no settings lock, no real `sys_audio_status()`
+/// call) so every branch is unit-testable directly — `start_recording` is
+/// the only real caller, feeding it a fresh `syscap::sys_audio_status()`
+/// read each time. `Recorder::start` still has its own, second-layer
+/// fallback for a `SysCapture::start` failure *after* this resolves `true`
+/// (see that function's docs) — this only decides whether to *attempt* it
+/// at all.
+fn resolve_include_system_audio(
+    explicit: Option<bool>,
+    settings_default: bool,
+    availability: SysAudioAvailability,
+) -> bool {
+    let want = explicit.unwrap_or(settings_default);
+    want && availability == SysAudioAvailability::Ready
+}
+
+/// **System audio (Stage 5 Task 5).** `include_system_audio` is resolved via
+/// [`resolve_include_system_audio`] — see that function's docs for the
+/// explicit-then-settings-default-then-availability-gate shape.
+/// `Recorder::start` itself has its own, second-layer fallback (a
+/// `SysCapture::start` failure *after* this resolves `true` still degrades
+/// to mic-only rather than failing the whole recording) — see its docs.
+/// Either way, the actually-realized outcome is read back off the returned
+/// `RecorderHandle::system_audio_active()`, never assumed from what was
+/// requested, so the very first `recording-state` event (emitted below) and
+/// the frontend's toggle both reflect the truth.
 #[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
@@ -989,10 +1067,12 @@ pub async fn start_recording(
     }
 
     let model_id = settings::resolve_stt_model(model_id, &settings::lock_settings(&settings));
-    let want_system_audio =
-        include_system_audio.unwrap_or_else(|| settings::lock_settings(&settings).capture_system_audio);
-    let system_audio_ready = syscap::sys_audio_status().availability == SysAudioAvailability::Ready;
-    let attempt_system_audio = want_system_audio && system_audio_ready;
+    let capture_system_audio_default = settings::lock_settings(&settings).capture_system_audio;
+    let attempt_system_audio = resolve_include_system_audio(
+        include_system_audio,
+        capture_system_audio_default,
+        syscap::sys_audio_status().availability,
+    );
 
     let meta = lock_store(&store)
         .create_note_now("New recording", &model_id)
@@ -1446,6 +1526,60 @@ mod tests {
         // case for both).
         let state = open_shared();
         assert!(!is_recording_active(&state));
+    }
+
+    // --- resolve_include_system_audio (Stage 5 Task 5) -----------------------
+
+    #[test]
+    fn resolve_include_system_audio_explicit_false_overrides_a_true_settings_default() {
+        assert!(!resolve_include_system_audio(
+            Some(false),
+            true,
+            SysAudioAvailability::Ready,
+        ));
+    }
+
+    #[test]
+    fn resolve_include_system_audio_explicit_true_overrides_a_false_settings_default() {
+        assert!(resolve_include_system_audio(
+            Some(true),
+            false,
+            SysAudioAvailability::Ready,
+        ));
+    }
+
+    #[test]
+    fn resolve_include_system_audio_none_falls_back_to_the_settings_default_true() {
+        assert!(resolve_include_system_audio(None, true, SysAudioAvailability::Ready));
+    }
+
+    #[test]
+    fn resolve_include_system_audio_none_falls_back_to_the_settings_default_false() {
+        assert!(!resolve_include_system_audio(None, false, SysAudioAvailability::Ready));
+    }
+
+    #[test]
+    fn resolve_include_system_audio_wanting_it_is_still_false_when_not_ready() {
+        assert!(!resolve_include_system_audio(
+            Some(true),
+            true,
+            SysAudioAvailability::NotGranted,
+        ));
+        assert!(!resolve_include_system_audio(
+            Some(true),
+            true,
+            SysAudioAvailability::Unsupported,
+        ));
+    }
+
+    #[test]
+    fn resolve_include_system_audio_not_wanting_it_stays_false_regardless_of_availability() {
+        assert!(!resolve_include_system_audio(
+            Some(false),
+            false,
+            SysAudioAvailability::Ready,
+        ));
+        assert!(!resolve_include_system_audio(None, false, SysAudioAvailability::NotGranted));
     }
 
     // --- downmix_to_mono -----------------------------------------------
@@ -1994,6 +2128,86 @@ mod tests {
         let bytes_a = std::fs::read(&path_a).unwrap();
         let bytes_b = std::fs::read(&path_b).unwrap();
         assert_eq!(bytes_a, bytes_b);
+    }
+
+    // --- run_writer_thread_with_system: post-mic-stall resync -----------------
+
+    #[test]
+    fn writer_thread_with_system_resyncs_to_recent_system_audio_after_a_mic_stall() {
+        // Simulates a mic stall (e.g. a Bluetooth device switch): system
+        // audio keeps flowing and piles up, un-drained, in the channel
+        // while no mic chunk has arrived yet — modeled here by sending one
+        // big backlog block to `sys_tx` *before* any mic chunk exists.
+        // Each sample is tagged with its own index so the surviving
+        // (recent) tail is distinguishable from the dropped (stale) head.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx, sys_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(1);
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        let excess = 500usize;
+        let backlog_len = SYS_BUF_MAX_LEAD_SAMPLES + excess;
+        // Each sample tagged with its own index, scaled well inside
+        // `mix_into`'s `[-1.0, 1.0]` clamp (a literal index value like
+        // `500.0` would itself clamp to `1.0`, destroying the very
+        // distinguishability this test relies on) — mixed against an
+        // all-zero mic chunk below, this survives the mix exactly (adding
+        // zero is exact in IEEE754), so the tag is still recoverable.
+        let scale = 0.5 / backlog_len as f32;
+        let backlog: Vec<f32> = (0..backlog_len).map(|i| i as f32 * scale).collect();
+        sys_tx.send(Arc::new(backlog)).unwrap();
+
+        // The mic stream resumes with an ordinary small chunk — must never
+        // be held up waiting for, or forced to consume, the whole stale
+        // backlog.
+        chunk_tx.send(Arc::new(vec![0.0f32; 10])).unwrap();
+        drop(chunk_tx);
+        drop(sys_tx);
+
+        run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+
+        // Mixing with all-zero mic reproduces the (post-resync) system
+        // signal exactly — the 10 samples actually consumed must be the
+        // oldest *surviving* ones after dropping `excess`, i.e. indices
+        // [excess, excess + 10), not the true stream start (index 0..10) —
+        // the offset is bounded by the cap, not the (much larger) raw
+        // backlog/stall length.
+        let forwarded = stt_rx.recv().unwrap();
+        let expected: Vec<f32> = (excess..excess + 10).map(|i| i as f32 * scale).collect();
+        assert_eq!(*forwarded, expected);
+    }
+
+    #[test]
+    fn writer_thread_with_system_does_not_resync_when_backlog_is_within_the_cap() {
+        // A backlog sitting exactly at the cap must NOT trigger any drop —
+        // resync only kicks in strictly past `SYS_BUF_MAX_LEAD_SAMPLES`,
+        // never at or below it. Steady-state operation (see the other
+        // `writer_thread_with_system_*` tests above) never approaches this
+        // cap at all, so this pins the boundary explicitly.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let writer = WavWriter::create(&path).unwrap();
+
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
+        let (sys_tx, sys_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(1);
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+
+        // Same clamp-safe index scaling as the mic-stall test above.
+        let scale = 0.5 / SYS_BUF_MAX_LEAD_SAMPLES as f32;
+        let backlog: Vec<f32> = (0..SYS_BUF_MAX_LEAD_SAMPLES).map(|i| i as f32 * scale).collect();
+        sys_tx.send(Arc::new(backlog)).unwrap();
+        chunk_tx.send(Arc::new(vec![0.0f32; 10])).unwrap();
+        drop(chunk_tx);
+        drop(sys_tx);
+
+        run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+
+        let forwarded = stt_rx.recv().unwrap();
+        let expected: Vec<f32> = (0..10).map(|i| i as f32 * scale).collect();
+        assert_eq!(*forwarded, expected);
     }
 
     // --- ElapsedTracker -------------------------------------------------------

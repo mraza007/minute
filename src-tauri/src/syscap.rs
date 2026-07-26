@@ -97,11 +97,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::audio::downmix_to_mono;
 
-/// `#[allow(dead_code)]`: its only ordinary-build caller is `mod capture`'s
-/// `did_output_sample_buffer`, itself only reachable once something calls
-/// `SysCapture::start` — see [`DecodedAudioBuffer`]'s docs for the full
-/// pending-Task-5 rationale this shares.
-#[allow(dead_code)]
+/// Locks a [`Mutex`], recovering from lock poisoning instead of
+/// propagating it — same rationale as `store::lock_store`. Used by `mod
+/// capture`'s `did_output_sample_buffer` callback (guarding `CallbackState`)
+/// once a real recording actually starts system-audio capture (Stage 5 Task
+/// 5's `Recorder::start`).
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -305,8 +305,6 @@ pub fn request_sys_audio_permission() -> SysAudioStatus {
 /// but cheap to handle without panicking) is dropped rather than padded or
 /// misread, mirroring `chunks_exact`'s own documented behavior.
 ///
-/// `#[allow(dead_code)]` — see [`DecodedAudioBuffer`]'s docs for why.
-#[allow(dead_code)]
 pub(crate) fn bytes_to_f32_le(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
@@ -318,13 +316,9 @@ pub(crate) fn bytes_to_f32_le(bytes: &[u8]) -> Vec<f32> {
 /// plus its already-decoded `f32` samples — deliberately decoupled from
 /// that crate's own `AudioBuffer` type so [`downmix_sck_buffers_to_mono`]
 /// stays unit-testable with synthetic data, no real capture required.
-///
-/// `#[allow(dead_code)]`: real construction only happens inside `mod
-/// capture`'s `did_output_sample_buffer`, which nothing in the ordinary
-/// (non-test) build graph calls yet — `SysCapture::start`'s only caller
-/// today is the `#[ignore]`d e2e test below, pending Task 5's mixer —
-/// matching `stt::transcribe_samples`'s identical shape/rationale.
-#[allow(dead_code)]
+/// Constructed inside `mod capture`'s `did_output_sample_buffer`, reachable
+/// in the ordinary (non-test) build once `Recorder::start` actually starts
+/// system-audio capture (Stage 5 Task 5).
 pub(crate) struct DecodedAudioBuffer {
     pub number_channels: u16,
     pub samples: Vec<f32>,
@@ -346,11 +340,6 @@ pub(crate) struct DecodedAudioBuffer {
 ///   correctly averaged, and nothing after it is fabricated.
 ///
 /// Empty input yields empty output.
-///
-/// `#[allow(dead_code)]` — see [`DecodedAudioBuffer`]'s docs for why (same
-/// pending-Task-5 reason); exercised directly by this module's own
-/// `pipeline_tests` regardless.
-#[allow(dead_code)]
 pub(crate) fn downmix_sck_buffers_to_mono(buffers: &[DecodedAudioBuffer]) -> Vec<f32> {
     match buffers.len() {
         0 => Vec::new(),
@@ -376,18 +365,11 @@ pub(crate) fn downmix_sck_buffers_to_mono(buffers: &[DecodedAudioBuffer]) -> Vec
 /// logic (which is inlined into `run_writer_thread`, not a reusable unit) —
 /// only `downmix_to_mono`/`LinearResampler`, the plan's named reuse
 /// targets, are pulled from there.
-///
-/// `#[allow(dead_code)]` — see [`DecodedAudioBuffer`]'s docs for why.
-#[allow(dead_code)]
 pub(crate) struct BlockBatcher {
     block_samples: usize,
     buf: Vec<f32>,
 }
 
-// The struct itself is `#[allow(dead_code)]`'d above; its inherent methods
-// need their own matching allow — the struct-level attribute doesn't cover
-// a separate `impl` block.
-#[allow(dead_code)]
 impl BlockBatcher {
     /// `block_samples` is clamped to at least 1 — a `0` would otherwise spin
     /// `push` forever draining zero-length blocks.
@@ -412,7 +394,10 @@ impl BlockBatcher {
 
     /// Returns and clears whatever partial block is left, if any — the
     /// tail-flush counterpart to `audio.rs::run_writer_thread`'s trailing-
-    /// partial-block handling, for whoever calls `SysCapture::stop`.
+    /// partial-block handling. Called from `SysCapture::stop`, once the
+    /// stream has actually finished stopping (see that method's own docs
+    /// for why only then), so a recording's last, not-yet-`SYS_BLOCK_SAMPLES`
+    /// stretch of system audio isn't silently lost off the end.
     pub fn flush(&mut self) -> Option<Vec<f32>> {
         if self.buf.is_empty() {
             None
@@ -552,15 +537,15 @@ mod pipeline_tests {
 /// `audio.rs`'s `STT_BLOCK_SAMPLES` (~0.5s at [`TARGET_SAMPLE_RATE`]) for
 /// the identical reason: a bounded channel's real buffering headroom is a
 /// function of how much audio each slot is worth, not slot count alone.
-///
-/// `#[allow(dead_code)]` — see [`DecodedAudioBuffer`]'s docs for why.
-#[allow(dead_code)]
 const SYS_BLOCK_SAMPLES: usize = 8_000;
 
 /// Bounded channel capacity — same ~128s headroom as `audio.rs`'s
-/// `STT_CHANNEL_CAPACITY`. Generous on purpose: Task 5's mixer consumer
-/// doesn't exist yet, so there's no real drain-rate to size against —
-/// revisit once one does.
+/// `STT_CHANNEL_CAPACITY`. Generous on purpose relative to
+/// `run_writer_thread_with_system`'s own real drain rate (it pulls via
+/// non-blocking `try_recv` once per mic chunk, not on a fixed schedule) —
+/// see that function's docs for the separate, tighter bound
+/// (`SYS_BUF_MAX_LEAD_SAMPLES`) on how much of what's drained is actually
+/// allowed to survive into the mix after a stall.
 const SYS_CHANNEL_CAPACITY: usize = 256;
 
 /// How often a *sustained* run of failures gets logged again, rather than
@@ -574,13 +559,8 @@ const SYS_DROP_LOG_INTERVAL: u64 = 50;
 
 /// Requested (not necessarily exactly what's delivered — see the module
 /// docs) audio format. 48kHz stereo: `SCStreamConfiguration`'s own
-/// documented Apple default.
-///
-/// `#[allow(dead_code)]` on both — see [`DecodedAudioBuffer`]'s docs for why
-/// (only used inside `mod capture::SysCapture::start`).
-#[allow(dead_code)]
+/// documented Apple default. Used inside `mod capture::SysCapture::start`.
 const SYS_AUDIO_SAMPLE_RATE_HZ: i32 = 48_000;
-#[allow(dead_code)]
 const SYS_AUDIO_CHANNELS: i32 = 2;
 
 /// The sender/receiver pair [`channel`] returns — named so clippy's
@@ -590,14 +570,10 @@ pub type SysAudioChannel = (SyncSender<Arc<Vec<f32>>>, std::sync::mpsc::Receiver
 
 /// Creates the bounded `Arc<Vec<f32>>` channel [`SysCapture::start`] sends
 /// blocks over — the same shape `Recorder::start`'s `sample_tx` uses (see
-/// `audio.rs`), so Task 5's eventual mixer can consume both sources
-/// identically. Exposed as its own function (rather than leaving every
-/// caller to spell out the type + capacity) since the channel's *shape* is
-/// this task's actual contract, per the plan — its consumer arrives later.
-///
-/// `#[allow(dead_code)]` — see [`DecodedAudioBuffer`]'s docs for why; used
-/// today by this module's own `#[ignore]`d e2e test.
-#[allow(dead_code)]
+/// `audio.rs`), so `run_writer_thread_with_system` (Stage 5 Task 5) can
+/// consume both sources identically. Exposed as its own function (rather
+/// than leaving every caller to spell out the type + capacity) since the
+/// channel's *shape* is this task's actual contract, per the plan.
 pub fn channel() -> SysAudioChannel {
     std::sync::mpsc::sync_channel(SYS_CHANNEL_CAPACITY)
 }
@@ -607,9 +583,6 @@ pub fn channel() -> SysAudioChannel {
 /// `try_send_stt_block` (see that function's docs for the full rationale):
 /// a slow/stalled/nonexistent consumer must never make the realtime SCK
 /// callback thread block.
-///
-/// `#[allow(dead_code)]` — see [`DecodedAudioBuffer`]'s docs for why.
-#[allow(dead_code)]
 fn try_send_sys_block(tx: &SyncSender<Arc<Vec<f32>>>, block: Vec<f32>, dropped: &mut u64) {
     match tx.try_send(Arc::new(block)) {
         Ok(()) => {}
@@ -997,11 +970,6 @@ mod capture {
     );
 
     impl SysAudioHandler {
-        /// `#[allow(dead_code)]`: `SysCapture::start` (this fn's only
-        /// caller) has no caller of its own in the ordinary (non-test)
-        /// build graph yet — see `SysCapture`'s own doc comment for the
-        /// shared pending-Task-5 rationale.
-        #[allow(dead_code)]
         fn new(tx: SyncSender<Arc<Vec<f32>>>, paused: Arc<AtomicBool>) -> Retained<Self> {
             let this = Self::alloc().set_ivars(HandlerIvars {
                 tx,
@@ -1033,24 +1001,14 @@ mod capture {
     /// not as a general-purpose "make anything Send" escape hatch — never
     /// used for anything beyond this one hand-off, and never returned from
     /// any public API of this module.
-    ///
-    /// `#[allow(dead_code)]`: only constructed inside [`first_display`],
-    /// itself pending-Task-5 unreachable in the ordinary build — see
-    /// `SysCapture`'s doc comment.
-    #[allow(dead_code)]
     struct SendableRetained(Retained<SCDisplay>);
     // SAFETY: see the doc comment above.
-    #[allow(dead_code)]
     unsafe impl Send for SendableRetained {}
 
     /// Blocks the calling thread (up to [`SCK_COMPLETION_TIMEOUT`]) until
     /// `getShareableContentWithCompletionHandler`'s completion block fires
     /// (see the module docs' "Async APIs, made synchronous" section),
     /// returning the first available display.
-    ///
-    /// `#[allow(dead_code)]`: only called from `SysCapture::start` — see
-    /// that type's doc comment for the shared pending-Task-5 rationale.
-    #[allow(dead_code)]
     fn first_display() -> Result<Retained<SCDisplay>> {
         let (tx, rx) =
             std::sync::mpsc::sync_channel::<std::result::Result<SendableRetained, String>>(1);
@@ -1126,15 +1084,17 @@ mod capture {
 
     /// A live system-audio capture session: owns the real `SCStream` (plus
     /// the dispatch queue and output handler it needs kept alive) for as
-    /// long as this handle lives.
-    ///
-    /// `#[allow(dead_code)]` on the struct and its `impl` below: pending
-    /// Task 5's mixer, this crate's only caller of `start`/`stop` today is
-    /// this module's own `#[ignore]`d e2e test — same rationale as every
-    /// other item this module docs' `DecodedAudioBuffer` entry explains.
-    #[allow(dead_code)]
+    /// long as this handle lives. `start`/`stop`'s real caller is
+    /// `audio::Recorder::start`/`RecorderHandle::stop` (Stage 5 Task 5),
+    /// alongside this module's own `#[ignore]`d e2e test.
     pub struct SysCapture {
         stream: Retained<SCStream>,
+        // Never read after construction — kept purely so the dispatch queue
+        // `stream`'s callback runs on stays alive for as long as `stream`
+        // itself does (dropping it early would be a use-after-free risk for
+        // the callback, not merely dead weight). A genuine, permanent RAII-
+        // only field, not leftover scaffolding.
+        #[allow(dead_code)]
         queue: dispatch2::DispatchRetained<DispatchQueue>,
         handler: Retained<SysAudioHandler>,
     }
@@ -1149,10 +1109,8 @@ mod capture {
     // both automatically per `define_class!`'s thread-safety rules, since
     // its ivars are `Send`+`Sync` and its superclass is plain `NSObject`)
     // — `stream` is the only field this impl actually needs to vouch for.
-    #[allow(dead_code)]
     unsafe impl Send for SysCapture {}
 
-    #[allow(dead_code)]
     impl SysCapture {
         /// Starts capturing system audio, downmixing/resampling to 16kHz
         /// mono and forwarding ~0.5s blocks over `tx` — see the module docs
@@ -1305,13 +1263,28 @@ mod capture {
             if let Err(msg) = result {
                 log::warn!("failed to cleanly stop system-audio capture (tearing down anyway): {msg}");
             }
+
+            // Flush the trailing partial (not-yet-`SYS_BLOCK_SAMPLES`) block
+            // the last callback invocation left batched but unsent — safe
+            // only now, after the stop completion above has already fired
+            // (or timed out): `SCStreamOutput`'s callback must not fire
+            // again past that point, so nothing else can race this read of
+            // `CallbackState`. Mirrors `audio.rs::run_writer_thread`'s own
+            // post-loop trailing-block flush — without this, up to
+            // `SYS_BLOCK_SAMPLES` (~0.5s) of system audio right at the end
+            // of every recording would be silently dropped instead of
+            // reaching the mixer.
+            let mut state = lock(&self.handler.ivars().state);
+            if let Some(block) = state.batcher.flush() {
+                try_send_sys_block(&self.handler.ivars().tx, block, &mut state.dropped);
+            }
         }
     }
 
     /// Unconditional teardown backstop: fires a best-effort, fire-and-
     /// forget stop request whenever a [`SysCapture`] is dropped without an
     /// explicit [`SysCapture::stop`] call first (e.g. a panic unwind
-    /// through a future Task 5 caller). Deliberately does **not** block —
+    /// through `audio::Recorder`'s own caller). Deliberately does **not** block —
     /// unlike `stop()`'s [`block_on_error_completion`], `Drop` can run in
     /// arbitrary contexts (including mid-panic-unwind), where blocking on
     /// an XPC round trip would itself be a hazard — so this passes `None`
@@ -1322,7 +1295,6 @@ mod capture {
     /// to guarantee the underlying capture session actually stops, and
     /// leaving the OS's own recording indicator running with no code path
     /// left to turn it off would be a real, user-visible bug.
-    #[allow(dead_code)]
     impl Drop for SysCapture {
         fn drop(&mut self) {
             // SAFETY: `self.stream` is a valid `SCStream` for as long as
@@ -1353,13 +1325,8 @@ mod capture {
     }
 }
 
-// Not yet consumed anywhere else in the crate — Task 5's mic+system mixer
-// (`Recorder`'s eventual second source) is this type's real caller. Kept
-// `pub` and re-exported now regardless, same "the channel shape is the
-// contract" reasoning the plan calls out for this task, and the same
-// "land the seam now, wire the caller later" shape as `detect.rs`'s
-// `#[allow(dead_code)] DetectorEvent::SetEnabled` variant.
-#[allow(unused_imports)]
+// `audio::Recorder::start`'s system-audio branch (Stage 5 Task 5) is this
+// type's real caller now — see that function's docs.
 pub use capture::SysCapture;
 
 // ---------------------------------------------------------------------------
