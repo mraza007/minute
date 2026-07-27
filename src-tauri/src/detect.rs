@@ -1815,8 +1815,10 @@ fn emit_meeting_detected(app: &AppHandle, app_name: &str) {
 /// macOS, an inert stub elsewhere — see the two `macos` module variants
 /// above) and a [`DetectorCore`], translating shim events, periodic ticks,
 /// and reported prompt outcomes into `Action`s, emitting `meeting-detected`
-/// to the frontend AND triggering the popup panel
-/// (`popup::show_meeting_prompt`) on `ShowPrompt`.
+/// to the frontend AND asking `popup::show_meeting_prompt` to queue the
+/// native panel work on Tauri's main thread when `ShowPrompt` occurs. The
+/// dispatch is essential because this function itself runs on a worker
+/// thread and AppKit window mutations are main-thread-only.
 ///
 /// `msg_tx`/`msg_rx` are the unified [`ThreadMsg`] channel `start` built —
 /// this function's own job with `msg_tx` is only to hand a clone to a small

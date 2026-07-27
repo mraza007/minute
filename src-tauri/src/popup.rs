@@ -43,6 +43,17 @@
 //! in here to unit-test in the first place, only NSPanel/AppKit plumbing
 //! (see the module-level "kept thin" note below).
 //!
+//! ## Main-thread boundary
+//! Every operation that touches the native panel — conversion, configuration,
+//! positioning, show, and hide — is dispatched through
+//! [`AppHandle::run_on_main_thread`]. `tauri-nspanel` marks its panel handles
+//! `Send + Sync` so they can travel through Tauri's command system, but its
+//! own safety comment still requires callers to perform the actual AppKit
+//! operations on the main thread. This matters here because
+//! `detect::run_detector_thread` deliberately runs on a `std::thread`; calling
+//! `to_panel` there reaches `-[NSPanel setFloatingPanel:]`, which macOS traps
+//! with "Must only be used from the main thread".
+//!
 //! ## Kept thin, deliberately
 //! Unlike `detect.rs`'s `DetectorCore`, there is no pure decision core to
 //! pull out of this module — window creation, positioning, and show/hide
@@ -85,11 +96,11 @@ struct MeetingPopupPayload {
     app_name: String,
 }
 
-/// Shows (creating once, then reusing for the rest of the app's lifetime)
-/// the meeting-detected pill for `app_name`, positioned top-center of
-/// whichever display currently has the mouse cursor. Called by
-/// `detect::run_detector_thread` on every `Action::ShowPrompt` — see that
-/// function's docs.
+/// Queues a main-thread task that shows (creating once, then reusing for the
+/// rest of the app's lifetime) the meeting-detected pill for `app_name`,
+/// positioned top-center of whichever display currently has the mouse
+/// cursor. Called by `detect::run_detector_thread` on every
+/// `Action::ShowPrompt` — see that function's docs.
 #[cfg(target_os = "macos")]
 pub fn show_meeting_prompt(app: &AppHandle, app_name: &str) {
     macos::show_meeting_prompt(app, app_name)
@@ -199,8 +210,9 @@ pub fn popup_dismiss(app: AppHandle, detector: State<SharedDetectorHandle>, time
 
 #[cfg(target_os = "macos")]
 mod macos {
-    //! The real NSPanel plumbing — see the module-level docs above for why
-    //! this stays free of anything worth unit-testing.
+    //! The real NSPanel plumbing. Functions ending in `_on_main_thread` are
+    //! the only functions allowed to touch `tauri-nspanel`; entry points and
+    //! callbacks must reach them through `dispatch_to_main_thread`.
 
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
@@ -248,7 +260,39 @@ mod macos {
         state.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Development-time backstop for future edits: `tauri-nspanel` cannot
+    /// encode AppKit's thread affinity in its `Send + Sync` handle type, so
+    /// keep the invariant executable at each native-operation boundary.
+    fn debug_assert_main_thread(operation: &str) {
+        debug_assert!(
+            objc2::MainThreadMarker::new().is_some(),
+            "meeting popup {operation} must run on the main thread"
+        );
+    }
+
+    /// Schedules one popup task on Tauri's event-loop thread. AppKit requires
+    /// all `NSWindow`/`NSPanel` mutations to happen there; in particular, the
+    /// detector calls `show_meeting_prompt` from its own worker thread.
+    fn dispatch_to_main_thread(
+        app: &AppHandle,
+        operation: &'static str,
+        task: impl FnOnce(&AppHandle) + Send + 'static,
+    ) {
+        let main_thread_app = app.clone();
+        if let Err(e) = app.run_on_main_thread(move || task(&main_thread_app)) {
+            log::warn!("meeting popup: failed to queue {operation} on the main thread: {e}");
+        }
+    }
+
     pub fn show_meeting_prompt(app: &AppHandle, app_name: &str) {
+        let app_name = app_name.to_string();
+        dispatch_to_main_thread(app, "show", move |app| {
+            show_meeting_prompt_on_main_thread(app, &app_name);
+        });
+    }
+
+    fn show_meeting_prompt_on_main_thread(app: &AppHandle, app_name: &str) {
+        debug_assert_main_thread("show");
         let window = match ensure_window(app) {
             Ok(window) => window,
             Err(e) => {
@@ -273,6 +317,11 @@ mod macos {
     }
 
     pub fn hide(app: &AppHandle) {
+        dispatch_to_main_thread(app, "hide", hide_on_main_thread);
+    }
+
+    fn hide_on_main_thread(app: &AppHandle) {
+        debug_assert_main_thread("hide");
         if let Ok(panel) = app.get_webview_panel(PANEL_LABEL) {
             panel.hide();
         }
@@ -283,6 +332,7 @@ mod macos {
     /// both the ready-immediately path and `on_page_load`'s deferred path
     /// funnel through the exact same two steps.
     fn deliver_prompt(app: &AppHandle, app_name: &str) {
+        debug_assert_main_thread("delivery");
         let payload = MeetingPopupPayload {
             app_name: app_name.to_string(),
         };
@@ -304,6 +354,7 @@ mod macos {
     /// the app's lifetime; a no-op (returns the existing window) on every
     /// call after the first.
     fn ensure_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+        debug_assert_main_thread("window creation");
         if let Some(window) = app.get_webview_window(PANEL_LABEL) {
             return Ok(window);
         }
@@ -327,7 +378,7 @@ mod macos {
             .visible(false)
             .on_page_load(|webview, payload| {
                 if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                    on_popup_ready(webview.app_handle());
+                    dispatch_to_main_thread(webview.app_handle(), "ready handling", on_popup_ready);
                 }
             })
             .build()?;
@@ -358,6 +409,7 @@ mod macos {
     /// ready and, if a `show_meeting_prompt` call arrived before this fired
     /// (see `show_meeting_prompt`'s `pending` branch), delivers it now.
     fn on_popup_ready(app: &AppHandle) {
+        debug_assert_main_thread("ready handling");
         let state = app.state::<PopupState>();
         state.ready.store(true, Ordering::SeqCst);
         // Split into its own `let` (rather than `if let Some(app_name) =
@@ -385,6 +437,7 @@ mod macos {
     /// there's nothing the raw AppKit call would buy beyond what's already
     /// unsafe-free.
     fn position_top_center_at_cursor(app: &AppHandle, window: &tauri::WebviewWindow) {
+        debug_assert_main_thread("positioning");
         let monitor = app
             .cursor_position()
             .ok()
