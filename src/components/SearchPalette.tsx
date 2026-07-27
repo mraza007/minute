@@ -208,14 +208,17 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
           maxHeight: '68vh',
           display: 'flex',
           flexDirection: 'column',
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
+          // A sheet of the same paper the app is made of, lifted off the
+          // page by a shadow — the one place a raised surface is justified,
+          // because it genuinely is a separate sheet laid over the others.
+          background: 'var(--panel)',
+          border: '1px solid var(--rule-strong)',
           borderRadius: 'var(--radius-md)',
           boxShadow: '0 20px 48px rgba(0,0,0,.22)',
           overflow: 'hidden',
         }}
       >
-        <div style={{ padding: '4px 16px', borderBottom: '1px solid var(--border-soft)', flex: 'none' }}>
+        <div style={{ padding: '0 20px', borderBottom: '1px solid var(--rule)', flex: 'none' }}>
           <input
             ref={inputRef}
             role="combobox"
@@ -231,27 +234,27 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
             style={{
               width: '100%',
               boxSizing: 'border-box',
-              padding: '14px 4px',
+              padding: '16px 0',
               border: 'none',
               outline: 'none',
               background: 'transparent',
-              fontFamily: 'inherit',
-              fontSize: 16,
+              fontFamily: 'var(--sans)',
+              fontSize: 15,
               color: 'var(--ink)',
             }}
           />
         </div>
-        <div id="search-palette-listbox" role="listbox" aria-label="Search results" style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
+        <div id="search-palette-listbox" role="listbox" aria-label="Search results" style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
           {trimmedQuery === '' && (
-            <div style={{ padding: '20px 14px', fontSize: 13, color: 'var(--ink-muted)' }}>
+            <div style={{ padding: '20px', fontFamily: 'var(--serif)', fontSize: 13.5, color: 'var(--ink-muted)' }}>
               Search note titles and transcripts.
             </div>
           )}
           {trimmedQuery !== '' && searchError && (
-            <div style={{ padding: '20px 14px', fontSize: 13, color: 'var(--ink-muted)' }}>Search failed: {searchError}</div>
+            <div style={{ padding: '20px', fontFamily: 'var(--serif)', fontSize: 13.5, color: 'var(--ink-muted)' }}>Search failed: {searchError}</div>
           )}
           {trimmedQuery !== '' && !searchError && !loading && hits.length === 0 && (
-            <div style={{ padding: '20px 14px', fontSize: 13, color: 'var(--ink-muted)' }}>No matches for “{trimmedQuery}”.</div>
+            <div style={{ padding: '20px', fontFamily: 'var(--serif)', fontSize: 13.5, color: 'var(--ink-muted)' }}>No matches for “{trimmedQuery}”.</div>
           )}
           {hits.map((hit, i) => (
             <div
@@ -271,36 +274,56 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
                 e.preventDefault()
                 selectHit(hit)
               }}
+              // Same selection language as the sidebar: a margin marker and
+              // a wash, not a filled rounded block.
               style={{
-                padding: '8px 10px',
-                borderRadius: 'var(--radius-sm)',
+                padding: '8px 20px 9px 18px',
+                borderLeft: `2px solid ${i === activeIndex ? 'var(--accent)' : 'transparent'}`,
                 cursor: 'pointer',
-                background: i === activeIndex ? 'var(--surface-soft)' : 'transparent',
+                background: i === activeIndex ? 'rgba(var(--accent-rgb), .08)' : 'transparent',
               }}
             >
-              <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div
+                style={{
+                  fontFamily: 'var(--serif)',
+                  fontSize: 14,
+                  color: 'var(--ink)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
                 {hit.title}
               </div>
               {hit.kind === 'title' ? (
-                <div style={{ fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>{dateLabelFor(notes, hit.noteId)}</div>
+                <div style={{ fontSize: 11, color: 'var(--ink-faint)', marginTop: 2 }}>{dateLabelFor(notes, hit.noteId)}</div>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 2 }}>
+                // The timestamp sits in a fixed-width column so a run of
+                // transcript hits reads as one flush margin — the palette's
+                // echo of the manuscript gutter.
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginTop: 3 }}>
                   <span
                     style={{
                       flex: 'none',
-                      padding: '1px 6px',
-                      borderRadius: 5,
-                      border: '1px solid var(--border-strong)',
-                      background: 'var(--surface-softer)',
-                      fontSize: 11,
-                      fontWeight: 600,
+                      width: 38,
+                      fontSize: 10.5,
                       color: 'var(--ink-faint)',
                       fontVariantNumeric: 'tabular-nums',
+                      letterSpacing: '.02em',
                     }}
                   >
                     {formatMmSs(hit.segmentStart ?? 0)}
                   </span>
-                  <span style={{ fontSize: 12, color: 'var(--ink-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span
+                    style={{
+                      fontFamily: 'var(--serif)',
+                      fontSize: 12.5,
+                      color: 'var(--ink-muted)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
                     <Highlighted text={hit.snippet} query={trimmedQuery} />
                   </span>
                 </div>

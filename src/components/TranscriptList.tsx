@@ -16,8 +16,22 @@ export interface TranscriptListProps {
 const VIRTUALIZE_THRESHOLD = 150
 
 /** Seeded estimate (px) for a not-yet-measured row's height, before the virtualizer's dynamic `measureElement` mode corrects it against the row's actual rendered height (segment text length varies a lot — a one-line aside vs. a multi-sentence remark — so this is only ever a starting guess, never load-bearing for correctness). Tuned to a typical single-paragraph segment at this component's font size/line-height. */
-const ESTIMATED_ROW_HEIGHT_PX = 92
+const ESTIMATED_ROW_HEIGHT_PX = 96
 
+/** Vertical rhythm between segments. Lives here rather than as a flex `gap` because the virtualized branch positions rows absolutely (no flex parent to inherit a gap from) and has to carry the same spacing as `paddingBottom`. */
+const ROW_GAP_PX = 21
+
+/**
+ * One transcript segment, set as a manuscript line: the timestamp sits in a
+ * right-aligned margin gutter behind the continuous rule drawn by `.script`
+ * (see index.css), and the speaker/body occupy the text column beside it.
+ *
+ * The timestamp *is* the seek control — there's no separate affordance. That
+ * merges two things the previous layout kept apart (a decorative avatar
+ * circle and a timestamp that happened to be clickable) into the single
+ * element a reader already looks at when they want to jump somewhere, and it
+ * puts it exactly where a manuscript puts line references.
+ */
 function Segment({
   segment,
   active,
@@ -30,78 +44,33 @@ function Segment({
   onSeek: (seconds: number) => void
 }) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 12,
-        padding: 6,
-        margin: -6,
-        borderRadius: 'var(--radius-sm)',
-        background: active ? 'var(--surface-soft)' : 'transparent',
-      }}
-    >
-      <div
-        style={{
-          width: 30,
-          height: 30,
-          borderRadius: '50%',
-          background: 'var(--panel-warm)',
-          color: 'var(--ink-muted)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 11,
-          fontWeight: 700,
-          flex: 'none',
-        }}
+    <div className="script-line" data-active={active ? 'true' : undefined}>
+      <button
+        onClick={() => seekable && onSeek(segment.start)}
+        disabled={!seekable}
+        aria-disabled={!seekable}
+        aria-label={`Play from ${segment.time}`}
+        className="script-ts"
+        data-seekable={seekable ? 'true' : 'false'}
       >
-        {segment.initials}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
-          <b>{segment.speaker}</b>
-          <button
-            onClick={() => seekable && onSeek(segment.start)}
-            disabled={!seekable}
-            aria-disabled={!seekable}
-            aria-label={`Play from ${segment.time}`}
-            style={{
-              border: 'none',
-              background: 'none',
-              padding: 0,
-              margin: 0,
-              font: 'inherit',
-              color: 'var(--ink-faint)',
-              cursor: seekable ? 'pointer' : 'default',
-            }}
-          >
-            {segment.time}
-          </button>
-        </div>
-        <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--ink-body)', textWrap: 'pretty' }}>{segment.text}</div>
+        {segment.time}
+      </button>
+      <div style={{ minWidth: 0 }}>
+        <div className="script-who">{segment.speaker}</div>
+        <p className="script-said">{segment.text}</p>
       </div>
     </div>
   )
 }
 
-const scrollContainerStyle = {
-  flex: 1,
-  overflow: 'auto',
-  padding: '24px 32px',
-  maxWidth: 700,
-} as const
-
 /**
- * Plain, unvirtualized rendering — every segment mounted directly, exactly
- * as this component behaved before virtualization existed. Used below
- * [`VIRTUALIZE_THRESHOLD`]; kept byte-for-byte equivalent to the pre-Task-7
- * shape (same wrapper `display: flex, flexDirection: column, gap: 18`) so
- * every existing test (and every real note short enough to matter) sees no
- * difference at all.
+ * Plain, unvirtualized rendering — every segment mounted directly. Used
+ * below [`VIRTUALIZE_THRESHOLD`]; the flex column supplies [`ROW_GAP_PX`]
+ * between rows, which the virtualized branch has to reproduce by hand.
  */
 function PlainTranscriptList({ segments, activeIndex, onSeek, seekable }: TranscriptListProps) {
   return (
-    <div style={{ ...scrollContainerStyle, display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div className="script" style={{ display: 'flex', flexDirection: 'column', gap: ROW_GAP_PX }}>
       {segments.map((segment, i) => (
         <Segment key={i} segment={segment} active={i === activeIndex} seekable={seekable} onSeek={onSeek} />
       ))}
@@ -120,10 +89,11 @@ function PlainTranscriptList({ segments, activeIndex, onSeek, seekable }: Transc
  * seeds the very first layout pass before any row has actually been
  * measured.
  *
- * The gap between rows (18px in the plain, flex-column layout above) can't
- * come from `flexDirection: column; gap` here — virtualized rows are
- * absolutely positioned, not flex children — so each row's wrapper carries
- * that spacing itself as `paddingBottom`.
+ * The margin rule is unaffected by virtualization: it's a background
+ * gradient on this scroll container (`.script`), painted against the
+ * container's own padding box rather than its scrolled content, so it stays
+ * one unbroken vertical line however far the transcript is scrolled and
+ * however few rows happen to be mounted.
  */
 function VirtualizedRows({ segments, activeIndex, onSeek, seekable }: TranscriptListProps) {
   const parentRef = useRef<HTMLDivElement>(null)
@@ -137,7 +107,7 @@ function VirtualizedRows({ segments, activeIndex, onSeek, seekable }: Transcript
   const items = virtualizer.getVirtualItems()
 
   return (
-    <div ref={parentRef} data-testid="transcript-virtual-scroll" style={scrollContainerStyle}>
+    <div ref={parentRef} data-testid="transcript-virtual-scroll" className="script">
       <div style={{ position: 'relative', width: '100%', height: virtualizer.getTotalSize() }}>
         {items.map(item => {
           const segment = segments[item.index]
@@ -152,7 +122,7 @@ function VirtualizedRows({ segments, activeIndex, onSeek, seekable }: Transcript
                 left: 0,
                 width: '100%',
                 transform: `translateY(${item.start}px)`,
-                paddingBottom: 18,
+                paddingBottom: ROW_GAP_PX,
               }}
             >
               <Segment segment={segment} active={item.index === activeIndex} seekable={seekable} onSeek={onSeek} />

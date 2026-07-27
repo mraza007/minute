@@ -38,10 +38,16 @@ describe('Sidebar', () => {
     expect(onSelect).toHaveBeenCalledWith('demo-6')
   })
 
-  it('gives the selected row a white background', () => {
+  // Selection is drawn as a margin marker (a 2px accent rule down the left
+  // edge plus a wash that fades out to the right), not as a raised card.
+  // That treatment lives in index.css keyed on `.side-row[aria-current]`, so
+  // what this guards is the pair of hooks the stylesheet needs — jsdom won't
+  // resolve the stylesheet itself.
+  it('marks the selected row with the hooks index.css draws the margin rule from', () => {
     render(<Sidebar {...base} selectedNoteId="demo-3" />)
     const row = screen.getByRole('button', { name: /client call — acme/i })
-    expect(row).toHaveStyle({ background: 'var(--card)' })
+    expect(row).toHaveClass('side-row')
+    expect(row).toHaveAttribute('aria-current', 'true')
   })
 
   it('marks the selected note row and current nav item with aria-current', () => {

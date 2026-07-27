@@ -5,13 +5,13 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-0.5.0-e04430)
+![version](https://img.shields.io/badge/version-0.6.0-c8412a)
 
 ![Minute — note view with live transcript and AI-generated summary](screenshots/hero.png)
 
 **[⬇ Download Minute for macOS (Apple Silicon)](https://github.com/mraza007/minute/releases/latest)**
 
-or grab the DMG directly: [Minute_0.5.0_aarch64.dmg](https://github.com/mraza007/minute/releases/download/v0.5.0/Minute_0.5.0_aarch64.dmg)
+or grab the DMG directly: [Minute_0.6.0_aarch64.dmg](https://github.com/mraza007/minute/releases/download/v0.6.0/Minute_0.6.0_aarch64.dmg)
 
 Drag Minute to Applications, then run this once — the build isn't notarized,
 so macOS quarantines it and refuses to open it until the flag is cleared:

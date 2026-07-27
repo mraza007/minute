@@ -53,7 +53,10 @@ export default function App() {
 
   if (s.view === 'loading') {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)', fontSize: 13, color: 'var(--ink-muted)' }}>
+      <div
+        className="app-paper"
+        style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)', fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)' }}
+      >
         Loading…
       </div>
     )
@@ -78,7 +81,13 @@ export default function App() {
   return (
     <>
       {/* minWidth mirrors src-tauri/tauri.conf.json's windows[0].minWidth — keep both in sync, they can't reference each other across the JS/Rust boundary. */}
-      <div style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
+      <div className="app-paper" style={{ height: '100vh', minWidth: 1180, display: 'flex', flexDirection: 'column', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
+        {/* "Quiet by default, loud when recording" (.impeccable.md), spent in
+            one place: a single accent hairline along the very top edge of the
+            window. It's visible from the corner of the eye no matter which
+            view is open or where the window sits, and it costs no layout —
+            which is what lets the rest of the recording UI stay calm. */}
+        {s.isRecording && <div className="rec-edge" aria-hidden="true" />}
         <TitleBar isRecording={s.isRecording} recTime={s.recTime} onStartRec={s.startRec} onReturnToRecording={s.goRecording} />
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           <Sidebar

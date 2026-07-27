@@ -153,7 +153,7 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    await waitFor(() => expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
     expect(screen.getByText('REC 00:00')).toBeInTheDocument()
   })
 
@@ -220,7 +220,7 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    await waitFor(() => expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
 
     await act(async () => {
       await emit('transcript-segment', { noteId: '20260722-130000', speaker: 'Speaker 1', start: 0, end: 1, text: 'Hello there' })
@@ -251,7 +251,7 @@ describe('App', () => {
     // segment accumulated so far — including the one that arrived while on
     // Settings — visible and merged.
     fireEvent.click(screen.getByRole('button', { name: 'Return to recording' }))
-    await waitFor(() => expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
     expect(screen.getByText('Hello there how are you')).toBeInTheDocument()
   })
 

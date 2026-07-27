@@ -19,19 +19,22 @@
          that fixed it. -->
     <title>Minute — marketing capture frame</title>
     <style>
+      /* Kept in step with src/index.css's ramp — the backdrop is one shade
+         off the app's own --canvas so the window still separates from it,
+         and the accent blob matches --accent exactly. */
       :root {
-        --backdrop-base: #efe9e2;
-        --blob-accent: rgba(224, 68, 48, 0.22);
-        --blob-cream: rgba(250, 240, 222, 0.65);
-        --blob-gray: rgba(150, 140, 128, 0.16);
-        --window-border: rgba(28, 26, 24, 0.1);
+        --backdrop-base: #e3dac6;
+        --blob-accent: rgba(200, 65, 42, 0.2);
+        --blob-cream: rgba(250, 244, 230, 0.7);
+        --blob-gray: rgba(150, 138, 112, 0.16);
+        --window-border: rgba(33, 29, 24, 0.12);
       }
       html[data-theme='dark'] {
-        --backdrop-base: #18160f;
-        --blob-accent: rgba(224, 84, 63, 0.16);
-        --blob-cream: rgba(90, 76, 58, 0.28);
-        --blob-gray: rgba(70, 64, 56, 0.22);
-        --window-border: rgba(255, 255, 255, 0.08);
+        --backdrop-base: #100e09;
+        --blob-accent: rgba(224, 90, 66, 0.16);
+        --blob-cream: rgba(90, 76, 54, 0.28);
+        --blob-gray: rgba(70, 62, 50, 0.22);
+        --window-border: rgba(240, 233, 219, 0.09);
       }
 
       * {

@@ -27,8 +27,8 @@ export function Toggle({ on, onToggle, label, disabled = false }: ToggleProps) {
         background: 'transparent',
         border: 'none',
         padding: 0,
-        fontFamily: 'inherit',
-        fontSize: 13,
+        fontFamily: 'var(--serif)',
+        fontSize: 13.5,
         color: 'inherit',
         textAlign: 'left',
         cursor: disabled ? 'default' : 'pointer',
@@ -69,8 +69,13 @@ export function Toggle({ on, onToggle, label, disabled = false }: ToggleProps) {
             width: 20,
             height: 20,
             borderRadius: '50%',
-            background: 'var(--card)',
-            boxShadow: '0 1px 3px rgba(0,0,0,.25)',
+            // Paper-white knob rather than --card, so it stays legible
+            // against both the accent fill (on) and the warm track (off) in
+            // either appearance; the shadow is the one place a control is
+            // allowed a lift, since the knob has to read as sitting *on* the
+            // track.
+            background: '#fff',
+            boxShadow: '0 1px 2px rgba(0,0,0,.22)',
             transform: on ? 'translateX(16px)' : 'translateX(0)',
             transition: 'transform .18s',
           }}

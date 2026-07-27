@@ -51,12 +51,21 @@ interface RecordingViewProps {
 // role="status" node that gets conditionally mounted/unmounted with its
 // announcement text already inside is commonly missed by screen readers, so
 // this stays in the tree the entire time and only its content changes.
+//
+// Sits in the transcript's text column (offset past the timestamp gutter) so
+// the caret lands exactly where the next transcribed line will appear.
 function TranscribingIndicator({ active }: { active: boolean }) {
   return (
-    <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-text)', fontSize: 13, fontWeight: 600 }}>
+    <div
+      role="status"
+      style={{ display: 'flex', alignItems: 'center', gap: 9, color: 'var(--accent-text)', fontSize: 12, fontWeight: 600 }}
+    >
       {active && (
         <>
-          <span className="blink-dot" style={{ width: 8, height: 16, borderRadius: 3, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }} />
+          <span
+            className="blink-dot"
+            style={{ width: 7, height: 15, background: 'var(--accent)', display: 'inline-block', animation: 'blink 1s step-end infinite' }}
+          />
           transcribing…
         </>
       )}
@@ -72,15 +81,14 @@ function SttErrorRow({ sttError }: { sttError: string | null }) {
         display: 'flex',
         flexDirection: 'column',
         gap: 3,
+        borderLeft: '2px solid var(--accent)',
         background: 'var(--accent-tint)',
-        border: '1px solid rgba(var(--accent-rgb), .3)',
-        borderRadius: 'var(--radius-md)',
         padding: '10px 14px',
         color: 'var(--accent-text)',
       }}
     >
-      <div style={{ fontSize: 13, fontWeight: 600 }}>Recording continues — transcript unavailable</div>
-      {sttError && <div style={{ fontSize: 12, color: 'var(--accent-text)' }}>{sttError}</div>}
+      <div style={{ fontSize: 12.5, fontWeight: 600 }}>Recording continues — transcript unavailable</div>
+      {sttError && <div style={{ fontSize: 11.5 }}>{sttError}</div>}
     </div>
   )
 }
@@ -117,8 +125,9 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
   return (
     <>
       {capped && (
-        <div style={{ fontSize: 12, color: 'var(--ink-faint)' }}>
-          Showing the latest {LIVE_RENDER_CAP} entries — the full transcript is saved.
+        <div className="script-line">
+          <span />
+          <div className="mlab">Showing the latest {LIVE_RENDER_CAP} entries — the full transcript is saved.</div>
         </div>
       )}
       {visibleGroups.map(group => (
@@ -139,17 +148,37 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
         // group on a speaker change, and stream time only moves forward —
         // but `speaker` is included too as a defensive tiebreaker rather
         // than relying on that alone.
-        <div key={`${group.speaker}-${group.start}`}>
-          <div style={{ display: 'flex', gap: 9, fontSize: 12, marginBottom: 3, alignItems: 'baseline' }}>
-            <b>{group.speaker}</b>
-            <span style={{ color: 'var(--ink-faint)' }}>{formatMmSs(group.start)}</span>
+        //
+        // Uses the same `.script-line` manuscript grid the stored
+        // transcript does, so a live line lands in exactly the position it
+        // will occupy once the note is stopped — nothing reflows when
+        // recording ends.
+        <div key={`${group.speaker}-${group.start}`} className="script-line">
+          <div className="script-ts" style={{ padding: '3px 0 0' }}>
+            {formatMmSs(group.start)}
           </div>
-          <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--ink-body)', textWrap: 'pretty' }}>{group.text}</div>
+          <div style={{ minWidth: 0 }}>
+            <div className="script-who">{group.speaker}</div>
+            <p className="script-said">{group.text}</p>
+          </div>
         </div>
       ))}
-      {showLoadingHint && <div style={{ fontSize: 13, color: 'var(--ink-faint)' }}>Loading {modelName}…</div>}
-      {showError && <SttErrorRow sttError={sttError} />}
-      <TranscribingIndicator active={showTranscribing} />
+      {showLoadingHint && (
+        <div className="script-line">
+          <span />
+          <div style={{ fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)' }}>Loading {modelName}…</div>
+        </div>
+      )}
+      {showError && (
+        <div className="script-line">
+          <span />
+          <SttErrorRow sttError={sttError} />
+        </div>
+      )}
+      <div className="script-line">
+        <span />
+        <TranscribingIndicator active={showTranscribing} />
+      </div>
     </>
   )
 })
@@ -200,9 +229,13 @@ function LiveTranscriptScroller({
         ref={scrollRef}
         onScroll={handleScroll}
         data-testid="live-transcript-scroll"
-        style={{ position: 'absolute', inset: 0, overflow: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 740 }}
+        className="script"
+        style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 21 }}
       >
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE</div>
+        <div className="script-line">
+          <span />
+          <div className="mlab">Live transcript — audio never leaves this machine</div>
+        </div>
         <LiveTranscriptBody liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
       </div>
       {!stuck && (
@@ -222,12 +255,12 @@ function LiveTranscriptScroller({
             alignItems: 'center',
             gap: 6,
             padding: '7px 14px',
-            border: '1px solid var(--border)',
+            border: '1px solid var(--rule-strong)',
             borderRadius: 999,
             background: 'var(--card)',
             color: 'var(--ink)',
             fontFamily: 'inherit',
-            fontSize: 12,
+            fontSize: 11.5,
             fontWeight: 600,
             cursor: 'pointer',
             boxShadow: '0 2px 8px rgba(0,0,0,.12)',
@@ -244,6 +277,43 @@ function LiveTranscriptScroller({
   )
 }
 
+/** Audio-source indicator. Reads as a pair of underlined captions rather
+ *  than a segmented control, because it isn't one: the source is fixed for
+ *  the life of a recording (see `systemAudioActive`'s docs), so anything
+ *  that looks pressable here is lying about what it does. */
+function SourceTab({ on, disabled, title, icon, label }: { on: boolean; disabled?: boolean; title?: string; icon: React.ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={on}
+      aria-disabled={disabled ? 'true' : undefined}
+      disabled={disabled}
+      tabIndex={disabled ? -1 : 0}
+      title={title}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 7,
+        border: 'none',
+        background: 'transparent',
+        padding: '6px 0',
+        borderBottom: `2px solid ${on ? 'var(--accent)' : 'transparent'}`,
+        fontFamily: 'var(--sans)',
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: '.11em',
+        textTransform: 'uppercase',
+        color: on ? 'var(--ink)' : 'var(--ink-faint)',
+        cursor: 'default',
+      }}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
 export const RecordingView = memo(function RecordingView({
   liveSegments,
   paused,
@@ -256,131 +326,113 @@ export const RecordingView = memo(function RecordingView({
   systemAudioActive,
 }: RecordingViewProps) {
   return (
-    <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
+    <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--panel)' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <div style={{ padding: '16px 32px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div role="radiogroup" aria-label="Audio source" style={{ display: 'flex', background: 'var(--panel-warm)', borderRadius: 9, padding: 3 }}>
-            <button
-              type="button"
-              role="radio"
-              aria-checked="true"
-              tabIndex={0}
-              style={{
-                padding: '6px 14px',
-                borderRadius: 7,
-                border: 'none',
-                background: 'var(--card)',
-                boxShadow: '0 1px 3px rgba(0,0,0,.1)',
-                fontFamily: 'inherit',
-                fontSize: 13,
-                fontWeight: 600,
-                color: 'inherit',
-                display: 'flex',
-                gap: 7,
-                alignItems: 'center',
-              }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-              </svg>
-              Microphone
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={systemAudioActive}
-              aria-disabled="true"
+        <div
+          style={{
+            height: 56,
+            flex: 'none',
+            padding: '0 34px',
+            borderBottom: '1px solid var(--rule)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 26,
+          }}
+        >
+          <div role="radiogroup" aria-label="Audio source" style={{ display: 'flex', gap: 22, flex: 'none' }}>
+            <SourceTab
+              on
+              label="Microphone"
+              icon={
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                </svg>
+              }
+            />
+            <SourceTab
+              on={systemAudioActive}
               disabled
-              tabIndex={-1}
+              label="System audio"
               title={
                 systemAudioActive
                   ? 'Recording system audio — the other side of the call. The source can’t change mid-recording.'
                   : 'System audio isn’t part of this recording. Turn it on for the next one in Settings.'
               }
-              style={{
-                padding: '6px 14px',
-                borderRadius: 7,
-                border: 'none',
-                background: systemAudioActive ? 'var(--card)' : 'transparent',
-                boxShadow: systemAudioActive ? '0 1px 3px rgba(0,0,0,.1)' : 'none',
-                fontFamily: 'inherit',
-                fontSize: 13,
-                fontWeight: 600,
-                color: systemAudioActive ? 'inherit' : 'var(--ink-muted)',
-                display: 'flex',
-                gap: 7,
-                alignItems: 'center',
-              }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-                <rect width="20" height="14" x="2" y="3" rx="2"></rect>
-                <line x1="8" x2="16" y1="21" y2="21"></line>
-                <line x1="12" x2="12" y1="17" y2="21"></line>
-              </svg>
-              System audio
-            </button>
+              icon={
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+                  <line x1="8" x2="16" y1="21" y2="21"></line>
+                  <line x1="12" x2="12" y1="17" y2="21"></line>
+                </svg>
+              }
+            />
           </div>
           <Waveform paused={paused} />
-          <div style={{ fontSize: 12, color: 'var(--ink-faint)', flex: 'none' }}>{modelName} · on-device</div>
+          <div className="mlab" style={{ flex: 'none' }}>{modelName} · on-device</div>
         </div>
+
         <LiveTranscriptScroller liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
-        <div style={{ padding: '14px 32px 18px', display: 'flex', gap: 10, flex: 'none' }}>
-          <button
-            onClick={stopRec}
-            disabled={stopping}
-            className="btn-rec"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 9,
-              padding: '11px 22px',
-              border: 'none',
-              borderRadius: 999,
-              background: 'var(--accent-solid)',
-              color: 'var(--text-on-accent)',
-              fontFamily: 'inherit',
-              fontWeight: 600,
-              fontSize: 13,
-              cursor: stopping ? 'default' : 'pointer',
-              opacity: stopping ? 0.7 : 1,
-              boxShadow: '0 1px 4px rgba(var(--accent-rgb), .35)',
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <rect width="12" height="12" x="6" y="6" rx="2"></rect>
+
+        {/* Flush control strip, continuous with the player bar on the notes
+            side — same height, same rule, same chrome fill, so switching
+            between the two views doesn't shift the bottom edge. */}
+        <div
+          style={{
+            height: 62,
+            flex: 'none',
+            padding: '0 34px',
+            borderTop: '1px solid var(--rule)',
+            background: 'var(--panel-warm)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <button onClick={stopRec} disabled={stopping} className="btn-solid">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <rect width="12" height="12" x="6" y="6"></rect>
             </svg>
             {stopping ? 'Finishing…' : 'Stop & transcribe'}
           </button>
-          <button
-            onClick={togglePause}
-            disabled={stopping}
-            className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid var(--border-strong)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: stopping ? 'default' : 'pointer', opacity: stopping ? 0.6 : 1 }}
-          >
+          <button onClick={togglePause} disabled={stopping} className="btn-outline">
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button
-            disabled
-            aria-disabled="true"
-            title="Markers arrive in a later update."
-            className="btn-light"
-            style={{ padding: '11px 22px', border: '1px solid var(--border-strong)', borderRadius: 999, background: 'var(--card)', color: 'var(--ink)', fontFamily: 'inherit', fontWeight: 600, fontSize: 13, cursor: 'default', opacity: 0.5 }}
-          >
+          <button disabled aria-disabled="true" title="Markers arrive in a later update." className="btn-quiet">
             Add marker
           </button>
         </div>
       </div>
-      <div style={{ width: 330, flex: 'none', borderLeft: '1px solid var(--border-soft)', display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)' }}>
-        <h2 style={{ margin: 0, padding: '16px 16px 12px', fontWeight: 700, fontSize: 14 }}>Live insights</h2>
-        <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)', marginBottom: 6 }}>LIVE INSIGHTS</div>
-            <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)' }}>Live insights arrive in a later update.</div>
-          </div>
-          <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '12px 14px', fontSize: 12, lineHeight: 1.55, color: 'var(--ink-faint)' }}>
-            Transcription runs on-device — nothing leaves this machine.
-          </div>
+
+      <div
+        style={{
+          width: 316,
+          flex: 'none',
+          borderLeft: '1px solid var(--rule)',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          background: 'var(--panel)',
+        }}
+      >
+        <div style={{ padding: '24px 26px 20px' }}>
+          <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 17, letterSpacing: '-.005em' }}>
+            Live insights
+          </h2>
+        </div>
+        <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
+          <section style={{ marginBottom: 22 }}>
+            <div className="sec-head" style={{ marginBottom: 9 }}>
+              <span className="mlab">Not yet</span>
+            </div>
+            <div className="placeholder-block">Live insights arrive in a later update.</div>
+          </section>
+          <section>
+            <div className="sec-head" style={{ marginBottom: 9 }}>
+              <span className="mlab">Privacy</span>
+            </div>
+            <p className="leaf-body">Transcription runs on-device — nothing leaves this machine.</p>
+          </section>
         </div>
       </div>
     </main>

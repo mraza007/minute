@@ -60,50 +60,36 @@ export const MarkdownCard = memo(function MarkdownCard({ filename, subtitle, mar
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px 28px', minHeight: 0 }}>
-      <div
-        style={{
-          maxWidth: 720,
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: '0 1px 4px rgba(0,0,0,.05)',
-          overflow: 'hidden',
-        }}
-      >
+    <div style={{ flex: 1, overflow: 'auto', padding: '26px 34px 34px', minHeight: 0 }}>
+      {/* A drawn frame, not a raised card — this block represents a file on
+          disk, so a border earns its place here in a way the app's other
+          former cards didn't. Square corners, hairline rule, no shadow.
+          The body stays monospace: it's literal file source, the one place
+          in the app where the characters themselves are the subject. */}
+      <div style={{ maxWidth: 760, border: '1px solid var(--rule-strong)', overflow: 'hidden' }}>
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 10,
-            padding: '10px 16px',
-            borderBottom: '1px solid var(--border-soft)',
-            background: 'var(--surface-softer)',
+            padding: '9px 14px',
+            borderBottom: '1px solid var(--rule)',
+            background: 'var(--panel-warm)',
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-faint)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"></path>
             <path d="M15 3v6h6"></path>
           </svg>
-          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, fontWeight: 600, color: 'var(--ink-body)' }}>
+          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11.5, fontWeight: 600, color: 'var(--ink-body)' }}>
             {filename}
           </span>
-          <span style={{ fontSize: 11, color: 'var(--ink-faint)' }}>{subtitle}</span>
+          <span style={{ fontSize: 10.5, color: 'var(--ink-faint)' }}>{subtitle}</span>
           <div style={{ flex: 1 }} />
           <button
             onClick={handleCopy}
-            className="btn-light"
-            style={{
-              padding: '5px 12px',
-              border: '1px solid var(--border-strong)',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--card)',
-              fontFamily: 'inherit',
-              fontSize: 12,
-              fontWeight: 600,
-              color: 'var(--ink)',
-              cursor: 'pointer',
-            }}
+            className="btn-outline"
+            style={{ padding: '5px 11px', fontSize: 11.5 }}
           >
             Copy
           </button>
@@ -111,13 +97,13 @@ export const MarkdownCard = memo(function MarkdownCard({ filename, subtitle, mar
             onClick={onReveal}
             className="btn-dark-accent"
             style={{
-              padding: '5px 12px',
+              padding: '6px 12px',
               border: 'none',
               borderRadius: 'var(--radius-sm)',
-              background: 'var(--ink-solid)',
-              color: 'var(--text-on-accent)',
-              fontFamily: 'inherit',
-              fontSize: 12,
+              background: 'var(--btn-ink-bg)',
+              color: 'var(--btn-ink-fg)',
+              fontFamily: 'var(--sans)',
+              fontSize: 11.5,
               fontWeight: 600,
               cursor: 'pointer',
             }}
@@ -127,13 +113,15 @@ export const MarkdownCard = memo(function MarkdownCard({ filename, subtitle, mar
         </div>
         <div
           style={{
-            padding: '20px 24px',
+            padding: '20px 22px',
             fontFamily: 'ui-monospace, Menlo, monospace',
-            fontSize: 13,
+            fontSize: 12.5,
             lineHeight: 1.8,
             color: 'var(--ink-body)',
             whiteSpace: 'pre-wrap',
             overflowWrap: 'break-word',
+            userSelect: 'text',
+            cursor: 'auto',
           }}
         >
           <MarkdownBody markdown={markdown} />

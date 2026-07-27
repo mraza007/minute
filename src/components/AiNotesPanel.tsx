@@ -1,4 +1,4 @@
-import { memo, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { memo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import { splitAnswerCitations } from '../state/adapters'
 import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
 import type { SummaryDoc } from '../ipc/types'
@@ -40,69 +40,48 @@ export interface AiNotesPanelProps {
 }
 
 const panelStyle: CSSProperties = {
-  width: 330,
+  width: 316,
   flex: 'none',
-  borderLeft: '1px solid var(--border-soft)',
+  borderLeft: '1px solid var(--rule)',
   display: 'flex',
   flexDirection: 'column',
   minHeight: 0,
   background: 'var(--panel)',
 }
 
-const cardStyle: CSSProperties = {
-  background: 'var(--card)',
-  border: '1px solid var(--border-soft)',
-  borderRadius: 'var(--radius-md)',
-  padding: '14px 16px',
-  boxShadow: '0 1px 3px rgba(0,0,0,.04)',
+/**
+ * A ruled section on the facing leaf: a micro label with a hairline running
+ * out to the column edge, then the content beneath it. This replaces the
+ * bordered, shadowed card each of these blocks used to sit in — the rule
+ * does all the dividing a card was doing, without introducing a raised
+ * surface onto a page that is meant to read as paper.
+ */
+function Section({ label, children, tone }: { label: string; children: ReactNode; tone?: 'error' }) {
+  return (
+    <section style={{ marginBottom: 22 }}>
+      <div className="sec-head" style={{ marginBottom: 9 }}>
+        <span className="mlab" style={tone === 'error' ? { color: 'var(--accent-text)' } : undefined}>
+          {label}
+        </span>
+      </div>
+      {children}
+    </section>
+  )
 }
 
-// Eyebrow labels ("SUMMARY", "DECISIONS", "ACTION ITEMS") use the same
-// muted-gray eyebrow color as everywhere else in the app — red is reserved
-// for the "SUMMARY FAILED" error state, which uses errorLabelStyle instead.
-const labelStyle: CSSProperties = {
-  fontSize: 11,
-  fontWeight: 700,
-  letterSpacing: '.07em',
-  color: 'var(--ink-faint)',
-  marginBottom: 8,
-}
-
-const errorLabelStyle: CSSProperties = {
-  ...labelStyle,
-  color: 'var(--accent-text)',
-}
-
-const btnStyle: CSSProperties = {
+const smallBtnStyle: CSSProperties = {
   flex: 1,
-  padding: '8px 0',
-  border: '1px solid var(--border-strong)',
-  borderRadius: 'var(--radius-sm)',
-  background: 'var(--card)',
-  fontFamily: 'inherit',
-  fontSize: 12,
-  fontWeight: 600,
-  color: 'var(--ink)',
-  cursor: 'pointer',
+  padding: '7px 0',
+  fontSize: 11.5,
 }
 
-// `color` was previously interpolated straight into a `border` shorthand
-// (`` `2px solid ${color}40` ``) — with the only value ever passed being
-// `var(--accent)`, that produced the string `2px solid var(--accent)40`,
-// which isn't valid CSS. The whole `border` declaration was dropped as a
-// result, so the ring never rendered at all — only `borderTopColor` (a
-// separate, valid declaration) painted anything, i.e. a single accent arc
-// with no visible track behind it. Fixed by building the border from
-// `--accent-rgb` directly, the same pattern NoteView's own spinner rings
-// already use; the prop is gone since every call site passed the same
-// color.
 function Spinner() {
   return (
     <span
       className="spin"
       style={{
-        width: 14,
-        height: 14,
+        width: 13,
+        height: 13,
         borderRadius: '50%',
         border: '2px solid rgba(var(--accent-rgb), .25)',
         borderTopColor: 'var(--accent)',
@@ -120,12 +99,10 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        background: 'var(--card)',
-        border: '1px solid rgba(var(--accent-rgb), .3)',
-        borderRadius: 'var(--radius-md)',
-        padding: '12px 16px',
-        boxShadow: '0 1px 3px rgba(0,0,0,.04)',
-        fontSize: 13,
+        marginBottom: 20,
+        paddingBottom: 16,
+        borderBottom: '1px solid var(--rule)',
+        fontSize: 12.5,
         fontWeight: 600,
         color: 'var(--accent-text)',
       }}
@@ -138,163 +115,61 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
 
 function ErrorCard({ error, onRegenerate }: { error?: string; onRegenerate: () => void }) {
   return (
-    <div role="alert" style={{ ...cardStyle, border: '1px solid rgba(var(--accent-rgb), .3)', background: 'var(--error-tint)' }}>
-      <div style={errorLabelStyle}>SUMMARY FAILED</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--error-text-strong)', marginBottom: 10 }}>
-        {error || 'Something went wrong generating this summary.'}
-      </div>
-      <button onClick={onRegenerate} className="btn-light" style={{ ...btnStyle, flex: 'none', padding: '6px 14px' }}>
-        Regenerate
-      </button>
-    </div>
-  )
-}
-
-function SummaryCard({ text }: { text: string }) {
-  return (
-    <div style={cardStyle}>
-      <div style={labelStyle}>SUMMARY</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-body)', textWrap: 'pretty' }}>{text}</div>
-    </div>
-  )
-}
-
-function DecisionsCard({ decisions }: { decisions: string[] }) {
-  return (
-    <div style={cardStyle}>
-      <div style={labelStyle}>DECISIONS</div>
-      {decisions.map((d, i) => (
-        <div
-          key={i}
-          style={{
-            fontSize: 13,
-            lineHeight: 1.55,
-            color: 'var(--ink-body)',
-            display: 'flex',
-            gap: 8,
-            marginBottom: i < decisions.length - 1 ? 7 : 0,
-          }}
-        >
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink)', flex: 'none', marginTop: 7 }} />
-          {d}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function ActionItemsCard({
-  items,
-  onToggleAction,
-  disabled,
-}: {
-  items: SummaryDoc['actionItems']
-  onToggleAction: (index: number, done: boolean) => void
-  // True while status === 'running' — a regenerate in flight over this same
-  // note is about to overwrite `items` wholesale, and a toggle that lands on
-  // the old (still-displayed) array after the worker's write patches the
-  // wrong item by index against the new one. Disabling here is the cheap,
-  // always-available half of the guard; `toggle_action_item` also rejects
-  // server-side while `LlmBusy` is claimed as the authoritative check.
-  disabled: boolean
-}) {
-  return (
-    <div style={cardStyle}>
-      <div style={labelStyle}>ACTION ITEMS</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-        {items.map((item, i) => (
-          <label
-            key={i}
-            aria-disabled={disabled}
-            style={{
-              display: 'flex',
-              gap: 9,
-              alignItems: 'flex-start',
-              fontSize: 13,
-              lineHeight: 1.5,
-              cursor: disabled ? 'default' : 'pointer',
-              opacity: disabled ? 0.5 : 1,
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={item.done}
-              disabled={disabled}
-              aria-disabled={disabled}
-              onChange={e => onToggleAction(i, e.target.checked)}
-              style={{ marginTop: 3 }}
-            />
-            <span style={item.done ? { textDecoration: 'line-through', color: 'var(--ink-faint)' } : { color: 'var(--ink-body)' }}>{item.text}</span>
-          </label>
-        ))}
-      </div>
+    <div role="alert">
+      <Section label="Summary failed" tone="error">
+        <p className="leaf-body" style={{ color: 'var(--error-text-strong)', marginBottom: 11 }}>
+          {error || 'Something went wrong generating this summary.'}
+        </p>
+        <button onClick={onRegenerate} className="btn-outline" style={{ padding: '7px 14px', fontSize: 11.5 }}>
+          Regenerate
+        </button>
+      </Section>
     </div>
   )
 }
 
 function GenerateSummaryButton({ onClick }: { onClick: () => void }) {
   return (
+    <button onClick={onClick} className="btn-solid" style={{ width: '100%', justifyContent: 'center', marginBottom: 22 }}>
+      Generate summary
+    </button>
+  )
+}
+
+function DownloadModelLink({ onGoSettings }: { onGoSettings: () => void }) {
+  return (
     <button
-      onClick={onClick}
-      className="btn-rec"
+      onClick={onGoSettings}
       style={{
-        padding: '10px 0',
         border: 'none',
-        borderRadius: 999,
-        background: 'var(--accent-solid)',
-        color: 'var(--text-on-accent)',
-        fontFamily: 'inherit',
-        fontSize: 13,
-        fontWeight: 700,
+        background: 'none',
+        padding: 0,
+        fontFamily: 'var(--sans)',
+        fontSize: 12,
+        fontWeight: 600,
+        color: 'var(--accent-text)',
         cursor: 'pointer',
+        textDecoration: 'underline',
+        textUnderlineOffset: 2,
       }}
     >
-      Generate summary
+      Download a summary model
     </button>
   )
 }
 
 function NoLlmPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
   return (
-    <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
-      <div style={labelStyle}>SUMMARY</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)', marginBottom: 10 }}>
+    <Section label="Summary">
+      <p className="leaf-body" style={{ color: 'var(--ink-muted)', marginBottom: 10 }}>
         Summarize this note on-device once a summary model is installed.
-      </div>
-      <button
-        onClick={onGoSettings}
-        style={{
-          border: 'none',
-          background: 'none',
-          padding: 0,
-          fontFamily: 'inherit',
-          fontSize: 13,
-          fontWeight: 700,
-          color: 'var(--accent-text)',
-          cursor: 'pointer',
-          textDecoration: 'underline',
-        }}
-      >
-        Download a summary model
-      </button>
-    </div>
+      </p>
+      <DownloadModelLink onGoSettings={onGoSettings} />
+    </Section>
   )
 }
 
 // --- Ask your notes ---------------------------------------------------------
-
-const askInputStyle: CSSProperties = {
-  width: '100%',
-  boxSizing: 'border-box',
-  padding: '8px 12px',
-  border: '1px solid var(--border-strong)',
-  borderRadius: 'var(--radius-sm)',
-  background: 'var(--card)',
-  fontFamily: 'inherit',
-  fontSize: 13,
-  color: 'var(--ink)',
-  outline: 'none',
-}
 
 const citationButtonStyle: CSSProperties = {
   display: 'inline',
@@ -308,6 +183,7 @@ const citationButtonStyle: CSSProperties = {
   color: 'var(--accent-text)',
   cursor: 'pointer',
   textDecoration: 'underline',
+  textUnderlineOffset: 2,
 }
 
 /**
@@ -359,7 +235,13 @@ function AnswerWithCitations({ text, seekable, onSeekCitation }: { text: string;
   )
 }
 
-function AskEntryCard({
+/**
+ * One question-and-answer exchange. The question is set in sans (it's the
+ * user's own input — chrome, not document), the answer in serif (it's
+ * generated prose about the document), with a hairline separating exchanges
+ * instead of each sitting in its own card.
+ */
+function AskEntry({
   entry,
   disabled,
   seekable,
@@ -373,26 +255,28 @@ function AskEntryCard({
   onRetry: () => void
 }) {
   return (
-    <div style={cardStyle}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>{entry.question}</div>
+    <div style={{ paddingTop: 12, borderTop: '1px solid var(--rule)' }}>
+      <div style={{ fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>
+        {entry.question}
+      </div>
       {entry.error ? (
         <>
-          <div role="alert" style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--accent-text)', marginBottom: 8 }}>
+          <div role="alert" style={{ fontSize: 12.5, lineHeight: 1.55, color: 'var(--accent-text)', marginBottom: 9 }}>
             {entry.error}
           </div>
           <button
             onClick={onRetry}
             disabled={disabled}
-            className="btn-light"
-            style={{ ...btnStyle, flex: 'none', padding: '6px 14px', opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}
+            className="btn-outline"
+            style={{ padding: '6px 13px', fontSize: 11.5 }}
           >
             Retry
           </button>
         </>
       ) : (
-        <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-body)' }}>
+        <p className="leaf-body">
           <AnswerWithCitations text={entry.answer ?? ''} seekable={seekable} onSeekCitation={onSeekCitation} />
-        </div>
+        </p>
       )}
     </div>
   )
@@ -400,28 +284,12 @@ function AskEntryCard({
 
 function NoLlmAskPlaceholder({ onGoSettings }: { onGoSettings: () => void }) {
   return (
-    <div style={{ border: '1px dashed var(--border-heavy)', borderRadius: 'var(--radius-md)', padding: '14px 16px' }}>
-      <div style={labelStyle}>ASK YOUR NOTES</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--ink-faint)', marginBottom: 10 }}>
+    <Section label="Ask your notes">
+      <p className="leaf-body" style={{ color: 'var(--ink-muted)', marginBottom: 10 }}>
         Ask questions about this meeting on-device once a summary model is installed.
-      </div>
-      <button
-        onClick={onGoSettings}
-        style={{
-          border: 'none',
-          background: 'none',
-          padding: 0,
-          fontFamily: 'inherit',
-          fontSize: 13,
-          fontWeight: 700,
-          color: 'var(--accent-text)',
-          cursor: 'pointer',
-          textDecoration: 'underline',
-        }}
-      >
-        Download a summary model
-      </button>
-    </div>
+      </p>
+      <DownloadModelLink onGoSettings={onGoSettings} />
+    </Section>
   )
 }
 
@@ -473,9 +341,8 @@ function AskSection({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={labelStyle}>ASK YOUR NOTES</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <Section label="Ask your notes">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <input
           value={draft}
           onChange={e => setDraft(e.target.value)}
@@ -483,18 +350,18 @@ function AskSection({
           placeholder="Ask about this meeting…"
           aria-label="Ask about this meeting"
           disabled={disabled}
-          className="input-focus"
-          style={{ ...askInputStyle, flex: 1, opacity: disabled ? 0.6 : 1 }}
+          className="input-ruled"
+          style={{ flex: 1, opacity: disabled ? 0.6 : 1 }}
         />
         {running && <Spinner />}
       </div>
       {!running && llmBusy && (
-        <div style={{ fontSize: 12, color: 'var(--ink-faint)' }}>Waiting for the current generation…</div>
+        <div style={{ fontSize: 11.5, color: 'var(--ink-faint)', marginBottom: 10 }}>Waiting for the current generation…</div>
       )}
       {askHistory.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {askHistory.map(entry => (
-            <AskEntryCard
+            <AskEntry
               key={entry.id}
               entry={entry}
               disabled={disabled}
@@ -505,7 +372,7 @@ function AskSection({
           ))}
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -543,9 +410,11 @@ export const AiNotesPanel = memo(function AiNotesPanel({
 
   return (
     <div style={panelStyle}>
-      <div style={{ padding: '16px 16px 12px', display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <h2 style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>AI notes</h2>
-        <div style={{ fontSize: 11, color: 'var(--ink-faint)' }}>generated locally</div>
+      <div style={{ padding: '24px 26px 20px', display: 'flex', alignItems: 'baseline', gap: 9 }}>
+        <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 17, letterSpacing: '-.005em' }}>
+          AI notes
+        </h2>
+        <div style={{ fontSize: 10.5, color: 'var(--ink-faint)' }}>generated locally</div>
       </div>
       {/* Persistent `role="status"` announcer — always mounted, text toggles
           between '', "Summarizing on-device…", and "Answering…" — the
@@ -559,29 +428,71 @@ export const AiNotesPanel = memo(function AiNotesPanel({
       <span role="status" className="visually-hidden">
         {statusAnnouncement}
       </span>
-      <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
         {summarizing && <SummarizingBanner modelName={modelName} />}
         {status === 'error' && <ErrorCard error={error} onRegenerate={onRegenerate} />}
 
         {summary ? (
           <>
-            <SummaryCard text={summary.summary} />
-            {summary.decisions.length > 0 && <DecisionsCard decisions={summary.decisions} />}
-            {summary.actionItems.length > 0 && (
-              <ActionItemsCard items={summary.actionItems} onToggleAction={onToggleAction} disabled={summarizing} />
+            <Section label="Summary">
+              <p className="leaf-body">{summary.summary}</p>
+            </Section>
+            {summary.decisions.length > 0 && (
+              <Section label="Decisions">
+                <ul className="sec-list">
+                  {summary.decisions.map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                </ul>
+              </Section>
             )}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={onCopy} className="btn-light" style={btnStyle}>
+            {summary.actionItems.length > 0 && (
+              <Section label="Action items">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {summary.actionItems.map((item, i) => (
+                    <label
+                      key={i}
+                      className="todo-row"
+                      aria-disabled={summarizing}
+                      style={{ cursor: summarizing ? 'default' : 'pointer', opacity: summarizing ? 0.5 : 1 }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={item.done}
+                        // True while status === 'running' — a regenerate in
+                        // flight over this same note is about to overwrite
+                        // `items` wholesale, and a toggle that lands on the
+                        // old (still-displayed) array after the worker's
+                        // write patches the wrong item by index against the
+                        // new one. Disabling here is the cheap,
+                        // always-available half of the guard;
+                        // `toggle_action_item` also rejects server-side
+                        // while `LlmBusy` is claimed as the authoritative
+                        // check.
+                        disabled={summarizing}
+                        aria-disabled={summarizing}
+                        onChange={e => onToggleAction(i, e.target.checked)}
+                      />
+                      <span style={item.done ? { textDecoration: 'line-through', color: 'var(--ink-faint)' } : undefined}>
+                        {item.text}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </Section>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 22 }}>
+              <button onClick={onCopy} className="btn-outline" style={{ ...smallBtnStyle, justifyContent: 'center' }}>
                 Copy
               </button>
-              <button onClick={onExport} className="btn-light" style={btnStyle}>
+              <button onClick={onExport} className="btn-outline" style={{ ...smallBtnStyle, justifyContent: 'center' }}>
                 Export .md
               </button>
               <button
                 onClick={onRegenerate}
                 disabled={summarizing}
-                className="btn-light"
-                style={{ ...btnStyle, opacity: summarizing ? 0.5 : 1, cursor: summarizing ? 'default' : 'pointer' }}
+                className="btn-outline"
+                style={{ ...smallBtnStyle, justifyContent: 'center' }}
               >
                 Regenerate
               </button>

@@ -20,13 +20,17 @@ export function ErrorBanner({ message }: ErrorBannerProps) {
         bottom: 24,
         transform: 'translateX(-50%)',
         maxWidth: 480,
-        padding: '10px 16px',
-        borderRadius: 'var(--radius-md)',
+        padding: '11px 16px',
+        borderRadius: 'var(--radius-sm)',
         background: 'var(--error-tint)',
         border: '1px solid rgba(var(--accent-rgb), .3)',
-        color: 'var(--accent-text)',
-        fontSize: 13,
-        fontWeight: 600,
+        // A heavier rule down the leading edge — the same margin-marker
+        // device used for selection and for the recording top edge, so an
+        // error reads as annotated onto the page rather than pasted over it.
+        borderLeft: '2px solid var(--accent)',
+        color: 'var(--error-text-strong)',
+        fontFamily: 'var(--serif)',
+        fontSize: 13.5,
         lineHeight: 1.5,
         boxShadow: '0 4px 20px rgba(0,0,0,.12)',
         zIndex: 1000,

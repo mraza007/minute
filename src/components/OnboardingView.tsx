@@ -38,65 +38,28 @@ function ModelCard({
   const progress = downloads[entry.id]
 
   return (
-    <div
-      style={{
-        background: 'var(--card)',
-        border: '1px solid var(--border-soft)',
-        borderRadius: 'var(--radius-md)',
-        boxShadow: '0 1px 3px rgba(0,0,0,.04)',
-        padding: '16px 18px',
-      }}
-    >
+    <div style={{ padding: '16px 0', borderTop: '1px solid var(--rule)' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14 }}>
-        <div style={{ fontSize: 13, lineHeight: 1.5 }}>
-          <b>{info.displayName}</b> — {info.desc}
+        <div style={{ fontFamily: 'var(--serif)', fontSize: 13.5, lineHeight: 1.5 }}>
+          <b style={{ fontWeight: 700 }}>{info.displayName}</b> — {info.desc}
           <br />
-          <span style={{ fontSize: 12, color: 'var(--ink-faint)' }}>{info.sub}</span>
+          <span style={{ fontFamily: 'var(--sans)', fontSize: 11, color: 'var(--ink-faint)' }}>{info.sub}</span>
         </div>
         {info.state === 'notInstalled' && (
-          <button
-            className="btn-rec"
-            onClick={() => onDownload(entry.id)}
-            style={{
-              flex: 'none',
-              padding: '8px 16px',
-              border: 'none',
-              borderRadius: 999,
-              background: 'var(--accent-solid)',
-              color: 'var(--text-on-accent)',
-              fontFamily: 'inherit',
-              fontWeight: 600,
-              fontSize: 13,
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
+          <button className="btn-solid" onClick={() => onDownload(entry.id)} style={{ flex: 'none', whiteSpace: 'nowrap' }}>
             Download ({formatBytes(entry.sizeBytes)})
           </button>
         )}
         {info.state === 'downloading' && (
-          <button
-            className="btn-light"
-            onClick={() => onCancel(entry.id)}
-            style={{
-              flex: 'none',
-              padding: '8px 16px',
-              border: '1px solid var(--border-strong)',
-              borderRadius: 999,
-              background: 'var(--card)',
-              color: 'var(--ink)',
-              fontFamily: 'inherit',
-              fontWeight: 600,
-              fontSize: 13,
-              cursor: 'pointer',
-            }}
-          >
+          <button className="btn-outline" onClick={() => onCancel(entry.id)} style={{ flex: 'none' }}>
             Cancel
           </button>
         )}
       </div>
       {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
-      {footnote && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ink-faint)' }}>{footnote}</div>}
+      {footnote && (
+        <div style={{ marginTop: 9, fontFamily: 'var(--serif)', fontSize: 12.5, color: 'var(--ink-faint)' }}>{footnote}</div>
+      )}
     </div>
   )
 }
@@ -115,14 +78,25 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
   const [meetingDetectionOptIn, setMeetingDetectionOptIn] = useState(false)
 
   return (
-    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
-      <div style={{ width: 560, maxWidth: '92vw', display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <div style={{ background: 'var(--banner-bg)', color: 'var(--banner-text)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-lg)', padding: '26px 30px', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}>
-          <div style={{ fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Minute runs entirely on this Mac.</div>
-          <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.6, color: 'var(--banner-text-muted)' }}>
-            No account. No cloud. No network permission. Download a transcription model to get started — everything after
-            this, recording, transcription, and notes, runs completely offline.
-          </div>
+    <div
+      className="app-paper"
+      style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}
+    >
+      <div style={{ width: 560, maxWidth: '92vw' }}>
+        {/* The trust statement is the first thing on the page and reads as a
+            title page, not a banner in a box: the promise is the product, so
+            it's set at document scale in the serif rather than boxed off as
+            a notice the eye learns to skip. */}
+        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 30, lineHeight: 1.16, letterSpacing: '-.015em' }}>
+          Minute runs entirely on this Mac.
+        </h1>
+        <p style={{ margin: '12px 0 26px', fontFamily: 'var(--serif)', fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink-muted)', maxWidth: '52ch' }}>
+          No account. No cloud. No network permission. Download a transcription model to get started — everything after
+          this, recording, transcription, and notes, runs completely offline.
+        </p>
+
+        <div className="sec-head" style={{ marginBottom: 2 }}>
+          <span className="mlab">Models</span>
         </div>
 
         {sttEntry && (
@@ -140,14 +114,7 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
           />
         )}
 
-        <div
-          style={{
-            background: 'var(--card)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 'var(--radius-md)',
-            padding: '14px 18px',
-          }}
-        >
+        <div style={{ padding: '18px 0 24px', borderTop: '1px solid var(--rule)' }}>
           <Toggle
             on={meetingDetectionOptIn}
             onToggle={() => setMeetingDetectionOptIn(v => !v)}
@@ -158,18 +125,13 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
         <button
           disabled={!hasInstalledStt}
           onClick={() => onStart(meetingDetectionOptIn)}
-          className="btn-rec"
+          className="btn-solid"
           style={{
             padding: '12px 22px',
-            border: 'none',
-            borderRadius: 999,
             background: hasInstalledStt ? 'var(--accent-solid)' : 'var(--control-track)',
             color: hasInstalledStt ? 'var(--text-on-accent)' : 'var(--ink-muted)',
-            fontFamily: 'inherit',
-            fontWeight: 600,
-            fontSize: 13,
             cursor: hasInstalledStt ? 'pointer' : 'not-allowed',
-            boxShadow: hasInstalledStt ? '0 1px 4px rgba(var(--accent-rgb), .35)' : 'none',
+            opacity: 1,
           }}
         >
           Start using Minute

@@ -32,16 +32,25 @@ const navBase: CSSProperties = {
   alignItems: 'center',
   gap: 9,
   width: '100%',
-  padding: '8px 10px',
+  padding: '6px 0',
   border: 'none',
-  borderRadius: 'var(--radius-sm)',
   background: 'transparent',
   fontFamily: 'inherit',
-  fontSize: 13,
-  fontWeight: 600,
-  color: 'var(--ink)',
+  fontSize: 12.5,
+  fontWeight: 500,
+  color: 'var(--ink-muted)',
   cursor: 'pointer',
   textAlign: 'left',
+}
+
+const navCurrent: CSSProperties = { color: 'var(--ink)', fontWeight: 600 }
+
+const emptyStyle: CSSProperties = {
+  padding: '24px 18px',
+  fontFamily: 'var(--serif)',
+  fontSize: 13.5,
+  color: 'var(--ink-muted)',
+  lineHeight: 1.6,
 }
 
 // Memoized — the recording view's 1Hz elapsed-time tick re-renders App,
@@ -70,35 +79,34 @@ export const Sidebar = memo(function Sidebar({
     <nav
       aria-label="Notes"
       style={{
-        width: 250,
+        width: 238,
         flex: 'none',
         background: 'var(--panel-warm)',
-        borderRight: '1px solid var(--border)',
+        borderRight: '1px solid var(--rule)',
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
       }}
     >
-      <div style={{ padding: '12px 12px 4px', position: 'relative' }}>
+      {/* Search as a ruled line, not a boxed field — the sidebar is an index
+          page, and a raised input with its own border and shadow was the
+          loudest thing on it. */}
+      <div
+        style={{
+          margin: '16px 18px 6px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          borderBottom: '1px solid var(--rule)',
+        }}
+      >
         <input
-          placeholder="Search notes…"
+          placeholder="Search notes"
           aria-label="Search notes"
-          className="input-focus"
+          className="input-ruled"
           value={searchQuery}
           onChange={e => onSearchQueryChange(e.target.value)}
-          style={{
-            width: '100%',
-            boxSizing: 'border-box',
-            padding: '8px 40px 8px 12px',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--card)',
-            fontFamily: 'inherit',
-            fontSize: 13,
-            color: 'var(--ink)',
-            outline: 'none',
-            boxShadow: '0 1px 2px rgba(0,0,0,.04)',
-          }}
+          style={{ flex: 1, borderBottom: 'none' }}
         />
         <button
           type="button"
@@ -106,83 +114,59 @@ export const Sidebar = memo(function Sidebar({
           aria-label="Open search palette"
           title="Open search palette (⌘K)"
           style={{
-            position: 'absolute',
-            right: 20,
-            top: '50%',
-            transform: 'translateY(-38%)',
-            padding: '1px 6px',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 5,
-            background: 'var(--surface-softer)',
-            fontSize: 11,
-            fontWeight: 600,
+            border: 'none',
+            background: 'none',
+            padding: '0 0 8px',
+            fontFamily: 'inherit',
+            fontSize: 10.5,
+            fontWeight: 500,
+            letterSpacing: '.04em',
             color: 'var(--ink-faint)',
             cursor: 'pointer',
-            fontFamily: 'inherit',
+            flex: 'none',
           }}
         >
           ⌘K
         </button>
       </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 1 }}>
-        {notes.length === 0 && (
-          <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
-            No notes yet — hit "New recording"
-          </div>
-        )}
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '12px 0 0' }}>
+        {notes.length === 0 && <div style={emptyStyle}>No notes yet — hit "New recording".</div>}
         {notes.length > 0 && filtering && visibleNotes.length === 0 && (
-          <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
-            No matches for “{searchQuery.trim()}”
-          </div>
+          <div style={emptyStyle}>No matches for “{searchQuery.trim()}”</div>
         )}
         {visibleNotes.map(note => (
           <div key={note.id}>
             {!filtering && note.group && (
-              <div style={{ padding: '14px 10px 5px', fontSize: 11, fontWeight: 700, letterSpacing: '.07em', color: 'var(--ink-faint)' }}>
+              <div className="mlab" style={{ padding: '15px 18px 7px' }}>
                 {note.group}
               </div>
             )}
             <button
               onClick={() => onSelect(note.id)}
-              className={note.id === selectedNoteId ? undefined : 'hov-dark'}
+              className="side-row"
               aria-current={note.id === selectedNoteId ? 'true' : undefined}
-              style={{
-                display: 'block',
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '8px 10px',
-                border: 'none',
-                cursor: 'pointer',
-                borderRadius: 'var(--radius-sm)',
-                background: note.id === selectedNoteId ? 'var(--card)' : 'transparent',
-                boxShadow: note.id === selectedNoteId ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
-                fontFamily: 'inherit',
-                textAlign: 'left',
-                color: 'inherit',
-              }}
             >
-              <span style={{ display: 'block', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {note.title}
-              </span>
-              <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>{note.meta}</span>
+              <span className="side-row-title">{note.title}</span>
+              <span className="side-row-meta">{note.meta}</span>
             </button>
           </div>
         ))}
       </div>
-      <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+
+      <div style={{ padding: '12px 18px 14px', borderTop: '1px solid var(--rule)' }}>
         <button
           onClick={onGoNotes}
-          className="hov-dark6"
           aria-current={view === 'notes' ? 'page' : undefined}
-          style={{ ...navBase, background: view === 'notes' ? 'var(--border-soft)' : 'transparent' }}
+          style={{ ...navBase, ...(view === 'notes' ? navCurrent : null) }}
         >
           <svg
-            width="15"
-            height="15"
+            width="14"
+            height="14"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.8"
             strokeLinecap="round"
             strokeLinejoin="round"
             aria-hidden="true"
@@ -194,17 +178,16 @@ export const Sidebar = memo(function Sidebar({
         </button>
         <button
           onClick={onGoSettings}
-          className="hov-dark6"
           aria-current={view === 'settings' ? 'page' : undefined}
-          style={{ ...navBase, background: view === 'settings' ? 'var(--border-soft)' : 'transparent' }}
+          style={{ ...navBase, ...(view === 'settings' ? navCurrent : null) }}
         >
           <svg
-            width="15"
-            height="15"
+            width="14"
+            height="14"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.8"
             strokeLinecap="round"
             strokeLinejoin="round"
             aria-hidden="true"
@@ -214,7 +197,10 @@ export const Sidebar = memo(function Sidebar({
           </svg>
           Settings
         </button>
-        <div style={{ padding: '8px 10px 2px', fontSize: 11, color: 'var(--ink-faint)' }}>{statsLine}</div>
+        {/* Sentence case, not the uppercase micro label: at .11em tracking
+            this line runs past the 238px sidebar and orphans its last word
+            onto a second row. It's a quiet footnote anyway, not a heading. */}
+        <div style={{ marginTop: 11, fontSize: 10.5, lineHeight: 1.5, color: 'var(--ink-faint)' }}>{statsLine}</div>
       </div>
     </nav>
   )

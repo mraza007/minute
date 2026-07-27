@@ -144,11 +144,15 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
         padding: '0 14px',
         margin: 8,
         borderRadius: 999,
-        background: 'var(--card)',
-        border: '1px solid var(--border)',
+        // Paper, like every other surface in the app — but this one floats
+        // over an arbitrary desktop, so it keeps its border and shadow (the
+        // only shadowed surface left) to separate itself from whatever is
+        // behind it. See --shadow-pill in index.css.
+        background: 'var(--panel)',
+        border: '1px solid var(--rule-strong)',
         boxShadow: 'var(--shadow-pill)',
         overflow: 'hidden',
-        fontFamily: "'Instrument Sans', system-ui, -apple-system, sans-serif",
+        fontFamily: 'var(--sans)',
       }}
     >
       <div
@@ -173,10 +177,14 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Meeting detected</div>
+        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.11em', textTransform: 'uppercase', color: 'var(--ink)' }}>
+          Meeting detected
+        </div>
         <div
           style={{
-            fontSize: 12,
+            marginTop: 2,
+            fontFamily: 'var(--serif)',
+            fontSize: 13,
             color: 'var(--ink-muted)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -190,19 +198,8 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
       <button
         type="button"
         onClick={start}
-        className="btn-rec"
-        style={{
-          flex: 'none',
-          padding: '7px 14px',
-          border: 'none',
-          borderRadius: 999,
-          background: 'var(--accent-solid)',
-          color: 'var(--text-on-accent)',
-          fontFamily: 'inherit',
-          fontWeight: 600,
-          fontSize: 12.5,
-          cursor: 'pointer',
-        }}
+        className="btn-record"
+        style={{ flex: 'none', padding: '8px 15px' }}
       >
         Start recording
       </button>

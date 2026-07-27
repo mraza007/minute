@@ -204,7 +204,11 @@ describe('NoteView', () => {
       expect(screen.getByText('Thanks for making time.')).toBeInTheDocument()
       expect(screen.getByText('Second segment.')).toBeInTheDocument()
       expect(screen.getByText('00:41')).toBeInTheDocument()
-      expect(screen.getAllByText('S1').length).toBeGreaterThan(0)
+      // The speaker label itself, set as a small-caps rule above each
+      // paragraph — the initials avatar it used to sit beside is gone (the
+      // manuscript layout identifies a line by its speaker name and its
+      // margin timestamp, not by a coloured disc).
+      expect(screen.getAllByText('Speaker 1').length).toBeGreaterThan(0)
     })
 
     it('does not render stale segments from a different note while the current note is still loading', () => {

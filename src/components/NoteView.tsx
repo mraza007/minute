@@ -80,10 +80,10 @@ const EMPTY_SEGMENTS: StoredSegment[] = []
 
 function EmptyNotesArea() {
   return (
-    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-soft)' }}>
-      <div style={{ textAlign: 'center', maxWidth: 340 }}>
-        <div style={{ fontWeight: 700, fontSize: 17 }}>No notes yet</div>
-        <div style={{ marginTop: 6, fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
+    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
+      <div style={{ textAlign: 'center', maxWidth: 360 }}>
+        <div style={{ fontFamily: 'var(--serif)', fontSize: 22, letterSpacing: '-.01em' }}>No notes yet</div>
+        <div style={{ marginTop: 8, fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
           Hit "New recording" in the title bar to capture your first meeting — transcription happens entirely on this
           Mac.
         </div>
@@ -92,14 +92,21 @@ function EmptyNotesArea() {
   )
 }
 
+/**
+ * Header status, set as a micro label with a dot rather than the bordered
+ * pill it used to be. A pill is a badge; this is a caption on a document,
+ * and it sits next to a 28px serif title that should stay the loudest thing
+ * in the header.
+ */
 const pillBaseStyle = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 6,
-  padding: '4px 10px',
-  borderRadius: 999,
-  fontSize: 12,
+  fontFamily: 'var(--sans)',
+  fontSize: 9.5,
   fontWeight: 700,
+  letterSpacing: '.11em',
+  textTransform: 'uppercase',
   flex: 'none',
 } as const
 
@@ -137,53 +144,47 @@ function StatusPill({
 
   let content: ReactNode = null
 
+  const spinner = (
+    <span
+      className="spin"
+      style={{
+        width: 10,
+        height: 10,
+        borderRadius: '50%',
+        border: '2px solid rgba(var(--accent-rgb), .25)',
+        borderTopColor: 'var(--accent)',
+        animation: 'spin .8s linear infinite',
+        flex: 'none',
+      }}
+    />
+  )
+  const okDot = <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ok-text)' }} />
+
   if (finalizing) {
     content = (
-      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(var(--accent-rgb), .3)', color: 'var(--accent-text)' }}>
-        <span
-          className="spin"
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: '50%',
-            border: '2px solid rgba(var(--accent-rgb), .25)',
-            borderTopColor: 'var(--accent)',
-            animation: 'spin .8s linear infinite',
-            flex: 'none',
-          }}
-        />
+      <span style={{ ...pillBaseStyle, color: 'var(--accent-text)' }}>
+        {spinner}
         Finalizing transcript…
       </span>
     )
   } else if (summaryStatus === 'running') {
     content = (
-      <span style={{ ...pillBaseStyle, background: 'var(--accent-tint)', border: '1px solid rgba(var(--accent-rgb), .3)', color: 'var(--accent-text)' }}>
-        <span
-          className="spin"
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: '50%',
-            border: '2px solid rgba(var(--accent-rgb), .25)',
-            borderTopColor: 'var(--accent)',
-            animation: 'spin .8s linear infinite',
-            flex: 'none',
-          }}
-        />
+      <span style={{ ...pillBaseStyle, color: 'var(--accent-text)' }}>
+        {spinner}
         Summarizing…
       </span>
     )
   } else if (meta.status === 'ready') {
     content = (
-      <span style={{ ...pillBaseStyle, background: 'var(--ok-tint)', border: '1px solid var(--ok-text)', color: 'var(--ok-text)' }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
+      <span style={{ ...pillBaseStyle, color: 'var(--ok-text)' }}>
+        {okDot}
         Ready
       </span>
     )
   } else if (meta.status === 'transcribed') {
     content = (
-      <span style={{ ...pillBaseStyle, background: 'var(--ok-tint)', border: '1px solid var(--ok-text)', color: 'var(--ok-text)' }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok-text)' }} />
+      <span style={{ ...pillBaseStyle, color: 'var(--ok-text)' }}>
+        {okDot}
         Transcribed
       </span>
     )
@@ -205,12 +206,22 @@ interface NoteTitleProps {
   onRename: (title: string) => void
 }
 
+/** Shared between the static heading and its inline edit field, so swapping
+ *  one for the other doesn't shift the title by a pixel. */
+const titleTypeStyle = {
+  fontFamily: 'var(--serif)',
+  fontWeight: 400,
+  fontSize: 28,
+  lineHeight: 1.14,
+  letterSpacing: '-.014em',
+} as const
+
 /**
  * Header title: an `<h1>` by default; the pencil button swaps it for an
- * inline `<input>` (styled to match the heading's 21px/700 weight) —
- * Enter or blur commits the draft via `onRename` (skipped if blank or
- * unchanged), Escape discards the draft and reverts without calling
- * `onRename` at all.
+ * inline `<input>` (styled to match the heading exactly, see
+ * `titleTypeStyle`) — Enter or blur commits the draft via `onRename`
+ * (skipped if blank or unchanged), Escape discards the draft and reverts
+ * without calling `onRename` at all.
  */
 function NoteTitle({ meta, onRename }: NoteTitleProps) {
   const [editing, setEditing] = useState(false)
@@ -220,7 +231,7 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
   if (!editing) {
     return (
       <>
-        <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>{meta.title}</h1>
+        <h1 style={{ margin: 0, ...titleTypeStyle }}>{meta.title}</h1>
         <button
           title="Rename"
           aria-label="Rename"
@@ -231,12 +242,12 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
             setEditing(true)
           }}
           style={{
-            width: 32,
-            height: 32,
+            width: 28,
+            height: 28,
             border: 'none',
             borderRadius: 'var(--radius-sm)',
             background: 'transparent',
-            color: 'var(--ink-muted)',
+            color: 'var(--ink-faint)',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
@@ -283,14 +294,15 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
       onBlur={commit}
       style={{
         margin: 0,
-        fontWeight: 700,
-        fontSize: 21,
-        letterSpacing: '-.02em',
-        fontFamily: 'inherit',
-        border: '1px solid var(--border-heavy)',
-        borderRadius: 6,
-        padding: '1px 6px',
-        minWidth: 240,
+        ...titleTypeStyle,
+        color: 'var(--ink)',
+        background: 'transparent',
+        border: 'none',
+        borderBottom: '1px solid var(--accent)',
+        borderRadius: 0,
+        padding: '0 0 2px',
+        minWidth: 280,
+        outline: 'none',
       }}
     />
   )
@@ -319,12 +331,12 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
           onDelete(id)
         }}
         style={{
-          width: 32,
-          height: 32,
+          width: 26,
+          height: 26,
           border: 'none',
           borderRadius: 'var(--radius-sm)',
-          background: confirming ? 'rgba(var(--accent-rgb), .12)' : 'transparent',
-          color: confirming ? 'var(--accent-text)' : 'var(--ink-muted)',
+          background: confirming ? 'var(--accent-tint)' : 'transparent',
+          color: confirming ? 'var(--accent-text)' : 'var(--ink-faint)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
@@ -332,7 +344,7 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
           flex: 'none',
         }}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M3 6h18"></path>
           <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
           <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
@@ -529,79 +541,47 @@ export function NoteView({
   }
 
   return (
-    <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface-soft)' }}>
+    <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--panel)' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <div
-          style={{
-            padding: '22px 32px 16px',
-            borderBottom: '1px solid var(--border-soft)',
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            gap: 16,
-          }}
-        >
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <NoteTitle meta={meta} onRename={title => onRename(meta.id, title)} />
-              <StatusPill meta={meta} sttStatus={sttStatus} sttStatusNoteId={sttStatusNoteId} summaryStatus={summaryStatus} />
-            </div>
-            <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ink-muted)' }}>
-              {metaLine} · {dateLabel} · stored locally{includedSystemAudio ? ' · mic + system audio' : ''}
-            </div>
+        {/* Document head. Title, then a caption line, then the tab rule —
+            stacked like a masthead rather than split into a left column and
+            a right cluster of controls. The tabs sit *on* the rule that
+            divides head from body, so one hairline does both jobs. */}
+        <div style={{ padding: '24px 34px 0', flex: 'none' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+            <NoteTitle meta={meta} onRename={title => onRename(meta.id, title)} />
+            <StatusPill meta={meta} sttStatus={sttStatus} sttStatusNoteId={sttStatusNoteId} summaryStatus={summaryStatus} />
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 'none' }}>
-            <div role="tablist" aria-label="Note content" onKeyDown={handleTabKeyDown} style={{ display: 'flex', background: 'var(--panel-warm)', borderRadius: 9, padding: 3 }}>
-              <button
-                ref={transcriptTabRef}
-                id="note-tab-transcript"
-                role="tab"
-                aria-selected={noteTab === 'transcript'}
-                aria-controls="note-panel-transcript"
-                tabIndex={noteTab === 'transcript' ? 0 : -1}
-                onClick={() => setNoteTab('transcript')}
-                className={noteTab === 'transcript' ? undefined : 'seg-off'}
-                style={{
-                  padding: '5px 14px',
-                  border: 'none',
-                  borderRadius: 7,
-                  fontFamily: 'inherit',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  background: noteTab === 'transcript' ? 'var(--card)' : 'transparent',
-                  color: noteTab === 'transcript' ? 'var(--ink)' : 'var(--ink-muted)',
-                  boxShadow: noteTab === 'transcript' ? '0 1px 3px rgba(0,0,0,.1)' : 'none',
-                }}
-              >
-                Transcript
-              </button>
-              <button
-                ref={mdTabRef}
-                id="note-tab-md"
-                role="tab"
-                aria-selected={noteTab === 'md'}
-                aria-controls="note-panel-md"
-                tabIndex={noteTab === 'md' ? 0 : -1}
-                onClick={() => setNoteTab('md')}
-                className={noteTab === 'md' ? undefined : 'seg-off'}
-                style={{
-                  padding: '5px 14px',
-                  border: 'none',
-                  borderRadius: 7,
-                  fontFamily: 'inherit',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  background: noteTab === 'md' ? 'var(--card)' : 'transparent',
-                  color: noteTab === 'md' ? 'var(--ink)' : 'var(--ink-muted)',
-                  boxShadow: noteTab === 'md' ? '0 1px 3px rgba(0,0,0,.1)' : 'none',
-                }}
-              >
-                Markdown
-              </button>
-            </div>
-            <div style={{ display: 'flex', gap: 4, flex: 'none' }}>
+          <div style={{ marginTop: 7, fontSize: 11.5, color: 'var(--ink-muted)', fontVariantNumeric: 'tabular-nums' }}>
+            {metaLine} · {dateLabel} · stored locally{includedSystemAudio ? ' · mic + system audio' : ''}
+          </div>
+          <div role="tablist" aria-label="Note content" onKeyDown={handleTabKeyDown} className="tab-rule" style={{ marginTop: 18 }}>
+            <button
+              ref={transcriptTabRef}
+              id="note-tab-transcript"
+              role="tab"
+              aria-selected={noteTab === 'transcript'}
+              aria-controls="note-panel-transcript"
+              tabIndex={noteTab === 'transcript' ? 0 : -1}
+              onClick={() => setNoteTab('transcript')}
+              className="tab-item"
+            >
+              Transcript
+            </button>
+            <button
+              ref={mdTabRef}
+              id="note-tab-md"
+              role="tab"
+              aria-selected={noteTab === 'md'}
+              aria-controls="note-panel-md"
+              tabIndex={noteTab === 'md' ? 0 : -1}
+              onClick={() => setNoteTab('md')}
+              className="tab-item"
+            >
+              Markdown
+            </button>
+            <div style={{ flex: 1 }} />
+            <div style={{ paddingBottom: 6 }}>
               <DeleteNoteButton id={meta.id} onDelete={onDelete} />
             </div>
           </div>
@@ -609,7 +589,7 @@ export function NoteView({
         {noteTab === 'transcript' && (
           <div id="note-panel-transcript" role="tabpanel" aria-labelledby="note-tab-transcript" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
             {showTranscriptLoading ? (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, color: 'var(--ink-muted)' }}>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)' }}>
                 Loading transcript…
               </div>
             ) : (

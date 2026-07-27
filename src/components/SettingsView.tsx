@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import type { ModelStatus, StorageStats, SysAudioAvailability } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
@@ -30,29 +30,57 @@ export interface SettingsViewProps {
   onRequestSysAudioPermission: () => void
 }
 
-const cardStyle: CSSProperties = {
-  background: 'var(--card)',
-  border: '1px solid var(--border-soft)',
-  borderRadius: 'var(--radius-md)',
-  boxShadow: '0 1px 3px rgba(0,0,0,.04)',
-  overflow: 'hidden',
+/**
+ * A settings section, set the same way the AI-notes leaf sets its sections:
+ * a micro label with a hairline running out to the column edge. Settings
+ * used to be a column of raised, shadowed cards — the same widget-stack
+ * pattern the notes rail had, and equally at odds with a page that's meant
+ * to read as paper. The rule divides; nothing needs to be raised.
+ */
+function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <section style={{ marginBottom: 34 }}>
+      <div className="sec-head" style={{ marginBottom: hint ? 7 : 14 }}>
+        <h2 className="mlab" style={{ margin: 0 }}>
+          {title}
+        </h2>
+      </div>
+      {hint && (
+        <p style={{ margin: '0 0 14px', fontFamily: 'var(--serif)', fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.55 }}>
+          {hint}
+        </p>
+      )}
+      {children}
+    </section>
+  )
 }
 
-const cardHeaderStyle: CSSProperties = {
-  margin: 0,
-  padding: '16px 20px 4px',
-  fontWeight: 700,
-  fontSize: 14,
+/** Body copy under a control — serif, because it's explanatory prose about
+ *  what the setting does, not a UI label. */
+const noteTextStyle: CSSProperties = {
+  marginTop: 10,
+  fontFamily: 'var(--serif)',
+  fontSize: 12.8,
+  lineHeight: 1.55,
+  color: 'var(--ink-muted)',
+}
+
+const fineTextStyle: CSSProperties = {
+  marginTop: 5,
+  fontFamily: 'var(--serif)',
+  fontSize: 12,
+  lineHeight: 1.5,
+  color: 'var(--ink-faint)',
 }
 
 const secondaryBtnStyle: CSSProperties = {
   flex: 'none',
   padding: '6px 12px',
-  border: '1px solid var(--border-strong)',
-  borderRadius: 999,
-  background: 'var(--card)',
-  fontFamily: 'inherit',
-  fontSize: 12,
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-sm)',
+  background: 'transparent',
+  fontFamily: 'var(--sans)',
+  fontSize: 11.5,
   fontWeight: 600,
   color: 'var(--ink)',
   cursor: 'pointer',
@@ -61,7 +89,7 @@ const secondaryBtnStyle: CSSProperties = {
 
 const dangerBtnStyle: CSSProperties = {
   ...secondaryBtnStyle,
-  border: '1px solid rgba(var(--accent-rgb), .35)',
+  border: '1px solid rgba(var(--accent-rgb), .4)',
   color: 'var(--accent-text)',
 }
 
@@ -187,20 +215,22 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, roving, down
           : undefined
       }
       className="model-card"
+      // A ruled row, selected by a margin marker — the same selection
+      // language the sidebar and search palette use, rather than a card
+      // that grows a coloured border.
       style={{
         display: 'flex',
-        gap: 12,
+        gap: 13,
         alignItems: 'flex-start',
         width: '100%',
         boxSizing: 'border-box',
-        border: selected ? '1.5px solid var(--accent)' : '1px solid var(--border)',
-        background: selected ? 'var(--selected-tint)' : 'var(--card)',
-        borderRadius: 'var(--radius-md)',
-        padding: selected ? '11.5px 13.5px' : '12px 14px',
+        borderLeft: `2px solid ${selected ? 'var(--accent)' : 'transparent'}`,
+        borderBottom: '1px solid var(--rule)',
+        background: selected ? 'var(--selected-tint)' : 'transparent',
+        padding: '13px 14px',
         cursor: selectable ? 'pointer' : 'default',
-        fontSize: 13,
         lineHeight: 1.5,
-        transition: 'border-color .15s, background .15s',
+        transition: 'background .15s',
         fontFamily: 'inherit',
         textAlign: 'left',
         color: 'inherit',
@@ -208,21 +238,30 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, roving, down
     >
       <span
         style={{
-          width: 16,
-          height: 16,
+          width: 15,
+          height: 15,
           flex: 'none',
-          marginTop: 2,
+          marginTop: 3,
           borderRadius: '50%',
           boxSizing: 'border-box',
-          background: 'var(--card)',
-          border: selected ? '5px solid var(--accent)' : '1.5px solid var(--control-border)',
+          background: 'transparent',
+          border: selected ? '4.5px solid var(--accent)' : '1.5px solid var(--control-border)',
           transition: 'border .15s',
         }}
       />
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <b>{info.displayName}</b> — {info.desc}
+      <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--serif)', fontSize: 13.5 }}>
+        <b style={{ fontWeight: 700 }}>{info.displayName}</b> — {info.desc}
         <br />
-        <span style={{ fontSize: 12, color: selected ? 'var(--accent-text)' : 'var(--ink-faint)', fontWeight: selected ? 600 : 400 }}>{info.sub}</span>
+        <span
+          style={{
+            fontFamily: 'var(--sans)',
+            fontSize: 11,
+            color: selected ? 'var(--accent-text)' : 'var(--ink-faint)',
+            fontWeight: selected ? 600 : 400,
+          }}
+        >
+          {info.sub}
+        </span>
         {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
       </span>
       <span style={{ flex: 'none' }}>
@@ -286,18 +325,19 @@ export function SettingsView({
   const pct = (n: number) => (totalBytes > 0 ? (n / totalBytes) * 100 : 0)
 
   return (
-    <main style={{ flex: 1, overflow: 'auto', background: 'var(--surface-soft)' }}>
-      <div style={{ maxWidth: 760, padding: '28px 36px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <h1 style={{ margin: 0, fontWeight: 700, fontSize: 21, letterSpacing: '-.02em' }}>Settings</h1>
+    <main style={{ flex: 1, overflow: 'auto', background: 'var(--panel)' }}>
+      <div style={{ maxWidth: 720, padding: '30px 34px 48px' }}>
+        <h1 style={{ margin: '0 0 28px', fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 28, lineHeight: 1.14, letterSpacing: '-.014em' }}>
+          Settings
+        </h1>
 
-        <div style={cardStyle}>
-          <h2 style={cardHeaderStyle}>Transcription model</h2>
+        <Section title="Transcription model">
           <div
             ref={sttGroupRef}
             role="radiogroup"
             aria-label="Transcription model"
             onKeyDown={e => handleRadiogroupKeyDown(e, selectableSttIds, setSttModel, sttGroupRef.current)}
-            style={{ padding: '12px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
+            style={{ borderTop: '1px solid var(--rule)' }}
           >
             {sttModels.map(m => (
               <SelectableModelRow
@@ -313,17 +353,15 @@ export function SettingsView({
               />
             ))}
           </div>
-        </div>
+        </Section>
 
-        <div style={cardStyle}>
-          <h2 style={cardHeaderStyle}>Summary model</h2>
-          <div style={{ padding: '4px 20px 4px', fontSize: 12, color: 'var(--ink-faint)' }}>Powers summaries, decisions & action items.</div>
+        <Section title="Summary model" hint="Powers summaries, decisions & action items.">
           <div
             ref={llmGroupRef}
             role="radiogroup"
             aria-label="Summary model"
             onKeyDown={e => handleRadiogroupKeyDown(e, selectableLlmIds, setLlmModel, llmGroupRef.current)}
-            style={{ padding: '8px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}
+            style={{ borderTop: '1px solid var(--rule)' }}
           >
             {llmModels.map(m => (
               <SelectableModelRow
@@ -339,92 +377,85 @@ export function SettingsView({
               />
             ))}
           </div>
-        </div>
+        </Section>
 
-        <div style={cardStyle}>
-          <h2 style={cardHeaderStyle}>Meeting detection</h2>
-          <div style={{ padding: '12px 20px 18px' }}>
-            <Toggle on={meetingDetection} onToggle={toggleMeetingDetection} label="Offer to record when a meeting starts" />
-            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-faint)' }}>
-              When another app starts using the microphone, Minute shows a small prompt. Detection is fully local and never listens to audio.
-            </div>
-            <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.</div>
+        <Section title="Meeting detection">
+          <Toggle on={meetingDetection} onToggle={toggleMeetingDetection} label="Offer to record when a meeting starts" />
+          <div style={noteTextStyle}>
+            When another app starts using the microphone, Minute shows a small prompt. Detection is fully local and never listens to audio.
           </div>
-        </div>
+          <div style={fineTextStyle}>Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.</div>
+        </Section>
 
-        <div style={cardStyle}>
-          {/*
-            Placement decision (Stage 5 Task 5): its own "Recording" card,
-            not folded into "Meeting detection" above — system audio applies
-            to every recording (manually started or popup-triggered), not
-            just meeting-detected ones, so nesting it under that card would
-            misleadingly imply a dependency between the two features that
-            doesn't exist. A dedicated card also leaves room for future
-            recording-only settings without overloading either existing
-            card's scope.
-          */}
-          <h2 style={cardHeaderStyle}>Recording</h2>
-          <div style={{ padding: '12px 20px 18px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <Toggle
-                on={captureSystemAudio}
-                onToggle={toggleCaptureSystemAudio}
-                label="Capture system audio"
-                disabled={sysAudioAvailability !== 'ready'}
-              />
-              {sysAudioAvailability === 'notGranted' && (
-                <button
-                  className="btn-light"
-                  onClick={onRequestSysAudioPermission}
-                  style={{ ...secondaryBtnStyle, flex: 'none' }}
-                >
-                  Grant permission…
-                </button>
-              )}
-            </div>
-            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-faint)' }}>
-              Include what you hear — the other side of calls — in recordings and transcripts.
-              Requires Screen Recording permission.
-            </div>
-            {sysAudioAvailability === 'unsupported' && (
-              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>Requires macOS 13 or later.</div>
-            )}
+        {/*
+          Placement decision (Stage 5 Task 5): its own "Recording" section,
+          not folded into "Meeting detection" above — system audio applies
+          to every recording (manually started or popup-triggered), not
+          just meeting-detected ones, so nesting it under that section would
+          misleadingly imply a dependency between the two features that
+          doesn't exist. A dedicated section also leaves room for future
+          recording-only settings without overloading either existing
+          one's scope.
+        */}
+        <Section title="Recording">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Toggle
+              on={captureSystemAudio}
+              onToggle={toggleCaptureSystemAudio}
+              label="Capture system audio"
+              disabled={sysAudioAvailability !== 'ready'}
+            />
             {sysAudioAvailability === 'notGranted' && (
-              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-faint)' }}>
-                A freshly granted permission may need Minute to restart before it takes effect.
-              </div>
+              <button className="btn-light" onClick={onRequestSysAudioPermission} style={{ ...secondaryBtnStyle, flex: 'none' }}>
+                Grant permission…
+              </button>
             )}
           </div>
-        </div>
-
-        <div style={cardStyle}>
-          <h2 style={cardHeaderStyle}>Storage</h2>
-          <div style={{ padding: '12px 20px 18px' }}>
-            <div style={{ display: 'flex', height: 12, borderRadius: 999, overflow: 'hidden', background: 'var(--panel-warm)', maxWidth: 520 }}>
-              <div style={{ width: `${pct(modelsBytes)}%`, background: 'var(--ink)' }} />
-              <div style={{ width: `${pct(audioBytes)}%`, background: 'var(--accent)' }} />
-              <div style={{ width: `${pct(notesBytes)}%`, background: 'var(--ink-faint)' }} />
-            </div>
-            <div style={{ display: 'flex', gap: 18, marginTop: 8, fontSize: 12, color: 'var(--ink-muted)', flexWrap: 'wrap' }}>
-              <span>
-                <b style={{ color: 'var(--ink)' }}>●</b> Models {formatBytes(modelsBytes)}
-              </span>
-              <span>
-                <b style={{ color: 'var(--accent)' }}>●</b> Audio {formatBytes(audioBytes)}
-              </span>
-              <span>
-                <b style={{ color: 'var(--ink-faint)' }}>●</b> Notes {formatBytes(notesBytes)}
-              </span>
-              <span>{noteCount} notes</span>
-            </div>
-            <div style={{ marginTop: 16 }}>
-              <Toggle on={tDel} onToggle={toggleDel} label="Delete original audio 30 days after transcription" />
-            </div>
-            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-faint)' }}>
-              Your library inherits FileVault full-disk encryption.
-            </div>
+          <div style={noteTextStyle}>
+            Include what you hear — the other side of calls — in recordings and transcripts. Requires Screen Recording
+            permission.
           </div>
-        </div>
+          {sysAudioAvailability === 'unsupported' && <div style={fineTextStyle}>Requires macOS 13 or later.</div>}
+          {sysAudioAvailability === 'notGranted' && (
+            <div style={fineTextStyle}>A freshly granted permission may need Minute to restart before it takes effect.</div>
+          )}
+        </Section>
+
+        <Section title="Storage">
+          {/* Square-cut, flush to the measure — a printed bar chart rather
+              than a rounded progress pill. */}
+          <div style={{ display: 'flex', height: 10, overflow: 'hidden', background: 'var(--control-track)', maxWidth: 520 }}>
+            <div style={{ width: `${pct(modelsBytes)}%`, background: 'var(--ink)' }} />
+            <div style={{ width: `${pct(audioBytes)}%`, background: 'var(--accent)' }} />
+            <div style={{ width: `${pct(notesBytes)}%`, background: 'var(--ink-faint)' }} />
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              gap: 18,
+              marginTop: 10,
+              fontSize: 11.5,
+              color: 'var(--ink-muted)',
+              flexWrap: 'wrap',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            <span>
+              <b style={{ color: 'var(--ink)' }}>●</b> Models {formatBytes(modelsBytes)}
+            </span>
+            <span>
+              <b style={{ color: 'var(--accent)' }}>●</b> Audio {formatBytes(audioBytes)}
+            </span>
+            <span>
+              <b style={{ color: 'var(--ink-faint)' }}>●</b> Notes {formatBytes(notesBytes)}
+            </span>
+            <span>{noteCount} notes</span>
+          </div>
+          <div style={{ marginTop: 18 }}>
+            <Toggle on={tDel} onToggle={toggleDel} label="Delete original audio 30 days after transcription" />
+          </div>
+          <div style={noteTextStyle}>Your library inherits FileVault full-disk encryption.</div>
+        </Section>
       </div>
     </main>
   )

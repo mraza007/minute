@@ -143,7 +143,7 @@ describe('AiNotesPanel', () => {
       const onRegenerate = vi.fn()
       render(<AiNotesPanel {...baseProps({ status: 'error', error: 'model failed to load', onRegenerate })} />)
 
-      expect(screen.getByText('SUMMARY FAILED')).toBeInTheDocument()
+      expect(screen.getByText('Summary failed')).toBeInTheDocument()
       expect(screen.getByText('model failed to load')).toBeInTheDocument()
 
       const regenerateButtons = screen.getAllByRole('button', { name: 'Regenerate' })
@@ -158,7 +158,7 @@ describe('AiNotesPanel', () => {
 
     it('still shows a stale summary underneath the error card when one exists', () => {
       render(<AiNotesPanel {...baseProps({ status: 'error', error: 'boom', summary: summaryFixture() })} />)
-      expect(screen.getByText('SUMMARY FAILED')).toBeInTheDocument()
+      expect(screen.getByText('Summary failed')).toBeInTheDocument()
       expect(screen.getByText(summaryFixture().summary)).toBeInTheDocument()
     })
   })
@@ -201,13 +201,13 @@ describe('AiNotesPanel', () => {
   describe('ask your notes', () => {
     it('shows the section header and an input with the right placeholder', () => {
       render(<AiNotesPanel {...baseProps()} />)
-      expect(screen.getByText('ASK YOUR NOTES')).toBeInTheDocument()
+      expect(screen.getByText('Ask your notes')).toBeInTheDocument()
       expect(screen.getByPlaceholderText('Ask about this meeting…')).toBeInTheDocument()
     })
 
     it('shows the no-LLM placeholder instead of the input when no LLM is installed', () => {
       render(<AiNotesPanel {...baseProps({ llmInstalled: false })} />)
-      expect(screen.getByText('ASK YOUR NOTES')).toBeInTheDocument()
+      expect(screen.getByText('Ask your notes')).toBeInTheDocument()
       expect(screen.getByText('Ask questions about this meeting on-device once a summary model is installed.')).toBeInTheDocument()
       expect(screen.queryByPlaceholderText('Ask about this meeting…')).not.toBeInTheDocument()
     })

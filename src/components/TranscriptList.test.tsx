@@ -30,7 +30,7 @@ describe('TranscriptList', () => {
   it('renders every segment speaker and text', () => {
     render(<TranscriptList {...makeProps()} />)
     expect(screen.getAllByText('Tom Reyes — Acme').length).toBe(2)
-    expect(screen.getAllByText('You', { selector: 'b' }).length).toBe(2)
+    expect(screen.getAllByText('You', { selector: '.script-who' }).length).toBe(2)
     expect(screen.getByText('Priya Shah')).toBeInTheDocument()
   })
 
@@ -58,19 +58,19 @@ describe('TranscriptList', () => {
     expect(onSeek).toHaveBeenCalledWith(94)
   })
 
+  // Playback position is marked with `data-active` on the row, which
+  // index.css keys the (quiet) accent treatment off — the filled background
+  // block it used to be would fight the ruled-margin layout.
   it('highlights the active segment (per activeIndex) and no other', () => {
-    render(<TranscriptList {...makeProps({ activeIndex: 1 })} />)
+    const { container } = render(<TranscriptList {...makeProps({ activeIndex: 1 })} />)
     const activeButton = screen.getByRole('button', { name: 'Play from 01:02' })
-    const activeRow = activeButton.closest('div')?.parentElement?.parentElement
-    expect(activeRow).toHaveStyle({ background: 'var(--surface-soft)' })
+    expect(activeButton.closest('.script-line')).toHaveAttribute('data-active', 'true')
+    expect(container.querySelectorAll('.script-line[data-active="true"]')).toHaveLength(1)
   })
 
   it('highlights nothing when activeIndex is -1', () => {
     const { container } = render(<TranscriptList {...makeProps({ activeIndex: -1 })} />)
-    const rows = container.querySelectorAll(':scope > div')
-    rows.forEach(row => {
-      expect(row).not.toHaveStyle({ background: 'var(--surface-soft)' })
-    })
+    expect(container.querySelectorAll('.script-line[data-active="true"]')).toHaveLength(0)
   })
 
   it('disables timestamp buttons and does not call onSeek when not seekable', () => {

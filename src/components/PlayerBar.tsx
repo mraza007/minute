@@ -23,19 +23,26 @@ const ARROW_KEY_SEEK_SECONDS = 5
 function PlayPauseIcon({ playing }: { playing: boolean }) {
   if (playing) {
     return (
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <rect x="5" y="3" width="5" height="18" rx="1"></rect>
         <rect x="14" y="3" width="5" height="18" rx="1"></rect>
       </svg>
     )
   }
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <polygon points="6 3 20 12 6 21 6 3"></polygon>
     </svg>
   )
 }
 
+/**
+ * Playback transport, set flush into the bottom edge of the note pane —
+ * a ruled strip continuous with the title bar and sidebar chrome, rather
+ * than the floating rounded card it used to be. Nothing in this app is
+ * meant to hover above the page ("paper, not glass"), and a raised card
+ * pinned to the bottom of a document was the last thing that did.
+ */
 export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec, rate, onToggle, onSkip, onSeek, onCycleRate }: PlayerBarProps) {
   const disabled = audioPath === null || failed
   const trackRef = useRef<HTMLDivElement>(null)
@@ -84,14 +91,14 @@ export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec
   }
 
   const iconBtnStyle = {
-    width: 30,
-    height: 30,
+    width: 28,
+    height: 28,
     border: 'none',
     borderRadius: '50%',
     background: 'transparent',
     color: 'var(--ink-muted)',
     cursor: disabled ? 'default' : 'pointer',
-    opacity: disabled ? 0.5 : 1,
+    opacity: disabled ? 0.45 : 1,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -99,135 +106,145 @@ export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec
   } as const
 
   return (
-    <div style={{ padding: '12px 32px 16px', flex: 'none' }}>
-      <div
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        flex: 'none',
+        height: 58,
+        padding: '0 34px',
+        borderTop: '1px solid var(--rule)',
+        background: 'var(--panel-warm)',
+      }}
+    >
+      <button
+        disabled={disabled}
+        aria-disabled={disabled}
+        aria-label="Back 15s"
+        onClick={() => onSkip(-SKIP_SECONDS)}
+        className="icon-btn"
+        style={iconBtnStyle}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+          <path d="M3 3v5h5"></path>
+        </svg>
+      </button>
+      <button
+        disabled={disabled}
+        aria-disabled={disabled}
+        className="btn-dark"
+        aria-label={playing ? 'Pause' : 'Play'}
+        onClick={onToggle}
         style={{
+          width: 32,
+          height: 32,
+          border: 'none',
+          borderRadius: '50%',
+          background: 'var(--btn-ink-bg)',
+          color: 'var(--btn-ink-fg)',
+          cursor: disabled ? 'default' : 'pointer',
+          opacity: disabled ? 0.45 : 1,
           display: 'flex',
           alignItems: 'center',
-          gap: 12,
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          padding: '10px 16px',
-          boxShadow: '0 1px 4px rgba(0,0,0,.06)',
+          justifyContent: 'center',
+          flex: 'none',
         }}
       >
-        <button
-          disabled={disabled}
-          aria-disabled={disabled}
-          aria-label="Back 15s"
-          onClick={() => onSkip(-SKIP_SECONDS)}
-          className="icon-btn"
-          style={iconBtnStyle}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-            <path d="M3 3v5h5"></path>
-          </svg>
-        </button>
-        <button
-          disabled={disabled}
-          aria-disabled={disabled}
-          className="btn-dark"
-          aria-label={playing ? 'Pause' : 'Play'}
-          onClick={onToggle}
-          style={{
-            width: 36,
-            height: 36,
-            border: 'none',
-            borderRadius: '50%',
-            background: 'var(--ink-solid)',
-            color: 'var(--text-on-accent)',
-            cursor: disabled ? 'default' : 'pointer',
-            opacity: disabled ? 0.5 : 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flex: 'none',
-          }}
-        >
-          <PlayPauseIcon playing={playing} />
-        </button>
-        <button
-          disabled={disabled}
-          aria-disabled={disabled}
-          aria-label="Forward 15s"
-          onClick={() => onSkip(SKIP_SECONDS)}
-          className="icon-btn"
-          style={iconBtnStyle}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
-            <path d="M21 3v5h-5"></path>
-          </svg>
-        </button>
+        <PlayPauseIcon playing={playing} />
+      </button>
+      <button
+        disabled={disabled}
+        aria-disabled={disabled}
+        aria-label="Forward 15s"
+        onClick={() => onSkip(SKIP_SECONDS)}
+        className="icon-btn"
+        style={iconBtnStyle}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+          <path d="M21 3v5h-5"></path>
+        </svg>
+      </button>
+      {/* A drawn rule, not a rounded pill: 2px, square ends, filled in the
+          signal accent so elapsed position reads at a glance without the
+          bar itself becoming a graphic element. */}
+      <div
+        ref={trackRef}
+        role="slider"
+        tabIndex={disabled ? -1 : 0}
+        aria-label="Seek"
+        aria-disabled={disabled}
+        aria-valuemin={0}
+        aria-valuemax={Math.round(durationSec)}
+        aria-valuenow={Math.round(currentTime)}
+        aria-valuetext={formatMmSs(currentTime)}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onKeyDown={handleKeyDown}
+        style={{
+          flex: 1,
+          height: 2,
+          background: 'var(--player-track)',
+          position: 'relative',
+          cursor: disabled ? 'default' : 'pointer',
+          touchAction: 'none',
+          opacity: disabled ? 0.5 : 1,
+        }}
+      >
+        <div style={{ position: 'absolute', inset: `0 ${100 - progressPercent}% 0 0`, background: 'var(--accent)' }} />
         <div
-          ref={trackRef}
-          role="slider"
-          tabIndex={disabled ? -1 : 0}
-          aria-label="Seek"
-          aria-disabled={disabled}
-          aria-valuemin={0}
-          aria-valuemax={Math.round(durationSec)}
-          aria-valuenow={Math.round(currentTime)}
-          aria-valuetext={formatMmSs(currentTime)}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onKeyDown={handleKeyDown}
+          aria-hidden="true"
           style={{
-            flex: 1,
-            height: 5,
-            borderRadius: 999,
-            background: 'var(--player-track)',
-            position: 'relative',
-            cursor: disabled ? 'default' : 'pointer',
-            touchAction: 'none',
-          }}
-        >
-          <div style={{ position: 'absolute', inset: `0 ${100 - progressPercent}% 0 0`, borderRadius: 999, background: 'var(--ink)' }} />
-          <div
-            aria-hidden="true"
-            style={{
-              position: 'absolute',
-              left: `${progressPercent}%`,
-              top: -4,
-              width: 13,
-              height: 13,
-              borderRadius: '50%',
-              background: 'var(--card)',
-              border: '2.5px solid var(--accent)',
-              boxShadow: '0 1px 3px rgba(0,0,0,.2)',
-              transform: 'translateX(-50%)',
-              opacity: disabled ? 0.5 : 1,
-            }}
-          />
-        </div>
-        <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: disabled ? 'var(--ink-faint)' : 'var(--ink-muted)', flex: 'none' }}>
-          {disabled ? (failed ? 'Audio unavailable' : 'Audio removed') : `${formatMmSs(currentTime)} / ${formatMmSs(durationSec)}`}
-        </div>
-        <button
-          disabled={disabled}
-          aria-disabled={disabled}
-          aria-label="Playback speed"
-          onClick={onCycleRate}
-          className="btn-light"
-          style={{
-            padding: '6px 10px',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 999,
-            background: 'var(--card)',
-            fontFamily: 'inherit',
-            fontSize: 12,
-            fontWeight: 700,
-            color: 'var(--ink)',
-            cursor: disabled ? 'default' : 'pointer',
+            position: 'absolute',
+            left: `${progressPercent}%`,
+            top: '50%',
+            width: 11,
+            height: 11,
+            marginTop: -5.5,
+            borderRadius: '50%',
+            background: 'var(--panel-warm)',
+            border: '2px solid var(--accent)',
+            transform: 'translateX(-50%)',
             opacity: disabled ? 0.5 : 1,
-            flex: 'none',
           }}
-        >
-          {rate}×
-        </button>
+        />
       </div>
+      <div
+        style={{
+          fontSize: 11,
+          fontVariantNumeric: 'tabular-nums',
+          letterSpacing: '.02em',
+          color: disabled ? 'var(--ink-faint)' : 'var(--ink-muted)',
+          flex: 'none',
+        }}
+      >
+        {disabled ? (failed ? 'Audio unavailable' : 'Audio removed') : `${formatMmSs(currentTime)} / ${formatMmSs(durationSec)}`}
+      </div>
+      <button
+        disabled={disabled}
+        aria-disabled={disabled}
+        aria-label="Playback speed"
+        onClick={onCycleRate}
+        className="btn-light"
+        style={{
+          padding: '3px 8px',
+          border: '1px solid var(--rule-strong)',
+          borderRadius: 'var(--radius-sm)',
+          background: 'transparent',
+          fontFamily: 'inherit',
+          fontSize: 10.5,
+          fontWeight: 600,
+          fontVariantNumeric: 'tabular-nums',
+          color: 'var(--ink-muted)',
+          cursor: disabled ? 'default' : 'pointer',
+          opacity: disabled ? 0.5 : 1,
+          flex: 'none',
+        }}
+      >
+        {rate}×
+      </button>
     </div>
   )
 }

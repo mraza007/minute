@@ -1,7 +1,11 @@
 /* Instrument Sans, bundled locally (no runtime fetch) — variable weight
    400–700, latin + latin-ext subsets, upright + italic. Files fingerprinted
    by Vite on build; unicode-range values copied verbatim from Google's
-   css2 response so subset selection still matches per-glyph. */
+   css2 response so subset selection still matches per-glyph.
+
+   Instrument Sans is the app's *chrome* face only — labels, buttons,
+   metadata, timestamps. Document text (transcript body, summaries, note
+   titles) is set in the serif ramp below instead; see --serif. */
 @font-face {
   font-family: 'Instrument Sans';
   font-style: normal;
@@ -37,159 +41,223 @@
 
 :root {
   color-scheme: light dark;
-  /* surfaces */
-  --canvas: #e8e6e3;
-  --panel: #f2f0ee;
-  --panel-warm: #eceae7;
-  --surface-soft: #f7f6f4;
-  --surface-softer: #faf9f7;
-  --card: #fff;
-  --control-track: #d8d4cf;   /* Toggle off-track, disabled CTA fills */
-  --player-track: #e8e5e1;    /* PlayerBar seek track */
-  --selected-tint: #fff6f4;   /* selected-model row tint (SettingsView) */
-  /* ink ramp (all AA on every surface above) */
-  --ink: #1c1a18;
-  --ink-body: #33302c;
-  --ink-muted: #57524b;
-  --ink-faint: #6b6660;
-  /* fixed-dark chrome — intentionally NOT inverted in the dark ramp below.
-     Used for the "trust banner" panels and the dark play/reveal buttons,
-     which are meant to read as a printed dark card/button in both
-     appearances rather than following the ink/text color's light↔dark
-     flip. */
-  --ink-solid: #1c1a18;
-  --text-on-accent: #fff;           /* text over accent-solid / ink-solid / btn-dark fills */
-  /* trust-banner chrome (SettingsView + OnboardingView "nothing leaves this
-     machine" callouts) — DOES invert in the dark ramp below, unlike
-     --ink-solid: in light mode a nearly-black block reads as a deliberate,
-     loud callout against the light page, but the same near-black block on
-     an already-near-black dark canvas would just disappear. Dark mode
-     instead renders it as a normal elevated --card, matching every other
-     card on the page, which is the honest equivalent for this half of the
-     ramp. */
-  --banner-bg: #1c1a18;
-  --banner-text: #fff;
-  --banner-text-muted: rgba(255, 255, 255, .75);
-  /* accent */
-  --accent-rgb: 224, 68, 48;  /* == --accent, as r,g,b — for rgba() borders/shadows/rings that need a translucent accent rather than a solid one */
-  --accent: #e04430;          /* graphics, dots, borders, REC — never text-bearing fills */
-  --accent-solid: #c93520;    /* button fills with white text (5.2:1) */
-  --accent-solid-hover: #b32d1a;
-  --accent-solid-active: #9c2716;
-  --accent-text: #b3200c;     /* red text on light tints (5.6:1 on #ffe6e1) */
-  --accent-tint: #ffe6e1;
-  --accent-selection: #ffd9d2;
-  --error-tint: #fff4f1;      /* error-card bg (AiNotesPanel, ErrorBanner) */
-  --error-text-strong: #7a1c0e; /* darker error body text on --error-tint */
+
+  /* ── type ─────────────────────────────────────────────────────────────
+     Two families, one job each. Sans is chrome: buttons, labels,
+     timestamps, metadata — anything that is *about* the document. Serif is
+     the document itself: transcript body, summaries, decisions, note
+     titles. That split is what delivers .impeccable.md's "the transcript
+     is the interface" — text stops looking like UI copy and starts looking
+     like the material.
+
+     Charter is a system font on every supported macOS (Matthew Carter,
+     drawn for dense text at small sizes on imprecise output — almost
+     exactly this use case), so it costs zero bytes. Iowan Old Style and
+     New York (`ui-serif`) are the fallbacks, both also macOS-resident and
+     both warm enough to keep the character if Charter ever goes missing.
+     Swap in a bundled face by changing this one declaration. */
+  --sans: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  --serif: 'Charter', 'Iowan Old Style', 'Palatino Linotype', ui-serif, Georgia, serif;
+
+  /* ── surfaces ─────────────────────────────────────────────────────────
+     Actual paper, not a nominally-warm gray. The previous ramp
+     (#e8e6e3 / #f2f0ee) was warm only on paper — at 8-bit it read as plain
+     light gray. These carry a real cream cast that survives on a display,
+     which is the whole point of the "warm paper light theme is the
+     identity" line in .impeccable.md. Two tones do almost all the work:
+     --panel/--surface-soft is the writing surface, --panel-warm is the
+     chrome around it (title bar, sidebar, player strip). */
+  --canvas: #e7dfce;
+  --panel: #f4efe4;           /* the leaf you write on */
+  --panel-warm: #ece5d6;      /* chrome: title bar, sidebar, player strip */
+  --surface-soft: #f4efe4;
+  --surface-softer: #f8f4ec;
+  --card: #faf7f0;
+  --control-track: #d5cab3;   /* Toggle off-track, disabled CTA fills */
+  --player-track: #d9cfba;    /* PlayerBar seek track */
+  --selected-tint: #fbf2ea;   /* selected-model row tint (SettingsView) */
+
+  /* ── ink ramp (all AA on every surface above; see scripts note below) ── */
+  --ink: #211d18;
+  --ink-body: #3b352c;
+  --ink-muted: #5c5446;
+  --ink-faint: #6b6252;
+
+  --text-on-accent: #fff;           /* text over accent-solid fills */
+
+  /* Ink buttons — the solid disc/pill controls (PlayerBar's play/pause,
+     MarkdownCard's "Reveal in Finder"). These DO invert in the dark ramp.
+     They used to be pinned near-black in both appearances, on the reasoning
+     that they're shape-defined and carry a crisp white glyph. That held
+     while dark --panel-warm was a mid-brown, but this ramp's chrome is much
+     darker (#1b1813) and a #211d18 disc on it measures 1.06:1 — the control
+     stops existing as a shape at all. Ink on dark paper is light; these
+     follow that, which is also the more honest reading of the metaphor. */
+  --btn-ink-bg: #211d18;
+  --btn-ink-fg: #fff;
+  --btn-ink-hover: #3b352c;
+
+  /* (The former --banner-* trust-banner tokens are gone: onboarding's
+     "nothing leaves this Mac" callout is no longer a near-black block on
+     the page but the page's own title, set at document scale in the serif.
+     A promise the product is built on shouldn't be boxed off as a notice
+     the eye learns to skip.) */
+
+  /* ── accent ───────────────────────────────────────────────────────────
+     One signal colour, pulled slightly toward oxide/iron-red so it sits on
+     cream as printed ink rather than as a web red. Still the only loud
+     thing in the app. */
+  --accent-rgb: 200, 65, 42;  /* == --accent, as r,g,b — for rgba() borders/shadows/rings that need a translucent accent rather than a solid one */
+  --accent: #c8412a;          /* graphics, rules, dots, REC — never text-bearing fills */
+  --accent-solid: #b8341d;    /* button fills with white text (5.4:1) */
+  --accent-solid-hover: #a32c17;
+  --accent-solid-active: #8e2512;
+  --accent-text: #a32c17;     /* red text on light tints (5.1:1 on --accent-tint) */
+  --accent-tint: #f7e0d7;
+  --accent-selection: #f2cfc3;
+  --error-tint: #fbeee8;      /* error-card bg (AiNotesPanel, ErrorBanner) */
+  --error-text-strong: #7a2410; /* darker error body text on --error-tint */
+
   /* status */
-  --ok-text: #356b22;
-  --ok-tint: #e6ecda;
-  /* hairlines & controls */
-  --border-soft: rgba(0, 0, 0, .07);
-  --border: rgba(0, 0, 0, .09);
-  --border-strong: rgba(0, 0, 0, .12);
-  --border-heavy: rgba(0, 0, 0, .15); /* dashed placeholder cards, delete-confirm border */
-  --control-border: #8a8580;  /* >=3:1 on white for radio/toggle affordances */
+  --ok-text: #3f6b2c;
+  --ok-tint: #e2e8d2;
+
+  /* ── hairlines ────────────────────────────────────────────────────────
+     Ink-tinted, never neutral black — a rule drawn on cream with a grey
+     hairline reads as a UI border; the same rule in dilute ink reads as
+     drawn. --rule is the workhorse (the manuscript margin, section-head
+     rules, panel divisions); the --border-* aliases below are kept so
+     surfaces not yet reworked stay coherent. */
+  --rule: rgba(33, 29, 24, .14);
+  --rule-strong: rgba(33, 29, 24, .26);
+  --border-soft: rgba(33, 29, 24, .09);
+  --border: rgba(33, 29, 24, .13);
+  --border-strong: rgba(33, 29, 24, .2);
+  --border-heavy: rgba(33, 29, 24, .28); /* dashed placeholder cards, delete-confirm border */
+  --control-border: #857b6a;  /* >=3:1 on --card for radio/toggle affordances */
+
   /* overlay scrim — the ⌘K search palette is the one deliberately-justified
      overlay in the app (see .impeccable.md's "paper, not glass": no blur/
      glow/gradients). A plain dim backdrop is still needed to separate the
      palette from the app behind it, so this is ink-tinted (derived from
      --ink, not a neutral/cool black) to stay warm rather than read as
      glass. Reused wherever a future modal scrim is needed. */
-  --scrim: rgba(28, 26, 24, .38);
+  --scrim: rgba(33, 29, 24, .40);
+
   /* hover overlays (utility classes below) */
-  --hover-overlay: rgba(0, 0, 0, .05);
-  --hover-overlay-strong: rgba(0, 0, 0, .06);
-  --btn-light-hover: #f3f1ef;
-  --btn-dark-hover: #3a3733;
-  /* radii */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  --hover-overlay: rgba(33, 29, 24, .05);
+  --hover-overlay-strong: rgba(33, 29, 24, .07);
+  --btn-light-hover: #f2ece0;
+  --btn-dark-hover: #3b352c;
+
+  /* radii — deliberately small. Paper is cut, not moulded; the 16px pill
+     radius the app used everywhere is the single strongest "web card" tell.
+     999px survives only where a control genuinely is a pill (the record
+     button, the REC chip). */
+  --radius-sm: 4px;
+  --radius-md: 5px;
+  --radius-lg: 6px;
+
   /* Meeting-popup pill (src/popup/Pill.tsx) drop shadow — the one shadow
-     token in the app so far (every other box-shadow here is a plain
-     hardcoded literal, not theme-varying — .impeccable.md's "paper, not
-     glass" principle keeps shadows rare and functional, not decorative).
-     This one specifically needs to vary by theme: unlike every other
-     shadowed surface in the app (a card sitting on the app's own --canvas),
-     the popup floats directly over an arbitrary desktop/call window, so its
-     shadow is the only thing separating it from whatever's behind it in
-     either theme — never "none". */
+     token in the app (the rest of the UI is flat per "paper, not glass").
+     It needs to vary by theme: unlike every other surface in the app (which
+     sits on the app's own paper), the popup floats directly over an
+     arbitrary desktop/call window, so its shadow is the only thing
+     separating it from whatever's behind it — never "none". */
   --shadow-pill: 0 4px 16px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .12);
+
+  /* Paper grain, as a data URI so it costs no request. Multiplied over the
+     app surface at low opacity — enough to break up flat fills and read as
+     stock, not enough to touch text contrast (verified: the overlay sits
+     behind nothing, it multiplies the *background* only where text is
+     absent, and its own alpha is far below the AA headroom in the ink
+     ramp). Disabled wholesale under forced-colors. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
+  --grain-opacity: .40;
+  --grain-blend: multiply;
 }
 
 /* Dark ramp — follows macOS appearance. Keeps the warm paper-and-ink
    character (see .impeccable.md: "dark warm ink surfaces, not cool slate or
-   neon-on-black") rather than a cool/neutral dark theme: every surface below
-   is a warm near-black brown, not a blue-grey. Values verified with a WCAG
-   contrast script — see the Task 6 report for the pairing table. */
+   neon-on-black"): this is ink-on-dark-paper, every surface a warm
+   near-black brown rather than a blue-grey. Values verified with the
+   contrast script — see the pairing table in the revamp notes. */
 @media (prefers-color-scheme: dark) {
   :root {
     /* surfaces */
-    --canvas: #211f1c;
-    --panel: #262421;
-    --panel-warm: #2a2724;
-    --surface-soft: #2d2a26;
-    --surface-softer: #312d29;
-    --card: #34302b;
-    /* darker than the initial ramp guess (#4a453f) — that value only cleared
-       3.74:1 against --ink-muted (the OnboardingView disabled-CTA label),
-       short of AA; this clears 4.94:1 while staying a clearly "muted/off"
-       fill (--control-border, not this token, carries the Toggle
-       off/on boundary, so darkening it doesn't touch that pairing). */
-    --control-track: #423b35;
-    --player-track: #403b35;
-    --selected-tint: #3a2620;
+    --canvas: #17150f;
+    --panel: #221e18;
+    --panel-warm: #1b1813;
+    --surface-soft: #221e18;
+    --surface-softer: #272219;
+    --card: #2b261e;
+    /* kept clearly "muted/off" while still clearing AA against
+       --ink-muted (the OnboardingView disabled-CTA label sits on it);
+       --control-border, not this token, carries the Toggle off/on
+       boundary, so its value doesn't affect that pairing. */
+    --control-track: #423b30;
+    --player-track: #3f382d;
+    --selected-tint: #382419;
+
     /* ink ramp */
-    --ink: #ece9e4;
-    --ink-body: #d9d5cf;
-    --ink-muted: #b3ada4;
-    --ink-faint: #a29a90;
-    /* --ink-solid / --text-on-accent intentionally NOT overridden — the
-       small dark buttons that use them (PlayerBar play/pause, MarkdownCard
-       "Reveal in Finder") keep a fixed near-black fill in both appearances;
-       they're shape-defined (circle/pill) with a crisp white icon/label
-       rather than relying on separation from the page behind them. */
-    --banner-bg: #34302b;               /* = dark --card */
-    --banner-text: #ece9e4;             /* = dark --ink */
-    --banner-text-muted: rgba(236, 233, 228, .75);
-    /* accent — same graphic accent; solid fill darkened (same direction as
-       light mode's own hover/active step) so white text clears AA on a dark
-       canvas; hover/active continue darkening for consistent depress
-       feedback. */
-    --accent-rgb: 224, 84, 63;  /* == dark --accent */
-    --accent: #e0543f;
-    --accent-solid: #b32d1a;
-    --accent-solid-hover: #9c2716;
-    --accent-solid-active: #821f11;
-    --accent-text: #ff9c87;
-    --accent-tint: #47231c;
-    --accent-selection: #5c2c22;
-    --error-tint: #3d221c;
-    --error-text-strong: #ffb3a1;
+    --ink: #f0e9db;
+    --ink-body: #ddd5c5;
+    --ink-muted: #b7ae9c;
+    --ink-faint: #a49a86;
+
+    /* Ink buttons invert: a light disc with a dark glyph, 14:1 against the
+       chrome behind it — see the light ramp's note for why they no longer
+       stay pinned near-black. --text-on-accent is deliberately NOT
+       overridden: it labels accent-solid fills, which stay dark red in both
+       appearances. */
+    --btn-ink-bg: #ece4d5;
+    --btn-ink-fg: #17150f;
+    --btn-ink-hover: #d5cdbe;
+
+    /* accent — same graphic accent, lifted for a dark ground; solid fill
+       darkened (same direction as light mode's own hover/active step) so
+       white text clears AA, hover/active continuing to darken for
+       consistent depress feedback. */
+    --accent-rgb: 224, 90, 66;  /* == dark --accent */
+    --accent: #e05a42;
+    --accent-solid: #b8341d;
+    --accent-solid-hover: #a32c17;
+    --accent-solid-active: #8e2512;
+    --accent-text: #ffa48d;
+    --accent-tint: #44201a;
+    --accent-selection: #5a2b21;
+    --error-tint: #3a1f18;
+    --error-text-strong: #ffb9a5;
+
     /* status */
-    --ok-text: #a2c97a;
-    --ok-tint: #2c3a22;
-    /* hairlines & controls */
-    --border-soft: rgba(255, 255, 255, .07);
-    --border: rgba(255, 255, 255, .1);
-    --border-strong: rgba(255, 255, 255, .14);
-    --border-heavy: rgba(255, 255, 255, .16);
-    --control-border: #948e85;
-    --scrim: rgba(0, 0, 0, .5);
-    --hover-overlay: rgba(255, 255, 255, .06);
-    --hover-overlay-strong: rgba(255, 255, 255, .08);
-    --btn-light-hover: #3a3733;
-    --btn-dark-hover: #47423b;
-    /* Reduced (not "none"): every other dark-mode shadow already present in
-       the app (AiNotesPanel/MarkdownCard/SettingsView's near-invisible `0
-       1px 3px rgba(0,0,0,.04)` cards) leans on this same idea — a black
-       drop shadow reads as heavy/muddy against an already-dark surface, so
-       dark mode keeps a lighter touch here too and lets the pill's own `1px
-       solid var(--border)` (already present) carry most of the actual
-       separation instead of the shadow doing all the work, the same
-       division of labor those other dark-mode cards rely on. */
+    --ok-text: #a8cc80;
+    --ok-tint: #2a3620;
+
+    /* hairlines — light ink on dark paper */
+    --rule: rgba(240, 233, 219, .12);
+    --rule-strong: rgba(240, 233, 219, .22);
+    --border-soft: rgba(240, 233, 219, .08);
+    --border: rgba(240, 233, 219, .11);
+    --border-strong: rgba(240, 233, 219, .17);
+    --border-heavy: rgba(240, 233, 219, .22);
+    --control-border: #968c79;
+    --scrim: rgba(0, 0, 0, .55);
+    --hover-overlay: rgba(240, 233, 219, .06);
+    --hover-overlay-strong: rgba(240, 233, 219, .09);
+    --btn-light-hover: #322c23;
+    --btn-dark-hover: #453e33;
+
+    /* Reduced (not "none"): a black drop shadow reads as heavy/muddy
+       against an already-dark surface, so dark mode keeps a lighter touch
+       and lets the pill's own `1px solid var(--border)` carry most of the
+       actual separation instead. */
     --shadow-pill: 0 4px 16px rgba(0, 0, 0, .1), 0 1px 3px rgba(0, 0, 0, .08);
+
+    /* Grain screens (rather than multiplies) on dark paper — multiplying
+       noise into an already-dark fill just muddies it; screening lifts the
+       same texture as flecks in the stock. */
+    --grain-opacity: .28;
+    --grain-blend: screen;
   }
 }
 
@@ -197,13 +265,34 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
-  font-family: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  font-family: var(--sans);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   cursor: default;
 }
 a { color: var(--ink); }
 a:hover { color: var(--accent-text); }
+
+/* ── paper grain ────────────────────────────────────────────────────────
+   Applied to the app shell (not <body>) so the meeting-popup window — a
+   transparent, free-floating pill over an arbitrary desktop — never gets
+   a grain layer it has no paper to sit on. Pointer-events none and behind
+   nothing interactive; purely a surface treatment. */
+.app-paper { position: relative; }
+.app-paper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: var(--grain-blend);
+  background-image: var(--grain);
+}
+@media (forced-colors: active) {
+  .app-paper::after { display: none; }
+}
+
 @keyframes wf { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -221,6 +310,338 @@ a:hover { color: var(--accent-text); }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 ::selection { background: var(--accent-selection); }
 
+/* ══════════════════════════════════════════════════════════════════════
+   TYPOGRAPHIC DEVICES
+   Three repeated forms carry nearly all hierarchy in the reworked UI.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* 1. The micro label. Replaces every eyebrow, group header, tab and status
+      caption. Uppercase, tightly-weighted, widely letterspaced sans —
+      unmistakably chrome, so it never competes with serif document text. */
+.mlab {
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* 2. The ruled section head. A micro label followed by a hairline that
+      runs out to the edge of its column — the editorial device that
+      replaces the app's stacked cards. Set on a flex container. */
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sec-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+/* 3. Document text. Serif, generous leading, ragged-right at a real
+      measure. `user-select: text` is deliberate and scoped: the app is
+      otherwise chrome (user-select: none, native-app behaviour), but a
+      transcript that can't be quoted out of fails its own premise. */
+.doc-text {
+  font-family: var(--serif);
+  color: var(--ink-body);
+  text-wrap: pretty;
+  user-select: text;
+  cursor: auto;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   THE MANUSCRIPT MARGIN
+   The transcript's signature: timestamps set in a right-aligned gutter
+   behind one continuous vertical rule. The rule is a background gradient
+   on the scroll container rather than a border on each row, so it stays
+   unbroken across row gaps — and, since backgrounds on a scroll container
+   are painted against its padding box (not its scrolled content), it reads
+   as one uninterrupted line no matter how far the transcript is scrolled.
+   ══════════════════════════════════════════════════════════════════════ */
+.script {
+  --gutter: 74px;
+  --gutter-gap: 34px;
+  flex: 1;
+  overflow: auto;
+  padding: 26px 34px;
+  min-height: 0;
+  background-image: linear-gradient(
+    to right,
+    transparent 0 calc(34px + var(--gutter) + (var(--gutter-gap) / 2)),
+    var(--rule) calc(34px + var(--gutter) + (var(--gutter-gap) / 2)) calc(35px + var(--gutter) + (var(--gutter-gap) / 2)),
+    transparent calc(35px + var(--gutter) + (var(--gutter-gap) / 2))
+  );
+  background-repeat: no-repeat;
+}
+.script-line {
+  display: grid;
+  grid-template-columns: var(--gutter) 1fr;
+  column-gap: var(--gutter-gap);
+  max-width: 760px;
+}
+/* Timestamps double as seek buttons — styled as margin marginalia, not as
+   links: no underline, no accent, tabular so the column stays flush. */
+.script-ts {
+  justify-self: end;
+  /* Without this the button stretches to the full grid-row height and
+     centres its own label, so a three-line segment's timestamp floats
+     opposite the middle of the paragraph instead of its first line. The
+     margin reference has to sit on the line it refers to. */
+  align-self: start;
+  padding: 3px 0 0;
+  border: none;
+  background: none;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+  color: var(--ink-faint);
+  text-align: right;
+}
+.script-ts[data-seekable='true'] { cursor: pointer; }
+.script-ts[data-seekable='true']:hover { color: var(--accent-text); }
+.script-who {
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.script-said {
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.62;
+  letter-spacing: .003em;
+  color: var(--ink-body);
+  text-wrap: pretty;
+  user-select: text;
+  cursor: auto;
+  margin: 0;
+}
+/* Playback position. A margin rule in the gutter — the manuscript
+   equivalent of a highlighted row, and far quieter than a filled block. */
+.script-line[data-active='true'] .script-ts { color: var(--accent-text); font-weight: 600; }
+.script-line[data-active='true'] .script-said { color: var(--ink); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   THE FACING LEAF
+   The AI-notes rail. Previously a scrolling stack of rounded, shadowed
+   cards — the exact "SaaS notetaker panels of widgets" .impeccable.md
+   names as an anti-reference. Now it's the right-hand page of an open
+   notebook: same paper as the transcript, divided from it by one hairline,
+   with ruled section heads instead of card edges.
+   ══════════════════════════════════════════════════════════════════════ */
+.leaf-body {
+  font-family: var(--serif);
+  font-size: 13.2px;
+  line-height: 1.58;
+  color: var(--ink-body);
+  text-wrap: pretty;
+  user-select: text;
+  cursor: auto;
+  margin: 0;
+}
+
+/* Decisions and similar enumerations. Hanging square markers in the signal
+   accent — a printed bullet, not a dot list. */
+.sec-list { margin: 0; padding: 0; list-style: none; }
+.sec-list li {
+  font-family: var(--serif);
+  font-size: 13.2px;
+  line-height: 1.5;
+  color: var(--ink-body);
+  position: relative;
+  padding-left: 16px;
+  margin-bottom: 9px;
+  text-wrap: pretty;
+  user-select: text;
+  cursor: auto;
+}
+.sec-list li:last-child { margin-bottom: 0; }
+.sec-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: .52em;
+  width: 5px;
+  height: 5px;
+  background: var(--accent);
+}
+
+/* Action items. A square, hairline-ruled checkbox — the box you'd draw in
+   a margin, rather than the platform's rounded control. */
+.todo-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-family: var(--serif);
+  font-size: 13.2px;
+  line-height: 1.5;
+  color: var(--ink-body);
+}
+.todo-row input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  margin: 3px 0 0;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+}
+.todo-row input[type='checkbox']:checked { background: var(--ink); border-color: var(--ink); }
+.todo-row input[type='checkbox']:checked::after {
+  content: '';
+  width: 7px;
+  height: 4px;
+  border: 1.6px solid var(--panel);
+  border-top: 0;
+  border-right: 0;
+  transform: rotate(-45deg) translate(.5px, -1px);
+}
+.todo-row input[type='checkbox']:disabled { cursor: default; }
+
+/* Honest empty/placeholder blocks — a dashed rule and a plain sentence,
+   never a skeleton pretending data is coming. */
+.placeholder-block {
+  border: 1px dashed var(--border-heavy);
+  padding: 13px 14px;
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   CONTROLS
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* The one loud control in the app. */
+.btn-solid {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 10px 17px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.btn-solid:hover:not(:disabled) { background: var(--accent-solid-hover); }
+.btn-solid:active:not(:disabled) { background: var(--accent-solid-active); }
+.btn-solid:disabled { cursor: default; opacity: .7; }
+
+/* The record button and its recording-state counterpart. The only two
+   pill-radius controls left in the app — a pill is what a "press this"
+   affordance looks like, and reserving the shape for these two makes the
+   record action unmistakable among otherwise square-cut chrome. */
+.btn-record {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 9px 17px 9px 14px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.btn-record:hover { background: var(--accent-solid-hover); }
+.btn-record:active { background: var(--accent-solid-active); }
+
+.rec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent-text);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  font-variant-numeric: tabular-nums;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.rec-chip:hover { background: var(--accent-selection); }
+
+.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 10px 17px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.btn-outline:hover:not(:disabled) { background: var(--hover-overlay); }
+.btn-outline:disabled { cursor: default; opacity: .5; }
+
+.btn-quiet {
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 10px 8px;
+  cursor: pointer;
+}
+.btn-quiet:hover:not(:disabled) { color: var(--ink); }
+.btn-quiet:disabled { cursor: default; opacity: .55; }
+
+/* Text-underline tabs, replacing the segmented pill. */
+.tab-rule {
+  display: flex;
+  gap: 22px;
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+}
+.tab-item {
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0 0 9px;
+  cursor: pointer;
+}
+.tab-item[aria-selected='true'] { color: var(--ink); border-bottom-color: var(--ink); }
+.tab-item:hover { color: var(--ink); }
+
 /* pseudo-state classes replacing the mock's style-hover/focus/active */
 .btn-rec { transition: background .12s; }
 .btn-rec:hover { background: var(--accent-solid-hover) !important; }
@@ -231,10 +652,82 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .icon-btn-danger:hover { background: var(--accent-tint) !important; color: var(--accent-text) !important; }
 .btn-light:hover { background: var(--btn-light-hover) !important; }
 .btn-dark-accent:hover { background: var(--accent) !important; }
-.btn-dark:hover { background: var(--btn-dark-hover) !important; }
+.btn-dark:hover { background: var(--btn-ink-hover) !important; }
 .input-focus:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .15) !important; }
 .model-card:hover { background: var(--surface-softer) !important; }
 .seg-off:hover { color: var(--ink) !important; }
+
+/* Quiet inputs — a single bottom hairline instead of a boxed field, so the
+   sidebar search and inline rename read as ruled lines on the page. */
+.input-ruled {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink);
+  padding: 0 0 8px;
+  outline: none;
+}
+.input-ruled::placeholder { color: var(--ink-faint); }
+.input-ruled:focus { border-bottom-color: var(--accent); }
+
+/* Sidebar entry — selection is a margin marker plus a wash that fades out
+   to the right, not a card. */
+.side-row {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 18px 9px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.side-row:hover { background: var(--hover-overlay); }
+.side-row .side-row-title {
+  display: block;
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.32;
+  color: var(--ink-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-row .side-row-meta {
+  display: block;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  margin-top: 2px;
+}
+.side-row[aria-current='true'] {
+  border-left-color: var(--accent);
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), .09), rgba(var(--accent-rgb), 0) 72%);
+}
+.side-row[aria-current='true'] .side-row-title { color: var(--ink); font-weight: 600; }
+
+/* Recording: a single hairline across the very top edge of the window.
+   .impeccable.md's "quiet by default, loud when recording", spent in one
+   place — unmissable peripherally, and it costs no layout. */
+.rec-edge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 60;
+  pointer-events: none;
+}
 
 /* prefers-reduced-motion: every looping animation in the app (waveform bars,
    the REC/transcribing blink dot, spinners) is purely decorative — each is
@@ -263,6 +756,7 @@ button:focus-visible,
 [role="radio"]:focus-visible,
 [role="tab"]:focus-visible,
 [role="switch"]:focus-visible,
+[role="slider"]:focus-visible,
 input:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);

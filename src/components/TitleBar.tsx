@@ -19,52 +19,29 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        height: 52,
+        gap: 13,
+        height: 48,
         padding: '0 16px 0 76px',
         background: 'var(--panel-warm)',
-        borderBottom: '1px solid var(--border)',
+        borderBottom: '1px solid var(--rule)',
         flex: 'none',
       }}
     >
-      <div data-tauri-drag-region="" style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em' }}>Minute</div>
+      <div data-tauri-drag-region="" style={{ fontWeight: 600, fontSize: 14, letterSpacing: '-.005em' }}>Minute</div>
+      {/* The on-device assurance sits permanently in the chrome rather than
+          in a banner that can be dismissed or scrolled past — it's the
+          product's core promise, so it reads as a property of the window
+          itself. */}
       <div
         data-tauri-drag-region=""
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '5px 2px',
-          fontSize: 12,
-          fontWeight: 500,
-          color: 'var(--ink-faint)',
-        }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-muted)' }}
       >
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok-text)' }} />
-        On-device
+        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ok-text)' }} />
+        on-device
       </div>
       <div data-tauri-drag-region="" style={{ flex: 1 }} />
       {isRecording && (
-        <button
-          type="button"
-          aria-label="Return to recording"
-          onClick={onReturnToRecording}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '6px 14px',
-            border: 'none',
-            borderRadius: 999,
-            background: 'var(--accent-tint)',
-            color: 'var(--accent-text)',
-            fontFamily: 'inherit',
-            fontWeight: 700,
-            fontSize: 13,
-            fontVariantNumeric: 'tabular-nums',
-            cursor: 'pointer',
-          }}
-        >
+        <button type="button" aria-label="Return to recording" onClick={onReturnToRecording} className="rec-chip">
           <span
             className="blink-dot"
             style={{
@@ -79,28 +56,10 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
         </button>
       )}
       {!isRecording && (
-        <button
-          onClick={onStartRec}
-          className="btn-rec"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '8px 18px',
-            border: 'none',
-            borderRadius: 999,
-            background: 'var(--accent-solid)',
-            color: 'var(--text-on-accent)',
-            fontFamily: 'inherit',
-            fontWeight: 600,
-            fontSize: 13,
-            cursor: 'pointer',
-            boxShadow: '0 1px 3px rgba(var(--accent-rgb), .35)',
-          }}
-        >
+        <button onClick={onStartRec} className="btn-record">
           <svg
-            width="14"
-            height="14"
+            width="13"
+            height="13"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"

@@ -38,7 +38,7 @@ describe('RecordingView', () => {
 
   it('shows the live transcript privacy label', () => {
     render(<RecordingView {...base} />)
-    expect(screen.getByText('LIVE TRANSCRIPT — AUDIO NEVER LEAVES THIS MACHINE')).toBeInTheDocument()
+    expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument()
   })
 
   it('shows the model name and "on-device" in the caption', () => {
