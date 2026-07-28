@@ -14,6 +14,11 @@ const base = {
   onSearchQueryChange: vi.fn(),
   matchedNoteIds: null,
   onOpenPalette: vi.fn(),
+  onStartRecording: vi.fn(),
+  onTogglePinned: vi.fn(),
+  onOpenShortcuts: vi.fn(),
+  onBulkExport: vi.fn().mockResolvedValue(undefined),
+  onBulkDelete: vi.fn().mockResolvedValue(undefined),
 }
 
 describe('Sidebar', () => {
@@ -57,6 +62,11 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: /settings/i })).not.toHaveAttribute('aria-current')
   })
 
+  it('exposes the complete note title when the row label is visually truncated', () => {
+    render(<Sidebar {...base} />)
+    expect(screen.getByRole('button', { name: /board prep sync/i })).toHaveAttribute('title', 'Board prep sync')
+  })
+
   it('calls onGoNotes when "All notes" is clicked', () => {
     const onGoNotes = vi.fn()
     render(<Sidebar {...base} onGoNotes={onGoNotes} />)
@@ -71,15 +81,96 @@ describe('Sidebar', () => {
     expect(onGoSettings).toHaveBeenCalledTimes(1)
   })
 
+  it('sorts notes explicitly and opens the shortcut reference', () => {
+    const onOpenShortcuts = vi.fn()
+    render(<Sidebar {...base} onOpenShortcuts={onOpenShortcuts} />)
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sort notes' }), {
+      target: { value: 'title' },
+    })
+    const noteRows = screen.getAllByRole('button').filter(button => button.classList.contains('side-row'))
+    expect(noteRows.map(row => row.querySelector('.side-row-title')?.textContent)).toEqual(
+      demoNotes.map(note => note.title).toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }))
+    expect(onOpenShortcuts).toHaveBeenCalledTimes(1)
+  })
+
+  it('bulk selects, exports, and recoverably deletes notes', async () => {
+    const onBulkExport = vi.fn().mockResolvedValue(undefined)
+    const onBulkDelete = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = render(
+      <Sidebar {...base} onBulkExport={onBulkExport} onBulkDelete={onBulkDelete} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select notes' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Board prep sync' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+    await vi.waitFor(() => expect(onBulkExport).toHaveBeenCalledWith(['demo-1']))
+
+    rerender(<Sidebar {...base} onBulkExport={onBulkExport} onBulkDelete={onBulkDelete} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Select notes' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Board prep sync' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(onBulkDelete).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete 1' }))
+    await vi.waitFor(() => expect(onBulkDelete).toHaveBeenCalledWith(['demo-1']))
+  })
+
   it('renders the given stats line', () => {
     render(<Sidebar {...base} statsLine="0 notes · 0 MB local · nothing synced" />)
     expect(screen.getByText('0 notes · 0 MB local · nothing synced')).toBeInTheDocument()
   })
 
   it('shows an empty-library message and no note rows when notes is empty', () => {
-    render(<Sidebar {...base} notes={[]} />)
+    const onStartRecording = vi.fn()
+    render(<Sidebar {...base} notes={[]} onStartRecording={onStartRecording} />)
     expect(screen.getByText(/no notes yet/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /board prep sync/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /start your first recording/i }))
+    expect(onStartRecording).toHaveBeenCalledTimes(1)
+  })
+
+  it('filters the library by pinned state', () => {
+    const notes = demoNotes.map((note, index) => ({ ...note, pinned: index === 1 }))
+    render(<Sidebar {...base} notes={notes} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
+      target: { value: 'pinned' },
+    })
+    expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
+    expect(screen.queryByText('Board prep sync')).not.toBeInTheDocument()
+  })
+
+  it('combines source and recording-status filters', () => {
+    const notes = demoNotes.map((note, index) => ({
+      ...note,
+      status: index === 0 ? 'recording' as const : 'ready' as const,
+      sources: index === 0 ? ['mic', 'system'] : ['mic'],
+    }))
+    render(<Sidebar {...base} notes={notes} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
+      target: { value: 'recording' },
+    })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by source' }), {
+      target: { value: 'system' },
+    })
+    expect(screen.getByText('Board prep sync')).toBeInTheDocument()
+    expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
+  })
+
+  it('pins a note and collapses the library into its compact mode', () => {
+    const onTogglePinned = vi.fn()
+    render(<Sidebar {...base} onTogglePinned={onTogglePinned} />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Pin note' })[0])
+    expect(onTogglePinned).toHaveBeenCalledWith('demo-1', true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
+    expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'true')
+    expect(screen.getByRole('button', { name: 'Expand library sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'All notes' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
   })
 
   describe('search input', () => {

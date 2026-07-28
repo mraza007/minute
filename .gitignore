@@ -27,6 +27,16 @@ dist-ssr
 src-tauri/target
 /target
 
-# Local planning docs (never committed)
-docs/
+# Local planning docs stay local; release/QA/product decisions are source.
+docs/*
+!docs/qa/
+!docs/qa/**
+!docs/product/
+!docs/product/**
+!docs/release/
+!docs/release/**
 .impeccable.md
+
+# Generated visual-regression output; only baselines are source.
+tests/visual/actual/
+tests/visual/diff/

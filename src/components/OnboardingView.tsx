@@ -1,11 +1,14 @@
 import { useState } from 'react'
-import type { ModelStatus, Recommendation } from '../ipc/types'
+import type { Hardware, ModelStatus, Recommendation } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
+import { assessModelSuitability } from '../state/modelSuitability'
+import { HardwareSummary, ModelSuitabilityLine } from './ModelSuitability'
 import { Toggle } from './Toggle'
 
 export interface OnboardingViewProps {
   models: ModelStatus[]
+  hardware: Hardware | null
   recommendation: Recommendation | null
   downloads: Record<string, DownloadProgressState>
   onDownload: (id: string) => void
@@ -21,6 +24,8 @@ export interface OnboardingViewProps {
 
 function ModelCard({
   entry,
+  hardware,
+  recommendation,
   downloads,
   inUseId,
   onDownload,
@@ -28,6 +33,8 @@ function ModelCard({
   footnote,
 }: {
   entry: ModelStatus
+  hardware: Hardware | null
+  recommendation: Recommendation | null
   downloads: Record<string, DownloadProgressState>
   inUseId: string
   onDownload: (id: string) => void
@@ -36,6 +43,7 @@ function ModelCard({
 }) {
   const info = modelStatusToSttInfo(entry, inUseId, downloads)
   const progress = downloads[entry.id]
+  const suitability = assessModelSuitability(entry, hardware, recommendation)
 
   return (
     <div style={{ padding: '16px 0', borderTop: '1px solid var(--rule)' }}>
@@ -44,6 +52,7 @@ function ModelCard({
           <b style={{ fontWeight: 700 }}>{info.displayName}</b> — {info.desc}
           <br />
           <span style={{ fontFamily: 'var(--sans)', fontSize: 11, color: 'var(--ink-faint)' }}>{info.sub}</span>
+          <ModelSuitabilityLine result={suitability} />
         </div>
         {info.state === 'notInstalled' && (
           <button className="btn-solid" onClick={() => onDownload(entry.id)} style={{ flex: 'none', whiteSpace: 'nowrap' }}>
@@ -64,7 +73,7 @@ function ModelCard({
   )
 }
 
-export function OnboardingView({ models, recommendation, downloads, onDownload, onCancel, onStart }: OnboardingViewProps) {
+export function OnboardingView({ models, hardware, recommendation, downloads, onDownload, onCancel, onStart }: OnboardingViewProps) {
   const sttEntry = recommendation ? models.find(m => m.id === recommendation.stt) : undefined
   const llmEntry = recommendation ? models.find(m => m.id === recommendation.llm) : undefined
   const hasInstalledStt = models.some(m => m.kind === 'stt' && m.state === 'installed')
@@ -78,11 +87,8 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
   const [meetingDetectionOptIn, setMeetingDetectionOptIn] = useState(false)
 
   return (
-    <div
-      className="app-paper"
-      style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}
-    >
-      <div style={{ width: 560, maxWidth: '92vw' }}>
+    <div className="app-paper onboarding-page">
+      <div className="onboarding-sheet">
         {/* The trust statement is the first thing on the page and reads as a
             title page, not a banner in a box: the promise is the product, so
             it's set at document scale in the serif rather than boxed off as
@@ -91,26 +97,53 @@ export function OnboardingView({ models, recommendation, downloads, onDownload, 
           Minute runs entirely on this Mac.
         </h1>
         <p style={{ margin: '12px 0 26px', fontFamily: 'var(--serif)', fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink-muted)', maxWidth: '52ch' }}>
-          No account. No cloud. No network permission. Download a transcription model to get started — everything after
-          this, recording, transcription, and notes, runs completely offline.
+          No account and no cloud processing. Minute connects only when you choose to download a model; recordings,
+          transcripts, summaries, and questions stay on this Mac.
         </p>
 
+        <div className="onboarding-privacy-facts" aria-label="Privacy and permissions">
+          <div>
+            <span className="mlab">Microphone</span>
+            <p>Requested when you start your first recording. Minute captures only while the recording indicator is visible.</p>
+          </div>
+          <div>
+            <span className="mlab">System audio</span>
+            <p>Optional. macOS Screen Recording permission is requested only when you choose to include call audio.</p>
+          </div>
+          <div>
+            <span className="mlab">Storage</span>
+            <p>Notes and audio are ordinary local files covered by your Mac’s FileVault settings.</p>
+          </div>
+        </div>
+
+        <HardwareSummary hardware={hardware} />
+
         <div className="sec-head" style={{ marginBottom: 2 }}>
-          <span className="mlab">Models</span>
+          <h2 className="mlab" style={{ margin: 0 }}>Models</h2>
         </div>
 
         {sttEntry && (
-          <ModelCard entry={sttEntry} downloads={downloads} inUseId={recommendation?.stt ?? ''} onDownload={onDownload} onCancel={onCancel} />
+          <ModelCard
+            entry={sttEntry}
+            hardware={hardware}
+            recommendation={recommendation}
+            downloads={downloads}
+            inUseId={recommendation?.stt ?? ''}
+            onDownload={onDownload}
+            onCancel={onCancel}
+          />
         )}
 
         {llmEntry && (
           <ModelCard
             entry={llmEntry}
+            hardware={hardware}
+            recommendation={recommendation}
             downloads={downloads}
             inUseId={recommendation?.llm ?? ''}
             onDownload={onDownload}
             onCancel={onCancel}
-            footnote="You can add this later — summaries arrive in a future update."
+            footnote="Optional. Add it now or later for local summaries, decisions, action items, and questions."
           />
         )}
 

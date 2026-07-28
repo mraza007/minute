@@ -177,7 +177,9 @@ pub type SharedSettings = Arc<Mutex<Settings>>;
 /// Locks a [`SharedSettings`], recovering from lock poisoning instead of
 /// propagating it — same rationale as `store::lock_store`.
 pub fn lock_settings(state: &SharedSettings) -> MutexGuard<'_, Settings> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Loads settings from `root` once and hands them back already wrapped as a
@@ -199,7 +201,11 @@ pub(crate) fn open_shared(root: &Path) -> SharedSettings {
 /// are left exactly as they were before this call — never left holding a
 /// patch that didn't actually make it to disk, which would otherwise let
 /// memory and disk permanently disagree about what's persisted.
-pub fn apply_and_save(root: &Path, state: &SharedSettings, patch: SettingsPatch) -> Result<Settings> {
+pub fn apply_and_save(
+    root: &Path,
+    state: &SharedSettings,
+    patch: SettingsPatch,
+) -> Result<Settings> {
     let mut guard = lock_settings(state);
     let mut candidate = guard.clone();
     apply_patch(&mut candidate, patch);
@@ -254,7 +260,11 @@ mod tests {
             "deleteAudioAfter30d": false,
             "encryptLibrary": true,
         });
-        fs::write(settings_path(dir.path()), serde_json::to_string(&legacy_json).unwrap()).unwrap();
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&legacy_json).unwrap(),
+        )
+        .unwrap();
 
         let loaded = load_settings(dir.path());
 

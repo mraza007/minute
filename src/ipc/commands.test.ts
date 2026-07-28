@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
+import type { AudioInputStatus, Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -167,6 +167,91 @@ describe('ipc/commands', () => {
     expect(calls[0].args).toEqual({ id: '20260722-120000', title: 'Renamed title' })
   })
 
+  it('setNotePinned invokes set_note_pinned with the requested state', async () => {
+    const calls = captureIPC()
+
+    await commands.setNotePinned('20260722-120000', true)
+
+    expect(calls[0].cmd).toBe('set_note_pinned')
+    expect(calls[0].args).toEqual({ id: '20260722-120000', pinned: true })
+  })
+
+  it('addNoteMarker invokes add_note_marker with timestamp and label', async () => {
+    const calls = captureIPC()
+
+    await commands.addNoteMarker('20260722-120000', 74.5, 'Pricing decision')
+
+    expect(calls[0].cmd).toBe('add_note_marker')
+    expect(calls[0].args).toEqual({
+      id: '20260722-120000',
+      seconds: 74.5,
+      label: 'Pricing decision',
+    })
+  })
+
+  it('updateNoteMarker invokes update_note_marker with index and label', async () => {
+    const calls = captureIPC()
+
+    await commands.updateNoteMarker('20260722-120000', 2, 'Updated decision')
+
+    expect(calls[0].cmd).toBe('update_note_marker')
+    expect(calls[0].args).toEqual({
+      id: '20260722-120000',
+      index: 2,
+      label: 'Updated decision',
+    })
+  })
+
+  it('deleteNoteMarker invokes delete_note_marker with the marker index', async () => {
+    const calls = captureIPC()
+
+    await commands.deleteNoteMarker('20260722-120000', 2)
+
+    expect(calls[0].cmd).toBe('delete_note_marker')
+    expect(calls[0].args).toEqual({ id: '20260722-120000', index: 2 })
+  })
+
+  it('renameSpeaker invokes rename_speaker with both speaker names', async () => {
+    const calls = captureIPC()
+
+    await commands.renameSpeaker('20260722-120000', 'Speaker 2', 'Sam')
+
+    expect(calls[0].cmd).toBe('rename_speaker')
+    expect(calls[0].args).toEqual({
+      id: '20260722-120000',
+      from: 'Speaker 2',
+      to: 'Sam',
+    })
+  })
+
+  it('mergeSpeakers invokes merge_speakers with source and destination', async () => {
+    const calls = captureIPC()
+
+    await commands.mergeSpeakers('20260722-120000', 'Speaker 2', 'Sam')
+
+    expect(calls[0].cmd).toBe('merge_speakers')
+    expect(calls[0].args).toEqual({
+      id: '20260722-120000',
+      from: 'Speaker 2',
+      into: 'Sam',
+    })
+  })
+
+  it('undoSpeakerMerge passes the exact backend-issued undo token', async () => {
+    const calls = captureIPC()
+    const undo = {
+      from: 'Speaker 2',
+      into: 'Sam',
+      segmentIndices: [1, 4],
+      checksum: 'merge-checksum',
+    }
+
+    await commands.undoSpeakerMerge('20260722-120000', undo)
+
+    expect(calls[0].cmd).toBe('undo_speaker_merge')
+    expect(calls[0].args).toEqual({ id: '20260722-120000', undo })
+  })
+
   it('deleteNote invokes delete_note with { id }', async () => {
     const calls = captureIPC()
 
@@ -174,6 +259,34 @@ describe('ipc/commands', () => {
 
     expect(calls[0].cmd).toBe('delete_note')
     expect(calls[0].args).toEqual({ id: '20260722-120000' })
+  })
+
+  it('passes exact recovery, bulk, storage, and export command shapes', async () => {
+    const calls = captureIPC()
+    const undo = {
+      id: '20260722-120000',
+      title: 'Planning',
+      trashName: '20260722-120000-1',
+      checksum: 'recovery-checksum',
+    }
+
+    await commands.restoreNote(undo)
+    await commands.deleteNotes(['note-a', 'note-b'])
+    await commands.restoreNotes([undo])
+    await commands.noteStorageStats('note-a')
+    await commands.deleteNoteAudio('note-a')
+    await commands.exportNotes(['note-a', 'note-b'])
+    await commands.exportDiagnostics()
+
+    expect(calls).toEqual([
+      { cmd: 'restore_note', args: { undo } },
+      { cmd: 'delete_notes', args: { ids: ['note-a', 'note-b'] } },
+      { cmd: 'restore_notes', args: { undo: [undo] } },
+      { cmd: 'note_storage_stats', args: { id: 'note-a' } },
+      { cmd: 'delete_note_audio', args: { id: 'note-a' } },
+      { cmd: 'export_notes', args: { ids: ['note-a', 'note-b'] } },
+      { cmd: 'export_diagnostics', args: {} },
+    ])
   })
 
   it('storageStats invokes storage_stats', async () => {
@@ -187,14 +300,61 @@ describe('ipc/commands', () => {
     expect(result).toEqual(stats)
   })
 
-  it('startRecording invokes start_recording with { modelId } and resolves the new note id', async () => {
+  it('audioInputStatus invokes audio_input_status and passes through selectable microphones', async () => {
+    const status: AudioInputStatus = {
+      devices: [{ id: 'studio', name: 'Studio Display Microphone', isDefault: true }],
+      defaultDeviceId: 'studio',
+      permission: 'authorized',
+    }
+    const calls = captureIPC(() => status)
+
+    const result = await commands.audioInputStatus()
+
+    expect(calls[0].cmd).toBe('audio_input_status')
+    expect(calls[0].args).toEqual({})
+    expect(result).toEqual(status)
+  })
+
+  it('requestMicrophonePermission invokes request_microphone_permission', async () => {
+    const calls = captureIPC(() => 'authorized')
+
+    const result = await commands.requestMicrophonePermission()
+
+    expect(calls[0].cmd).toBe('request_microphone_permission')
+    expect(calls[0].args).toEqual({})
+    expect(result).toBe('authorized')
+  })
+
+  it('startRecording passes the explicit model and source choices', async () => {
     const calls = captureIPC(() => '20260722-130000')
 
-    const result = await commands.startRecording('whisper-small')
+    const result = await commands.startRecording('whisper-small', true, 'studio')
 
     expect(calls[0].cmd).toBe('start_recording')
-    expect(calls[0].args).toEqual({ modelId: 'whisper-small' })
+    expect(calls[0].args).toEqual({
+      modelId: 'whisper-small',
+      includeSystemAudio: true,
+      inputDeviceId: 'studio',
+    })
     expect(result).toBe('20260722-130000')
+  })
+
+  it('starts and stops a token-scoped microphone preview', async () => {
+    const calls = captureIPC()
+
+    await commands.startAudioInputPreview('studio', 'preview-1')
+    await commands.stopAudioInputPreview('preview-1')
+
+    expect(calls).toEqual([
+      {
+        cmd: 'start_audio_input_preview',
+        args: { inputDeviceId: 'studio', sessionId: 'preview-1' },
+      },
+      {
+        cmd: 'stop_audio_input_preview',
+        args: { sessionId: 'preview-1' },
+      },
+    ])
   })
 
   it('pauseRecording invokes pause_recording with no args', async () => {

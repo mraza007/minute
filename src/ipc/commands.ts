@@ -6,9 +6,17 @@
 
 import { invoke, type InvokeArgs } from '@tauri-apps/api/core'
 import type {
+  AudioInputStatus,
+  DeletedNoteUndo,
   Hardware,
   ModelStatus,
+  MicrophonePermission,
   NoteMeta,
+  NoteStorageStats,
+  SpeakerMergeResult,
+  SpeakerMergeUndo,
+  SpeakerMergeUndoResult,
+  Transcript,
   NoteWithTranscript,
   Recommendation,
   SearchHit,
@@ -65,16 +73,81 @@ export const searchNotes = (query: string): Promise<SearchHit[]> => invokeCmd('s
 export const renameNote = (id: string, title: string): Promise<NoteMeta> =>
   invokeCmd('rename_note', { id, title })
 
-export const deleteNote = (id: string): Promise<void> => invokeCmd('delete_note', { id })
+export const setNotePinned = (id: string, pinned: boolean): Promise<NoteMeta> =>
+  invokeCmd('set_note_pinned', { id, pinned })
+
+export const addNoteMarker = (id: string, seconds: number, label: string): Promise<NoteMeta> =>
+  invokeCmd('add_note_marker', { id, seconds, label })
+
+export const updateNoteMarker = (id: string, index: number, label: string): Promise<NoteMeta> =>
+  invokeCmd('update_note_marker', { id, index, label })
+
+export const deleteNoteMarker = (id: string, index: number): Promise<NoteMeta> =>
+  invokeCmd('delete_note_marker', { id, index })
+
+export const renameSpeaker = (id: string, from: string, to: string): Promise<Transcript> =>
+  invokeCmd('rename_speaker', { id, from, to })
+
+export const mergeSpeakers = (id: string, from: string, into: string): Promise<SpeakerMergeResult> =>
+  invokeCmd('merge_speakers', { id, from, into })
+
+export const undoSpeakerMerge = (id: string, undo: SpeakerMergeUndo): Promise<SpeakerMergeUndoResult> =>
+  invokeCmd('undo_speaker_merge', { id, undo })
+
+export const deleteNote = (id: string): Promise<DeletedNoteUndo> => invokeCmd('delete_note', { id })
+
+export const restoreNote = (undo: DeletedNoteUndo): Promise<NoteMeta> =>
+  invokeCmd('restore_note', { undo })
+
+export const deleteNotes = (ids: string[]): Promise<DeletedNoteUndo[]> =>
+  invokeCmd('delete_notes', { ids })
+
+export const restoreNotes = (undo: DeletedNoteUndo[]): Promise<NoteMeta[]> =>
+  invokeCmd('restore_notes', { undo })
+
+export const noteStorageStats = (id: string): Promise<NoteStorageStats> =>
+  invokeCmd('note_storage_stats', { id })
+
+export const deleteNoteAudio = (id: string): Promise<NoteMeta> =>
+  invokeCmd('delete_note_audio', { id })
+
+export const exportNotes = (ids: string[]): Promise<string> =>
+  invokeCmd('export_notes', { ids })
+
+export const exportDiagnostics = (): Promise<string> => invokeCmd('export_diagnostics')
 
 export const storageStats = (): Promise<StorageStats> => invokeCmd('storage_stats')
 
 /** Reveals a note in Finder (its audio.wav if present, else the note's folder). */
 export const revealNote = (id: string): Promise<void> => invokeCmd('reveal_note', { id })
 
-/** Starts a new recording using the given STT model id; resolves with the new note's id. */
-export const startRecording = (modelId: string): Promise<string> =>
-  invokeCmd('start_recording', { modelId })
+/** Read-only list of the microphones currently available to a new recording. */
+export const audioInputStatus = (): Promise<AudioInputStatus> => invokeCmd('audio_input_status')
+
+/** Presents the native macOS microphone prompt when access has not yet been
+ * decided, then returns the resulting AVFoundation status. */
+export const requestMicrophonePermission = (): Promise<MicrophonePermission> =>
+  invokeCmd('request_microphone_permission')
+
+/** Opens a read-only microphone preview for the preflight meter. Audio is
+ * neither persisted nor forwarded to transcription. */
+export const startAudioInputPreview = (inputDeviceId: string, sessionId: string): Promise<void> =>
+  invokeCmd('start_audio_input_preview', { inputDeviceId, sessionId })
+
+/** Stops only the matching preview session, so a stale effect cleanup cannot
+ * close a newer device selection. */
+export const stopAudioInputPreview = (sessionId: string): Promise<void> =>
+  invokeCmd('stop_audio_input_preview', { sessionId })
+
+/** Starts a new recording using the given STT model and explicit source
+ * choices; resolves with the new note's id. A null device id preserves the
+ * default-input fallback used by meeting-popup starts. */
+export const startRecording = (
+  modelId: string,
+  includeSystemAudio: boolean,
+  inputDeviceId: string | null = null,
+): Promise<string> =>
+  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId })
 
 export const pauseRecording = (): Promise<void> => invokeCmd('pause_recording')
 

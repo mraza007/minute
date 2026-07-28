@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Minute records meetings only on your device.</string>
+    <string>Minute uses your microphone only while you record. Audio and transcripts stay on this Mac.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Minute uses Screen Recording permission only when you choose to include system audio from a call.</string>
 </dict>
 </plist>

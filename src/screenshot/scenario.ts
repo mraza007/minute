@@ -52,9 +52,11 @@ function setNativeInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-async function driveRecording(): Promise<void> {
+async function driveRecording(params: URLSearchParams): Promise<void> {
   const startButton = await waitForButtonByText('New recording')
   startButton?.click()
+  const confirmButton = await waitForButtonByText('Start recording')
+  confirmButton?.click()
 
   await waitFor(() => document.querySelector('[data-testid="waveform-bars"]') !== null)
 
@@ -72,7 +74,111 @@ async function driveRecording(): Promise<void> {
     })
   }
   await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'ready', error: null })
-  await emit('recording-state', { noteId: RECORDING_NOTE_ID, state: 'recording', elapsed: RECORDING_ELAPSED_SECONDS })
+  const latestSegmentEnd = RECORDING_LIVE_TURNS[RECORDING_LIVE_TURNS.length - 1]?.end ?? 0
+  const elapsed = params.get('lag') === 'delayed'
+    ? Math.max(RECORDING_ELAPSED_SECONDS, latestSegmentEnd + 45)
+    : RECORDING_ELAPSED_SECONDS
+  await emit('recording-state', {
+    noteId: RECORDING_NOTE_ID,
+    state: 'recording',
+    elapsed,
+    systemAudioActive: false,
+    microphoneName: 'MacBook Pro Microphone',
+    inputRms: 0.08,
+    inputPeak: 0.42,
+    inputSequence: 120,
+    inputError: null,
+  })
+
+  if (params.get('health') === 'silent') {
+    await emit('recording-state', {
+      noteId: RECORDING_NOTE_ID,
+      state: 'recording',
+      elapsed: elapsed + 1,
+      systemAudioActive: false,
+      microphoneName: 'MacBook Pro Microphone',
+      inputRms: 0,
+      inputPeak: 0.12,
+      inputSequence: 121,
+      inputError: null,
+    })
+    await emit('recording-state', {
+      noteId: RECORDING_NOTE_ID,
+      state: 'recording',
+      elapsed: elapsed + 11,
+      systemAudioActive: false,
+      microphoneName: 'MacBook Pro Microphone',
+      inputRms: 0,
+      inputPeak: 0.1,
+      inputSequence: 122,
+      inputError: null,
+    })
+  }
+
+  const title = params.get('title')
+  if (title) {
+    document.querySelector<HTMLButtonElement>('button[aria-label="Edit recording title"]')?.click()
+    const input = await waitForSelector<HTMLInputElement>('input[aria-label="Recording title"]')
+    if (input) {
+      setNativeInputValue(input, title)
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }))
+      await waitFor(() => document.querySelector('.recording-title-value h1')?.textContent === title)
+    }
+  }
+
+  const marker = params.get('marker')
+  if (marker) {
+    findButtonByText('Add marker')?.click()
+    const markerInput = await waitForSelector<HTMLInputElement>('input[aria-label="Marker label"]')
+    if (markerInput) {
+      setNativeInputValue(markerInput, marker)
+      await waitFor(() => findButtonByText('Save marker')?.disabled === false)
+      findButtonByText('Save marker')?.click()
+      await waitFor(() => document.body.textContent?.includes(marker) ?? false)
+    }
+  }
+
+  const details = params.get('details')
+  if (details === 'closed') {
+    findButtonByText('Hide details')?.click()
+    await waitFor(() => findButtonByText('Show details') !== undefined)
+  } else if (details === 'open') {
+    findButtonByText('Show details')?.click()
+    await waitFor(() => document.querySelector('#recording-details-panel:not([hidden])') !== null)
+  }
+
+  const processing = params.get('processing')
+  if (processing) {
+    findButtonByText('Stop & transcribe')?.click()
+    await waitFor(() => document.body.textContent?.includes('Turning your recording into notes') ?? false)
+    if (processing === 'finalizing') {
+      await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'finalizing', error: null })
+    }
+  }
+}
+
+async function drivePreflight(params: URLSearchParams): Promise<void> {
+  const startButton = await waitForButtonByText('New recording')
+  startButton?.click()
+  await waitFor(() => document.querySelector('[role="dialog"][aria-labelledby="recording-preflight-title"]') !== null)
+  const meter = await waitForSelector<HTMLElement>('[data-preview-session]')
+  const sessionId = meter?.dataset.previewSession
+  if (sessionId) {
+    const clipping = params.get('meter') === 'clipping'
+    const payload = {
+      sessionId,
+      rms: clipping ? 0.72 : 0.09,
+      peak: clipping ? 0.995 : 0.42,
+      error: null,
+    }
+    await emit('audio-input-level', payload)
+    if (clipping) await emit('audio-input-level', payload)
+  }
 }
 
 async function waitForButtonByText(text: string): Promise<HTMLButtonElement | undefined> {
@@ -121,6 +227,63 @@ async function driveSettings(): Promise<void> {
 async function driveNote(params: URLSearchParams): Promise<void> {
   await waitFor(() => document.querySelector('[role="tablist"][aria-label="Note content"]') !== null)
 
+  const tab = params.get('tab')
+  if (tab === 'overview') {
+    findButtonByText('Overview')?.click()
+    await waitFor(() => document.querySelector('#note-panel-overview') !== null)
+  }
+
+  if (params.get('markerAction') === 'edit') {
+    const editButton = await waitForSelector<HTMLButtonElement>('button[aria-label^="Edit marker"]')
+    editButton?.click()
+    await waitFor(() => document.querySelector('input[aria-label="Marker label"]') !== null)
+  }
+
+  if (params.get('markerAction') === 'add') {
+    const addButton = await waitForSelector<HTMLButtonElement>('button[aria-label^="Add marker at"]')
+    addButton?.click()
+    await waitFor(() => document.querySelector('input[aria-label^="New marker label at"]') !== null)
+  }
+
+  const filter = params.get('filter')
+  if (filter) {
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Filter by status"]')
+    if (select) {
+      select.value = filter
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+  }
+
+  if (params.get('sidebar') === 'collapsed') {
+    document.querySelector<HTMLButtonElement>('button[aria-label="Collapse library sidebar"]')?.click()
+    await waitFor(() => document.querySelector('.library-sidebar')?.getAttribute('data-collapsed') === 'true')
+  }
+
+  const speaker = params.get('speaker')
+  if (speaker) {
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Filter transcript by speaker"]')
+    if (select) {
+      select.value = speaker
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await waitFor(() => findButtonByText('Rename speaker') !== undefined)
+    }
+  }
+
+  const speakerMerge = params.get('speakerMerge')
+  if (speakerMerge && speaker) {
+    findButtonByText('Merge speaker')?.click()
+    const target = await waitForSelector<HTMLSelectElement>('select[aria-label="Merge into speaker"]')
+    const mergeInto = params.get('mergeInto')
+    if (target && mergeInto) {
+      target.value = mergeInto
+      target.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    if (speakerMerge === 'done') {
+      document.querySelector<HTMLButtonElement>('.speaker-merge-form button[type="submit"]')?.click()
+      await waitFor(() => findButtonByText('Undo') !== undefined)
+    }
+  }
+
   // Populate ask-your-notes' session history — session-only state, only
   // ever produced by real `ask-answer` events (see useNoteDetail.ts), so
   // there's no IPC field to seed this from; emitted in order so the second
@@ -154,7 +317,9 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
   await waitFor(() => document.querySelector('#root')?.children.length !== 0)
 
   if (state === 'recording') {
-    await driveRecording()
+    await driveRecording(params)
+  } else if (state === 'preflight') {
+    await drivePreflight(params)
   } else if (state === 'palette') {
     await drivePalette()
   } else if (state === 'settings') {

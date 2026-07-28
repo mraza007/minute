@@ -1,0 +1,52 @@
+name: Ad-hoc private macOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app
+      - name: Verify architecture and ad-hoc signature
+        run: |
+          expected_arch="${{ matrix.target }}"
+          expected_arch="${expected_arch%%-*}"
+          bash scripts/verify-macos-bundle.sh \
+            "src-tauri/target/${{ matrix.target }}/release/bundle/macos/Minute.app" \
+            "$expected_arch"
+      - name: Package private artifact and checksum
+        run: |
+          artifact="Minute-${{ matrix.target }}-private.zip"
+          ditto -c -k --keepParent \
+            "src-tauri/target/${{ matrix.target }}/release/bundle/macos/Minute.app" \
+            "$artifact"
+          shasum -a 256 "$artifact" > "$artifact.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minute-${{ matrix.target }}-private
+          path: |
+            Minute-${{ matrix.target }}-private.zip
+            Minute-${{ matrix.target }}-private.zip.sha256

@@ -145,11 +145,7 @@ pub fn installed_path(entry: &CatalogEntry, models_root: &Path) -> PathBuf {
         ModelKind::Stt => "whisper",
         ModelKind::Llm => "llm",
     };
-    let file_name = entry
-        .url
-        .rsplit('/')
-        .next()
-        .unwrap_or(entry.id.as_str());
+    let file_name = entry.url.rsplit('/').next().unwrap_or(entry.id.as_str());
     models_root.join("models").join(dir).join(file_name)
 }
 

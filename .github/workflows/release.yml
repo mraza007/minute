@@ -1,0 +1,83 @@
+name: Signed macOS release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run test:soak
+      - run: npm run test:scale
+
+  bundle:
+    needs: validate
+    runs-on: macos-14
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/minute-release.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/minute-build.keychain"
+          security default-keychain -s "$RUNNER_TEMP/minute-build.keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/minute-build.keychain"
+          security set-keychain-settings -t 3600 -u "$RUNNER_TEMP/minute-build.keychain"
+          security import "$RUNNER_TEMP/minute-release.p12" -k "$RUNNER_TEMP/minute-build.keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/minute-build.keychain"
+          security find-identity -v -p codesigning "$RUNNER_TEMP/minute-build.keychain"
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: minute-v__VERSION__
+          releaseName: Minute __VERSION__
+          releaseBody: Signed and notarized Minute release candidate. Complete docs/release/RELEASE_CHECKLIST.md before publishing.
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+      - name: Verify signed and notarized app
+        env:
+          MINUTE_APP_BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle/macos/Minute.app
+        run: |
+          expected_arch="${{ matrix.target }}"
+          expected_arch="${expected_arch%%-*}"
+          bash scripts/verify-macos-bundle.sh "$MINUTE_APP_BUNDLE" "$expected_arch" require-team
+          xcrun stapler validate "$MINUTE_APP_BUNDLE"
+          spctl --assess --type execute --verbose=4 "$MINUTE_APP_BUNDLE"

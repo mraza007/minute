@@ -197,7 +197,11 @@ pub fn popup_start(app: AppHandle, detector: State<SharedDetectorHandle>) -> Res
 /// `DetectorCore::process`), so the only thing that actually differs here is
 /// which variant gets reported.
 #[tauri::command]
-pub fn popup_dismiss(app: AppHandle, detector: State<SharedDetectorHandle>, timed_out: bool) -> Result<(), String> {
+pub fn popup_dismiss(
+    app: AppHandle,
+    detector: State<SharedDetectorHandle>,
+    timed_out: bool,
+) -> Result<(), String> {
     hide(&app);
     let outcome = if timed_out {
         PromptOutcome::TimedOut
@@ -217,8 +221,12 @@ mod macos {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
-    use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, WebviewUrl, WebviewWindowBuilder};
-    use tauri_nspanel::{tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt};
+    use tauri::{
+        AppHandle, Emitter, Manager, PhysicalPosition, Position, WebviewUrl, WebviewWindowBuilder,
+    };
+    use tauri_nspanel::{
+        tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
+    };
 
     use super::{MeetingPopupPayload, PANEL_HEIGHT, PANEL_LABEL, PANEL_WIDTH, TOP_MARGIN};
 
@@ -257,7 +265,10 @@ mod macos {
     }
 
     fn lock_pending(state: &PopupState) -> std::sync::MutexGuard<'_, Option<String>> {
-        state.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        state
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Development-time backstop for future edits: `tauri-nspanel` cannot
@@ -361,27 +372,32 @@ mod macos {
 
         app.manage(PopupState::default());
 
-        let window = WebviewWindowBuilder::new(app, PANEL_LABEL, WebviewUrl::App("popup.html".into()))
-            .title("Meeting detected")
-            .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
-            .decorations(false)
-            .transparent(true)
-            // The pill's own CSS box-shadow (see src/popup/Pill.tsx) is what
-            // should actually show — a native window shadow would draw a
-            // plain rectangle behind the transparent margins around the
-            // pill's rounded shape, which reads as a bug, not a design
-            // choice.
-            .shadow(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .visible(false)
-            .on_page_load(|webview, payload| {
-                if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                    dispatch_to_main_thread(webview.app_handle(), "ready handling", on_popup_ready);
-                }
-            })
-            .build()?;
+        let window =
+            WebviewWindowBuilder::new(app, PANEL_LABEL, WebviewUrl::App("popup.html".into()))
+                .title("Meeting detected")
+                .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
+                .decorations(false)
+                .transparent(true)
+                // The pill's own CSS box-shadow (see src/popup/Pill.tsx) is what
+                // should actually show — a native window shadow would draw a
+                // plain rectangle behind the transparent margins around the
+                // pill's rounded shape, which reads as a bug, not a design
+                // choice.
+                .shadow(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(false)
+                .on_page_load(|webview, payload| {
+                    if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                        dispatch_to_main_thread(
+                            webview.app_handle(),
+                            "ready handling",
+                            on_popup_ready,
+                        );
+                    }
+                })
+                .build()?;
 
         let panel = window.to_panel::<MeetingPopupPanel>()?;
         panel.set_level(PanelLevel::Floating.value());
@@ -455,7 +471,9 @@ mod macos {
         let x = work_area.position.x as f64 + (work_area.size.width as f64 - panel_width_px) / 2.0;
         let y = work_area.position.y as f64 + TOP_MARGIN * scale;
 
-        if let Err(e) = window.set_position(Position::Physical(PhysicalPosition::new(x as i32, y as i32))) {
+        if let Err(e) = window.set_position(Position::Physical(PhysicalPosition::new(
+            x as i32, y as i32,
+        ))) {
             log::warn!("meeting popup: failed to position the popup window: {e}");
         }
     }

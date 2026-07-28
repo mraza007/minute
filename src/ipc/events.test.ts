@@ -3,6 +3,7 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { describe, expect, it, vi } from 'vitest'
 import * as events from './events'
 import type {
+  AudioInputLevelEvent,
   MeetingDetectedEvent,
   MeetingPopupPayloadEvent,
   ModelDownloadDoneEvent,
@@ -62,7 +63,17 @@ describe('ipc/events', () => {
     const cb = vi.fn()
 
     await events.onRecordingState(cb)
-    const payload: RecordingStateEvent = { noteId: '20260722-120000', state: 'recording', elapsed: 12.5, systemAudioActive: false }
+    const payload: RecordingStateEvent = {
+      noteId: '20260722-120000',
+      state: 'recording',
+      elapsed: 12.5,
+      systemAudioActive: false,
+      microphoneName: 'MacBook Pro Microphone',
+      inputRms: 0.08,
+      inputPeak: 0.4,
+      inputSequence: 40,
+      inputError: null,
+    }
     await emit('recording-state', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
@@ -92,6 +103,22 @@ describe('ipc/events', () => {
     await events.onSttStatus(cb)
     const payload: SttStatusEvent = { noteId: '20260722-120000', state: 'ready', error: null }
     await emit('stt-status', payload)
+
+    expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onAudioInputLevel subscribes to audio-input-level and delivers the payload', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onAudioInputLevel(cb)
+    const payload: AudioInputLevelEvent = {
+      sessionId: 'preview-1',
+      rms: 0.24,
+      peak: 0.62,
+      error: null,
+    }
+    await emit('audio-input-level', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
   })
@@ -146,7 +173,17 @@ describe('ipc/events', () => {
 
     const unlisten = await events.onRecordingState(cb)
     unlisten()
-    await emit('recording-state', { noteId: '20260722-120000', state: 'stopped', elapsed: 30 })
+    await emit('recording-state', {
+      noteId: '20260722-120000',
+      state: 'stopped',
+      elapsed: 30,
+      systemAudioActive: false,
+      microphoneName: 'MacBook Pro Microphone',
+      inputRms: 0.08,
+      inputPeak: 0.4,
+      inputSequence: 90,
+      inputError: null,
+    })
 
     expect(cb).not.toHaveBeenCalled()
   })

@@ -37,6 +37,8 @@ export interface AiNotesPanelProps {
   onAsk: (question: string) => void
   /** Citation click → seek target, in seconds — same `onSeek` signature `TranscriptList` uses, since `NoteView` hands both the same `seek`-then-`play` callback. */
   onSeekCitation: (seconds: number) => void
+  /** Overview already renders summary/decisions/actions in the main leaf. */
+  overviewMode?: boolean
 }
 
 const panelStyle: CSSProperties = {
@@ -397,6 +399,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   onGoSettings,
   onAsk,
   onSeekCitation,
+  overviewMode = false,
 }: AiNotesPanelProps) {
   const summarizing = status === 'running'
   const answering = askStatus === 'running'
@@ -412,7 +415,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
     <div style={panelStyle}>
       <div style={{ padding: '24px 26px 20px', display: 'flex', alignItems: 'baseline', gap: 9 }}>
         <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 17, letterSpacing: '-.005em' }}>
-          AI notes
+          {overviewMode ? 'Ask & export' : 'AI notes'}
         </h2>
         <div style={{ fontSize: 10.5, color: 'var(--ink-faint)' }}>generated locally</div>
       </div>
@@ -429,10 +432,10 @@ export const AiNotesPanel = memo(function AiNotesPanel({
         {statusAnnouncement}
       </span>
       <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
-        {summarizing && <SummarizingBanner modelName={modelName} />}
-        {status === 'error' && <ErrorCard error={error} onRegenerate={onRegenerate} />}
+        {!overviewMode && summarizing && <SummarizingBanner modelName={modelName} />}
+        {!overviewMode && status === 'error' && <ErrorCard error={error} onRegenerate={onRegenerate} />}
 
-        {summary ? (
+        {!overviewMode && summary ? (
           <>
             <Section label="Summary">
               <p className="leaf-body">{summary.summary}</p>
@@ -498,10 +501,15 @@ export const AiNotesPanel = memo(function AiNotesPanel({
               </button>
             </div>
           </>
-        ) : (
+        ) : !overviewMode ? (
           status === 'idle' &&
           (llmInstalled ? <GenerateSummaryButton onClick={onRegenerate} /> : <NoLlmPlaceholder onGoSettings={onGoSettings} />)
-        )}
+        ) : summary ? (
+          <div className="overview-export-actions">
+            <button onClick={onCopy} className="btn-outline">Copy summary</button>
+            <button onClick={onExport} className="btn-outline">Export .md</button>
+          </div>
+        ) : null}
 
         {llmInstalled ? (
           <AskSection

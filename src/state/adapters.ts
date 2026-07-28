@@ -54,6 +54,10 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
     title: meta.title,
     meta: `${minutes} min${speakersPart}`,
     group: noteGroup(createdAt, now),
+    status: meta.status,
+    sources: meta.sources,
+    createdAt: meta.createdAt,
+    pinned: meta.pinned ?? false,
   }
 }
 
@@ -245,13 +249,16 @@ export interface LiveTranscriptGroup {
  * word), so a whole-recording list stays small enough for this to be free.
  */
 export function groupLiveSegments(segments: TranscriptSegmentEvent[]): LiveTranscriptGroup[] {
-  return segments.reduce<LiveTranscriptGroup[]>((groups, seg) => {
+  const groups: LiveTranscriptGroup[] = []
+  for (const seg of segments) {
     const last = groups[groups.length - 1]
     if (last && last.speaker === seg.speaker) {
-      return [...groups.slice(0, -1), { ...last, end: seg.end, text: `${last.text} ${seg.text}` }]
+      groups[groups.length - 1] = { ...last, end: seg.end, text: `${last.text} ${seg.text}` }
+    } else {
+      groups.push({ speaker: seg.speaker, start: seg.start, end: seg.end, text: seg.text })
     }
-    return [...groups, { speaker: seg.speaker, start: seg.start, end: seg.end, text: seg.text }]
-  }, [])
+  }
+  return groups
 }
 
 /**

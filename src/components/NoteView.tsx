@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import type { NoteMeta, StoredSegment, SummaryDoc } from '../ipc/types'
+import type {
+  NoteMarker,
+  NoteMeta,
+  NoteStorageStats,
+  SpeakerMergeUndo,
+  StoredSegment,
+  SummaryDoc,
+} from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
-import { findActiveSegmentIndex, formatBytes, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
+import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
 import { useAudioPlayer } from '../state/useAudioPlayer'
-import type { SummaryStatus } from '../state/useAppState'
+import type { ProcessingFailure, SummaryStatus } from '../state/useAppState'
 import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
 import { AiNotesPanel } from './AiNotesPanel'
 import { MarkdownCard } from './MarkdownCard'
@@ -32,6 +39,7 @@ export interface NoteViewProps {
   selectedMarkdown: string
   /** This note's `audio.wav` path from `get_note`, or `null` if it doesn't exist on disk — same staleness contract as `selectedTranscript`/`selectedSummary`/`selectedMarkdown` (only trusted once `selectedMeta.id` matches `meta.id`). Feeds `useAudioPlayer`; `null` renders PlayerBar's disabled "Audio removed" state. A non-null path that then fails to actually load (see `useAudioPlayer`'s `failed`) renders the same disabled affordances with different, honest copy — "Audio unavailable" — since the file wasn't necessarily removed. */
   selectedAudioPath: string | null
+  selectedNoteStorage: NoteStorageStats | null
   transcriptLoading: boolean
   /**
    * A ⌘K search palette "open this transcript hit" request still waiting to
@@ -69,6 +77,18 @@ export interface NoteViewProps {
   onRegenerateSummary: (id: string) => void
   onAsk: (id: string, question: string) => void
   onGoSettings: () => void
+  onSetPinned: (id: string, pinned: boolean) => void
+  onAddMarker: (id: string, seconds: number, label: string) => Promise<void>
+  onUpdateMarker: (id: string, index: number, label: string) => Promise<void>
+  onDeleteMarker: (id: string, index: number) => Promise<void>
+  onRenameSpeaker: (id: string, from: string, to: string) => void
+  onMergeSpeakers: (id: string, from: string, into: string) => Promise<SpeakerMergeUndo>
+  onUndoSpeakerMerge: (id: string, undo: SpeakerMergeUndo) => Promise<void>
+  onDeleteAudio: () => Promise<void>
+  onStartRecording: () => void
+  processingFailure: ProcessingFailure | null
+  onRetryProcessing: () => void
+  onDismissProcessing: () => void
 }
 
 const DELETE_CONFIRM_TIMEOUT_MS = 4000
@@ -78,17 +98,326 @@ const DELETE_CONFIRM_TIMEOUT_MS = 4000
 // (and its own exhaustive-deps lint) despite being value-equal every time.
 const EMPTY_SEGMENTS: StoredSegment[] = []
 
-function EmptyNotesArea() {
+function EmptyNotesArea({ onStartRecording }: { onStartRecording: () => void }) {
   return (
     <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
       <div style={{ textAlign: 'center', maxWidth: 360 }}>
-        <div style={{ fontFamily: 'var(--serif)', fontSize: 22, letterSpacing: '-.01em' }}>No notes yet</div>
+        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 400, letterSpacing: '-.01em' }}>No notes yet</h1>
         <div style={{ marginTop: 8, fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
           Hit "New recording" in the title bar to capture your first meeting — transcription happens entirely on this
           Mac.
         </div>
+        <button type="button" className="btn-solid" style={{ marginTop: 18 }} onClick={onStartRecording}>
+          Start a recording
+        </button>
       </div>
     </main>
+  )
+}
+
+function NoteOverview({
+  meta,
+  summary,
+  segments,
+  markers,
+  summaryStatus,
+  summaryError,
+  llmInstalled,
+  onGenerate,
+  onToggleAction,
+  onOpenTranscript,
+  onFocusAsk,
+  onExport,
+  onUpdateMarker,
+  onDeleteMarker,
+  onRestoreMarker,
+  storage,
+  onDeleteAudio,
+}: {
+  meta: NoteMeta
+  summary: SummaryDoc | null
+  segments: StoredSegment[]
+  markers: NoteMarker[]
+  summaryStatus: SummaryStatus
+  summaryError?: string
+  llmInstalled: boolean
+  onGenerate: () => void
+  onToggleAction: (index: number, done: boolean) => void
+  onOpenTranscript: (seconds?: number) => void
+  onFocusAsk: () => void
+  onExport: () => void
+  onUpdateMarker: (index: number, label: string) => Promise<void>
+  onDeleteMarker: (index: number) => Promise<void>
+  onRestoreMarker: (marker: NoteMarker) => Promise<void>
+  storage: NoteStorageStats | null
+  onDeleteAudio: () => Promise<void>
+}) {
+  const [editingMarkerIndex, setEditingMarkerIndex] = useState<number | null>(null)
+  const [markerDraft, setMarkerDraft] = useState('')
+  const [pendingMarkerIndex, setPendingMarkerIndex] = useState<number | null>(null)
+  const [deleteArmedIndex, setDeleteArmedIndex] = useState<number | null>(null)
+  const [deletedMarkerUndo, setDeletedMarkerUndo] = useState<NoteMarker | null>(null)
+  const [audioDeleteArmed, setAudioDeleteArmed] = useState(false)
+  const [audioDeletePending, setAudioDeletePending] = useState(false)
+  const markerEditButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const markerUndoButtonRef = useRef<HTMLButtonElement>(null)
+  const markersSectionRef = useRef<HTMLElement>(null)
+
+  function closeMarkerEditor(index: number) {
+    setEditingMarkerIndex(null)
+    setMarkerDraft('')
+    requestAnimationFrame(() => markerEditButtonRefs.current[index]?.focus())
+  }
+
+  async function saveMarker(index: number) {
+    const label = markerDraft.trim()
+    if (!label || pendingMarkerIndex !== null) return
+    setPendingMarkerIndex(index)
+    try {
+      await onUpdateMarker(index, label)
+      closeMarkerEditor(index)
+    } catch {
+      // The shared error banner reports the persistence failure; retain the
+      // draft so the user can retry without retyping it.
+    } finally {
+      setPendingMarkerIndex(null)
+    }
+  }
+
+  async function deleteMarker(index: number) {
+    if (deleteArmedIndex !== index) {
+      setDeleteArmedIndex(index)
+      return
+    }
+    setPendingMarkerIndex(index)
+    try {
+      const removedMarker = markers[index]
+      await onDeleteMarker(index)
+      setDeletedMarkerUndo(removedMarker ?? null)
+      setDeleteArmedIndex(null)
+      requestAnimationFrame(() => markerUndoButtonRef.current?.focus())
+      if (editingMarkerIndex === index) {
+        setEditingMarkerIndex(null)
+        setMarkerDraft('')
+      }
+    } catch {
+      // Keep the armed row in place so a failed delete remains recoverable.
+    } finally {
+      setPendingMarkerIndex(null)
+    }
+  }
+
+  return (
+    <div className="note-overview">
+      <div className="overview-measures" aria-label="Note overview">
+        <div><span>Duration</span><strong>{formatMmSs(meta.durationSec)}</strong></div>
+        <div><span>Speakers</span><strong>{meta.speakers}</strong></div>
+        <div><span>Transcript</span><strong>{segments.length} turns</strong></div>
+        <div><span>Markers</span><strong>{markers.length}</strong></div>
+      </div>
+
+      <div className="overview-actions" aria-label="Note actions">
+        <button type="button" onClick={() => onOpenTranscript()}>Open transcript</button>
+        <button type="button" onClick={onFocusAsk}>Ask this note</button>
+        <button type="button" onClick={onExport}>Export</button>
+      </div>
+
+      {summaryStatus === 'error' && (
+        <section className="overview-recovery" role="alert">
+          <div className="mlab">Summary unavailable</div>
+          <p>{summaryError || 'Minute could not generate the summary. The transcript and audio are still available.'}</p>
+          <button type="button" className="btn-outline" onClick={onGenerate}>Retry summary</button>
+        </section>
+      )}
+
+      {summary ? (
+        <div className="overview-columns">
+          <section>
+            <div className="sec-head"><span className="mlab">Summary</span></div>
+            <p className="overview-summary">{summary.summary}</p>
+          </section>
+          <section>
+            <div className="sec-head"><span className="mlab">Decisions · {summary.decisions.length}</span></div>
+            {summary.decisions.length > 0 ? (
+              <ul className="sec-list">
+                {summary.decisions.map((decision, index) => <li key={`${decision}-${index}`}>{decision}</li>)}
+              </ul>
+            ) : <p className="overview-empty">No decisions were identified.</p>}
+          </section>
+          <section className="overview-actions-section">
+            <div className="sec-head"><span className="mlab">Action items · {summary.actionItems.length}</span></div>
+            {summary.actionItems.length > 0 ? (
+              <ul className="overview-checklist">
+                {summary.actionItems.map((item, index) => (
+                  <li key={`${item.text}-${index}`}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={item.done}
+                        onChange={event => onToggleAction(index, event.target.checked)}
+                      />
+                      <span>{item.text}</span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="overview-empty">No action items were identified.</p>}
+          </section>
+        </div>
+      ) : summaryStatus !== 'error' ? (
+        <section className="overview-empty-summary">
+          <div className="mlab">{summaryStatus === 'running' ? 'Summary in progress' : 'Summary not generated'}</div>
+          <p>
+            {summaryStatus === 'running'
+              ? 'The transcript stays available while Minute prepares the overview.'
+              : llmInstalled
+                ? 'Generate a local summary to surface decisions and action items.'
+                : 'Install a summary model in Settings to generate decisions and action items.'}
+          </p>
+          {llmInstalled && summaryStatus !== 'running' && (
+            <button type="button" className="btn-solid" onClick={onGenerate}>Generate summary</button>
+          )}
+        </section>
+      ) : null}
+
+      <section
+        ref={markersSectionRef}
+        className="overview-markers"
+        aria-label="Recording markers"
+        tabIndex={-1}
+      >
+        <div className="sec-head"><span className="mlab">Markers · {markers.length}</span></div>
+        {markers.length > 0 ? (
+          <ol>
+            {markers.map((marker, index) => (
+              <li key={`${marker.seconds}-${index}`}>
+                <button type="button" onClick={() => onOpenTranscript(marker.seconds)}>{formatMmSs(marker.seconds)}</button>
+                {editingMarkerIndex === index ? (
+                  <form
+                    className="marker-edit-form"
+                    onSubmit={event => {
+                      event.preventDefault()
+                      void saveMarker(index)
+                    }}
+                  >
+                    <input
+                      autoFocus
+                      aria-label={`Marker label at ${formatMmSs(marker.seconds)}`}
+                      value={markerDraft}
+                      maxLength={100}
+                      onChange={event => setMarkerDraft(event.target.value)}
+                      onKeyDown={event => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          closeMarkerEditor(index)
+                        }
+                      }}
+                    />
+                    <button type="submit" disabled={!markerDraft.trim() || pendingMarkerIndex !== null}>
+                      {pendingMarkerIndex === index ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => closeMarkerEditor(index)}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <span>{marker.label}</span>
+                    <span className="marker-row-actions">
+                      <button
+                        ref={element => {
+                          markerEditButtonRefs.current[index] = element
+                        }}
+                        type="button"
+                        aria-label={`Edit marker ${marker.label}`}
+                        onClick={() => {
+                          setEditingMarkerIndex(index)
+                          setMarkerDraft(marker.label)
+                          setDeleteArmedIndex(null)
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={
+                          deleteArmedIndex === index
+                            ? `Confirm delete marker ${marker.label}`
+                            : `Delete marker ${marker.label}`
+                        }
+                        data-danger={deleteArmedIndex === index ? 'true' : 'false'}
+                        disabled={pendingMarkerIndex !== null}
+                        onClick={() => void deleteMarker(index)}
+                      >
+                        {pendingMarkerIndex === index
+                          ? 'Deleting…'
+                          : deleteArmedIndex === index
+                            ? 'Confirm'
+                            : 'Delete'}
+                      </button>
+                    </span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ol>
+        ) : <p className="overview-empty">No markers were added during this recording.</p>}
+      </section>
+
+      {deletedMarkerUndo && (
+        <div className="overview-undo" role="status">
+          <span>Marker “{deletedMarkerUndo.label}” deleted.</span>
+          <button
+            ref={markerUndoButtonRef}
+            type="button"
+            onClick={() => {
+              void onRestoreMarker(deletedMarkerUndo).then(() => {
+                setDeletedMarkerUndo(null)
+                requestAnimationFrame(() => markersSectionRef.current?.focus())
+              })
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      )}
+
+      <section className="overview-storage">
+        <div className="sec-head"><span className="mlab">Local storage</span></div>
+        <div className="overview-storage-line">
+          <span>
+            {storage
+              ? `${formatBytes(storage.totalBytes)} total · ${formatBytes(storage.audioBytes)} audio · ${formatBytes(storage.documentBytes)} notes`
+              : 'Calculating local storage…'}
+          </span>
+          {meta.audioDeleted ? (
+            <span className="overview-storage-removed">Original audio removed</span>
+          ) : (
+            <button
+              type="button"
+              data-danger={audioDeleteArmed ? 'true' : 'false'}
+              disabled={audioDeletePending}
+              onClick={() => {
+                if (!audioDeleteArmed) {
+                  setAudioDeleteArmed(true)
+                  return
+                }
+                setAudioDeletePending(true)
+                void onDeleteAudio()
+                  .then(() => setAudioDeleteArmed(false))
+                  .finally(() => setAudioDeletePending(false))
+              }}
+            >
+              {audioDeletePending ? 'Removing…' : audioDeleteArmed ? 'Confirm remove audio' : 'Remove original audio'}
+            </button>
+          )}
+        </div>
+        <p>Removing audio keeps the transcript, summary, markers, and Markdown. This cannot be undone.</p>
+      </section>
+    </div>
   )
 }
 
@@ -167,6 +496,13 @@ function StatusPill({
         Finalizing transcript…
       </span>
     )
+  } else if (meta.captureWarning) {
+    content = (
+      <span style={{ ...pillBaseStyle, color: 'var(--accent-text)' }}>
+        <span aria-hidden="true">!</span>
+        Needs review
+      </span>
+    )
   } else if (summaryStatus === 'running') {
     content = (
       <span style={{ ...pillBaseStyle, color: 'var(--accent-text)' }}>
@@ -227,12 +563,14 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(meta.title)
   const committedRef = useRef(false)
+  const editButtonRef = useRef<HTMLButtonElement>(null)
 
   if (!editing) {
     return (
       <>
         <h1 style={{ margin: 0, ...titleTypeStyle }}>{meta.title}</h1>
         <button
+          ref={editButtonRef}
           title="Rename"
           aria-label="Rename"
           className="icon-btn"
@@ -263,17 +601,23 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
     )
   }
 
-  function commit() {
+  function restoreEditFocus() {
+    requestAnimationFrame(() => editButtonRef.current?.focus())
+  }
+
+  function commit(restoreFocus = false) {
     if (committedRef.current) return
     committedRef.current = true
     const trimmed = draft.trim()
     setEditing(false)
     if (trimmed && trimmed !== meta.title) onRename(trimmed)
+    if (restoreFocus) restoreEditFocus()
   }
 
   function cancel() {
     committedRef.current = true
     setEditing(false)
+    restoreEditFocus()
   }
 
   return (
@@ -285,13 +629,13 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
       onKeyDown={e => {
         if (e.key === 'Enter') {
           e.preventDefault()
-          commit()
+          commit(true)
         } else if (e.key === 'Escape') {
           e.preventDefault()
           cancel()
         }
       }}
-      onBlur={commit}
+      onBlur={() => commit()}
       style={{
         margin: 0,
         ...titleTypeStyle,
@@ -308,7 +652,7 @@ function NoteTitle({ meta, onRename }: NoteTitleProps) {
   )
 }
 
-function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string) => void }) {
+function DeleteNoteButton({ id, title, onDelete }: { id: string; title: string; onDelete: (id: string) => void }) {
   const [confirming, setConfirming] = useState(false)
   const confirmTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
@@ -317,8 +661,8 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
   return (
     <>
       <button
-        title={confirming ? 'Confirm delete?' : 'Delete'}
-        aria-label={confirming ? 'Confirm delete?' : 'Delete'}
+        title={confirming ? `Confirm delete “${title}”?` : `Delete “${title}”`}
+        aria-label={confirming ? `Confirm delete note ${title}` : `Delete note ${title}`}
         className="icon-btn-danger"
         onClick={() => {
           if (!confirming) {
@@ -351,7 +695,7 @@ function DeleteNoteButton({ id, onDelete }: { id: string; onDelete: (id: string)
         </svg>
       </button>
       <span role="status" className="visually-hidden">
-        {confirming ? 'Press again to confirm deletion' : ''}
+        {confirming ? `Press again to confirm deletion of ${title}` : ''}
       </span>
     </>
   )
@@ -364,6 +708,7 @@ export function NoteView({
   selectedSummary,
   selectedMarkdown,
   selectedAudioPath,
+  selectedNoteStorage,
   transcriptLoading,
   pendingSeek,
   onPendingSeekApplied,
@@ -386,9 +731,53 @@ export function NoteView({
   onRegenerateSummary,
   onAsk,
   onGoSettings,
+  onSetPinned,
+  onAddMarker,
+  onUpdateMarker,
+  onDeleteMarker,
+  onRenameSpeaker,
+  onMergeSpeakers,
+  onUndoSpeakerMerge,
+  onDeleteAudio,
+  onStartRecording,
+  processingFailure,
+  onRetryProcessing,
+  onDismissProcessing,
 }: NoteViewProps) {
+  const overviewTabRef = useRef<HTMLButtonElement>(null)
   const transcriptTabRef = useRef<HTMLButtonElement>(null)
   const mdTabRef = useRef<HTMLButtonElement>(null)
+  const speakerFilterRef = useRef<HTMLSelectElement>(null)
+  const speakerRenameButtonRef = useRef<HTMLButtonElement>(null)
+  const speakerMergeButtonRef = useRef<HTMLButtonElement>(null)
+  const [speakerFilter, setSpeakerFilter] = useState('all')
+  const [speakerEditing, setSpeakerEditing] = useState(false)
+  const [speakerDraft, setSpeakerDraft] = useState('')
+  const [speakerMergeOpen, setSpeakerMergeOpen] = useState(false)
+  const [speakerMergeTarget, setSpeakerMergeTarget] = useState('')
+  const [speakerMergePending, setSpeakerMergePending] = useState(false)
+  const [speakerMergeUndo, setSpeakerMergeUndo] = useState<SpeakerMergeUndo | null>(null)
+  const [speakerUndoPending, setSpeakerUndoPending] = useState(false)
+  const [markerAddSeconds, setMarkerAddSeconds] = useState<number | null>(null)
+  const [markerAddDraft, setMarkerAddDraft] = useState('')
+  const [markerAddPending, setMarkerAddPending] = useState(false)
+  const addMarkerButtonRef = useRef<HTMLButtonElement>(null)
+
+  function focusSpeakerFilter() {
+    requestAnimationFrame(() => speakerFilterRef.current?.focus())
+  }
+
+  function closeSpeakerRename() {
+    setSpeakerEditing(false)
+    setSpeakerDraft('')
+    requestAnimationFrame(() => speakerRenameButtonRef.current?.focus())
+  }
+
+  function closeSpeakerMerge() {
+    setSpeakerMergeOpen(false)
+    setSpeakerMergeTarget('')
+    requestAnimationFrame(() => speakerMergeButtonRef.current?.focus())
+  }
 
   // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
   // are useAppState's async `get_note` fetch for whichever note was
@@ -404,12 +793,20 @@ export function NoteView({
   const summary = transcriptReady ? selectedSummary : null
   const markdown = transcriptReady ? selectedMarkdown : ''
   const audioPath = transcriptReady ? selectedAudioPath : null
+  const detailMeta = transcriptReady && selectedMeta ? selectedMeta : meta
+  const noteId = meta?.id ?? null
+  const markers = detailMeta?.markers ?? []
+  const speakers = useMemo(() => Array.from(new Set(segments.map(segment => segment.speaker))), [segments])
+  const filteredSegments = useMemo(
+    () => speakerFilter === 'all' ? segments : segments.filter(segment => segment.speaker === speakerFilter),
+    [segments, speakerFilter],
+  )
 
   // Both re-derive their full input on every call (a segment-by-segment
   // adapter pass, a UTF-8 byte-length encode) — worth skipping once
   // `segments`/`markdown` themselves haven't changed, same rationale as the
   // rest of this sweep (see MarkdownCard/Sidebar/TitleBar).
-  const displaySegments = useMemo(() => storedSegmentsToDisplay(segments), [segments])
+  const displaySegments = useMemo(() => storedSegmentsToDisplay(filteredSegments), [filteredSegments])
   const markdownBytes = useMemo(() => new TextEncoder().encode(markdown).length, [markdown])
 
   // Owns the single `<audio>` element for whichever note is selected —
@@ -449,9 +846,45 @@ export function NoteView({
   // playback ever starts) never shows a stale/misleading highlight — only
   // actual playback does, per the design ("while playing").
   const activeIndex = useMemo(
-    () => (playing ? findActiveSegmentIndex(segments, currentTime) : -1),
-    [segments, currentTime, playing],
+    () => (playing ? findActiveSegmentIndex(filteredSegments, currentTime) : -1),
+    [filteredSegments, currentTime, playing],
   )
+
+  useEffect(() => {
+    setSpeakerFilter('all')
+    setSpeakerEditing(false)
+    setSpeakerDraft('')
+    setSpeakerMergeOpen(false)
+    setSpeakerMergeTarget('')
+    setSpeakerMergePending(false)
+    setSpeakerMergeUndo(null)
+    setSpeakerUndoPending(false)
+    setMarkerAddSeconds(null)
+    setMarkerAddDraft('')
+    setMarkerAddPending(false)
+  }, [noteId])
+
+  const closeMarkerComposer = useCallback(() => {
+    setMarkerAddSeconds(null)
+    setMarkerAddDraft('')
+    requestAnimationFrame(() => addMarkerButtonRef.current?.focus())
+  }, [])
+
+  const saveAddedMarker = useCallback(async () => {
+    if (!meta || markerAddSeconds === null || markerAddPending) return
+    const label = markerAddDraft.trim()
+    if (!label) return
+    setMarkerAddPending(true)
+    try {
+      await onAddMarker(meta.id, markerAddSeconds, label)
+      closeMarkerComposer()
+    } catch {
+      // The shared error banner owns the failure message. Keep the captured
+      // timestamp and draft intact so retrying never changes what was marked.
+    } finally {
+      setMarkerAddPending(false)
+    }
+  }, [closeMarkerComposer, markerAddDraft, markerAddPending, markerAddSeconds, meta, onAddMarker])
 
   // Transcript timestamp click → seek and start playback. `seek`/`play` are
   // themselves permanently stable, so this is too — required for
@@ -490,7 +923,6 @@ export function NoteView({
   // useAppState. Also computed ahead of the `!meta` early return below (same
   // reason as `displaySegments`/`markdownBytes` above) — meaningless but
   // harmless while `meta` is `null`.
-  const noteId = meta?.id ?? null
   const handleReveal = useCallback(() => {
     if (noteId) onReveal(noteId)
   }, [noteId, onReveal])
@@ -517,8 +949,24 @@ export function NoteView({
     navigator.clipboard.writeText(markdown).catch(err => onCopyError(err))
   }, [markdown, onCopyError])
 
+  const handleOpenTranscript = useCallback(
+    (seconds?: number) => {
+      setNoteTab('transcript')
+      if (seconds !== undefined) {
+        seek(seconds)
+        play()
+      }
+    },
+    [play, seek, setNoteTab],
+  )
+  const handleFocusAsk = useCallback(() => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>('input[aria-label="Ask about this meeting"]')?.focus()
+    })
+  }, [])
+
   if (!meta) {
-    return <EmptyNotesArea />
+    return <EmptyNotesArea onStartRecording={onStartRecording} />
   }
 
   const metaLine = noteMetaToListItem(meta, new Date()).meta
@@ -529,15 +977,17 @@ export function NoteView({
   // every note, including every one recorded before this field existed).
   const includedSystemAudio = meta.sources.includes('system')
 
-  // Two-item roving-focus tablist: Left/Right just toggles between the only
-  // two tabs (Transcript/Markdown) — moves selection *and* focus, per the
-  // WAI-ARIA tabs pattern.
+  // Three-item roving-focus tablist: Left/Right moves selection and focus,
+  // per the WAI-ARIA tabs pattern.
   function handleTabKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
     e.preventDefault()
-    const next: NoteTab = noteTab === 'transcript' ? 'md' : 'transcript'
+    const tabs: NoteTab[] = ['overview', 'transcript', 'md']
+    const current = tabs.indexOf(noteTab)
+    const direction = e.key === 'ArrowRight' ? 1 : -1
+    const next = tabs[(current + direction + tabs.length) % tabs.length]
     setNoteTab(next)
-    ;(next === 'transcript' ? transcriptTabRef : mdTabRef).current?.focus()
+    ;(next === 'overview' ? overviewTabRef : next === 'transcript' ? transcriptTabRef : mdTabRef).current?.focus()
   }
 
   return (
@@ -551,41 +1001,107 @@ export function NoteView({
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
             <NoteTitle meta={meta} onRename={title => onRename(meta.id, title)} />
             <StatusPill meta={meta} sttStatus={sttStatus} sttStatusNoteId={sttStatusNoteId} summaryStatus={summaryStatus} />
+            <button
+              type="button"
+              className="note-pin-toggle"
+              data-active={meta.pinned ? 'true' : 'false'}
+              aria-label={meta.pinned ? 'Unpin note' : 'Pin note'}
+              title={meta.pinned ? 'Unpin note' : 'Pin note'}
+              onClick={() => onSetPinned(meta.id, !(meta.pinned ?? false))}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill={meta.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <path d="m12 17-5 3 1.5-5.8L4 10.5l5.9-.4L12 4.5l2.1 5.6 5.9.4-4.5 3.7L17 20Z" />
+              </svg>
+            </button>
           </div>
           <div style={{ marginTop: 7, fontSize: 11.5, color: 'var(--ink-muted)', fontVariantNumeric: 'tabular-nums' }}>
             {metaLine} · {dateLabel} · stored locally{includedSystemAudio ? ' · mic + system audio' : ''}
           </div>
-          <div role="tablist" aria-label="Note content" onKeyDown={handleTabKeyDown} className="tab-rule" style={{ marginTop: 18 }}>
-            <button
-              ref={transcriptTabRef}
-              id="note-tab-transcript"
-              role="tab"
-              aria-selected={noteTab === 'transcript'}
-              aria-controls="note-panel-transcript"
-              tabIndex={noteTab === 'transcript' ? 0 : -1}
-              onClick={() => setNoteTab('transcript')}
-              className="tab-item"
-            >
-              Transcript
-            </button>
-            <button
-              ref={mdTabRef}
-              id="note-tab-md"
-              role="tab"
-              aria-selected={noteTab === 'md'}
-              aria-controls="note-panel-md"
-              tabIndex={noteTab === 'md' ? 0 : -1}
-              onClick={() => setNoteTab('md')}
-              className="tab-item"
-            >
-              Markdown
-            </button>
-            <div style={{ flex: 1 }} />
-            <div style={{ paddingBottom: 6 }}>
-              <DeleteNoteButton id={meta.id} onDelete={onDelete} />
+          <div className="note-tab-row" style={{ marginTop: 18 }}>
+            <div role="tablist" aria-label="Note content" onKeyDown={handleTabKeyDown} className="tab-rule">
+              <button
+                ref={overviewTabRef}
+                id="note-tab-overview"
+                role="tab"
+                aria-selected={noteTab === 'overview'}
+                aria-controls="note-panel-overview"
+                tabIndex={noteTab === 'overview' ? 0 : -1}
+                onClick={() => setNoteTab('overview')}
+                className="tab-item"
+              >
+                Overview
+              </button>
+              <button
+                ref={transcriptTabRef}
+                id="note-tab-transcript"
+                role="tab"
+                aria-selected={noteTab === 'transcript'}
+                aria-controls="note-panel-transcript"
+                tabIndex={noteTab === 'transcript' ? 0 : -1}
+                onClick={() => setNoteTab('transcript')}
+                className="tab-item"
+              >
+                Transcript
+              </button>
+              <button
+                ref={mdTabRef}
+                id="note-tab-md"
+                role="tab"
+                aria-selected={noteTab === 'md'}
+                aria-controls="note-panel-md"
+                tabIndex={noteTab === 'md' ? 0 : -1}
+                onClick={() => setNoteTab('md')}
+                className="tab-item"
+              >
+                Markdown
+              </button>
+            </div>
+            <div className="note-tab-actions">
+              <DeleteNoteButton id={meta.id} title={meta.title} onDelete={onDelete} />
             </div>
           </div>
         </div>
+        {processingFailure?.stage === 'preparing' && (
+          <div className="note-processing-recovery" role="status">
+            <span>
+              <strong>The recording is saved, but the library did not refresh.</strong>
+              {processingFailure.message}
+            </span>
+            <button type="button" className="btn-outline" onClick={onRetryProcessing}>Retry refresh</button>
+            <button type="button" className="btn-quiet" onClick={onDismissProcessing}>Dismiss</button>
+          </div>
+        )}
+        {meta.captureWarning && (
+          <div className="note-processing-recovery" role="status">
+            <span>
+              <strong>Part of this recording may be missing.</strong>
+              {meta.captureWarning} Existing audio and transcript content were preserved.
+            </span>
+          </div>
+        )}
+        {noteTab === 'overview' && (
+          <div id="note-panel-overview" role="tabpanel" aria-labelledby="note-tab-overview" className="note-overview-panel">
+            <NoteOverview
+              meta={detailMeta ?? meta}
+              summary={summary}
+              segments={segments}
+              markers={markers}
+              summaryStatus={summaryStatus}
+              summaryError={summaryError}
+              llmInstalled={llmInstalled}
+              onGenerate={handleRegenerate}
+              onToggleAction={handleToggleAction}
+              onOpenTranscript={handleOpenTranscript}
+              onFocusAsk={handleFocusAsk}
+              onExport={handleReveal}
+              onUpdateMarker={(index, label) => onUpdateMarker(meta.id, index, label)}
+              onDeleteMarker={index => onDeleteMarker(meta.id, index)}
+              onRestoreMarker={marker => onAddMarker(meta.id, marker.seconds, marker.label)}
+              storage={selectedNoteStorage}
+              onDeleteAudio={onDeleteAudio}
+            />
+          </div>
+        )}
         {noteTab === 'transcript' && (
           <div id="note-panel-transcript" role="tabpanel" aria-labelledby="note-tab-transcript" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
             {showTranscriptLoading ? (
@@ -593,12 +1109,239 @@ export function NoteView({
                 Loading transcript…
               </div>
             ) : (
-              <TranscriptList
-                segments={displaySegments}
-                activeIndex={activeIndex}
-                onSeek={handleSeekFromTranscript}
-                seekable={seekable}
-              />
+              <>
+                <div className="transcript-tools">
+                  <span className="transcript-play-hint">Timestamps play audio · ↑↓ moves between turns</span>
+                  <button
+                    ref={addMarkerButtonRef}
+                    type="button"
+                    className="transcript-add-marker"
+                    disabled={!seekable || markerAddSeconds !== null}
+                    aria-label={
+                      seekable
+                        ? `Add marker at ${formatMmSs(currentTime)}`
+                        : 'Add marker unavailable without audio'
+                    }
+                    title={seekable ? `Mark ${formatMmSs(currentTime)}` : 'Audio is unavailable'}
+                    onClick={() => {
+                      setMarkerAddSeconds(currentTime)
+                      setMarkerAddDraft('')
+                    }}
+                  >
+                    Add marker
+                  </button>
+                  <select
+                    ref={speakerFilterRef}
+                    aria-label="Filter transcript by speaker"
+                    value={speakerFilter}
+                    onChange={event => {
+                      setSpeakerFilter(event.target.value)
+                      setSpeakerEditing(false)
+                      setSpeakerMergeOpen(false)
+                      setSpeakerMergeTarget('')
+                    }}
+                  >
+                    <option value="all">All speakers</option>
+                    {speakers.map(speaker => <option key={speaker} value={speaker}>{speaker}</option>)}
+                  </select>
+                  {speakerFilter !== 'all' && !speakerEditing && (
+                    <>
+                      <button
+                        ref={speakerRenameButtonRef}
+                        type="button"
+                        className="btn-quiet"
+                        onClick={() => {
+                          setSpeakerDraft(speakerFilter)
+                          setSpeakerEditing(true)
+                          setSpeakerMergeOpen(false)
+                        }}
+                      >
+                        Rename speaker
+                      </button>
+                      {speakers.length > 1 && (
+                        <button
+                          ref={speakerMergeButtonRef}
+                          type="button"
+                          className="btn-quiet"
+                          onClick={() => {
+                            setSpeakerMergeTarget(speakers.find(speaker => speaker !== speakerFilter) ?? '')
+                            setSpeakerMergeOpen(true)
+                            setSpeakerEditing(false)
+                          }}
+                        >
+                          Merge speaker
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {speakerEditing && (
+                    <form
+                      className="speaker-rename"
+                      onSubmit={event => {
+                        event.preventDefault()
+                        const next = speakerDraft.trim()
+                        if (next && next !== speakerFilter) onRenameSpeaker(meta.id, speakerFilter, next)
+                        setSpeakerFilter('all')
+                        setSpeakerEditing(false)
+                        focusSpeakerFilter()
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        aria-label="Speaker name"
+                        value={speakerDraft}
+                        onChange={event => setSpeakerDraft(event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key === 'Escape') {
+                            event.preventDefault()
+                            closeSpeakerRename()
+                          }
+                        }}
+                      />
+                      <button type="submit" className="btn-outline">Save</button>
+                      <button type="button" className="btn-quiet" onClick={closeSpeakerRename}>Cancel</button>
+                    </form>
+                  )}
+                </div>
+                {speakerMergeOpen && speakerFilter !== 'all' && (
+                  <form
+                    className="speaker-merge-form"
+                    onKeyDown={event => {
+                      if (event.key === 'Escape' && !speakerMergePending) {
+                        event.preventDefault()
+                        closeSpeakerMerge()
+                      }
+                    }}
+                    onSubmit={event => {
+                      event.preventDefault()
+                      if (!speakerMergeTarget || speakerMergePending) return
+                      const from = speakerFilter
+                      const into = speakerMergeTarget
+                      setSpeakerMergePending(true)
+                      void onMergeSpeakers(meta.id, from, into)
+                        .then(undo => {
+                          setSpeakerMergeUndo(undo)
+                          setSpeakerFilter('all')
+                          setSpeakerMergeOpen(false)
+                          setSpeakerMergeTarget('')
+                          focusSpeakerFilter()
+                        })
+                        .catch(() => {
+                          // The shared error banner owns the message. Keep
+                          // both selected speakers intact for a retry.
+                        })
+                        .finally(() => setSpeakerMergePending(false))
+                    }}
+                  >
+                    <span>
+                      Merge <strong>{speakerFilter}</strong> into
+                    </span>
+                    <select
+                      autoFocus
+                      aria-label="Merge into speaker"
+                      value={speakerMergeTarget}
+                      disabled={speakerMergePending}
+                      onChange={event => setSpeakerMergeTarget(event.target.value)}
+                    >
+                      {speakers
+                        .filter(speaker => speaker !== speakerFilter)
+                        .map(speaker => <option key={speaker} value={speaker}>{speaker}</option>)}
+                    </select>
+                    <button type="submit" disabled={!speakerMergeTarget || speakerMergePending}>
+                      {speakerMergePending ? 'Merging…' : 'Merge'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={speakerMergePending}
+                      onClick={closeSpeakerMerge}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                )}
+                {speakerMergeUndo && (
+                  <div className="speaker-merge-notice">
+                    <span role="status">
+                      <strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into}</strong>.
+                    </span>
+                    <button
+                      type="button"
+                      disabled={speakerUndoPending}
+                      onClick={() => {
+                        setSpeakerUndoPending(true)
+                        void onUndoSpeakerMerge(meta.id, speakerMergeUndo)
+                          .then(() => {
+                            setSpeakerMergeUndo(null)
+                            focusSpeakerFilter()
+                          })
+                          .catch(() => {
+                            // Retain the undo affordance when persistence
+                            // fails so the user can retry.
+                          })
+                          .finally(() => setSpeakerUndoPending(false))
+                      }}
+                    >
+                      {speakerUndoPending ? 'Undoing…' : 'Undo'}
+                    </button>
+                  </div>
+                )}
+                {markerAddSeconds !== null && (
+                  <form
+                    className="transcript-marker-add"
+                    onSubmit={event => {
+                      event.preventDefault()
+                      void saveAddedMarker()
+                    }}
+                  >
+                    <span className="transcript-marker-add-time">{formatMmSs(markerAddSeconds)}</span>
+                    <input
+                      autoFocus
+                      aria-label={`New marker label at ${formatMmSs(markerAddSeconds)}`}
+                      placeholder="What happened here?"
+                      value={markerAddDraft}
+                      maxLength={100}
+                      disabled={markerAddPending}
+                      onChange={event => setMarkerAddDraft(event.target.value)}
+                      onKeyDown={event => {
+                        if (event.key === 'Escape' && !markerAddPending) {
+                          event.preventDefault()
+                          closeMarkerComposer()
+                        }
+                      }}
+                    />
+                    <button type="submit" disabled={!markerAddDraft.trim() || markerAddPending}>
+                      {markerAddPending ? 'Saving…' : 'Save marker'}
+                    </button>
+                    <button type="button" disabled={markerAddPending} onClick={closeMarkerComposer}>
+                      Cancel
+                    </button>
+                  </form>
+                )}
+                {markers.length > 0 && (
+                  <div className="transcript-markers" aria-label="Recording markers">
+                    {markers.map((marker, index) => (
+                      <button key={`${marker.seconds}-${index}`} type="button" onClick={() => handleSeekFromTranscript(marker.seconds)}>
+                        <span>{formatMmSs(marker.seconds)}</span>
+                        {marker.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {filteredSegments.length === 0 ? (
+                  <div className="transcript-empty-filter">
+                    No transcript turns match this speaker.
+                    <button type="button" className="empty-action" onClick={() => setSpeakerFilter('all')}>Show all speakers</button>
+                  </div>
+                ) : (
+                  <TranscriptList
+                    noteId={meta.id}
+                    segments={displaySegments}
+                    activeIndex={activeIndex}
+                    onSeek={handleSeekFromTranscript}
+                    seekable={seekable}
+                  />
+                )}
+              </>
             )}
             <PlayerBar
               audioPath={audioPath}
@@ -655,6 +1398,7 @@ export function NoteView({
         // share one stable identity instead of two.
         onExport={handleReveal}
         onGoSettings={onGoSettings}
+        overviewMode={noteTab === 'overview'}
       />
     </main>
   )

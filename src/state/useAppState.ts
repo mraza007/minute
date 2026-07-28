@@ -1,8 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
-import type { Hardware, NoteMeta, StorageStats, SysAudioAvailability, TranscriptSegmentEvent } from '../ipc/types'
+import type {
+  AudioInputDevice,
+  DeletedNoteUndo,
+  Hardware,
+  MicrophonePermission,
+  NoteMarker,
+  NoteMeta,
+  NoteStorageStats,
+  SpeakerMergeUndo,
+  StorageStats,
+  SysAudioAvailability,
+  TranscriptSegmentEvent,
+} from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
+import type { RecordingProcessingStage } from '../types'
+import {
+  INITIAL_CAPTURE_HEALTH_TRACKER,
+  nextCaptureHealth,
+  type CaptureHealth,
+} from '../components/recordingDiagnostics'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { useModelManager } from './useModelManager'
 import { useNoteDetail } from './useNoteDetail'
@@ -23,12 +41,20 @@ const LAST_ERROR_TIMEOUT_MS = 5000
 /** Debounce window (ms) between a keystroke in the sidebar search input and the `search_notes` call it triggers — same value the ⌘K palette (`SearchPalette`) debounces its own input at. */
 const SIDEBAR_SEARCH_DEBOUNCE_MS = 150
 
+export interface ProcessingFailure {
+  stage: 'saving' | 'preparing'
+  message: string
+}
+
 export function useAppState() {
   const [view, setView] = useState<View>('loading')
   const [loaded, setLoaded] = useState(false)
   const [notes, setNotes] = useState<NoteMeta[]>([])
   const [hardware, setHardware] = useState<Hardware | null>(null)
   const [storage, setStorage] = useState<StorageStats | null>(null)
+  const [selectedNoteStorage, setSelectedNoteStorage] = useState<NoteStorageStats | null>(null)
+  const [deletedNoteUndo, setDeletedNoteUndo] = useState<DeletedNoteUndo[] | null>(null)
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null)
   const [lastError, setLastErrorState] = useState<string | null>(null)
 
   const [sel, setSel] = useState(0)
@@ -44,6 +70,16 @@ export function useAppState() {
   const [recElapsed, setRecElapsed] = useState(0)
   const [paused, setPaused] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const [processingStage, setProcessingStage] = useState<RecordingProcessingStage>('idle')
+  const [processingFailure, setProcessingFailure] = useState<ProcessingFailure | null>(null)
+  const [recordingPreflightOpen, setRecordingPreflightOpen] = useState(false)
+  const [preflightMicrophoneDevices, setPreflightMicrophoneDevices] = useState<AudioInputDevice[]>([])
+  const [selectedPreflightMicrophoneId, setSelectedPreflightMicrophoneId] = useState<string | null>(null)
+  const [preflightMicrophoneLoading, setPreflightMicrophoneLoading] = useState(false)
+  const [preflightMicrophonePermission, setPreflightMicrophonePermission] =
+    useState<MicrophonePermission>('unknown')
+  const [requestingMicrophonePermission, setRequestingMicrophonePermission] = useState(false)
+  const [recordingStarting, setRecordingStarting] = useState(false)
   // Stage 5 Task 5: the *active* recording's real system-audio state, from
   // `recording-state`'s `systemAudioActive` field — distinct from
   // `tCaptureSystemAudio` (the pre-recording *setting*, below) since
@@ -53,6 +89,9 @@ export function useAppState() {
   // right now, reset alongside the rest of the recording-lifecycle fields
   // in `startRec`/`stopRec`.
   const [systemAudioActive, setSystemAudioActive] = useState(false)
+  const [microphoneName, setMicrophoneName] = useState('Default microphone')
+  const [recordingTitle, setRecordingTitle] = useState('New recording')
+  const [recordingMarkers, setRecordingMarkers] = useState<NoteMarker[]>([])
   const [sttStatus, setSttStatus] = useState<SttStatus>('idle')
   const [sttError, setSttError] = useState<string | null>(null)
   // The note id the most recent onSttStatus event was actually about —
@@ -62,10 +101,13 @@ export function useAppState() {
   // clears this (and `sttStatus`/`sttError`) once `stop_recording` itself
   // resolves — see its docs for why that's the correct, safe moment.
   const [sttStatusNoteId, setSttStatusNoteId] = useState<string | null>(null)
+  const [captureHealth, setCaptureHealth] = useState<CaptureHealth>('checking')
+  const captureHealthTracker = useRef(INITIAL_CAPTURE_HEALTH_TRACKER)
   // Guards `togglePause` against re-entrant double-calls (e.g. a fast
   // double-click) firing a second pause/resume IPC call before the first
   // one has resolved — see `togglePause`'s docs.
   const pauseInFlight = useRef(false)
+  const recordingStartInFlight = useRef(false)
 
   // Settings-backed storage/privacy toggle — seeded from `get_settings` in
   // the initial load effect below; `toggleDel` further down flips this
@@ -143,6 +185,24 @@ export function useAppState() {
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
 
   const selectedNoteId = notes[sel]?.id ?? null
+
+  useEffect(() => {
+    let cancelled = false
+    if (!selectedNoteId) {
+      setSelectedNoteStorage(null)
+      return
+    }
+    ipc.noteStorageStats(selectedNoteId)
+      .then(stats => {
+        if (!cancelled) setSelectedNoteStorage(stats)
+      })
+      .catch(error => {
+        if (!cancelled) reportError(error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [reportError, selectedNoteId])
 
   /**
    * The selected note's transcript/summary/markdown/audio-path (LRU-cached),
@@ -314,6 +374,108 @@ export function useAppState() {
     [selectedNoteId, loadNoteTranscript, invalidateNoteCache, reportError],
   )
 
+  const setNotePinned = useCallback(
+    (id: string, pinned: boolean) => {
+      ipc
+        .setNotePinned(id, pinned)
+        .then(updated => {
+          setNotes(current => current.map(note => note.id === id ? updated : note))
+          invalidateNoteCache(id)
+        })
+        .catch(reportError)
+    },
+    [invalidateNoteCache, reportError],
+  )
+
+  const addNoteMarker = useCallback(
+    async (id: string, seconds: number, label: string) => {
+      try {
+        const updated = await ipc.addNoteMarker(id, seconds, label)
+        setNotes(current => current.map(note => note.id === id ? updated : note))
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+  )
+
+  const updateNoteMarker = useCallback(
+    async (id: string, index: number, label: string) => {
+      try {
+        const updated = await ipc.updateNoteMarker(id, index, label)
+        setNotes(current => current.map(note => note.id === id ? updated : note))
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+  )
+
+  const deleteNoteMarker = useCallback(
+    async (id: string, index: number) => {
+      try {
+        const updated = await ipc.deleteNoteMarker(id, index)
+        setNotes(current => current.map(note => note.id === id ? updated : note))
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+  )
+
+  const renameSpeaker = useCallback(
+    (id: string, from: string, to: string) => {
+      ipc
+        .renameSpeaker(id, from, to)
+        .then(() => {
+          invalidateNoteCache(id)
+          loadNoteTranscript(id, { force: true })
+        })
+        .catch(reportError)
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError],
+  )
+
+  const mergeSpeakers = useCallback(
+    async (id: string, from: string, into: string): Promise<SpeakerMergeUndo> => {
+      try {
+        const result = await ipc.mergeSpeakers(id, from, into)
+        setNotes(current => current.map(note => note.id === id ? result.meta : note))
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        return result.undo
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+  )
+
+  const undoSpeakerMerge = useCallback(
+    async (id: string, undo: SpeakerMergeUndo) => {
+      try {
+        const result = await ipc.undoSpeakerMerge(id, undo)
+        setNotes(current => current.map(note => note.id === id ? result.meta : note))
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+  )
+
   /**
    * Header trash (after 4s-arm confirm) → deletes on disk, refreshes the
    * notes list, and clamps the selection onto whatever note now sits at the
@@ -326,7 +488,9 @@ export function useAppState() {
     (id: string) => {
       ipc
         .deleteNote(id)
-        .then(() => {
+        .then(undo => {
+          setDeletedNoteUndo([undo])
+          setLibraryNotice(null)
           invalidateNoteCache(id)
           // The note is gone on disk — its summarization/ask lifecycle
           // state (`summaryStatus`/`summaryError`/`askStatusMap`/
@@ -343,6 +507,80 @@ export function useAppState() {
     },
     [invalidateNoteCache, pruneNoteDetail, reportError],
   )
+
+  const deleteNotes = useCallback(
+    async (ids: string[]) => {
+      try {
+        const undo = await ipc.deleteNotes(ids)
+        setDeletedNoteUndo(undo)
+        setLibraryNotice(null)
+        for (const id of ids) {
+          invalidateNoteCache(id)
+          pruneNoteDetail(id)
+        }
+        const freshNotes = await ipc.listNotes()
+        setNotes(freshNotes)
+        setSel(previous => Math.min(previous, Math.max(freshNotes.length - 1, 0)))
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, pruneNoteDetail, reportError],
+  )
+
+  const undoDeletedNotes = useCallback(async () => {
+    if (!deletedNoteUndo) return
+    try {
+      const restored = await ipc.restoreNotes(deletedNoteUndo)
+      const freshNotes = await ipc.listNotes()
+      setNotes(freshNotes)
+      const restoredId = restored[0]?.id
+      if (restoredId) {
+        setSel(Math.max(0, freshNotes.findIndex(note => note.id === restoredId)))
+      }
+      setDeletedNoteUndo(null)
+      setLibraryNotice(`${restored.length === 1 ? 'Note' : `${restored.length} notes`} restored.`)
+    } catch (error) {
+      reportError(error)
+      throw error
+    }
+  }, [deletedNoteUndo, reportError])
+
+  const exportNotes = useCallback(async (ids: string[]) => {
+    try {
+      await ipc.exportNotes(ids)
+      setLibraryNotice(`${ids.length === 1 ? 'Note' : `${ids.length} notes`} exported to Finder.`)
+    } catch (error) {
+      reportError(error)
+      throw error
+    }
+  }, [reportError])
+
+  const exportDiagnostics = useCallback(async () => {
+    try {
+      await ipc.exportDiagnostics()
+      setLibraryNotice('Privacy-safe diagnostics exported to Finder.')
+    } catch (error) {
+      reportError(error)
+      throw error
+    }
+  }, [reportError])
+
+  const deleteSelectedNoteAudio = useCallback(async () => {
+    if (!selectedNoteId) return
+    try {
+      const updated = await ipc.deleteNoteAudio(selectedNoteId)
+      setNotes(current => current.map(note => note.id === updated.id ? updated : note))
+      invalidateNoteCache(selectedNoteId)
+      await loadNoteTranscript(selectedNoteId, { force: true })
+      setSelectedNoteStorage(await ipc.noteStorageStats(selectedNoteId))
+      setLibraryNotice('Original audio removed. Transcript and notes were kept.')
+    } catch (error) {
+      reportError(error)
+      throw error
+    }
+  }, [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId])
 
   /**
    * Markdown card "Reveal in Finder" → reveals the note's audio.wav (or its
@@ -425,6 +663,10 @@ export function useAppState() {
       setRecElapsed(payload.elapsed)
       setPaused(payload.state === 'paused')
       setSystemAudioActive(payload.systemAudioActive)
+      setMicrophoneName(payload.microphoneName || 'Default microphone')
+      const nextHealth = nextCaptureHealth(captureHealthTracker.current, payload)
+      captureHealthTracker.current = nextHealth.tracker
+      setCaptureHealth(nextHealth.health)
     },
     [],
   )
@@ -445,6 +687,9 @@ export function useAppState() {
       setSttStatus(payload.state)
       setSttError(payload.error)
       setSttStatusNoteId(payload.noteId)
+      if (payload.state === 'finalizing') {
+        setProcessingStage(stage => stage === 'saving' ? 'finalizing' : stage)
+      }
     },
     [],
   )
@@ -474,15 +719,78 @@ export function useAppState() {
     [modelManager.models, modelManager.llmModel],
   )
 
+  /** Refreshes selectable inputs without opening a stream. The previous
+   * selection survives when it is still connected; otherwise we fall back
+   * to the current macOS default, then the first enumerated input. */
+  const refreshPreflightMicrophones = useCallback(() => {
+    setPreflightMicrophoneLoading(true)
+    return ipc
+      .audioInputStatus()
+      .then(status => {
+        const devices = status?.devices ?? []
+        setPreflightMicrophonePermission(status?.permission ?? 'unknown')
+        setPreflightMicrophoneDevices(devices)
+        setSelectedPreflightMicrophoneId(previous =>
+          devices.some(device => device.id === previous)
+            ? previous
+            : status?.defaultDeviceId ?? devices[0]?.id ?? null,
+        )
+      })
+      .catch(error => {
+        setPreflightMicrophonePermission('unknown')
+        setPreflightMicrophoneDevices([])
+        reportError(error)
+      })
+      .finally(() => setPreflightMicrophoneLoading(false))
+  }, [reportError])
+
+  /** Requests access only after the user explicitly chooses the preflight
+   * action. This keeps the macOS permission prompt contextual and lets the
+   * same sheet explain a denial without attempting a broken recording. */
+  const requestMicrophonePermission = useCallback(() => {
+    if (requestingMicrophonePermission) return
+    setRequestingMicrophonePermission(true)
+    void ipc
+      .requestMicrophonePermission()
+      .then(permission => {
+        setPreflightMicrophonePermission(permission)
+        return refreshPreflightMicrophones()
+      })
+      .catch(reportError)
+      .finally(() => setRequestingMicrophonePermission(false))
+  }, [refreshPreflightMicrophones, reportError, requestingMicrophonePermission])
+
+  /** Opens the preparation sheet immediately, then refreshes the real
+   * microphones without blocking that entrance. Devices can change while
+   * Minute is open, so this check happens per opening rather than only once
+   * during app boot. */
+  const openRecordingPreflight = useCallback(() => {
+    setRecordingPreflightOpen(true)
+    void refreshPreflightMicrophones()
+  }, [refreshPreflightMicrophones])
+
+  const closeRecordingPreflight = useCallback(() => {
+    if (recordingStartInFlight.current) return
+    setRecordingPreflightOpen(false)
+  }, [])
+
   /**
    * Starts a new recording with the currently selected STT model.
-   * `useCallback` (deps: `modelManager.sttModel`, `reportError`) so this
-   * has a stable identity across renders that don't actually change either
-   * — see `togglePause`/`stopRec`'s docs for why that matters.
+   * The preflight's system-audio choice is passed explicitly, so clicking
+   * Start immediately after flipping the persisted setting cannot race the
+   * backend's settings read. A ref closes the sub-render gap where two
+   * rapid clicks could otherwise issue two start commands.
    */
   const startRec = useCallback(() => {
+    if (recordingStartInFlight.current) return
+    recordingStartInFlight.current = true
+    setRecordingStarting(true)
+    const includeSystemAudio = tCaptureSystemAudio && sysAudioAvailability === 'ready'
+    const selectedMicrophone = preflightMicrophoneDevices.find(
+      device => device.id === selectedPreflightMicrophoneId,
+    )
     ipc
-      .startRecording(modelManager.sttModel)
+      .startRecording(modelManager.sttModel, includeSystemAudio, selectedPreflightMicrophoneId)
       .then(noteId => {
         setActiveNoteId(noteId)
         setLiveSegmentsRaw([])
@@ -491,16 +799,40 @@ export function useAppState() {
         setSttStatus('idle')
         setSttError(null)
         setSttStatusNoteId(null)
+        captureHealthTracker.current = INITIAL_CAPTURE_HEALTH_TRACKER
+        setCaptureHealth('checking')
+        setProcessingStage('idle')
+        setProcessingFailure(null)
         // The very first `recording-state` event (emitted synchronously by
         // `start_recording` itself before this call even resolves) reconciles
         // this to the real, backend-confirmed value almost immediately —
         // `false` here is just the safe starting point for the instant
         // between "we have a note id" and that event arriving.
         setSystemAudioActive(false)
+        setMicrophoneName(selectedMicrophone?.name ?? 'Default microphone')
+        setRecordingTitle('New recording')
+        setRecordingMarkers([])
+        setRecordingPreflightOpen(false)
         setView('recording')
       })
-      .catch(reportError)
-  }, [modelManager.sttModel, reportError])
+      .catch(error => {
+        reportError(error)
+        if (recordingPreflightOpen) void refreshPreflightMicrophones()
+      })
+      .finally(() => {
+        recordingStartInFlight.current = false
+        setRecordingStarting(false)
+      })
+  }, [
+    modelManager.sttModel,
+    preflightMicrophoneDevices,
+    recordingPreflightOpen,
+    refreshPreflightMicrophones,
+    reportError,
+    selectedPreflightMicrophoneId,
+    sysAudioAvailability,
+    tCaptureSystemAudio,
+  ])
 
   /**
    * The meeting-popup's "Start recording" click (`popup::popup_start`'s
@@ -584,6 +916,37 @@ export function useAppState() {
     })
   }, [paused, reportError])
 
+  /** Persists the active note's working title through the same rename command
+   * used by finalized notes. The promise lets the inline editor show a real
+   * saving state and keep the old title if the write fails. */
+  const renameActiveRecording = useCallback(
+    async (title: string) => {
+      if (activeNoteId === null) throw new Error('no active recording')
+      try {
+        const updated = await ipc.renameNote(activeNoteId, title)
+        setRecordingTitle(updated.title)
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [activeNoteId, reportError],
+  )
+
+  const addRecordingMarker = useCallback(
+    async (label: string) => {
+      if (activeNoteId === null) throw new Error('no active recording')
+      try {
+        const updated = await ipc.addNoteMarker(activeNoteId, recElapsed, label)
+        setRecordingMarkers(updated.markers ?? [])
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [activeNoteId, recElapsed, reportError],
+  )
+
   /**
    * Stops the active recording: sets `stopping` (RecordingView disables its
    * controls off this) until the backend finishes finalizing, then
@@ -616,10 +979,13 @@ export function useAppState() {
    * memo reason as `togglePause`.
    */
   const stopRec = useCallback(() => {
+    setProcessingFailure(null)
     setStopping(true)
+    setProcessingStage('saving')
     ipc
       .stopRecording()
       .then(newNote => {
+        setProcessingStage('preparing')
         Promise.all([ipc.listNotes(), ipc.storageStats()])
           .then(([freshNotes, freshStorage]) => {
             setNotes(freshNotes)
@@ -628,7 +994,10 @@ export function useAppState() {
             const idx = freshNotes.findIndex(n => n.id === newNote.id)
             setSel(idx >= 0 ? idx : 0)
           })
-          .catch(reportError)
+          .catch(error => {
+            setProcessingFailure({ stage: 'preparing', message: messageOf(error) })
+            reportError(error)
+          })
           .finally(() => {
             setView('notes')
             setActiveNoteId(null)
@@ -637,14 +1006,40 @@ export function useAppState() {
             setSttError(null)
             setSttStatusNoteId(null)
             setSystemAudioActive(false)
+            setMicrophoneName('Default microphone')
+            setRecordingTitle('New recording')
+            setRecordingMarkers([])
+            captureHealthTracker.current = INITIAL_CAPTURE_HEALTH_TRACKER
+            setCaptureHealth('checking')
+            setProcessingStage('idle')
             setStopping(false)
+            setNoteTab('overview')
           })
       })
       .catch(err => {
         setStopping(false)
+        setProcessingStage('idle')
+        setProcessingFailure({ stage: 'saving', message: messageOf(err) })
         reportError(err)
       })
   }, [reportError, invalidateNoteCache])
+
+  const retryProcessingFailure = useCallback(() => {
+    if (processingFailure?.stage === 'saving') {
+      stopRec()
+      return
+    }
+    if (processingFailure?.stage !== 'preparing') return
+    Promise.all([ipc.listNotes(), ipc.storageStats()])
+      .then(([freshNotes, freshStorage]) => {
+        setNotes(freshNotes)
+        setStorage(freshStorage)
+        setProcessingFailure(null)
+      })
+      .catch(reportError)
+  }, [processingFailure, reportError, stopRec])
+
+  const dismissProcessingFailure = useCallback(() => setProcessingFailure(null), [])
 
   // `useCallback` (stable identity, no deps beyond the setter) — passed
   // straight through to the memoized Sidebar/TitleBar as `onGoNotes`/
@@ -785,6 +1180,11 @@ export function useAppState() {
     hardware,
     recommendation: modelManager.recommendation,
     storage,
+    selectedNoteStorage,
+    deletedNoteUndo,
+    libraryNotice,
+    dismissLibraryNotice: () => setLibraryNotice(null),
+    dismissDeletedNoteUndo: () => setDeletedNoteUndo(null),
     lastError: lastError ?? modelManager.lastError,
     sttModel: modelManager.sttModel,
     sttModelDisplayName,
@@ -795,6 +1195,8 @@ export function useAppState() {
     recElapsed,
     paused,
     stopping,
+    processingStage,
+    processingFailure,
     sttStatus,
     sttError,
     sttStatusNoteId,
@@ -827,7 +1229,20 @@ export function useAppState() {
     toggleCaptureSystemAudio,
     sysAudioAvailability,
     requestSysAudioPermission,
+    recordingPreflightOpen,
+    preflightMicrophoneDevices,
+    selectedPreflightMicrophoneId,
+    preflightMicrophoneLoading,
+    preflightMicrophonePermission,
+    requestingMicrophonePermission,
+    requestMicrophonePermission,
+    selectPreflightMicrophone: setSelectedPreflightMicrophoneId,
+    recordingStarting,
     systemAudioActive,
+    microphoneName,
+    recordingTitle,
+    recordingMarkers,
+    captureHealth,
     noteTab,
     sidebarNotes,
     statsLine,
@@ -847,9 +1262,15 @@ export function useAppState() {
     goNotes,
     goSettings,
     goRecording,
+    openRecordingPreflight,
+    closeRecordingPreflight,
     startRec,
     stopRec,
+    retryProcessingFailure,
+    dismissProcessingFailure,
     togglePause,
+    renameActiveRecording,
+    addRecordingMarker,
     setNoteTab,
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,
@@ -859,7 +1280,19 @@ export function useAppState() {
     deleteModel: modelManager.deleteModel,
     completeOnboarding,
     renameNote,
+    setNotePinned,
+    addNoteMarker,
+    updateNoteMarker,
+    deleteNoteMarker,
+    renameSpeaker,
+    mergeSpeakers,
+    undoSpeakerMerge,
     deleteNote,
+    deleteNotes,
+    undoDeletedNotes,
+    exportNotes,
+    exportDiagnostics,
+    deleteSelectedNoteAudio,
     revealNote,
     reportError,
   }

@@ -39,7 +39,38 @@ profile="debug"
 if [[ "${TAURI_ENV_DEBUG:-}" == "false" ]]; then
   profile="release"
 fi
-lib_dir="$src_tauri_dir/target/$profile"
+expected_arch="${TAURI_ENV_ARCH:-}"
+if [[ "$expected_arch" == "aarch64" ]]; then
+  expected_arch="arm64"
+fi
+
+# Tauri exposes a target triple for both native and explicit cross-builds,
+# but Cargo writes native builds to target/<profile> and explicit --target
+# builds to target/<triple>/<profile>. Pick the newest candidate matching
+# the requested architecture so a stale build in the other directory can
+# never supply the bundle's executable or dylibs.
+candidate_dirs=()
+if [[ -n "${TAURI_ENV_TARGET_TRIPLE:-}" ]]; then
+  candidate_dirs+=("$src_tauri_dir/target/${TAURI_ENV_TARGET_TRIPLE}/$profile")
+fi
+candidate_dirs+=("$src_tauri_dir/target/$profile")
+
+lib_dir=""
+for candidate in "${candidate_dirs[@]}"; do
+  candidate_bin="$candidate/app"
+  [[ -x "$candidate_bin" ]] || continue
+  if [[ -n "$expected_arch" ]] && ! lipo "$candidate_bin" -verify_arch "$expected_arch" >/dev/null 2>&1; then
+    continue
+  fi
+  if [[ -z "$lib_dir" || "$candidate_bin" -nt "$lib_dir/app" ]]; then
+    lib_dir="$candidate"
+  fi
+done
+
+if [[ -z "$lib_dir" ]]; then
+  echo "stage-frameworks: no freshly built app matched architecture ${expected_arch:-<unknown>}" >&2
+  exit 1
+fi
 bin="$lib_dir/app"
 
 if [[ ! -x "$bin" ]]; then
@@ -109,6 +140,20 @@ while IFS= read -r name; do
   fi
 
   cp "$resolved" "$dest/$name"
+
+  # A strict signature does not prove a nested binary matches the app's
+  # architecture. In particular, an Intel cross-build can otherwise bundle
+  # stale Apple Silicon dylibs from target/debug and still pass codesign.
+  while IFS= read -r arch; do
+    [[ -z "$arch" ]] && continue
+    if ! lipo "$dest/$name" -verify_arch "$arch" >/dev/null 2>&1; then
+      echo "stage-frameworks: $name does not contain required app architecture $arch" >&2
+      echo "  app:   $(lipo -archs "$bin")" >&2
+      echo "  dylib: $(lipo -archs "$dest/$name")" >&2
+      exit 1
+    fi
+  done < <(lipo -archs "$bin" | tr ' ' '\n')
+
   copied+=("$name")
 done <<< "$needed_names"
 

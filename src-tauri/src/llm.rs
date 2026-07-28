@@ -131,7 +131,14 @@ fn format_mm_ss(total_seconds: f64) -> String {
 fn format_transcript_lines(segments: &[StoredSegment]) -> String {
     segments
         .iter()
-        .map(|seg| format!("[{}] {}: {}", format_mm_ss(seg.start), seg.speaker, seg.text))
+        .map(|seg| {
+            format!(
+                "[{}] {}: {}",
+                format_mm_ss(seg.start),
+                seg.speaker,
+                seg.text
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -308,7 +315,9 @@ fn strip_reasoning(raw: &str) -> Result<String> {
     let has_open = raw.contains("<think>");
     let has_close = raw.contains("</think>");
     if has_open && !has_close {
-        return Err(MinuteError::Other("model produced only reasoning".to_string()));
+        return Err(MinuteError::Other(
+            "model produced only reasoning".to_string(),
+        ));
     }
     if has_close {
         return Ok(raw.rsplit("</think>").next().unwrap_or("").to_string());
@@ -458,9 +467,15 @@ struct RawSummary {
 /// an otherwise-good summary and decisions list.
 fn action_item_from_value(value: serde_json::Value) -> Option<ActionItem> {
     match &value {
-        serde_json::Value::String(text) => Some(ActionItem { text: text.clone(), done: false }),
+        serde_json::Value::String(text) => Some(ActionItem {
+            text: text.clone(),
+            done: false,
+        }),
         serde_json::Value::Object(map) => match map.get("text").and_then(|t| t.as_str()) {
-            Some(text) => Some(ActionItem { text: text.to_string(), done: false }),
+            Some(text) => Some(ActionItem {
+                text: text.to_string(),
+                done: false,
+            }),
             None => {
                 log::debug!("skipping action item with no usable \"text\" field: {value}");
                 None
@@ -671,7 +686,9 @@ pub type SharedLlmEngine = Arc<Mutex<LlmEngineState>>;
 /// summarization must not brick every later one for the rest of the
 /// session.
 pub fn lock_llm_engine(engine: &SharedLlmEngine) -> MutexGuard<'_, LlmEngineState> {
-    engine.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    engine
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Creates an empty, ready-to-`app.manage()` engine state — no model loaded.
@@ -679,7 +696,10 @@ pub fn lock_llm_engine(engine: &SharedLlmEngine) -> MutexGuard<'_, LlmEngineStat
 /// it starts at, since [`LlmEngineState::unload_if_idle`] never consults it
 /// while `loaded` is `None`.
 pub(crate) fn open_shared() -> SharedLlmEngine {
-    Arc::new(Mutex::new(LlmEngineState { loaded: None, last_used: Instant::now() }))
+    Arc::new(Mutex::new(LlmEngineState {
+        loaded: None,
+        last_used: Instant::now(),
+    }))
 }
 
 /// Single-generation-at-a-time gate, app-wide — deliberately *not* a field
@@ -730,7 +750,10 @@ const SAMPLER_SEED: u32 = 1_746_312_558;
 /// (512 vs [`MAX_GENERATION_TOKENS`]'s 1024: a citation-bearing answer is a
 /// few sentences, not a JSON document with a variable number of decisions
 /// and action items).
-const ASK_GENERATION_PARAMS: GenerationParams = GenerationParams { temperature: 0.2, max_tokens: 512 };
+const ASK_GENERATION_PARAMS: GenerationParams = GenerationParams {
+    temperature: 0.2,
+    max_tokens: 512,
+};
 
 impl LlmEngineState {
     /// Ensures `model_id`'s GGUF at `model_path` is the currently loaded
@@ -755,9 +778,10 @@ impl LlmEngineState {
         let backend = LlamaBackend::init()
             .map_err(|e| MinuteError::Other(format!("failed to init llama backend: {e}")))?;
         let model_params = LlamaModelParams::default().with_n_gpu_layers(1_000_000);
-        let model = LlamaModel::load_from_file(&backend, model_path, &model_params).map_err(|e| {
-            MinuteError::Other(format!("failed to load LLM model {model_path:?}: {e}"))
-        })?;
+        let model =
+            LlamaModel::load_from_file(&backend, model_path, &model_params).map_err(|e| {
+                MinuteError::Other(format!("failed to load LLM model {model_path:?}: {e}"))
+            })?;
         log::info!(
             "llm: loaded {model_id} ({model_path:?}) in {:?}",
             load_start.elapsed()
@@ -879,7 +903,12 @@ pub fn should_unload(last_used: Instant, now: Instant, busy: bool) -> bool {
 /// against a real model path — see the note above the `LlmEngineState`/
 /// `try_spawn_summarize` test section). Production's only caller is
 /// [`LlmEngineState::unload_if_idle`], instantiated with `T = LoadedModel`.
-fn unload_if_idle<T>(loaded: &mut Option<T>, last_used: Instant, now: Instant, busy: bool) -> Option<T> {
+fn unload_if_idle<T>(
+    loaded: &mut Option<T>,
+    last_used: Instant,
+    now: Instant,
+    busy: bool,
+) -> Option<T> {
     if loaded.is_none() {
         return None;
     }
@@ -945,7 +974,10 @@ pub fn janitor_pass(engine: &SharedLlmEngine, busy: &LlmBusy, now: Instant) {
         return;
     };
     if guard.unload_if_idle(now, busy.load(Ordering::SeqCst)) {
-        log::info!("llm: unloaded idle model after {:?} of inactivity", IDLE_UNLOAD_AFTER);
+        log::info!(
+            "llm: unloaded idle model after {:?} of inactivity",
+            IDLE_UNLOAD_AFTER
+        );
     }
 }
 
@@ -980,7 +1012,10 @@ impl Default for GenerationParams {
     /// existed — `generate`/`run_summarize` behavior is identical to before
     /// this refactor.
     fn default() -> Self {
-        Self { temperature: 0.3, max_tokens: MAX_GENERATION_TOKENS }
+        Self {
+            temperature: 0.3,
+            max_tokens: MAX_GENERATION_TOKENS,
+        }
     }
 }
 
@@ -1048,7 +1083,11 @@ fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
 /// sampler chain and token budget. `params` supplies the two knobs that
 /// differ per call site (see [`GenerationParams`]) — everything else
 /// (penalties, top-p, the seeded `dist` draw) is fixed regardless of caller.
-fn generate_with_loaded(loaded: &LoadedModel, prompt: &str, params: &GenerationParams) -> Result<String> {
+fn generate_with_loaded(
+    loaded: &LoadedModel,
+    prompt: &str,
+    params: &GenerationParams,
+) -> Result<String> {
     let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(LLM_CONTEXT_TOKENS));
     let mut ctx = loaded
         .model
@@ -1116,9 +1155,9 @@ fn generate_with_loaded(loaded: &LoadedModel, prompt: &str, params: &GenerationP
         }
 
         batch.clear();
-        batch
-            .add(token, n_cur, &[0], true)
-            .map_err(|e| MinuteError::Other(format!("failed to add generated token to batch: {e}")))?;
+        batch.add(token, n_cur, &[0], true).map_err(|e| {
+            MinuteError::Other(format!("failed to add generated token to batch: {e}"))
+        })?;
         n_cur += 1;
         ctx.decode(&mut batch)
             .map_err(|e| MinuteError::Other(format!("generation decode failed: {e}")))?;
@@ -1316,7 +1355,9 @@ impl AskWorker {
 /// [`run_summarize_worker`]) releases [`LlmBusy`] on every exit path,
 /// including a panic unwinding through the thread.
 fn run_ask_worker(ctx: AskWorkerCtx) {
-    let _busy_guard = BusyGuard { busy: ctx.busy.clone() };
+    let _busy_guard = BusyGuard {
+        busy: ctx.busy.clone(),
+    };
 
     (ctx.emit)(AskEvent::AskStatus(AskStatusPayload {
         note_id: ctx.note_id.clone(),
@@ -1327,7 +1368,11 @@ fn run_ask_worker(ctx: AskWorkerCtx) {
     let answer = match run_ask(&ctx) {
         Ok(answer) => answer,
         Err(e) => {
-            log::warn!("ask failed for note {} question {:?}: {e}", ctx.note_id, ctx.question);
+            log::warn!(
+                "ask failed for note {} question {:?}: {e}",
+                ctx.note_id,
+                ctx.question
+            );
             (ctx.emit)(AskEvent::AskStatus(AskStatusPayload {
                 note_id: ctx.note_id.clone(),
                 state: AskStatusState::Error,
@@ -1553,7 +1598,9 @@ impl Drop for BusyGuard {
 /// `run_summarize`'s success path (via `store::Store::write_summary_and_finalize`)
 /// flips it to `ready`.
 fn run_summarize_worker(ctx: SummarizeWorkerCtx) {
-    let _busy_guard = BusyGuard { busy: ctx.busy.clone() };
+    let _busy_guard = BusyGuard {
+        busy: ctx.busy.clone(),
+    };
 
     (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
         note_id: ctx.note_id.clone(),
@@ -1830,8 +1877,12 @@ mod tests {
         let segments = vec![seg("Speaker 1", 41.0, "Thanks for making time.")];
         let prompt = build_summary_prompt("Standup", &segments);
 
-        let open = prompt.find("<transcript>\n").expect("missing <transcript> open tag");
-        let close = prompt.find("\n</transcript>").expect("missing </transcript> close tag");
+        let open = prompt
+            .find("<transcript>\n")
+            .expect("missing <transcript> open tag");
+        let close = prompt
+            .find("\n</transcript>")
+            .expect("missing </transcript> close tag");
         assert!(open < close, "open tag must precede close tag");
 
         let transcript_line_pos = prompt
@@ -1893,7 +1944,13 @@ mod tests {
     #[test]
     fn truncated_transcript_never_splits_a_line_in_half() {
         let segments: Vec<StoredSegment> = (0..600)
-            .map(|i| seg("Speaker 1", i as f64, &format!("line {i} of filler text here")))
+            .map(|i| {
+                seg(
+                    "Speaker 1",
+                    i as f64,
+                    &format!("line {i} of filler text here"),
+                )
+            })
             .collect();
         let full = format_transcript_lines(&segments);
         let truncated = truncate_transcript_for_prompt(&full);
@@ -1952,8 +2009,12 @@ mod tests {
         let segments = vec![seg("Speaker 1", 41.0, "Thanks for making time.")];
         let prompt = build_ask_prompt("Standup", &segments, "What did they say?");
 
-        let open = prompt.find("<transcript>\n").expect("missing <transcript> open tag");
-        let close = prompt.find("\n</transcript>").expect("missing </transcript> close tag");
+        let open = prompt
+            .find("<transcript>\n")
+            .expect("missing <transcript> open tag");
+        let close = prompt
+            .find("\n</transcript>")
+            .expect("missing </transcript> close tag");
         assert!(open < close, "open tag must precede close tag");
 
         let transcript_line_pos = prompt
@@ -2047,14 +2108,16 @@ mod tests {
 
     #[test]
     fn extracts_json_wrapped_in_a_json_language_fence() {
-        let raw = "```json\n{\"summary\": \"Short sync.\", \"decisions\": [], \"action_items\": []}\n```";
+        let raw =
+            "```json\n{\"summary\": \"Short sync.\", \"decisions\": [], \"action_items\": []}\n```";
         let doc = extract_summary_json(raw).unwrap();
         assert_eq!(doc.summary, "Short sync.");
     }
 
     #[test]
     fn extracts_json_wrapped_in_a_bare_fence() {
-        let raw = "```\n{\"summary\": \"Short sync.\", \"decisions\": [], \"action_items\": []}\n```";
+        let raw =
+            "```\n{\"summary\": \"Short sync.\", \"decisions\": [], \"action_items\": []}\n```";
         let doc = extract_summary_json(raw).unwrap();
         assert_eq!(doc.summary, "Short sync.");
     }
@@ -2102,7 +2165,10 @@ mod tests {
     fn braces_inside_json_strings_do_not_confuse_the_balance_scan() {
         let raw = r#"{"summary": "She said \"use {curly} braces\" in the meeting.", "decisions": [], "action_items": []}"#;
         let doc = extract_summary_json(raw).unwrap();
-        assert_eq!(doc.summary, "She said \"use {curly} braces\" in the meeting.");
+        assert_eq!(
+            doc.summary,
+            "She said \"use {curly} braces\" in the meeting."
+        );
     }
 
     #[test]
@@ -2143,14 +2209,18 @@ mod tests {
     fn multiple_decisions_and_action_items_preserve_order() {
         let raw = r#"{"summary": "x", "decisions": ["First", "Second"], "action_items": [{"text": "A"}, {"text": "B"}]}"#;
         let doc = extract_summary_json(raw).unwrap();
-        assert_eq!(doc.decisions, vec!["First".to_string(), "Second".to_string()]);
+        assert_eq!(
+            doc.decisions,
+            vec!["First".to_string(), "Second".to_string()]
+        );
         assert_eq!(doc.action_items[0].text, "A");
         assert_eq!(doc.action_items[1].text, "B");
     }
 
     #[test]
     fn garbage_with_no_json_object_is_an_error() {
-        let err = extract_summary_json("the model just rambled with no structure at all").unwrap_err();
+        let err =
+            extract_summary_json("the model just rambled with no structure at all").unwrap_err();
         assert!(err.to_string().contains("no JSON object found"));
     }
 
@@ -2312,7 +2382,10 @@ mod tests {
 
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("no JSON object found"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no JSON object found"),
             "should fail via the ordinary not-found path, not panic or time out"
         );
         assert!(
@@ -2353,10 +2426,16 @@ mod tests {
 
     #[test]
     fn generate_with_nothing_loaded_errors() {
-        let state = LlmEngineState { loaded: None, last_used: Instant::now() };
+        let state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now(),
+        };
         let result = state.generate("Say OK.");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no LLM model loaded"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no LLM model loaded"));
     }
 
     // --- should_unload: pure decision function ----------------------------
@@ -2414,7 +2493,10 @@ mod tests {
         let dropped = unload_if_idle(&mut loaded, last_used, now, false);
 
         assert_eq!(dropped, Some("model-a"));
-        assert!(loaded.is_none(), "the janitor must actually clear the cached model");
+        assert!(
+            loaded.is_none(),
+            "the janitor must actually clear the cached model"
+        );
     }
 
     #[test]
@@ -2465,7 +2547,10 @@ mod tests {
 
     #[test]
     fn llm_engine_state_unload_if_idle_is_a_no_op_with_nothing_loaded() {
-        let mut state = LlmEngineState { loaded: None, last_used: Instant::now() - IDLE_UNLOAD_AFTER - Duration::from_secs(1) };
+        let mut state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now() - IDLE_UNLOAD_AFTER - Duration::from_secs(1),
+        };
         assert!(!state.unload_if_idle(Instant::now(), false));
     }
 
@@ -2475,7 +2560,11 @@ mod tests {
         let busy = open_busy_flag();
         // Must not panic even given a `now` well past the idle threshold —
         // there's simply nothing to unload.
-        janitor_pass(&engine, &busy, Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600));
+        janitor_pass(
+            &engine,
+            &busy,
+            Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600),
+        );
     }
 
     #[test]
@@ -2487,7 +2576,11 @@ mod tests {
         // blocking behind it (that's the whole point of `try_lock_llm_engine`
         // over `lock_llm_engine` here).
         let _generation_guard = lock_llm_engine(&engine);
-        janitor_pass(&engine, &busy, Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600));
+        janitor_pass(
+            &engine,
+            &busy,
+            Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600),
+        );
     }
 
     #[test]
@@ -2571,7 +2664,9 @@ mod tests {
         });
 
         assert!(result.is_ok());
-        started_rx.recv().expect("worker never reached its Running emit");
+        started_rx
+            .recv()
+            .expect("worker never reached its Running emit");
         assert!(busy.load(Ordering::SeqCst));
         // Let the (now-observed) worker finish on its own — same
         // fire-and-forget shape as every other test here that spawns a
@@ -2648,8 +2743,14 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert_eq!(attempts, 1, "must succeed on the very first attempt — no retry needed");
-        assert_eq!(sleep_calls, 0, "must never sleep when the first attempt already succeeds");
+        assert_eq!(
+            attempts, 1,
+            "must succeed on the very first attempt — no retry needed"
+        );
+        assert_eq!(
+            sleep_calls, 0,
+            "must never sleep when the first attempt already succeeds"
+        );
     }
 
     #[test]
@@ -2662,7 +2763,11 @@ mod tests {
                 attempts += 1;
                 // Busy for the first two attempts, free on the third —
                 // simulates another generation finishing mid-retry.
-                if attempts < 3 { Err("summarization already running") } else { Ok(()) }
+                if attempts < 3 {
+                    Err("summarization already running")
+                } else {
+                    Ok(())
+                }
             },
             sleep,
             elapsed,
@@ -2670,7 +2775,10 @@ mod tests {
             Duration::from_secs(600),
         );
 
-        assert!(result.is_ok(), "must eventually succeed once busy clears, well before the deadline");
+        assert!(
+            result.is_ok(),
+            "must eventually succeed once busy clears, well before the deadline"
+        );
     }
 
     #[test]
@@ -2690,7 +2798,10 @@ mod tests {
         // The honest give-up message, never the raw internal token
         // `try_spawn_summarize`/`try_spawn_ask` actually reject with.
         assert!(!err.contains("already running"));
-        assert!(err.contains("Regenerate"), "should tell the user what to do about it");
+        assert!(
+            err.contains("Regenerate"),
+            "should tell the user what to do about it"
+        );
     }
 
     #[test]
@@ -2777,7 +2888,8 @@ mod tests {
     }
 
     #[test]
-    fn retry_spawn_while_busy_against_real_try_spawn_summarize_gives_up_honestly_when_never_freed() {
+    fn retry_spawn_while_busy_against_real_try_spawn_summarize_gives_up_honestly_when_never_freed()
+    {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_shared(dir.path().to_path_buf());
         let engine = open_shared();
@@ -2816,7 +2928,11 @@ mod tests {
     // `running`/`error` events and the busy-guard) without needing a GGUF on
     // disk.
 
-    fn worker_test_ctx() -> (SummarizeWorkerCtx, Arc<Mutex<Vec<SummaryEvent>>>, tempfile::TempDir) {
+    fn worker_test_ctx() -> (
+        SummarizeWorkerCtx,
+        Arc<Mutex<Vec<SummaryEvent>>>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_shared(dir.path().to_path_buf());
         let note_id = lock_store(&store)
@@ -2857,12 +2973,18 @@ mod tests {
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 2);
         match &events[0] {
-            SummaryEvent::SummaryStatus(payload) => assert_eq!(payload.state, SummaryStatusState::Running),
+            SummaryEvent::SummaryStatus(payload) => {
+                assert_eq!(payload.state, SummaryStatusState::Running)
+            }
         }
         match &events[1] {
             SummaryEvent::SummaryStatus(payload) => {
                 assert_eq!(payload.state, SummaryStatusState::Error);
-                assert!(payload.error.as_deref().unwrap_or("").contains("nothing to summarize"));
+                assert!(payload
+                    .error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("nothing to summarize"));
             }
         }
         assert!(
@@ -2933,7 +3055,9 @@ mod tests {
         });
 
         assert!(result.is_ok());
-        started_rx.recv().expect("worker never reached its Running emit");
+        started_rx
+            .recv()
+            .expect("worker never reached its Running emit");
         assert!(busy.load(Ordering::SeqCst));
         let _ = release_tx.send(());
     }
@@ -2982,7 +3106,11 @@ mod tests {
         run_ask_worker(ctx);
 
         let events = events.lock().unwrap();
-        assert_eq!(events.len(), 2, "no ask-answer event should fire on failure");
+        assert_eq!(
+            events.len(),
+            2,
+            "no ask-answer event should fire on failure"
+        );
         match &events[0] {
             AskEvent::AskStatus(payload) => assert_eq!(payload.state, AskStatusState::Running),
             other => panic!("expected AskStatus, got {other:?}"),
@@ -3038,7 +3166,10 @@ mod tests {
     fn no_think_prefill_not_applied_for_gemma_model_ids() {
         let templated = "<|im_start|>assistant\n";
         let out = apply_no_think_prefill(templated, "gemma-4-e4b");
-        assert_eq!(out, templated, "non-Qwen models must get the templated prompt untouched");
+        assert_eq!(
+            out, templated,
+            "non-Qwen models must get the templated prompt untouched"
+        );
     }
 
     #[test]
@@ -3080,9 +3211,8 @@ mod tests {
     #[ignore]
     fn real_llm_loads_and_generates() {
         let home = std::env::var("HOME").expect("HOME must be set");
-        let model_path = PathBuf::from(&home).join(
-            "Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf",
-        );
+        let model_path = PathBuf::from(&home)
+            .join("Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf");
         assert!(
             model_path.exists(),
             "expected qwen3.5-4b model at {model_path:?} (run \
@@ -3103,12 +3233,11 @@ mod tests {
         let model_params = LlamaModelParams::default().with_n_gpu_layers(1_000_000);
 
         let load_start = Instant::now();
-        let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
-            .expect(
-                "failed to load Qwen3.5-4B GGUF — if this rejects the model architecture, the \
+        let model = LlamaModel::load_from_file(&backend, &model_path, &model_params).expect(
+            "failed to load Qwen3.5-4B GGUF — if this rejects the model architecture, the \
                  vendored llama.cpp inside this llama-cpp-2 version is too old for Qwen3.5; see \
                  the plan's model-support risk contingency before swapping anything",
-            );
+        );
         let load_elapsed = load_start.elapsed();
         eprintln!("model load took {load_elapsed:?}");
 
@@ -3120,11 +3249,11 @@ mod tests {
         let tmpl = model
             .chat_template(None)
             .expect("model has no baked-in chat template");
-        let messages = vec![LlamaChatMessage::new(
-            "user".to_string(),
-            "Say OK and nothing else.".to_string(),
-        )
-        .expect("chat message construction should not fail on plain ASCII")];
+        let messages =
+            vec![
+                LlamaChatMessage::new("user".to_string(), "Say OK and nothing else.".to_string())
+                    .expect("chat message construction should not fail on plain ASCII"),
+            ];
         let prompt = model
             .apply_chat_template(&tmpl, &messages, true)
             .expect("chat template application failed");
@@ -3179,9 +3308,7 @@ mod tests {
         let tokens_per_sec = generated as f64 / gen_elapsed.as_secs_f64();
 
         let output = String::from_utf8_lossy(&output_bytes).to_string();
-        eprintln!(
-            "generated {generated} tokens in {gen_elapsed:?} ({tokens_per_sec:.2} tok/s)"
-        );
+        eprintln!("generated {generated} tokens in {gen_elapsed:?} ({tokens_per_sec:.2} tok/s)");
         eprintln!("output: {output:?}");
 
         assert!(!output.trim().is_empty(), "generated output was empty");
@@ -3246,9 +3373,8 @@ mod tests {
     #[ignore]
     fn real_llm_summarizes_transcript() {
         let home = std::env::var("HOME").expect("HOME must be set");
-        let model_path = PathBuf::from(&home).join(
-            "Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf",
-        );
+        let model_path = PathBuf::from(&home)
+            .join("Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf");
         assert!(
             model_path.exists(),
             "expected qwen3.5-4b model at {model_path:?} (run \
@@ -3259,7 +3385,10 @@ mod tests {
         let segments = fake_product_launch_transcript();
         let prompt = build_summary_prompt("Aurora launch planning", &segments);
 
-        let mut state = LlmEngineState { loaded: None, last_used: Instant::now() };
+        let mut state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now(),
+        };
 
         let load_start = Instant::now();
         state
@@ -3277,7 +3406,10 @@ mod tests {
             .expect("failed to extract a SummaryDoc from the model's output");
         eprintln!("extracted SummaryDoc: {doc:?}");
 
-        assert!(!doc.summary.trim().is_empty(), "expected a non-empty summary");
+        assert!(
+            !doc.summary.trim().is_empty(),
+            "expected a non-empty summary"
+        );
 
         let combined = doc.decisions.len() + doc.action_items.len();
         if combined == 0 {
@@ -3326,7 +3458,9 @@ mod tests {
 
     #[test]
     fn contains_mm_ss_citation_finds_a_real_citation_and_rejects_plain_brackets() {
-        assert!(contains_mm_ss_citation("They agreed at [01:34] to ship Friday."));
+        assert!(contains_mm_ss_citation(
+            "They agreed at [01:34] to ship Friday."
+        ));
         assert!(!contains_mm_ss_citation("See [above] for details."));
         assert!(!contains_mm_ss_citation("no brackets at all here"));
     }
@@ -3354,9 +3488,8 @@ mod tests {
     #[ignore]
     fn real_llm_answers_a_question() {
         let home = std::env::var("HOME").expect("HOME must be set");
-        let model_path = PathBuf::from(&home).join(
-            "Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf",
-        );
+        let model_path = PathBuf::from(&home)
+            .join("Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf");
         assert!(
             model_path.exists(),
             "expected qwen3.5-4b model at {model_path:?} (run \
@@ -3368,7 +3501,10 @@ mod tests {
         let question = "What did they discuss and decide?";
         let prompt = build_ask_prompt("Aurora launch planning", &segments, question);
 
-        let mut state = LlmEngineState { loaded: None, last_used: Instant::now() };
+        let mut state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now(),
+        };
 
         let load_start = Instant::now();
         state

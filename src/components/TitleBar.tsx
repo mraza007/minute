@@ -19,7 +19,6 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 13,
         height: 48,
         padding: '0 16px 0 76px',
         background: 'var(--panel-warm)',
@@ -27,18 +26,9 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
         flex: 'none',
       }}
     >
-      <div data-tauri-drag-region="" style={{ fontWeight: 600, fontSize: 14, letterSpacing: '-.005em' }}>Minute</div>
-      {/* The on-device assurance sits permanently in the chrome rather than
-          in a banner that can be dismissed or scrolled past — it's the
-          product's core promise, so it reads as a property of the window
-          itself. */}
-      <div
-        data-tauri-drag-region=""
-        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-muted)' }}
-      >
-        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ok-text)' }} />
-        on-device
-      </div>
+      {/* The native window already carries Minute's identity. Keeping this
+          side of the chrome empty makes the title bar feel like macOS
+          furniture, while the large drag region remains available. */}
       <div data-tauri-drag-region="" style={{ flex: 1 }} />
       {isRecording && (
         <button type="button" aria-label="Return to recording" onClick={onReturnToRecording} className="rec-chip">

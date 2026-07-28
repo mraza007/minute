@@ -1,9 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ModelStatus, Recommendation } from '../ipc/types'
+import type { Hardware, ModelStatus, Recommendation } from '../ipc/types'
 import { OnboardingView } from './OnboardingView'
 
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
+const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -39,6 +40,7 @@ function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
 
 const base = {
   models: [sttModel(), llmModel()],
+  hardware,
   recommendation,
   downloads: {},
   onDownload: vi.fn(),
@@ -47,6 +49,11 @@ const base = {
 }
 
 describe('OnboardingView', () => {
+  it('exposes the model section as a heading for screen-reader navigation', () => {
+    render(<OnboardingView {...base} />)
+    expect(screen.getByRole('heading', { level: 2, name: 'Models' })).toBeInTheDocument()
+  })
+
   it('shows the privacy hero and the recommended STT + LLM pair', () => {
     render(<OnboardingView {...base} />)
     expect(screen.getByText('Minute runs entirely on this Mac.')).toBeInTheDocument()
@@ -61,7 +68,7 @@ describe('OnboardingView', () => {
 
   it('notes the LLM card is optional and can be added later', () => {
     render(<OnboardingView {...base} />)
-    expect(screen.getByText(/you can add this later/i)).toBeInTheDocument()
+    expect(screen.getByText(/add it now or later/i)).toBeInTheDocument()
   })
 
   it('clicking Download calls onDownload with the model id', () => {

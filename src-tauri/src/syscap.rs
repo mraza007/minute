@@ -154,7 +154,10 @@ pub struct SysAudioStatus {
 /// Screen Recording preflight result, what should be reported? Factored out
 /// from the two commands below so it's testable without touching
 /// `NSProcessInfo`/`CoreGraphics` at all.
-pub(crate) fn resolve_availability(macos_major: i64, screen_recording_granted: bool) -> SysAudioAvailability {
+pub(crate) fn resolve_availability(
+    macos_major: i64,
+    screen_recording_granted: bool,
+) -> SysAudioAvailability {
     if macos_major < 13 {
         SysAudioAvailability::Unsupported
     } else if screen_recording_granted {
@@ -170,13 +173,22 @@ mod availability_tests {
 
     #[test]
     fn below_13_is_unsupported_even_if_granted() {
-        assert_eq!(resolve_availability(11, true), SysAudioAvailability::Unsupported);
-        assert_eq!(resolve_availability(12, true), SysAudioAvailability::Unsupported);
+        assert_eq!(
+            resolve_availability(11, true),
+            SysAudioAvailability::Unsupported
+        );
+        assert_eq!(
+            resolve_availability(12, true),
+            SysAudioAvailability::Unsupported
+        );
     }
 
     #[test]
     fn below_13_is_unsupported_when_not_granted_too() {
-        assert_eq!(resolve_availability(11, false), SysAudioAvailability::Unsupported);
+        assert_eq!(
+            resolve_availability(11, false),
+            SysAudioAvailability::Unsupported
+        );
     }
 
     #[test]
@@ -186,13 +198,19 @@ mod availability_tests {
 
     #[test]
     fn exactly_13_and_not_granted_is_not_granted() {
-        assert_eq!(resolve_availability(13, false), SysAudioAvailability::NotGranted);
+        assert_eq!(
+            resolve_availability(13, false),
+            SysAudioAvailability::NotGranted
+        );
     }
 
     #[test]
     fn well_above_13_still_gates_on_permission() {
         assert_eq!(resolve_availability(15, true), SysAudioAvailability::Ready);
-        assert_eq!(resolve_availability(15, false), SysAudioAvailability::NotGranted);
+        assert_eq!(
+            resolve_availability(15, false),
+            SysAudioAvailability::NotGranted
+        );
     }
 }
 
@@ -223,7 +241,9 @@ mod availability_shim {
         // `NSInteger` (`majorVersion`'s field type) binds to `isize` —
         // always small and non-negative in practice for a real macOS
         // version, so this cast never loses information.
-        NSProcessInfo::processInfo().operatingSystemVersion().majorVersion as i64
+        NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion as i64
     }
 
     pub fn screen_recording_granted() -> bool {
@@ -498,7 +518,10 @@ mod pipeline_tests {
     fn push_exact_multiple_yields_full_blocks_with_no_remainder() {
         let mut batcher = BlockBatcher::new(4);
         let blocks = batcher.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-        assert_eq!(blocks, vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]]);
+        assert_eq!(
+            blocks,
+            vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]]
+        );
         assert_eq!(batcher.flush(), None);
     }
 
@@ -566,7 +589,10 @@ const SYS_AUDIO_CHANNELS: i32 = 2;
 /// The sender/receiver pair [`channel`] returns — named so clippy's
 /// `type_complexity` lint (and every reader) gets a label instead of a bare
 /// nested-generic tuple at every call site.
-pub type SysAudioChannel = (SyncSender<Arc<Vec<f32>>>, std::sync::mpsc::Receiver<Arc<Vec<f32>>>);
+pub type SysAudioChannel = (
+    SyncSender<Arc<Vec<f32>>>,
+    std::sync::mpsc::Receiver<Arc<Vec<f32>>>,
+);
 
 /// Creates the bounded `Arc<Vec<f32>>` channel [`SysCapture::start`] sends
 /// blocks over — the same shape `Recorder::start`'s `sample_tx` uses (see
@@ -657,9 +683,10 @@ mod capture {
     };
 
     use super::{
-        bytes_to_f32_le, downmix_sck_buffers_to_mono, lock, resolve_availability, try_send_sys_block,
-        availability_shim, BlockBatcher, DecodedAudioBuffer, SysAudioAvailability, SYS_AUDIO_CHANNELS,
-        SYS_AUDIO_SAMPLE_RATE_HZ, SYS_BLOCK_SAMPLES, SYS_DROP_LOG_INTERVAL,
+        availability_shim, bytes_to_f32_le, downmix_sck_buffers_to_mono, lock,
+        resolve_availability, try_send_sys_block, BlockBatcher, DecodedAudioBuffer,
+        SysAudioAvailability, SYS_AUDIO_CHANNELS, SYS_AUDIO_SAMPLE_RATE_HZ, SYS_BLOCK_SAMPLES,
+        SYS_DROP_LOG_INTERVAL,
     };
     use crate::audio::{LinearResampler, TARGET_SAMPLE_RATE};
     use crate::error::{MinuteError, Result};
@@ -805,7 +832,8 @@ mod capture {
         // means it's released automatically when `_block_buffer` drops at
         // the end of this function, after every buffer's bytes have been
         // copied out.
-        let _block_buffer = NonNull::new(block_buffer_ptr).map(|ptr| unsafe { CFRetained::from_raw(ptr) });
+        let _block_buffer =
+            NonNull::new(block_buffer_ptr).map(|ptr| unsafe { CFRetained::from_raw(ptr) });
 
         // SAFETY: `status == noErr` guarantees `list_ptr` was filled in,
         // including its leading `mNumberBuffers` field.
@@ -936,7 +964,8 @@ mod capture {
                 }
 
                 let mut state = lock(&self.ivars().state);
-                let Some(decoded) = extract_audio_buffers(sample_buffer, &mut state.extraction_failures)
+                let Some(decoded) =
+                    extract_audio_buffers(sample_buffer, &mut state.extraction_failures)
                 else {
                     return;
                 };
@@ -974,7 +1003,10 @@ mod capture {
             let this = Self::alloc().set_ivars(HandlerIvars {
                 tx,
                 state: Mutex::new(CallbackState {
-                    resampler: LinearResampler::new(SYS_AUDIO_SAMPLE_RATE_HZ as u32, TARGET_SAMPLE_RATE),
+                    resampler: LinearResampler::new(
+                        SYS_AUDIO_SAMPLE_RATE_HZ as u32,
+                        TARGET_SAMPLE_RATE,
+                    ),
                     batcher: BlockBatcher::new(SYS_BLOCK_SAMPLES),
                     dropped: 0,
                     extraction_failures: 0,
@@ -1012,27 +1044,31 @@ mod capture {
     fn first_display() -> Result<Retained<SCDisplay>> {
         let (tx, rx) =
             std::sync::mpsc::sync_channel::<std::result::Result<SendableRetained, String>>(1);
-        let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
-            // SAFETY: both are the raw pointer pair
-            // `getShareableContentWithCompletionHandler` hands to its
-            // completion block; each is either null or valid for the
-            // duration of this call, per Apple's documented contract.
-            let result = if let Some(error) = unsafe { error.as_ref() } {
-                Err(error.localizedDescription().to_string())
-            } else if let Some(content) = unsafe { content.as_ref() } {
-                // SAFETY: `content` is a valid `SCShareableContent` (just
-                // checked above); `displays()` has no further preconditions.
-                match unsafe { content.displays() }.firstObject() {
-                    Some(display) => Ok(SendableRetained(display)),
-                    None => Err("no displays available to build a content filter".to_string()),
-                }
-            } else {
-                Err("getShareableContentWithCompletionHandler returned neither content nor an \
+        let block = RcBlock::new(
+            move |content: *mut SCShareableContent, error: *mut NSError| {
+                // SAFETY: both are the raw pointer pair
+                // `getShareableContentWithCompletionHandler` hands to its
+                // completion block; each is either null or valid for the
+                // duration of this call, per Apple's documented contract.
+                let result = if let Some(error) = unsafe { error.as_ref() } {
+                    Err(error.localizedDescription().to_string())
+                } else if let Some(content) = unsafe { content.as_ref() } {
+                    // SAFETY: `content` is a valid `SCShareableContent` (just
+                    // checked above); `displays()` has no further preconditions.
+                    match unsafe { content.displays() }.firstObject() {
+                        Some(display) => Ok(SendableRetained(display)),
+                        None => Err("no displays available to build a content filter".to_string()),
+                    }
+                } else {
+                    Err(
+                        "getShareableContentWithCompletionHandler returned neither content nor an \
                      error"
-                    .to_string())
-            };
-            let _ = tx.send(result);
-        });
+                            .to_string(),
+                    )
+                };
+                let _ = tx.send(result);
+            },
+        );
         // SAFETY: `block` is a valid block; ScreenCaptureKit copies its own
         // reference internally per the standard Cocoa completion-handler
         // contract, so it's sound for `block` to be dropped once this
@@ -1075,10 +1111,10 @@ mod capture {
         match rx.recv_timeout(SCK_COMPLETION_TIMEOUT) {
             Ok(None) => Ok(()),
             Ok(Some(msg)) => Err(msg),
-            Err(_) => {
-                Err("ScreenCaptureKit did not respond — try toggling system audio off and on"
-                    .to_string())
-            }
+            Err(_) => Err(
+                "ScreenCaptureKit did not respond — try toggling system audio off and on"
+                    .to_string(),
+            ),
         }
     }
 
@@ -1230,7 +1266,9 @@ mod capture {
             block_on_error_completion(|block| unsafe {
                 stream.startCaptureWithCompletionHandler(Some(block))
             })
-            .map_err(|msg| MinuteError::Other(format!("failed to start system-audio capture: {msg}")))?;
+            .map_err(|msg| {
+                MinuteError::Other(format!("failed to start system-audio capture: {msg}"))
+            })?;
 
             Ok(Self {
                 stream,
@@ -1261,7 +1299,9 @@ mod capture {
                 self.stream.stopCaptureWithCompletionHandler(Some(block))
             });
             if let Err(msg) = result {
-                log::warn!("failed to cleanly stop system-audio capture (tearing down anyway): {msg}");
+                log::warn!(
+                    "failed to cleanly stop system-audio capture (tearing down anyway): {msg}"
+                );
             }
 
             // Flush the trailing partial (not-yet-`SYS_BLOCK_SAMPLES`) block
@@ -1386,10 +1426,11 @@ mod e2e_tests {
 
         let (tx, rx) = channel();
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let capture =
-            SysCapture::start(tx, paused).expect("SysCapture::start failed despite Ready availability");
+        let capture = SysCapture::start(tx, paused)
+            .expect("SysCapture::start failed despite Ready availability");
 
-        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.wav");
+        let fixture =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.wav");
         assert!(fixture.exists(), "expected fixture at {fixture:?}");
         let mut afplay = std::process::Command::new("afplay")
             .arg(&fixture)
@@ -1409,8 +1450,15 @@ mod e2e_tests {
         let _ = afplay.wait();
         capture.stop();
 
-        eprintln!("collected {} samples ({:.2}s at 16kHz)", collected.len(), collected.len() as f64 / 16_000.0);
-        assert!(!collected.is_empty(), "expected at least one system-audio block to arrive");
+        eprintln!(
+            "collected {} samples ({:.2}s at 16kHz)",
+            collected.len(),
+            collected.len() as f64 / 16_000.0
+        );
+        assert!(
+            !collected.is_empty(),
+            "expected at least one system-audio block to arrive"
+        );
 
         let rms = (collected.iter().map(|s| s * s).sum::<f32>() / collected.len() as f32).sqrt();
         eprintln!("RMS = {rms}");

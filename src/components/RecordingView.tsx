@@ -1,7 +1,14 @@
-import { memo, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { LiveTranscriptGroup } from '../state/adapters'
+import type { ProcessingFailure } from '../state/useAppState'
 import { formatMmSs } from '../state/adapters'
-import type { SttStatus } from '../types'
+import type { NoteMarker } from '../ipc/types'
+import type { RecordingProcessingStage, SttStatus } from '../types'
+import {
+  transcriptPace,
+  type CaptureHealth,
+  type TranscriptPaceResult,
+} from './recordingDiagnostics'
 import { Waveform } from './Waveform'
 
 /** Within this many px of the bottom still counts as "stuck" — accounts for sub-pixel scrollHeight rounding, not just an exact 0. */
@@ -28,6 +35,7 @@ interface RecordingViewProps {
   togglePause: () => void
   stopRec: () => void
   stopping: boolean
+  processingStage: RecordingProcessingStage
   sttStatus: SttStatus
   sttError: string | null
   modelName: string
@@ -43,6 +51,17 @@ interface RecordingViewProps {
    * setting is actually changed, ahead of the *next* recording.
    */
   systemAudioActive: boolean
+  /** cpal-reported name of the microphone opened for this session. */
+  microphoneName: string
+  captureHealth: CaptureHealth
+  elapsed: number
+  title: string
+  renameTitle: (title: string) => Promise<void>
+  markers: NoteMarker[]
+  addMarker: (label: string) => Promise<void>
+  processingFailure: ProcessingFailure | null
+  onRetryProcessing: () => void
+  onDismissProcessingFailure: () => void
 }
 
 // Persistent `role="status"` container — always mounted for the whole
@@ -153,7 +172,7 @@ const LiveTranscriptBody = memo(function LiveTranscriptBody({
         // transcript does, so a live line lands in exactly the position it
         // will occupy once the note is stopped — nothing reflows when
         // recording ends.
-        <div key={`${group.speaker}-${group.start}`} className="script-line">
+        <div key={`${group.speaker}-${group.start}`} className="script-line live-script-line">
           <div className="script-ts" style={{ padding: '3px 0 0' }}>
             {formatMmSs(group.start)}
           </div>
@@ -224,7 +243,7 @@ function LiveTranscriptScroller({
   }, [liveSegments, sttStatus, sttError, stuck])
 
   return (
-    <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+    <div className="live-transcript-frame">
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -246,25 +265,7 @@ function LiveTranscriptScroller({
             const el = scrollRef.current
             if (el) el.scrollTop = el.scrollHeight
           }}
-          style={{
-            position: 'absolute',
-            bottom: 16,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '7px 14px',
-            border: '1px solid var(--rule-strong)',
-            borderRadius: 999,
-            background: 'var(--card)',
-            color: 'var(--ink)',
-            fontFamily: 'inherit',
-            fontSize: 11.5,
-            fontWeight: 600,
-            cursor: 'pointer',
-            boxShadow: '0 2px 8px rgba(0,0,0,.12)',
-          }}
+          className="jump-latest"
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 5v14"></path>
@@ -277,40 +278,360 @@ function LiveTranscriptScroller({
   )
 }
 
-/** Audio-source indicator. Reads as a pair of underlined captions rather
- *  than a segmented control, because it isn't one: the source is fixed for
- *  the life of a recording (see `systemAudioActive`'s docs), so anything
- *  that looks pressable here is lying about what it does. */
-function SourceTab({ on, disabled, title, icon, label }: { on: boolean; disabled?: boolean; title?: string; icon: React.ReactNode; label: string }) {
+function MicrophoneIcon() {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={on}
-      aria-disabled={disabled ? 'true' : undefined}
-      disabled={disabled}
-      tabIndex={disabled ? -1 : 0}
-      title={title}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 7,
-        border: 'none',
-        background: 'transparent',
-        padding: '6px 0',
-        borderBottom: `2px solid ${on ? 'var(--accent)' : 'transparent'}`,
-        fontFamily: 'var(--sans)',
-        fontSize: 9.5,
-        fontWeight: 700,
-        letterSpacing: '.11em',
-        textTransform: 'uppercase',
-        color: on ? 'var(--ink)' : 'var(--ink-faint)',
-        cursor: 'default',
-      }}
-    >
-      {icon}
-      {label}
-    </button>
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+      <path d="M12 19v3"></path>
+    </svg>
+  )
+}
+
+function SystemAudioIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+      <path d="M8 21h8M12 17v4"></path>
+    </svg>
+  )
+}
+
+function SourceDetailRow({
+  icon,
+  label,
+  value,
+  state,
+  active,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  state: string
+  active: boolean
+}) {
+  return (
+    <div className="source-detail-row" data-active={active ? 'true' : 'false'}>
+      <div className="source-detail-icon">{icon}</div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div className="source-detail-label">{label}</div>
+        <div className="source-detail-value" title={value}>{value}</div>
+      </div>
+      <div className="source-detail-state">
+        <span className="source-state-dot" />
+        {state}
+      </div>
+    </div>
+  )
+}
+
+const CAPTURE_HEALTH_COPY: Record<CaptureHealth, { label: string; detail: string; tone: string }> = {
+  checking: {
+    label: 'Checking microphone',
+    detail: 'Waiting for the first input sample.',
+    tone: 'neutral',
+  },
+  healthy: {
+    label: 'Input healthy',
+    detail: 'Minute is receiving audio from this microphone.',
+    tone: 'positive',
+  },
+  paused: {
+    label: 'Input paused',
+    detail: 'Resume when you are ready to continue capturing.',
+    tone: 'neutral',
+  },
+  silent: {
+    label: 'No input detected',
+    detail: 'Check that the microphone is not muted or covered.',
+    tone: 'warning',
+  },
+  clipping: {
+    label: 'Input is clipping',
+    detail: 'Lower the microphone input level to keep speech clear.',
+    tone: 'warning',
+  },
+  disconnected: {
+    label: 'Microphone stopped responding',
+    detail: 'Reconnect it or stop to safely finish what has already been captured.',
+    tone: 'danger',
+  },
+}
+
+function transcriptPaceCopy(result: TranscriptPaceResult): { label: string; detail: string; tone: string } {
+  const lag = Math.max(1, Math.round(result.lagSeconds))
+  switch (result.pace) {
+    case 'current':
+      return {
+        label: 'Transcript caught up',
+        detail: 'On-device transcription is keeping pace.',
+        tone: 'positive',
+      }
+    case 'behind':
+      return {
+        label: `Transcript about ${lag}s behind`,
+        detail: 'Audio capture is safe while the transcript catches up.',
+        tone: 'neutral',
+      }
+    case 'delayed':
+      return {
+        label: `Transcript delayed by about ${lag}s`,
+        detail: 'Recording continues; keep Minute open while transcription catches up.',
+        tone: 'warning',
+      }
+    case 'paused':
+      return {
+        label: 'Transcript paused',
+        detail: 'It will continue when recording resumes.',
+        tone: 'neutral',
+      }
+    case 'unavailable':
+      return {
+        label: 'Transcript unavailable',
+        detail: 'Audio is still being saved and can be transcribed later.',
+        tone: 'danger',
+      }
+    case 'finalizing':
+      return {
+        label: 'Finalizing transcript',
+        detail: 'Processing the final captured audio.',
+        tone: 'neutral',
+      }
+    default:
+      return {
+        label: 'Listening for speech',
+        detail: 'The first transcript line will appear here.',
+        tone: 'neutral',
+      }
+  }
+}
+
+function transcriptPaceAnnouncement(result: TranscriptPaceResult): string {
+  switch (result.pace) {
+    case 'current':
+      return 'Transcript caught up. On-device transcription is keeping pace.'
+    case 'behind':
+      return 'Transcript is behind. Audio capture is safe while the transcript catches up.'
+    case 'delayed':
+      return 'Transcript is delayed. Recording continues; keep Minute open while transcription catches up.'
+    case 'paused':
+      return 'Transcript paused. It will continue when recording resumes.'
+    case 'unavailable':
+      return 'Transcript unavailable. Audio is still being saved and can be transcribed later.'
+    case 'finalizing':
+      return 'Finalizing transcript. Processing the final captured audio.'
+    default:
+      return 'Listening for speech. The first transcript line will appear here.'
+  }
+}
+
+function RecordingHealthBar({
+  captureHealth,
+  transcript,
+}: {
+  captureHealth: CaptureHealth
+  transcript: TranscriptPaceResult
+}) {
+  const capture = CAPTURE_HEALTH_COPY[captureHealth]
+  const pace = transcriptPaceCopy(transcript)
+  const announcement = `${capture.label}. ${capture.detail} ${transcriptPaceAnnouncement(transcript)}`
+  return (
+    <>
+      <div className="recording-health-bar">
+        <div className="recording-health-item" data-tone={capture.tone}>
+          <span className="recording-health-dot" aria-hidden="true" />
+          <span>
+            <strong>{capture.label}</strong>
+            <span>{capture.detail}</span>
+          </span>
+        </div>
+        <div className="recording-health-divider" aria-hidden="true" />
+        <div className="recording-health-item" data-tone={pace.tone}>
+          <span className="recording-health-dot" aria-hidden="true" />
+          <span>
+            <strong>{pace.label}</strong>
+            <span>{pace.detail}</span>
+          </span>
+        </div>
+      </div>
+      <span
+        role="status"
+        aria-label="Recording health updates"
+        aria-atomic="true"
+        className="visually-hidden"
+      >
+        {announcement}
+      </span>
+    </>
+  )
+}
+
+const PROCESSING_STEPS: Array<{
+  id: Exclude<RecordingProcessingStage, 'idle'>
+  label: string
+  detail: string
+}> = [
+  { id: 'saving', label: 'Saving audio', detail: 'Closing the local recording file safely.' },
+  { id: 'finalizing', label: 'Finalizing transcript', detail: 'Processing the last spoken moments.' },
+  { id: 'preparing', label: 'Preparing notes', detail: 'Opening the completed meeting record.' },
+]
+
+function ProcessingHandoff({
+  stage,
+  elapsed,
+  microphoneName,
+  captureSummary,
+}: {
+  stage: Exclude<RecordingProcessingStage, 'idle'>
+  elapsed: number
+  microphoneName: string
+  captureSummary: string
+}) {
+  const activeIndex = PROCESSING_STEPS.findIndex(step => step.id === stage)
+  return (
+    <section className="processing-handoff" aria-labelledby="processing-title">
+      <div className="processing-copy">
+        <div className="mlab">Recording complete</div>
+        <h2 id="processing-title">Turning your recording into notes</h2>
+        <p>Audio is already on this Mac. Minute is finishing the transcript before opening the note.</p>
+      </div>
+      <ol className="processing-steps" aria-live="polite">
+        {PROCESSING_STEPS.map((step, index) => {
+          const state = index < activeIndex ? 'complete' : index === activeIndex ? 'active' : 'waiting'
+          return (
+            <li key={step.id} data-state={state}>
+              <span className="processing-step-mark" aria-hidden="true">
+                {state === 'complete' ? '✓' : index + 1}
+              </span>
+              <span>
+                <strong>{step.label}</strong>
+                <span>{state === 'active' ? step.detail : state === 'complete' ? 'Complete' : 'Waiting'}</span>
+              </span>
+            </li>
+          )
+        })}
+      </ol>
+      <dl className="processing-meta">
+        <div>
+          <dt>Duration</dt>
+          <dd>{formatMmSs(elapsed)}</dd>
+        </div>
+        <div>
+          <dt>Source</dt>
+          <dd title={microphoneName}>{microphoneName}</dd>
+        </div>
+        <div>
+          <dt>Capture</dt>
+          <dd>{captureSummary}</dd>
+        </div>
+      </dl>
+    </section>
+  )
+}
+
+function PencilIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  )
+}
+
+function PanelIcon({ open }: { open: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+      <path d={open ? 'm12 9-3 3 3 3' : 'm9 9 3 3-3 3'} />
+    </svg>
+  )
+}
+
+function RecordingTitle({
+  title,
+  disabled,
+  onRename,
+}: {
+  title: string
+  disabled: boolean
+  onRename: (title: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(title)
+  const [saving, setSaving] = useState(false)
+  const committed = useRef(false)
+
+  useEffect(() => {
+    if (!editing) setDraft(title)
+  }, [editing, title])
+
+  function cancel() {
+    committed.current = true
+    setDraft(title)
+    setEditing(false)
+  }
+
+  async function commit() {
+    if (committed.current) return
+    committed.current = true
+    const next = draft.trim()
+    setEditing(false)
+    if (!next || next === title) {
+      setDraft(title)
+      return
+    }
+    setSaving(true)
+    try {
+      await onRename(next)
+    } catch {
+      setDraft(title)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        aria-label="Recording title"
+        className="recording-title-input"
+        value={draft}
+        maxLength={120}
+        onChange={event => setDraft(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            void commit()
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            cancel()
+          }
+        }}
+        onBlur={() => void commit()}
+      />
+    )
+  }
+
+  return (
+    <div className="recording-title-value">
+      <h1 title={title}>{title}</h1>
+      <button
+        type="button"
+        className="icon-btn recording-title-edit"
+        aria-label="Edit recording title"
+        title="Edit recording title"
+        disabled={disabled || saving}
+        onClick={() => {
+          committed.current = false
+          setDraft(title)
+          setEditing(true)
+        }}
+      >
+        <PencilIcon />
+      </button>
+      {saving && <span className="recording-title-saving" role="status">Saving…</span>}
+    </div>
   )
 }
 
@@ -320,93 +641,254 @@ export const RecordingView = memo(function RecordingView({
   togglePause,
   stopRec,
   stopping,
+  processingStage,
   sttStatus,
   sttError,
   modelName,
   systemAudioActive,
+  microphoneName,
+  captureHealth,
+  elapsed,
+  title,
+  renameTitle,
+  markers,
+  addMarker,
+  processingFailure,
+  onRetryProcessing,
+  onDismissProcessingFailure,
 }: RecordingViewProps) {
-  return (
-    <main style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--panel)' }}>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <div
-          style={{
-            height: 56,
-            flex: 'none',
-            padding: '0 34px',
-            borderBottom: '1px solid var(--rule)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 26,
-          }}
-        >
-          <div role="radiogroup" aria-label="Audio source" style={{ display: 'flex', gap: 22, flex: 'none' }}>
-            <SourceTab
-              on
-              label="Microphone"
-              icon={
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                </svg>
-              }
-            />
-            <SourceTab
-              on={systemAudioActive}
-              disabled
-              label="System audio"
-              title={
-                systemAudioActive
-                  ? 'Recording system audio — the other side of the call. The source can’t change mid-recording.'
-                  : 'System audio isn’t part of this recording. Turn it on for the next one in Settings.'
-              }
-              icon={
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  <rect width="20" height="14" x="2" y="3" rx="2"></rect>
-                  <line x1="8" x2="16" y1="21" y2="21"></line>
-                  <line x1="12" x2="12" y1="17" y2="21"></line>
-                </svg>
-              }
-            />
-          </div>
-          <Waveform paused={paused} />
-          <div className="mlab" style={{ flex: 'none' }}>{modelName} · on-device</div>
-        </div>
+  const captureSummary = systemAudioActive ? 'Microphone + system audio' : 'Microphone only'
+  const transcriptState =
+    processingStage === 'saving'
+      ? 'Saving audio'
+      : processingStage === 'preparing'
+        ? 'Ready'
+        : sttStatus === 'error'
+      ? 'Unavailable'
+      : sttStatus === 'loading'
+        ? 'Loading model'
+        : paused
+          ? 'Paused'
+          : sttStatus === 'finalizing'
+            ? 'Finalizing'
+            : 'Live'
+  const latestSegmentEnd = liveSegments.length > 0 ? liveSegments[liveSegments.length - 1].end : null
+  const transcript = transcriptPace(elapsed, latestSegmentEnd, sttStatus, paused)
+  const activeProcessingStage = processingStage === 'idle' ? null : processingStage
+  const processing = stopping && activeProcessingStage !== null
+  const [detailsOpen, setDetailsOpen] = useState(() => {
+    if (typeof window.matchMedia !== 'function') return true
+    return !window.matchMedia('(max-width: 1280px)').matches
+  })
+  const [markerOpen, setMarkerOpen] = useState(false)
+  const [markerLabel, setMarkerLabel] = useState('')
+  const [markerSaving, setMarkerSaving] = useState(false)
 
-        <LiveTranscriptScroller liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
+  async function saveMarker() {
+    const label = markerLabel.trim()
+    if (!label || markerSaving) return
+    setMarkerSaving(true)
+    try {
+      await addMarker(label)
+      setMarkerLabel('')
+      setMarkerOpen(false)
+    } catch {
+      // useAppState already reports the persisted-write error; keep the
+      // draft in place so the user can retry without retyping it.
+    } finally {
+      setMarkerSaving(false)
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(max-width: 1280px)')
+    const sync = () => setDetailsOpen(!query.matches)
+    query.addEventListener('change', sync)
+    return () => query.removeEventListener('change', sync)
+  }, [])
+
+  useEffect(() => {
+    if (processing || stopping) return
+    function handleShortcut(event: KeyboardEvent) {
+      if (event.repeat) return
+      const target = event.target
+      if (target instanceof Element && target.closest('input, textarea, select, button, [contenteditable="true"]')) {
+        return
+      }
+      if (event.metaKey && event.shiftKey && event.key.toLowerCase() === 'm') {
+        event.preventDefault()
+        setMarkerOpen(true)
+      } else if (event.metaKey && event.key === 'Enter') {
+        event.preventDefault()
+        stopRec()
+      } else if (!event.metaKey && !event.ctrlKey && !event.altKey && event.code === 'Space') {
+        event.preventDefault()
+        togglePause()
+      }
+    }
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [processing, stopping, stopRec, togglePause])
+
+  return (
+    <main
+      className="recording-shell"
+      data-details-open={detailsOpen ? 'true' : 'false'}
+      style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--panel)' }}
+    >
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+        <div className="recording-title-strip">
+          <RecordingTitle title={title} disabled={processing || stopping} onRename={renameTitle} />
+          <button
+            type="button"
+            className="recording-details-toggle"
+            aria-expanded={detailsOpen}
+            aria-controls="recording-details-panel"
+            title={`${detailsOpen ? 'Hide' : 'Show'} recording details`}
+            onClick={() => setDetailsOpen(open => !open)}
+          >
+            <PanelIcon open={detailsOpen} />
+            {detailsOpen ? 'Hide details' : 'Show details'}
+          </button>
+        </div>
+        <section
+          className="capture-bar"
+          data-paused={paused || processing ? 'true' : 'false'}
+          data-processing={processing ? 'true' : 'false'}
+          aria-labelledby="capture-source-heading"
+        >
+          <div className="capture-source">
+            <div className="capture-icon">
+              <MicrophoneIcon />
+              <span className="capture-live-dot" aria-hidden="true" />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div className="mlab" id="capture-source-heading">
+                {processing ? 'Captured from' : paused ? 'Capture paused' : 'Capturing from'}
+              </div>
+              <div className="capture-source-name" title={microphoneName}>{microphoneName}</div>
+              <div className="capture-source-meta">{captureSummary} · macOS default input</div>
+            </div>
+          </div>
+          <Waveform paused={paused || processing} />
+          <div className="capture-model">
+            <div className="mlab">Live transcription</div>
+            <div className="capture-model-name">{modelName}</div>
+            <div className="capture-source-meta">{transcriptState} · on-device</div>
+          </div>
+        </section>
+
+        {processing ? (
+          <ProcessingHandoff
+            stage={activeProcessingStage!}
+            elapsed={elapsed}
+            microphoneName={microphoneName}
+            captureSummary={captureSummary}
+          />
+        ) : (
+          <>
+            <RecordingHealthBar captureHealth={captureHealth} transcript={transcript} />
+            {processingFailure?.stage === 'saving' && (
+              <div className="recording-recovery" role="status">
+                <span>
+                  <strong>Minute could not finish this recording.</strong>
+                  Audio capture is still active. {processingFailure.message}
+                </span>
+                <button type="button" className="btn-outline" onClick={onRetryProcessing}>Retry finish</button>
+                <button type="button" className="btn-quiet" onClick={onDismissProcessingFailure}>Continue recording</button>
+              </div>
+            )}
+            <LiveTranscriptScroller liveSegments={liveSegments} sttStatus={sttStatus} sttError={sttError} modelName={modelName} />
+          </>
+        )}
 
         {/* Flush control strip, continuous with the player bar on the notes
             side — same height, same rule, same chrome fill, so switching
             between the two views doesn't shift the bottom edge. */}
-        <div
-          style={{
-            height: 62,
-            flex: 'none',
-            padding: '0 34px',
-            borderTop: '1px solid var(--rule)',
-            background: 'var(--panel-warm)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-          }}
-        >
-          <button onClick={stopRec} disabled={stopping} className="btn-solid">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <rect width="12" height="12" x="6" y="6"></rect>
-            </svg>
-            {stopping ? 'Finishing…' : 'Stop & transcribe'}
-          </button>
-          <button onClick={togglePause} disabled={stopping} className="btn-outline">
-            {paused ? 'Resume' : 'Pause'}
-          </button>
-          <button disabled aria-disabled="true" title="Markers arrive in a later update." className="btn-quiet">
-            Add marker
-          </button>
-        </div>
+        {processing ? (
+          <div className="recording-controls processing-controls">
+            <span className="processing-spinner" aria-hidden="true" />
+            Keep Minute open while this finishes.
+          </div>
+        ) : (
+          <>
+          {markerOpen && (
+            <form
+              className="recording-marker-compose"
+              onSubmit={event => {
+                event.preventDefault()
+                void saveMarker()
+              }}
+            >
+              <span className="marker-time">{formatMmSs(elapsed)}</span>
+              <input
+                autoFocus
+                aria-label="Marker label"
+                value={markerLabel}
+                maxLength={100}
+                placeholder="What should you remember?"
+                onChange={event => setMarkerLabel(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    setMarkerOpen(false)
+                    setMarkerLabel('')
+                  }
+                }}
+              />
+              <button type="submit" className="btn-solid" disabled={!markerLabel.trim() || markerSaving}>
+                {markerSaving ? 'Saving…' : 'Save marker'}
+              </button>
+            </form>
+          )}
+          <div className="recording-controls">
+            <button
+              onClick={stopRec}
+              disabled={stopping}
+              className="btn-solid"
+              aria-keyshortcuts="Meta+Enter"
+              title="Stop and transcribe (⌘↵)"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect width="12" height="12" x="6" y="6"></rect>
+              </svg>
+              Stop & transcribe
+              <kbd className="control-shortcut" aria-hidden="true">⌘↵</kbd>
+            </button>
+            <button
+              onClick={togglePause}
+              disabled={stopping}
+              className="btn-outline"
+              aria-keyshortcuts="Space"
+              title={`${paused ? 'Resume' : 'Pause'} recording (Space)`}
+            >
+              {paused ? 'Resume' : 'Pause'}
+              <kbd className="control-shortcut" aria-hidden="true">Space</kbd>
+            </button>
+            <button
+              type="button"
+              className="btn-quiet marker-control"
+              aria-keyshortcuts="Meta+Shift+M"
+              title="Add a timestamped marker (⌘⇧M)"
+              onClick={() => setMarkerOpen(open => !open)}
+            >
+              Add marker
+              <kbd className="control-shortcut" aria-hidden="true">⌘⇧M</kbd>
+            </button>
+          </div>
+          </>
+        )}
       </div>
 
-      <div
+      <aside
+        id="recording-details-panel"
+        aria-label="Recording details"
+        aria-hidden={!detailsOpen}
+        hidden={!detailsOpen}
+        className="recording-details"
         style={{
-          width: 316,
+          width: 304,
           flex: 'none',
           borderLeft: '1px solid var(--rule)',
           display: 'flex',
@@ -415,26 +897,98 @@ export const RecordingView = memo(function RecordingView({
           background: 'var(--panel)',
         }}
       >
-        <div style={{ padding: '24px 26px 20px' }}>
-          <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 17, letterSpacing: '-.005em' }}>
-            Live insights
-          </h2>
+        <div className="recording-details-head" style={{ padding: '24px 26px 20px' }}>
+          <div>
+            <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 17, letterSpacing: '-.005em' }}>
+              Recording details
+            </h2>
+            <p style={{ margin: '5px 0 0', fontSize: 11.5, color: 'var(--ink-muted)' }}>
+              Sources are fixed until you stop.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="icon-btn recording-details-close"
+            aria-label="Hide recording details"
+            title="Hide recording details"
+            onClick={() => setDetailsOpen(false)}
+          >
+            <PanelIcon open={true} />
+          </button>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
-          <section style={{ marginBottom: 22 }}>
+          <section style={{ marginBottom: 25 }}>
             <div className="sec-head" style={{ marginBottom: 9 }}>
-              <span className="mlab">Not yet</span>
+              <span className="mlab">Capture sources</span>
             </div>
-            <div className="placeholder-block">Live insights arrive in a later update.</div>
+            <div className="source-detail-list">
+              <SourceDetailRow
+                icon={<MicrophoneIcon />}
+                label="Microphone"
+                value={microphoneName}
+                state={processing ? 'Saved' : paused ? 'Paused' : 'Active'}
+                active={!paused && !processing}
+              />
+              <SourceDetailRow
+                icon={<SystemAudioIcon />}
+                label="System audio"
+                value={systemAudioActive ? 'Apps and call audio' : 'Not part of this recording'}
+                state={systemAudioActive ? (processing ? 'Saved' : paused ? 'Paused' : 'Active') : 'Off'}
+                active={systemAudioActive && !paused && !processing}
+              />
+            </div>
+            {!systemAudioActive && (
+              <p className="recording-detail-note">
+                Turn on system audio in Settings before your next recording to capture the other side of a call.
+              </p>
+            )}
+          </section>
+          <section style={{ marginBottom: 25 }}>
+            <div className="sec-head" style={{ marginBottom: 9 }}>
+              <span className="mlab">Markers · {markers.length}</span>
+            </div>
+            {markers.length === 0 ? (
+              <p className="recording-detail-note">Add a marker when a decision or follow-up is worth revisiting.</p>
+            ) : (
+              <ol className="recording-marker-list">
+                {markers.map((marker, index) => (
+                  <li key={`${marker.seconds}-${index}`}>
+                    <span>{formatMmSs(marker.seconds)}</span>
+                    <strong>{marker.label}</strong>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+          <section style={{ marginBottom: 25 }}>
+            <div className="sec-head" style={{ marginBottom: 9 }}>
+              <span className="mlab">Transcription</span>
+            </div>
+            <div className="detail-pair">
+              <span>Model</span>
+              <strong>{modelName}</strong>
+            </div>
+            <div className="detail-pair">
+              <span>Status</span>
+              <strong data-tone={sttStatus === 'error' ? 'danger' : 'positive'}>{transcriptState}</strong>
+            </div>
+            {!processing && (
+              <div className="detail-pair">
+                <span>Pace</span>
+                <strong data-tone={transcript.pace === 'delayed' ? 'danger' : 'positive'}>
+                  {transcriptPaceCopy(transcript).label}
+                </strong>
+              </div>
+            )}
           </section>
           <section>
             <div className="sec-head" style={{ marginBottom: 9 }}>
               <span className="mlab">Privacy</span>
             </div>
-            <p className="leaf-body">Transcription runs on-device — nothing leaves this machine.</p>
+            <p className="leaf-body">Audio, transcript, and model processing stay on this Mac.</p>
           </section>
         </div>
-      </div>
+      </aside>
     </main>
   )
 })

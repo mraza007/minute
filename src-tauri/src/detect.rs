@@ -237,7 +237,9 @@ impl DetectorCore {
                 }
                 Action::None
             }
-            DetectorEvent::Tick { meeting_app_present } => {
+            DetectorEvent::Tick {
+                meeting_app_present,
+            } => {
                 self.last_meeting_app = meeting_app_present;
                 self.evaluate(now)
             }
@@ -402,8 +404,14 @@ mod core_tests {
         let mut core = DetectorCore::new(true);
 
         core.process(DetectorEvent::MicStarted, base);
-        core.process(DetectorEvent::MicStopped, base + Duration::from_millis(4900));
-        core.process(DetectorEvent::MicStarted, base + Duration::from_millis(4900));
+        core.process(
+            DetectorEvent::MicStopped,
+            base + Duration::from_millis(4900),
+        );
+        core.process(
+            DetectorEvent::MicStarted,
+            base + Duration::from_millis(4900),
+        );
 
         // 4.9s after the restart (9.8s of wall-clock since the very first
         // MicStarted) — would already be well past 5s if the reset hadn't
@@ -754,7 +762,10 @@ mod core_tests {
             }
         );
 
-        core.process(DetectorEvent::Outcome(PromptOutcome::Accepted), base + secs(5));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::Accepted),
+            base + secs(5),
+        );
 
         // Mic stays hot a long time (the recording itself) — must not
         // re-prompt no matter how long.
@@ -796,7 +807,10 @@ mod core_tests {
             },
             base + secs(5),
         );
-        core.process(DetectorEvent::Outcome(PromptOutcome::Dismissed), base + secs(5));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::Dismissed),
+            base + secs(5),
+        );
 
         // Still within the 15-minute cooldown (5s + 899s = 904s < 905s).
         let blocked = core.process(
@@ -835,7 +849,10 @@ mod core_tests {
             },
             base + secs(5),
         );
-        core.process(DetectorEvent::Outcome(PromptOutcome::TimedOut), base + secs(5));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::TimedOut),
+            base + secs(5),
+        );
 
         let blocked = core.process(
             DetectorEvent::Tick {
@@ -924,7 +941,10 @@ mod core_tests {
             },
             base + secs(5),
         );
-        core.process(DetectorEvent::Outcome(PromptOutcome::Dismissed), base + secs(5));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::Dismissed),
+            base + secs(5),
+        );
 
         // The call ends entirely before the cooldown would've expired.
         core.process(DetectorEvent::MicStopped, base + secs(10));
@@ -995,7 +1015,10 @@ mod core_tests {
             },
             base + secs(5),
         );
-        core.process(DetectorEvent::Outcome(PromptOutcome::Dismissed), base + secs(5));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::Dismissed),
+            base + secs(5),
+        );
 
         // Well inside what would otherwise be a 900s cooldown — disabling
         // must clear it outright, not just pause the countdown.
@@ -1028,7 +1051,10 @@ mod core_tests {
             },
             base + secs(5),
         );
-        core.process(DetectorEvent::Outcome(PromptOutcome::Accepted), base + secs(5));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::Accepted),
+            base + secs(5),
+        );
 
         // Mic never drops (the call is still ongoing) — disabling must
         // still lift the suppression itself, without needing a `MicStopped`.
@@ -1080,7 +1106,8 @@ mod core_tests {
     }
 
     #[test]
-    fn a_stale_outcome_after_the_cores_own_auto_timeout_already_resolved_it_does_not_extend_the_cooldown() {
+    fn a_stale_outcome_after_the_cores_own_auto_timeout_already_resolved_it_does_not_extend_the_cooldown(
+    ) {
         // The core's own PROMPT_AUTO_TIMEOUT fallback (see that constant's
         // docs) can resolve a Prompted phase into Cooldown entirely on its
         // own, independent of any real popup_dismiss/popup_start IPC call
@@ -1116,7 +1143,10 @@ mod core_tests {
 
         // The real (now-stale) outcome finally arrives a bit later — must
         // be a no-op: phase is `Cooldown`, not `Prompted`, by this point.
-        core.process(DetectorEvent::Outcome(PromptOutcome::TimedOut), base + secs(20));
+        core.process(
+            DetectorEvent::Outcome(PromptOutcome::TimedOut),
+            base + secs(20),
+        );
 
         // Right at what would have been the *original* cooldown's
         // expiry (base + 17s + 900s) — if the late Outcome had wrongly
@@ -1542,7 +1572,10 @@ mod macos {
 
         #[test]
         fn find_allowlisted_falls_back_to_a_browser_when_thats_all_that_matches() {
-            let running = vec!["com.apple.Dock".to_string(), "com.google.Chrome".to_string()];
+            let running = vec![
+                "com.apple.Dock".to_string(),
+                "com.google.Chrome".to_string(),
+            ];
             assert_eq!(find_allowlisted(&running), Some("Chrome".to_string()));
         }
 
@@ -1565,12 +1598,21 @@ mod macos {
             // (Zoom first), not merely from whichever happened to appear
             // first in `NSWorkspace.runningApplications`'s (otherwise
             // unspecified, per Apple's own docs) ordering.
-            let running = vec!["com.microsoft.teams2".to_string(), "us.zoom.xos".to_string()];
+            let running = vec![
+                "com.microsoft.teams2".to_string(),
+                "us.zoom.xos".to_string(),
+            ];
             assert_eq!(find_allowlisted(&running), Some("Zoom".to_string()));
 
             // Same two apps, running-list order flipped — still Zoom.
-            let running_reversed = vec!["us.zoom.xos".to_string(), "com.microsoft.teams2".to_string()];
-            assert_eq!(find_allowlisted(&running_reversed), Some("Zoom".to_string()));
+            let running_reversed = vec![
+                "us.zoom.xos".to_string(),
+                "com.microsoft.teams2".to_string(),
+            ];
+            assert_eq!(
+                find_allowlisted(&running_reversed),
+                Some("Zoom".to_string())
+            );
         }
 
         #[test]
@@ -1798,7 +1840,8 @@ fn any_stt_model_installed(app: &AppHandle) -> bool {
         return false;
     };
     entries.iter().any(|entry| {
-        entry.kind == ModelKind::Stt && catalog::install_state(entry, &models_root) == catalog::InstallState::Installed
+        entry.kind == ModelKind::Stt
+            && catalog::install_state(entry, &models_root) == catalog::InstallState::Installed
     })
 }
 
@@ -1885,7 +1928,10 @@ fn run_detector_thread(
         // why this needs to be re-checked continuously rather than only at
         // startup (a model can be deleted well after the thread starts).
         let stt_installed = any_stt_model_installed(&app);
-        core.process(DetectorEvent::SetSttModelInstalled(stt_installed), Instant::now());
+        core.process(
+            DetectorEvent::SetSttModelInstalled(stt_installed),
+            Instant::now(),
+        );
 
         let action = match msg_rx.recv_timeout(POLL_INTERVAL) {
             Ok(ThreadMsg::Shim(ShimEvent::MicStarted)) => {
@@ -1896,11 +1942,18 @@ fn run_detector_thread(
                 mic_active = false;
                 core.process(DetectorEvent::MicStopped, Instant::now())
             }
-            Ok(ThreadMsg::Outcome(outcome)) => core.process(DetectorEvent::Outcome(outcome), Instant::now()),
+            Ok(ThreadMsg::Outcome(outcome)) => {
+                core.process(DetectorEvent::Outcome(outcome), Instant::now())
+            }
             Err(RecvTimeoutError::Timeout) => {
                 if mic_active {
                     let app_present = macos::meeting_app_present();
-                    core.process(DetectorEvent::Tick { meeting_app_present: app_present }, Instant::now())
+                    core.process(
+                        DetectorEvent::Tick {
+                            meeting_app_present: app_present,
+                        },
+                        Instant::now(),
+                    )
                 } else {
                     Action::None
                 }

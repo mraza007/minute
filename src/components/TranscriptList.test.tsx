@@ -6,6 +6,7 @@ import { TranscriptList, type TranscriptListProps } from './TranscriptList'
 
 function makeProps(overrides: Partial<TranscriptListProps> = {}): TranscriptListProps {
   return {
+    noteId: 'note-1',
     segments: demoTranscript,
     activeIndex: -1,
     onSeek: vi.fn(),
@@ -66,6 +67,34 @@ describe('TranscriptList', () => {
     const activeButton = screen.getByRole('button', { name: 'Play from 01:02' })
     expect(activeButton.closest('.script-line')).toHaveAttribute('data-active', 'true')
     expect(container.querySelectorAll('.script-line[data-active="true"]')).toHaveLength(1)
+    expect(activeButton).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('moves keyboard focus between timestamps with ArrowUp and ArrowDown', () => {
+    render(<TranscriptList {...makeProps()} />)
+    const first = screen.getByRole('button', { name: 'Play from 00:41' })
+    const second = screen.getByRole('button', { name: 'Play from 01:02' })
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(second).toHaveFocus()
+    fireEvent.keyDown(second, { key: 'ArrowUp' })
+    expect(first).toHaveFocus()
+  })
+
+  it('restores each note’s transcript scroll position after switching notes', () => {
+    const { container, rerender } = render(<TranscriptList {...makeProps({ noteId: 'note-a' })} />)
+    const noteA = container.querySelector<HTMLElement>('.script')!
+    noteA.scrollTop = 240
+    fireEvent.scroll(noteA)
+
+    rerender(<TranscriptList {...makeProps({ noteId: 'note-b' })} />)
+    const noteB = container.querySelector<HTMLElement>('.script')!
+    expect(noteB.scrollTop).toBe(0)
+    noteB.scrollTop = 80
+    fireEvent.scroll(noteB)
+
+    rerender(<TranscriptList {...makeProps({ noteId: 'note-a' })} />)
+    expect(container.querySelector<HTMLElement>('.script')!.scrollTop).toBe(240)
   })
 
   it('highlights nothing when activeIndex is -1', () => {
@@ -76,7 +105,7 @@ describe('TranscriptList', () => {
   it('disables timestamp buttons and does not call onSeek when not seekable', () => {
     const onSeek = vi.fn()
     render(<TranscriptList {...makeProps({ onSeek, seekable: false })} />)
-    const button = screen.getByRole('button', { name: 'Play from 00:41' })
+    const button = screen.getByRole('button', { name: 'Audio unavailable at 00:41' })
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(onSeek).not.toHaveBeenCalled()

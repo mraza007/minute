@@ -59,6 +59,11 @@ export interface Recommendation {
 /** `store::NoteStatus` — `#[serde(rename_all = "lowercase")]`. */
 export type NoteStatus = 'recording' | 'transcribed' | 'ready'
 
+export interface NoteMarker {
+  seconds: number
+  label: string
+}
+
 /**
  * `store::NoteMeta` — `#[serde(rename_all = "camelCase")]`. `audioDeleted`
  * is `#[serde(default)]` on the Rust side (old `meta.json` files without it
@@ -80,8 +85,16 @@ export interface NoteMeta {
   model: string
   status: NoteStatus
   speakers: number
+  /** Present when capture or WAV finalization was incomplete. */
+  captureWarning?: string
   audioDeleted: boolean
   sources: string[]
+  /** Optional only for compatibility with legacy fixtures/meta files. */
+  pinned?: boolean
+  /** Optional only for compatibility with legacy fixtures/meta files. */
+  markers?: NoteMarker[]
+  /** User-confirmed raw-label aliases, scoped to this one recording. */
+  speakerAliases?: Record<string, string>
 }
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */
@@ -95,6 +108,27 @@ export interface StoredSegment {
 /** `store::Transcript` — `#[serde(rename_all = "camelCase")]`. */
 export interface Transcript {
   segments: StoredSegment[]
+}
+
+/** `store::SpeakerMergeUndo` — exact turn indices changed by one merge. */
+export interface SpeakerMergeUndo {
+  from: string
+  into: string
+  segmentIndices: number[]
+  checksum: string
+}
+
+/** `store::SpeakerMergeResult`. */
+export interface SpeakerMergeResult {
+  transcript: Transcript
+  meta: NoteMeta
+  undo: SpeakerMergeUndo
+}
+
+/** `store::SpeakerMergeUndoResult`. */
+export interface SpeakerMergeUndoResult {
+  transcript: Transcript
+  meta: NoteMeta
 }
 
 /**
@@ -174,6 +208,19 @@ export interface StorageStats {
   notesBytes: number
 }
 
+export interface DeletedNoteUndo {
+  id: string
+  title: string
+  trashName: string
+  checksum: string
+}
+
+export interface NoteStorageStats {
+  totalBytes: number
+  audioBytes: number
+  documentBytes: number
+}
+
 // --- settings.rs -------------------------------------------------------
 
 /**
@@ -244,6 +291,15 @@ export interface RecordingStateEvent {
   state: 'recording' | 'paused' | 'stopped'
   elapsed: number
   systemAudioActive: boolean
+  /** cpal-reported name of the microphone opened for this session. */
+  microphoneName: string
+  /** Current microphone RMS and loudest peak since the previous 1s tick. */
+  inputRms: number
+  inputPeak: number
+  /** Monotonic native callback count; a frozen value indicates a stalled stream. */
+  inputSequence: number
+  /** Native stream/write failure, when cpal supplied one. */
+  inputError: string | null
 }
 
 /** `stt.rs::TranscriptSegmentPayload` — event `transcript-segment`. */
@@ -345,4 +401,35 @@ export type SysAudioAvailability = 'unsupported' | 'notGranted' | 'ready'
 /** `syscap::SysAudioStatus` — `#[serde(rename_all = "camelCase")]`. */
 export interface SysAudioStatus {
   availability: SysAudioAvailability
+}
+
+// --- audio.rs ----------------------------------------------------------
+
+/** A cpal input source. The opaque id, not the display name, is used when
+ * starting capture because two connected devices can share a name. */
+export interface AudioInputDevice {
+  id: string
+  name: string
+  isDefault: boolean
+}
+
+export type MicrophonePermission = 'notDetermined' | 'restricted' | 'denied' | 'authorized' | 'unknown'
+
+/** The microphones currently visible to cpal and the macOS default id. An
+ * empty list means the preflight must disable its start action. */
+export interface AudioInputStatus {
+  devices: AudioInputDevice[]
+  defaultDeviceId: string | null
+  /** AVFoundation authorization, checked separately because CoreAudio may
+   * expose a device that only emits silence while access is denied. */
+  permission: MicrophonePermission
+}
+
+/** Throttled levels from the selected preflight microphone. `error` is set
+ * when an already-open preview stream fails or disconnects. */
+export interface AudioInputLevelEvent {
+  sessionId: string
+  rms: number
+  peak: number
+  error: string | null
 }

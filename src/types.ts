@@ -1,5 +1,5 @@
 export type View = 'loading' | 'onboarding' | 'notes' | 'recording' | 'settings'
-export type NoteTab = 'transcript' | 'md'
+export type NoteTab = 'overview' | 'transcript' | 'md'
 
 /**
  * Live-transcription lifecycle state for the active (or most recently
@@ -10,12 +10,19 @@ export type NoteTab = 'transcript' | 'md'
  */
 export type SttStatus = 'idle' | 'loading' | 'ready' | 'finalizing' | 'error'
 
+/** Visible phases between pressing Stop and opening the finalized note. */
+export type RecordingProcessingStage = 'idle' | 'saving' | 'finalizing' | 'preparing'
+
 export interface NoteListItem {
   /** The note's id — added so the sidebar can filter this list against ⌘K search results (a `Set<string>` of matched note ids) without a second lookup. */
   id: string
   title: string
   meta: string
   group?: string
+  status?: 'recording' | 'transcribed' | 'ready'
+  sources?: string[]
+  createdAt?: string
+  pinned?: boolean
 }
 
 export interface ActionItem {

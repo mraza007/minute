@@ -181,7 +181,9 @@ pub fn open_registry() -> DownloadRegistry {
 /// download must not brick every later download command for the rest of
 /// the session.
 fn lock_registry(registry: &DownloadRegistry) -> MutexGuard<'_, HashMap<String, Arc<AtomicBool>>> {
-    registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Registers a new active download for `id` and returns its cancellation
@@ -276,10 +278,7 @@ pub async fn execute_download(
     let mut request = client.get(&entry.url);
     let requested_range = resume.offset > 0;
     if requested_range {
-        request = request.header(
-            reqwest::header::RANGE,
-            format!("bytes={}-", resume.offset),
-        );
+        request = request.header(reqwest::header::RANGE, format!("bytes={}-", resume.offset));
     }
 
     let response = request
@@ -438,9 +437,14 @@ pub async fn download_model(
 
     let app_for_progress = app.clone();
     let id_for_progress = id.clone();
-    let result = execute_download(&entry, &models_root, &cancel_flag, move |downloaded, total| {
-        emit_progress(&app_for_progress, &id_for_progress, downloaded, total);
-    })
+    let result = execute_download(
+        &entry,
+        &models_root,
+        &cancel_flag,
+        move |downloaded, total| {
+            emit_progress(&app_for_progress, &id_for_progress, downloaded, total);
+        },
+    )
     .await;
 
     // `cancelled` is derived from the error variant itself, not a
@@ -450,9 +454,13 @@ pub async fn download_model(
     // mislabel a real failure as a cancellation.
     match result {
         Ok(()) => emit_done(&app, &id, true, false, None),
-        Err(MinuteError::Cancelled) => {
-            emit_done(&app, &id, false, true, Some(MinuteError::Cancelled.to_string()))
-        }
+        Err(MinuteError::Cancelled) => emit_done(
+            &app,
+            &id,
+            false,
+            true,
+            Some(MinuteError::Cancelled.to_string()),
+        ),
         Err(e) => emit_done(&app, &id, false, false, Some(e.to_string())),
     }
 
@@ -491,7 +499,11 @@ fn remove_file_tolerant(path: &Path) -> Result<()> {
 /// guard can't (and doesn't need to) tell which one is actually running;
 /// the message stays honest about that by not claiming it's specifically a
 /// summary.
-fn delete_model_blocked(downloading: bool, recording: bool, generating: bool) -> Option<&'static str> {
+fn delete_model_blocked(
+    downloading: bool,
+    recording: bool,
+    generating: bool,
+) -> Option<&'static str> {
     if downloading {
         return Some("model is downloading — cancel first");
     }

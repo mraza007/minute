@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -16,6 +16,13 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample as _;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+#[cfg(target_os = "macos")]
+use block2::RcBlock;
+#[cfg(target_os = "macos")]
+use objc2::runtime::Bool;
+#[cfg(target_os = "macos")]
+use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 
 use crate::catalog::{self, InstallState};
 use crate::error::{MinuteError, Result};
@@ -55,6 +62,437 @@ const STT_DROP_LOG_INTERVAL: u64 = 50;
 /// Target sample rate every note's `audio.wav` (and the STT sample stream)
 /// is normalized to, regardless of the input device's native rate.
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
+
+/// Preview events are intentionally slower than the device callback cadence:
+/// fast enough to feel live, slow enough not to churn the webview or make
+/// assistive status text flicker.
+const INPUT_PREVIEW_INTERVAL: Duration = Duration::from_millis(80);
+
+/// A selectable microphone as reported by the same cpal host
+/// `Recorder::start` uses. The opaque cpal id, rather than the display name,
+/// is sent back when recording starts because multiple devices can share a
+/// name.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInputDevice {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// Current microphones and the macOS default. An empty list is an honest
+/// "no input device" state rather than a command error, so the preflight can
+/// stay open and explain why recording cannot start.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInputStatus {
+    pub devices: Vec<AudioInputDevice>,
+    pub default_device_id: Option<String>,
+    pub permission: MicrophonePermission,
+}
+
+/// macOS microphone authorization as reported by AVFoundation. Checking this
+/// explicitly matters because CoreAudio can successfully open a stream that
+/// only delivers silence while permission is unresolved or denied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MicrophonePermission {
+    NotDetermined,
+    Restricted,
+    Denied,
+    Authorized,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_permission_from_av(status: AVAuthorizationStatus) -> MicrophonePermission {
+    match status {
+        AVAuthorizationStatus::NotDetermined => MicrophonePermission::NotDetermined,
+        AVAuthorizationStatus::Restricted => MicrophonePermission::Restricted,
+        AVAuthorizationStatus::Denied => MicrophonePermission::Denied,
+        AVAuthorizationStatus::Authorized => MicrophonePermission::Authorized,
+        _ => MicrophonePermission::Unknown,
+    }
+}
+
+pub fn microphone_permission_status() -> MicrophonePermission {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: AVMediaTypeAudio is a process-lifetime AVFoundation
+        // constant. Passing it to this documented class method is valid on
+        // every supported macOS version.
+        let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
+            return MicrophonePermission::Unknown;
+        };
+        let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) };
+        microphone_permission_from_av(status)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        MicrophonePermission::Authorized
+    }
+}
+
+fn ensure_microphone_authorized() -> Result<()> {
+    match microphone_permission_status() {
+        MicrophonePermission::Authorized => Ok(()),
+        MicrophonePermission::NotDetermined => Err(MinuteError::Other(
+            "microphone permission is required before recording".to_string(),
+        )),
+        MicrophonePermission::Denied => Err(MinuteError::Other(
+            "microphone access is denied; enable Minute in System Settings → Privacy & Security → Microphone"
+                .to_string(),
+        )),
+        MicrophonePermission::Restricted => Err(MinuteError::Other(
+            "microphone access is restricted by macOS settings".to_string(),
+        )),
+        MicrophonePermission::Unknown => Err(MinuteError::Other(
+            "microphone permission status could not be determined".to_string(),
+        )),
+    }
+}
+
+/// Read-only microphone check for the pre-recording sheet. This never opens
+/// a stream or triggers microphone permission itself; the actual
+/// `start_recording` call remains the final authority because devices can
+/// change between this check and capture starting.
+#[tauri::command]
+pub fn audio_input_status() -> AudioInputStatus {
+    let host = cpal::default_host();
+    let default_device = host.default_input_device().and_then(|device| {
+        let id = device.id().ok()?.to_string();
+        let name = device.description().ok()?.name().to_string();
+        Some((id, name))
+    });
+    let default_device_id = default_device.as_ref().map(|(id, _)| id.clone());
+
+    let mut devices: Vec<AudioInputDevice> = host
+        .input_devices()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|device| {
+            let id = device.id().ok()?.to_string();
+            let name = device.description().ok()?.name().to_string();
+            Some(AudioInputDevice {
+                is_default: default_device_id.as_deref() == Some(id.as_str()),
+                id,
+                name,
+            })
+        })
+        .collect();
+
+    // Some hosts can expose a usable default even when enumeration is
+    // temporarily incomplete. Keep that source selectable instead of
+    // presenting an empty, contradictory preflight.
+    if let Some((id, name)) = default_device {
+        if !devices.iter().any(|device| device.id == id) {
+            devices.push(AudioInputDevice {
+                id,
+                name,
+                is_default: true,
+            });
+        }
+    }
+    devices.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+
+    AudioInputStatus {
+        devices,
+        default_device_id,
+        permission: microphone_permission_status(),
+    }
+}
+
+/// Requests microphone access through AVFoundation. This is separate from
+/// opening a cpal stream because CoreAudio can vend silent samples without
+/// presenting the system prompt. The blocking wait runs off the Tauri command
+/// thread; AVFoundation invokes the completion block on its own queue.
+#[tauri::command]
+pub async fn request_microphone_permission() -> std::result::Result<MicrophonePermission, String> {
+    let current = microphone_permission_status();
+    if current != MicrophonePermission::NotDetermined {
+        return Ok(current);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        tauri::async_runtime::spawn_blocking(|| {
+            let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+            let handler = RcBlock::new(move |granted: Bool| {
+                let _ = result_tx.send(granted.as_bool());
+            });
+            // SAFETY: AVMediaTypeAudio is a static AVFoundation constant and
+            // requestAccess copies the completion block for asynchronous use.
+            let media_type = (unsafe { AVMediaTypeAudio })
+                .ok_or_else(|| "AVFoundation audio media type is unavailable".to_string())?;
+            unsafe {
+                AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &handler);
+            }
+            result_rx
+                .recv_timeout(Duration::from_secs(120))
+                .map_err(|_| {
+                    "timed out waiting for the macOS microphone permission response".to_string()
+                })?;
+            Ok(microphone_permission_status())
+        })
+        .await
+        .map_err(|error| format!("microphone permission task failed: {error}"))?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(MicrophonePermission::Authorized)
+    }
+}
+
+fn input_device(host: &cpal::Host, requested_id: Option<&str>) -> Result<cpal::Device> {
+    let Some(requested_id) = requested_id else {
+        return host
+            .default_input_device()
+            .ok_or_else(|| MinuteError::Other("no input device available".to_string()));
+    };
+
+    let devices = host
+        .input_devices()
+        .map_err(|e| MinuteError::Other(format!("could not list input devices: {e}")))?;
+    for device in devices {
+        let matches = device
+            .id()
+            .map(|id| id.to_string() == requested_id)
+            .unwrap_or(false);
+        if matches {
+            return Ok(device);
+        }
+    }
+    Err(MinuteError::Other(
+        "the selected microphone is no longer available".to_string(),
+    ))
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioInputLevelEvent {
+    session_id: String,
+    rms: f32,
+    peak: f32,
+    error: Option<String>,
+}
+
+enum InputPreviewMessage {
+    Level { rms: f32, peak: f32 },
+    Error(String),
+}
+
+/// A short-lived, read-only microphone stream used by the preflight meter.
+/// Dropping the handle stops the stream first, which drops both callback
+/// senders and lets the event worker exit before it is joined.
+pub(crate) struct InputPreviewHandle {
+    session_id: String,
+    stream: Option<cpal::Stream>,
+    event_worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for InputPreviewHandle {
+    fn drop(&mut self) {
+        drop(self.stream.take());
+        if let Some(worker) = self.event_worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// Managed state for the one preflight preview stream. A new device selection
+/// replaces the old stream; a recording start always drops this state before
+/// opening the final capture stream.
+pub type SharedInputPreview = Arc<Mutex<Option<InputPreviewHandle>>>;
+
+pub(crate) fn open_input_preview() -> SharedInputPreview {
+    Arc::new(Mutex::new(None))
+}
+
+fn input_levels<T>(data: &[T], channels: u16) -> (f32, f32)
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = channels.max(1) as usize;
+    let mut mono_square_sum = 0.0_f64;
+    let mut frame_count = 0_usize;
+    let mut peak = 0.0_f32;
+
+    for frame in data.chunks(channels) {
+        let mut mono = 0.0_f32;
+        for &sample in frame {
+            let sample = f32::from_sample(sample);
+            mono += sample;
+            peak = peak.max(sample.abs());
+        }
+        mono /= frame.len() as f32;
+        mono_square_sum += f64::from(mono) * f64::from(mono);
+        frame_count += 1;
+    }
+
+    let rms = if frame_count == 0 {
+        0.0
+    } else {
+        (mono_square_sum / frame_count as f64).sqrt() as f32
+    };
+    (rms.clamp(0.0, 1.0), peak.clamp(0.0, 1.0))
+}
+
+fn build_input_preview_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: u16,
+    message_tx: SyncSender<InputPreviewMessage>,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let error_tx = message_tx.clone();
+    let mut last_emit = Instant::now()
+        .checked_sub(INPUT_PREVIEW_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                if last_emit.elapsed() < INPUT_PREVIEW_INTERVAL {
+                    return;
+                }
+                last_emit = Instant::now();
+                let (rms, peak) = input_levels(data, channels);
+                let _ = message_tx.try_send(InputPreviewMessage::Level { rms, peak });
+            },
+            move |err| {
+                log::warn!("cpal input preview stream error: {err}");
+                let _ = error_tx.try_send(InputPreviewMessage::Error(err.to_string()));
+            },
+            None,
+        )
+        .map_err(|e| MinuteError::Other(format!("failed to build input preview: {e}")))
+}
+
+fn create_input_preview(
+    app: AppHandle,
+    device: &cpal::Device,
+    session_id: String,
+) -> Result<InputPreviewHandle> {
+    let supported = device
+        .default_input_config()
+        .map_err(|e| MinuteError::Other(format!("no default input config: {e}")))?;
+    let sample_format = supported.sample_format();
+    let channels = supported.channels();
+    let config: cpal::StreamConfig = supported.into();
+    let (message_tx, message_rx) = std::sync::mpsc::sync_channel(2);
+    let event_session_id = session_id.clone();
+    let event_worker = std::thread::Builder::new()
+        .name("input-preview-events".to_string())
+        .spawn(move || {
+            while let Ok(message) = message_rx.recv() {
+                let (rms, peak, error) = match message {
+                    InputPreviewMessage::Level { rms, peak } => (rms, peak, None),
+                    InputPreviewMessage::Error(error) => (0.0, 0.0, Some(error)),
+                };
+                let _ = app.emit_to(
+                    "main",
+                    "audio-input-level",
+                    AudioInputLevelEvent {
+                        session_id: event_session_id.clone(),
+                        rms,
+                        peak,
+                        error,
+                    },
+                );
+            }
+        })
+        .map_err(|e| MinuteError::Other(format!("failed to start input preview worker: {e}")))?;
+
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => {
+            build_input_preview_stream::<f32>(device, &config, channels, message_tx)
+        }
+        cpal::SampleFormat::I16 => {
+            build_input_preview_stream::<i16>(device, &config, channels, message_tx)
+        }
+        cpal::SampleFormat::U16 => {
+            build_input_preview_stream::<u16>(device, &config, channels, message_tx)
+        }
+        other => Err(MinuteError::Other(format!(
+            "unsupported input sample format: {other:?}"
+        ))),
+    };
+    let stream = match stream {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = event_worker.join();
+            return Err(error);
+        }
+    };
+    if let Err(error) = stream.play() {
+        drop(stream);
+        let _ = event_worker.join();
+        return Err(MinuteError::Other(format!(
+            "failed to start input preview: {error}"
+        )));
+    }
+
+    Ok(InputPreviewHandle {
+        session_id,
+        stream: Some(stream),
+        event_worker: Some(event_worker),
+    })
+}
+
+/// Opens the selected microphone without recording or persisting audio and
+/// emits throttled `audio-input-level` events for the matching frontend
+/// session. Replaces any older preview stream atomically.
+#[tauri::command]
+pub fn start_audio_input_preview(
+    app: AppHandle,
+    preview: State<'_, SharedInputPreview>,
+    recorder: State<'_, SharedRecorderState>,
+    input_device_id: String,
+    session_id: String,
+) -> std::result::Result<(), String> {
+    if session_id.trim().is_empty() {
+        return Err("input preview session id cannot be empty".to_string());
+    }
+
+    let mut preview_guard = lock(&preview);
+    preview_guard.take();
+    if is_recording_active(&recorder) {
+        return Err("cannot preview an input while recording".to_string());
+    }
+    ensure_microphone_authorized().map_err(|error| error.to_string())?;
+
+    let host = cpal::default_host();
+    let device = input_device(&host, Some(&input_device_id)).map_err(|e| e.to_string())?;
+    let handle = create_input_preview(app, &device, session_id).map_err(|e| e.to_string())?;
+    *preview_guard = Some(handle);
+    Ok(())
+}
+
+/// Stops only the preview session that requested the cleanup. This token
+/// check prevents a late React effect cleanup for device A from stopping the
+/// newer device B preview.
+#[tauri::command]
+pub fn stop_audio_input_preview(preview: State<'_, SharedInputPreview>, session_id: String) {
+    let mut guard = lock(&preview);
+    if guard
+        .as_ref()
+        .is_some_and(|handle| handle.session_id == session_id)
+    {
+        guard.take();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // downmix_to_mono
@@ -212,6 +650,8 @@ impl LinearResampler {
 pub struct WavWriter {
     inner: Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>,
     total_samples: u64,
+    #[cfg(test)]
+    fail_after_samples: Option<u64>,
 }
 
 impl WavWriter {
@@ -230,7 +670,16 @@ impl WavWriter {
         Ok(Self {
             inner: Some(inner),
             total_samples: 0,
+            #[cfg(test)]
+            fail_after_samples: None,
         })
+    }
+
+    #[cfg(test)]
+    fn create_failing_after(path: &Path, samples: u64) -> Result<Self> {
+        let mut writer = Self::create(path)?;
+        writer.fail_after_samples = Some(samples);
+        Ok(writer)
     }
 
     /// Clamps each sample to `[-1.0, 1.0]` and appends it as 16-bit PCM.
@@ -240,13 +689,22 @@ impl WavWriter {
             .as_mut()
             .ok_or_else(|| MinuteError::Other("append called after finalize".to_string()))?;
         for &sample in samples_f32 {
+            #[cfg(test)]
+            if self
+                .fail_after_samples
+                .is_some_and(|limit| self.total_samples >= limit)
+            {
+                return Err(MinuteError::Other(
+                    "simulated low-disk WAV write failure".to_string(),
+                ));
+            }
             let clamped = sample.clamp(-1.0, 1.0);
             let quantized = (clamped * i16::MAX as f32).round() as i16;
             writer
                 .write_sample(quantized)
                 .map_err(|e| MinuteError::Other(format!("failed to write wav sample: {e}")))?;
+            self.total_samples += 1;
         }
-        self.total_samples += samples_f32.len() as u64;
         Ok(())
     }
 
@@ -369,6 +827,54 @@ struct SharedState {
     /// later via `RecorderHandle::last_error`. The writer thread also
     /// stashes its own append/finalize errors here for the same reason.
     last_error: Mutex<Option<String>>,
+    /// Latest microphone RMS, encoded with `f32::to_bits` so the realtime
+    /// callback can publish it without taking a lock.
+    input_rms_bits: AtomicU32,
+    /// Loudest microphone peak since the last `recording-state` snapshot.
+    /// The ticker resets this after reading it, making one-second clipping
+    /// warnings much harder to miss than a single latest-value sample.
+    input_peak_bits: AtomicU32,
+    /// Incremented for every non-paused input callback. If it stops moving
+    /// for several state ticks, the frontend can distinguish a stalled or
+    /// disconnected device from an ordinary silent room.
+    input_sequence: AtomicU64,
+}
+
+fn store_max_f32(target: &AtomicU32, value: f32) {
+    let value = value.clamp(0.0, 1.0);
+    let mut current = target.load(Ordering::Relaxed);
+    while f32::from_bits(current) < value {
+        match target.compare_exchange_weak(
+            current,
+            value.to_bits(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RecordingInputSnapshot {
+    rms: f32,
+    peak: f32,
+    sequence: u64,
+    error: Option<String>,
+}
+
+fn recording_input_snapshot(shared: &SharedState) -> RecordingInputSnapshot {
+    RecordingInputSnapshot {
+        rms: f32::from_bits(shared.input_rms_bits.load(Ordering::Relaxed)),
+        peak: f32::from_bits(
+            shared
+                .input_peak_bits
+                .swap(0.0_f32.to_bits(), Ordering::Relaxed),
+        ),
+        sequence: shared.input_sequence.load(Ordering::Relaxed),
+        error: lock(&shared.last_error).clone(),
+    }
 }
 
 /// Builds a cpal input stream over sample type `T`. Its data callback is
@@ -399,6 +905,12 @@ where
                     return;
                 }
                 let floats: Vec<f32> = data.iter().map(|&s| f32::from_sample(s)).collect();
+                let (rms, peak) = input_levels::<f32>(&floats, channels);
+                shared
+                    .input_rms_bits
+                    .store(rms.to_bits(), Ordering::Relaxed);
+                store_max_f32(&shared.input_peak_bits, peak);
+                shared.input_sequence.fetch_add(1, Ordering::Relaxed);
                 let mono = downmix_to_mono(&floats, channels);
                 let resampled = resampler.resample(&mono);
                 if resampled.is_empty() {
@@ -516,7 +1028,14 @@ fn run_writer_thread(
     let mut block: Vec<f32> = Vec::with_capacity(STT_BLOCK_SAMPLES);
 
     while let Ok(chunk) = chunk_rx.recv() {
-        append_and_forward(&mut writer, &stt_tx, &shared, &mut block, &mut dropped, &chunk);
+        append_and_forward(
+            &mut writer,
+            &stt_tx,
+            &shared,
+            &mut block,
+            &mut dropped,
+            &chunk,
+        );
     }
 
     // Flush the trailing partial block (if any) rather than dropping it —
@@ -641,7 +1160,14 @@ fn run_writer_thread_with_system(
         sys_scratch.resize(need, 0.0);
 
         mix_into(&chunk, &sys_scratch, &mut mixed);
-        append_and_forward(&mut writer, &stt_tx, &shared, &mut block, &mut dropped, &mixed);
+        append_and_forward(
+            &mut writer,
+            &stt_tx,
+            &shared,
+            &mut block,
+            &mut dropped,
+            &mixed,
+        );
     }
 
     if !block.is_empty() {
@@ -664,6 +1190,9 @@ pub struct RecorderHandle {
     shared: Arc<SharedState>,
     wav_path: PathBuf,
     writer_thread: std::thread::JoinHandle<Result<u64>>,
+    /// Human-readable name reported by cpal for the default microphone that
+    /// was opened for this session.
+    microphone_name: String,
     /// The system-audio capture session, if one is active for this
     /// recording (`None` for a mic-only recording — see
     /// [`RecorderHandle::system_audio_active`]'s docs for how the two
@@ -724,11 +1253,14 @@ impl Recorder {
         note_dir: PathBuf,
         sample_tx: SyncSender<Arc<Vec<f32>>>,
         include_system_audio: bool,
+        input_device_id: Option<&str>,
     ) -> Result<RecorderHandle> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| MinuteError::Other("no input device available".to_string()))?;
+        let device = input_device(&host, input_device_id)?;
+        let microphone_name = device
+            .description()
+            .map(|description| description.name().to_string())
+            .unwrap_or_else(|_| "Default microphone".to_string());
         let supported = device
             .default_input_config()
             .map_err(|e| MinuteError::Other(format!("no default input config: {e}")))?;
@@ -746,6 +1278,9 @@ impl Recorder {
             tracker: Mutex::new(ElapsedTracker::new()),
             paused: paused.clone(),
             last_error: Mutex::new(None),
+            input_rms_bits: AtomicU32::new(0.0_f32.to_bits()),
+            input_peak_bits: AtomicU32::new(0.0_f32.to_bits()),
+            input_sequence: AtomicU64::new(0),
         });
         lock(&shared.tracker).start(Instant::now());
 
@@ -775,7 +1310,13 @@ impl Recorder {
         let writer_shared = shared.clone();
         let writer_thread = if let Some(sys_rx) = sys_rx_opt {
             std::thread::spawn(move || {
-                run_writer_thread_with_system(wav_writer, writer_rx, sys_rx, sample_tx, writer_shared)
+                run_writer_thread_with_system(
+                    wav_writer,
+                    writer_rx,
+                    sys_rx,
+                    sample_tx,
+                    writer_shared,
+                )
             })
         } else {
             std::thread::spawn(move || {
@@ -826,6 +1367,7 @@ impl Recorder {
             shared,
             wav_path,
             writer_thread,
+            microphone_name,
             sys_capture,
             system_audio_active,
         })
@@ -873,6 +1415,11 @@ impl RecorderHandle {
         self.system_audio_active
     }
 
+    /// The cpal-reported name of the input device opened for this session.
+    pub fn microphone_name(&self) -> &str {
+        &self.microphone_name
+    }
+
     /// Stops capture and finalizes the WAV file. Drops the cpal stream
     /// first — that drops the audio callback's `writer_tx` sender clone,
     /// which (once the writer thread drains whatever was already queued)
@@ -897,7 +1444,11 @@ impl RecorderHandle {
             .join()
             .map_err(|_| MinuteError::Other("wav writer thread panicked".to_string()))??;
 
-        Ok((elapsed_ms as f64 / 1000.0, self.wav_path, self.system_audio_active))
+        Ok((
+            elapsed_ms as f64 / 1000.0,
+            self.wav_path,
+            self.system_audio_active,
+        ))
     }
 }
 
@@ -924,6 +1475,10 @@ struct ActiveRecording {
     /// session (see that method's own docs), so caching it up front is
     /// exactly as correct as calling it fresh every time.
     system_audio_active: bool,
+    /// The input device opened for this recording. Cached so each state
+    /// event reports the session source even if macOS changes its default
+    /// microphone later.
+    microphone_name: String,
 }
 
 /// Managed state: at most one active recording at a time.
@@ -944,7 +1499,9 @@ pub(crate) fn open_shared() -> SharedRecorderState {
 }
 
 fn lock_recorder_state(state: &SharedRecorderState) -> MutexGuard<'_, RecorderState> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Whether a recording is currently active. Used by `download::delete_model`
@@ -965,9 +1522,20 @@ struct RecordingStateEvent {
     /// audio right now — fixed for the whole session (see
     /// `RecorderHandle::system_audio_active`'s docs), so every event for a
     /// given `note_id` carries the same value. Lets the frontend show the
-    /// real, honest state (`RecordingView`'s "System audio" segmented
-    /// option) rather than assuming the requested setting took effect.
+    /// real, honest state in `RecordingView`'s capture-source details rather
+    /// than assuming the requested setting took effect.
     system_audio_active: bool,
+    /// The microphone actually opened for this recording, as named by cpal.
+    microphone_name: String,
+    /// Current microphone level and the loudest peak observed since the
+    /// previous state snapshot. These are diagnostics only; no audio samples
+    /// cross the native/webview boundary.
+    input_rms: f32,
+    input_peak: f32,
+    /// Monotonic callback count used to detect a stream that has stopped
+    /// delivering data even when cpal has not produced an explicit error.
+    input_sequence: u64,
+    input_error: Option<String>,
 }
 
 fn emit_recording_state(
@@ -976,12 +1544,19 @@ fn emit_recording_state(
     state: &'static str,
     elapsed_secs: f64,
     system_audio_active: bool,
+    microphone_name: &str,
+    input: RecordingInputSnapshot,
 ) {
     let event = RecordingStateEvent {
         note_id: note_id.to_string(),
         state,
         elapsed: elapsed_secs,
         system_audio_active,
+        microphone_name: microphone_name.to_string(),
+        input_rms: input.rms,
+        input_peak: input.peak,
+        input_sequence: input.sequence,
+        input_error: input.error,
     };
     if let Err(e) = app.emit("recording-state", event) {
         log::warn!("failed to emit recording-state for {note_id}: {e}");
@@ -1042,14 +1617,17 @@ pub async fn start_recording(
     app: AppHandle,
     store: State<'_, SharedStore>,
     recorder: State<'_, SharedRecorderState>,
+    input_preview: State<'_, SharedInputPreview>,
     settings: State<'_, SharedSettings>,
     llm_busy: State<'_, LlmBusy>,
     model_id: Option<String>,
     include_system_audio: Option<bool>,
+    input_device_id: Option<String>,
 ) -> std::result::Result<String, String> {
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
     }
+    ensure_microphone_authorized().map_err(|error| error.to_string())?;
 
     // Observability only — not a guard. Starting a recording while an LLM
     // generation (a summarize or an ask) is in flight keeps both a whisper
@@ -1081,7 +1659,17 @@ pub async fn start_recording(
 
     let (sample_tx, sample_rx) =
         std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
-    let handle = match Recorder::start(note_dir.clone(), sample_tx, attempt_system_audio) {
+    // Keep the preview mutex until the active recorder is installed. A
+    // concurrent preview start therefore cannot slip a new meter stream in
+    // between dropping the old one and opening the final capture stream.
+    let mut preview_guard = lock(&input_preview);
+    preview_guard.take();
+    let handle = match Recorder::start(
+        note_dir.clone(),
+        sample_tx,
+        attempt_system_audio,
+        input_device_id.as_deref(),
+    ) {
         Ok(handle) => handle,
         Err(e) => {
             // The note directory was already created by `create_note_now`
@@ -1103,12 +1691,16 @@ pub async fn start_recording(
 
     let note_id = meta.id.clone();
     let system_audio_active = handle.system_audio_active();
+    let microphone_name = handle.microphone_name().to_string();
+    let initial_input = recording_input_snapshot(&handle.shared);
 
-    let stt_worker = spawn_stt_worker_if_model_installed(&app, &store, &note_id, &model_id, sample_rx);
+    let stt_worker =
+        spawn_stt_worker_if_model_installed(&app, &store, &note_id, &model_id, sample_rx);
 
     let tick_app = app.clone();
     let tick_note_id = note_id.clone();
     let tick_shared = handle.shared.clone();
+    let tick_microphone_name = microphone_name.clone();
     let tick_handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         // The first tick fires immediately; skip it so it doesn't race the
@@ -1120,7 +1712,15 @@ pub async fn start_recording(
             let paused = tick_shared.paused.load(Ordering::SeqCst);
             let elapsed_ms = lock(&tick_shared.tracker).elapsed_ms(Instant::now());
             let state = if paused { "paused" } else { "recording" };
-            emit_recording_state(&tick_app, &tick_note_id, state, elapsed_ms as f64 / 1000.0, system_audio_active);
+            emit_recording_state(
+                &tick_app,
+                &tick_note_id,
+                state,
+                elapsed_ms as f64 / 1000.0,
+                system_audio_active,
+                &tick_microphone_name,
+                recording_input_snapshot(&tick_shared),
+            );
         }
     });
 
@@ -1130,9 +1730,19 @@ pub async fn start_recording(
         stt_worker,
         tick_handle,
         system_audio_active,
+        microphone_name: microphone_name.clone(),
     });
+    drop(preview_guard);
 
-    emit_recording_state(&app, &note_id, "recording", 0.0, system_audio_active);
+    emit_recording_state(
+        &app,
+        &note_id,
+        "recording",
+        0.0,
+        system_audio_active,
+        &microphone_name,
+        initial_input,
+    );
     Ok(note_id)
 }
 
@@ -1212,8 +1822,18 @@ pub fn pause_recording(
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
     let system_audio_active = active.system_audio_active;
+    let microphone_name = active.microphone_name.clone();
+    let input = recording_input_snapshot(&active.handle.shared);
     drop(guard);
-    emit_recording_state(&app, &note_id, "paused", elapsed_secs, system_audio_active);
+    emit_recording_state(
+        &app,
+        &note_id,
+        "paused",
+        elapsed_secs,
+        system_audio_active,
+        &microphone_name,
+        input,
+    );
     Ok(())
 }
 
@@ -1232,8 +1852,18 @@ pub fn resume_recording(
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
     let system_audio_active = active.system_audio_active;
+    let microphone_name = active.microphone_name.clone();
+    let input = recording_input_snapshot(&active.handle.shared);
     drop(guard);
-    emit_recording_state(&app, &note_id, "recording", elapsed_secs, system_audio_active);
+    emit_recording_state(
+        &app,
+        &note_id,
+        "recording",
+        elapsed_secs,
+        system_audio_active,
+        &microphone_name,
+        input,
+    );
     Ok(())
 }
 
@@ -1273,7 +1903,8 @@ pub fn stop_recording(
 
     active.tick_handle.abort();
 
-    if let Some(err) = active.handle.last_error() {
+    let mut capture_warning = active.handle.last_error();
+    if let Some(err) = capture_warning.as_ref() {
         log::warn!(
             "recording {} encountered a stream error before stopping: {err}",
             active.note_id
@@ -1282,11 +1913,14 @@ pub fn stop_recording(
 
     let note_id = active.note_id;
     let system_audio_active = active.system_audio_active;
+    let microphone_name = active.microphone_name;
+    let final_input = recording_input_snapshot(&active.handle.shared);
     let fallback_elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
 
     let duration_sec = match active.handle.stop() {
         Ok((duration_sec, _wav_path, _system_audio_active)) => duration_sec,
         Err(e) => {
+            capture_warning = Some(format!("Audio finalization was incomplete: {e}"));
             log::warn!(
                 "failed to cleanly stop recording {note_id}: {e}; finalizing the note anyway \
                  with its last known elapsed time so it doesn't stay stuck as \"recording\""
@@ -1329,10 +1963,24 @@ pub fn stop_recording(
     // rather than failing the whole `stop_recording` call over a purely
     // descriptive metadata field.
     let meta = if system_audio_active {
-        match lock_store(&store).set_note_sources(&note_id, vec!["mic".to_string(), "system".to_string()]) {
+        match lock_store(&store)
+            .set_note_sources(&note_id, vec!["mic".to_string(), "system".to_string()])
+        {
             Ok(updated) => updated,
             Err(e) => {
                 log::warn!("failed to record system-audio source for note {note_id}: {e}");
+                meta
+            }
+        }
+    } else {
+        meta
+    };
+
+    let meta = if let Some(warning) = capture_warning {
+        match lock_store(&store).set_capture_warning(&note_id, warning) {
+            Ok(updated) => updated,
+            Err(error) => {
+                log::warn!("failed to persist capture warning for note {note_id}: {error}");
                 meta
             }
         }
@@ -1350,7 +1998,15 @@ pub fn stop_recording(
         log::warn!("failed to write note.md for {note_id}: {e}");
     }
 
-    emit_recording_state(&app, &note_id, "stopped", duration_sec, system_audio_active);
+    emit_recording_state(
+        &app,
+        &note_id,
+        "stopped",
+        duration_sec,
+        system_audio_active,
+        &microphone_name,
+        final_input,
+    );
 
     auto_trigger_summarize(&app, &store, &settings, &engine, &llm_busy, &note_id);
 
@@ -1514,6 +2170,27 @@ fn auto_trigger_summarize(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn avfoundation_microphone_status_maps_to_stable_ipc_values() {
+        assert_eq!(
+            microphone_permission_from_av(AVAuthorizationStatus::NotDetermined),
+            MicrophonePermission::NotDetermined
+        );
+        assert_eq!(
+            microphone_permission_from_av(AVAuthorizationStatus::Restricted),
+            MicrophonePermission::Restricted
+        );
+        assert_eq!(
+            microphone_permission_from_av(AVAuthorizationStatus::Denied),
+            MicrophonePermission::Denied
+        );
+        assert_eq!(
+            microphone_permission_from_av(AVAuthorizationStatus::Authorized),
+            MicrophonePermission::Authorized
+        );
+    }
+
     // --- is_recording_active -------------------------------------------
 
     #[test]
@@ -1550,12 +2227,20 @@ mod tests {
 
     #[test]
     fn resolve_include_system_audio_none_falls_back_to_the_settings_default_true() {
-        assert!(resolve_include_system_audio(None, true, SysAudioAvailability::Ready));
+        assert!(resolve_include_system_audio(
+            None,
+            true,
+            SysAudioAvailability::Ready
+        ));
     }
 
     #[test]
     fn resolve_include_system_audio_none_falls_back_to_the_settings_default_false() {
-        assert!(!resolve_include_system_audio(None, false, SysAudioAvailability::Ready));
+        assert!(!resolve_include_system_audio(
+            None,
+            false,
+            SysAudioAvailability::Ready
+        ));
     }
 
     #[test]
@@ -1579,7 +2264,88 @@ mod tests {
             false,
             SysAudioAvailability::Ready,
         ));
-        assert!(!resolve_include_system_audio(None, false, SysAudioAvailability::NotGranted));
+        assert!(!resolve_include_system_audio(
+            None,
+            false,
+            SysAudioAvailability::NotGranted
+        ));
+    }
+
+    // --- input preview levels ------------------------------------------
+
+    #[test]
+    fn input_levels_mono_reports_expected_rms_and_peak() {
+        let (rms, peak) = input_levels(&[0.5_f32, -0.5], 1);
+        assert!((rms - 0.5).abs() < 1e-6);
+        assert!((peak - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn input_levels_stereo_uses_mono_rms_but_preserves_channel_peak() {
+        let (rms, peak) = input_levels(&[0.5_f32, -0.5, 1.0, 1.0], 2);
+        assert!((rms - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(peak, 1.0);
+    }
+
+    #[test]
+    fn input_levels_empty_input_is_silent() {
+        assert_eq!(input_levels::<f32>(&[], 2), (0.0, 0.0));
+    }
+
+    #[test]
+    fn audio_input_level_event_serializes_for_the_frontend() {
+        let value = serde_json::to_value(AudioInputLevelEvent {
+            session_id: "preview-1".to_string(),
+            rms: 0.25,
+            peak: 0.75,
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(value["sessionId"], "preview-1");
+        assert_eq!(value["rms"], 0.25);
+        assert_eq!(value["peak"], 0.75);
+        assert!(value["error"].is_null());
+    }
+
+    #[test]
+    fn recording_input_snapshot_reports_latest_rms_interval_peak_and_sequence() {
+        let shared = test_shared_state();
+        shared
+            .input_rms_bits
+            .store(0.2_f32.to_bits(), Ordering::Relaxed);
+        store_max_f32(&shared.input_peak_bits, 0.7);
+        store_max_f32(&shared.input_peak_bits, 0.4);
+        shared.input_sequence.store(42, Ordering::Relaxed);
+
+        let first = recording_input_snapshot(&shared);
+        assert!((first.rms - 0.2).abs() < 1e-6);
+        assert!((first.peak - 0.7).abs() < 1e-6);
+        assert_eq!(first.sequence, 42);
+        assert!(first.error.is_none());
+
+        let second = recording_input_snapshot(&shared);
+        assert_eq!(second.peak, 0.0);
+        assert_eq!(second.sequence, 42);
+    }
+
+    #[test]
+    fn recording_state_event_serializes_input_health_for_the_frontend() {
+        let value = serde_json::to_value(RecordingStateEvent {
+            note_id: "note-live".to_string(),
+            state: "recording",
+            elapsed: 12.5,
+            system_audio_active: false,
+            microphone_name: "Studio Display Microphone".to_string(),
+            input_rms: 0.08,
+            input_peak: 0.7,
+            input_sequence: 88,
+            input_error: None,
+        })
+        .unwrap();
+        assert!((value["inputRms"].as_f64().unwrap() - 0.08).abs() < 1e-6);
+        assert!((value["inputPeak"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        assert_eq!(value["inputSequence"], 88);
+        assert!(value["inputError"].is_null());
     }
 
     // --- downmix_to_mono -----------------------------------------------
@@ -1731,9 +2497,7 @@ mod tests {
     #[test]
     fn resample_chunked_vs_one_shot_exact_for_uneven_chunks() {
         let n = 10_000usize;
-        let input: Vec<f32> = (0..n)
-            .map(|i| ((i as f32) * 0.001).sin())
-            .collect();
+        let input: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.001).sin()).collect();
 
         let mut one_shot = LinearResampler::new(44_100, 16_000);
         let one_shot_out = one_shot.resample(&input);
@@ -1782,9 +2546,7 @@ mod tests {
         let path = dir.path().join("audio.wav");
 
         let mut writer = WavWriter::create(&path).unwrap();
-        let ramp: Vec<f32> = (0..1000)
-            .map(|i| -1.0 + 2.0 * (i as f32) / 999.0)
-            .collect();
+        let ramp: Vec<f32> = (0..1000).map(|i| -1.0 + 2.0 * (i as f32) / 999.0).collect();
         writer.append(&ramp).unwrap();
         let total = writer.finalize().unwrap();
         assert_eq!(total, ramp.len() as u64);
@@ -1827,6 +2589,34 @@ mod tests {
         // runtime; this test documents the guarantee.
     }
 
+    #[test]
+    fn low_disk_write_failure_is_reported_while_transcription_forwarding_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let mut writer = WavWriter::create_failing_after(&path, 2).unwrap();
+        let shared = test_shared_state();
+        let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let mut block = Vec::new();
+        let mut dropped = 0;
+
+        append_and_forward(
+            &mut writer,
+            &stt_tx,
+            &shared,
+            &mut block,
+            &mut dropped,
+            &[0.1, 0.2, 0.3],
+        );
+
+        assert_eq!(
+            lock(&shared.last_error).as_deref(),
+            Some("simulated low-disk WAV write failure")
+        );
+        assert_eq!(block, vec![0.1, 0.2, 0.3]);
+        assert!(stt_rx.try_recv().is_err());
+        assert_eq!(writer.finalize().unwrap(), 2);
+    }
+
     // --- run_writer_thread (the audio callback -> WAV + STT hand-off) -------
 
     fn test_shared_state() -> Arc<SharedState> {
@@ -1834,6 +2624,9 @@ mod tests {
             tracker: Mutex::new(ElapsedTracker::new()),
             paused: Arc::new(AtomicBool::new(false)),
             last_error: Mutex::new(None),
+            input_rms_bits: AtomicU32::new(0.0_f32.to_bits()),
+            input_peak_bits: AtomicU32::new(0.0_f32.to_bits()),
+            input_sequence: AtomicU64::new(0),
         })
     }
 
@@ -1920,7 +2713,8 @@ mod tests {
         let writer = WavWriter::create(&path).unwrap();
 
         let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
-        let (stt_tx, _stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx, _stt_rx) =
+            std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
         drop(chunk_tx);
 
         let total = run_writer_thread(writer, chunk_rx, stt_tx, test_shared_state()).unwrap();
@@ -2002,7 +2796,9 @@ mod tests {
         drop(chunk_tx);
         drop(sys_tx);
 
-        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        let total =
+            run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state())
+                .unwrap();
         assert_eq!(total, 3);
 
         let forwarded = stt_rx.recv().unwrap();
@@ -2035,7 +2831,9 @@ mod tests {
         drop(chunk_tx);
         drop(sys_tx);
 
-        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        let total =
+            run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state())
+                .unwrap();
         assert_eq!(total, 3);
 
         // Mixing with all-silence system audio reproduces the mic signal
@@ -2058,11 +2856,15 @@ mod tests {
         let (stt_tx, stt_rx) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
 
         sys_tx.send(Arc::new(vec![0.2f32])).unwrap();
-        chunk_tx.send(Arc::new(vec![0.1f32, 0.1, 0.1, 0.1])).unwrap();
+        chunk_tx
+            .send(Arc::new(vec![0.1f32, 0.1, 0.1, 0.1]))
+            .unwrap();
         drop(chunk_tx);
         drop(sys_tx);
 
-        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        let total =
+            run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state())
+                .unwrap();
         assert_eq!(total, 4);
 
         let forwarded = stt_rx.recv().unwrap();
@@ -2089,7 +2891,9 @@ mod tests {
         drop(chunk_tx);
         drop(sys_tx);
 
-        let total = run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        let total =
+            run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state())
+                .unwrap();
         assert_eq!(total, 3);
 
         let forwarded = stt_rx.recv().unwrap();
@@ -2109,7 +2913,8 @@ mod tests {
         let path_a = dir_a.path().join("audio.wav");
         let writer_a = WavWriter::create(&path_a).unwrap();
         let (chunk_tx_a, chunk_rx_a) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
-        let (stt_tx_a, _stt_rx_a) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx_a, _stt_rx_a) =
+            std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
         chunk_tx_a.send(Arc::new(mic_samples.clone())).unwrap();
         drop(chunk_tx_a);
         run_writer_thread(writer_a, chunk_rx_a, stt_tx_a, test_shared_state()).unwrap();
@@ -2118,12 +2923,21 @@ mod tests {
         let path_b = dir_b.path().join("audio.wav");
         let writer_b = WavWriter::create(&path_b).unwrap();
         let (chunk_tx_b, chunk_rx_b) = std::sync::mpsc::channel::<Arc<Vec<f32>>>();
-        let (sys_tx_b, sys_rx_b) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
-        let (stt_tx_b, _stt_rx_b) = std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (sys_tx_b, sys_rx_b) =
+            std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
+        let (stt_tx_b, _stt_rx_b) =
+            std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
         chunk_tx_b.send(Arc::new(mic_samples)).unwrap();
         drop(chunk_tx_b);
         drop(sys_tx_b);
-        run_writer_thread_with_system(writer_b, chunk_rx_b, sys_rx_b, stt_tx_b, test_shared_state()).unwrap();
+        run_writer_thread_with_system(
+            writer_b,
+            chunk_rx_b,
+            sys_rx_b,
+            stt_tx_b,
+            test_shared_state(),
+        )
+        .unwrap();
 
         let bytes_a = std::fs::read(&path_a).unwrap();
         let bytes_b = std::fs::read(&path_b).unwrap();
@@ -2167,7 +2981,8 @@ mod tests {
         drop(chunk_tx);
         drop(sys_tx);
 
-        run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state())
+            .unwrap();
 
         // Mixing with all-zero mic reproduces the (post-resync) system
         // signal exactly — the 10 samples actually consumed must be the
@@ -2197,13 +3012,16 @@ mod tests {
 
         // Same clamp-safe index scaling as the mic-stall test above.
         let scale = 0.5 / SYS_BUF_MAX_LEAD_SAMPLES as f32;
-        let backlog: Vec<f32> = (0..SYS_BUF_MAX_LEAD_SAMPLES).map(|i| i as f32 * scale).collect();
+        let backlog: Vec<f32> = (0..SYS_BUF_MAX_LEAD_SAMPLES)
+            .map(|i| i as f32 * scale)
+            .collect();
         sys_tx.send(Arc::new(backlog)).unwrap();
         chunk_tx.send(Arc::new(vec![0.0f32; 10])).unwrap();
         drop(chunk_tx);
         drop(sys_tx);
 
-        run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state()).unwrap();
+        run_writer_thread_with_system(writer, chunk_rx, sys_rx, stt_tx, test_shared_state())
+            .unwrap();
 
         let forwarded = stt_rx.recv().unwrap();
         let expected: Vec<f32> = (0..10).map(|i| i as f32 * scale).collect();
@@ -2354,7 +3172,7 @@ mod tests {
 
         let (sample_tx, sample_rx) =
             std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
-        let handle = Recorder::start(note_dir.clone(), sample_tx, false)
+        let handle = Recorder::start(note_dir.clone(), sample_tx, false, None)
             .expect("Recorder::start failed — check mic permission / input device availability");
 
         let events: Arc<Mutex<Vec<stt::SttEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2368,7 +3186,8 @@ mod tests {
 
         std::thread::sleep(Duration::from_secs(10));
 
-        let (duration_sec, wav_path, _system_audio_active) = handle.stop().expect("Recorder::stop failed");
+        let (duration_sec, wav_path, _system_audio_active) =
+            handle.stop().expect("Recorder::stop failed");
         worker.join().expect("stt worker thread panicked");
         let final_meta = lock_store(&store)
             .finalize_note(&meta.id, duration_sec, 1)
@@ -2477,7 +3296,8 @@ mod tests {
         eprintln!("recording into {note_dir:?}");
         let _cleanup = NoteDirCleanupGuard(note_dir.clone());
 
-        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.wav");
+        let fixture =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.wav");
         assert!(fixture.exists(), "expected fixture at {fixture:?}");
         let mut afplay = std::process::Command::new("afplay")
             .arg(&fixture)
@@ -2486,7 +3306,7 @@ mod tests {
 
         let (sample_tx, sample_rx) =
             std::sync::mpsc::sync_channel::<Arc<Vec<f32>>>(STT_CHANNEL_CAPACITY);
-        let handle = Recorder::start(note_dir.clone(), sample_tx, true)
+        let handle = Recorder::start(note_dir.clone(), sample_tx, true, None)
             .expect("Recorder::start failed — check mic permission / input device availability");
         assert!(
             handle.system_audio_active(),
@@ -2508,7 +3328,10 @@ mod tests {
 
         let (duration_sec, wav_path, system_audio_active) =
             handle.stop().expect("Recorder::stop failed");
-        assert!(system_audio_active, "system audio should have stayed active for the whole recording");
+        assert!(
+            system_audio_active,
+            "system audio should have stayed active for the whole recording"
+        );
         worker.join().expect("stt worker thread panicked");
         lock_store(&store)
             .finalize_note(&meta.id, duration_sec, 1)
@@ -2519,7 +3342,10 @@ mod tests {
 
         eprintln!("recorded {duration_sec:.1}s, wav at {wav_path:?}");
         eprintln!("final note sources: {:?}", final_meta.sources);
-        assert_eq!(final_meta.sources, vec!["mic".to_string(), "system".to_string()]);
+        assert_eq!(
+            final_meta.sources,
+            vec!["mic".to_string(), "system".to_string()]
+        );
 
         assert!(wav_path.exists(), "audio.wav should exist");
         let mut reader = hound::WavReader::open(&wav_path).expect("failed to open recorded wav");
@@ -2527,14 +3353,21 @@ mod tests {
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / i16::MAX as f32)
             .collect();
-        eprintln!("recorded {} samples ({:.2}s at 16kHz)", samples.len(), samples.len() as f64 / 16_000.0);
+        eprintln!(
+            "recorded {} samples ({:.2}s at 16kHz)",
+            samples.len(),
+            samples.len() as f64 / 16_000.0
+        );
 
         // Primary assertion: the mixed wav actually contains non-silent
         // audio (proves the mic+system mixing pipeline delivered real
         // signal into the file), not merely that recording "ran".
         let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
         eprintln!("wav RMS = {rms}");
-        assert!(rms > 1e-4, "expected non-silent recorded audio, got RMS {rms}");
+        assert!(
+            rms > 1e-4,
+            "expected non-silent recorded audio, got RMS {rms}"
+        );
 
         // Bonus signal, not asserted — see this test's own doc comment for
         // why a transcript miss here is reported, not failed.

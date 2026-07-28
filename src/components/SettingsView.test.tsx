@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ModelStatus, StorageStats } from '../ipc/types'
+import type { Hardware, ModelStatus, Recommendation, StorageStats } from '../ipc/types'
 import { SettingsView } from './SettingsView'
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
@@ -37,7 +37,7 @@ function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
 
 const models: ModelStatus[] = [
   sttModel({ id: 'whisper-small', state: 'installed' }),
-  sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'notInstalled', sizeBytes: 1_500_000_000 }),
+  sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'notInstalled', sizeBytes: 1_500_000_000, minRamGb: 16 }),
   sttModel({ id: 'whisper-large-v3-turbo', displayName: 'Whisper large-v3-turbo', state: 'downloading' }),
   llmModel({ id: 'qwen3.5-4b', state: 'installed' }),
   llmModel({ id: 'gemma-4-e4b', displayName: 'Gemma 4 E4B', state: 'notInstalled', sizeBytes: 5_300_000_000 }),
@@ -45,9 +45,13 @@ const models: ModelStatus[] = [
 ]
 
 const storage: StorageStats = { modelsBytes: 6_400_000_000, audioBytes: 4_100_000_000, notesBytes: 1_900_000_000 }
+const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
+const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 
 const base = {
   models,
+  hardware,
+  recommendation,
   downloads: { 'whisper-large-v3-turbo': { downloaded: 800_000_000, total: 1_600_000_000 } },
   sttModel: 'whisper-small',
   setSttModel: vi.fn(),
@@ -66,10 +70,30 @@ const base = {
   toggleCaptureSystemAudio: vi.fn(),
   sysAudioAvailability: 'ready' as const,
   onRequestSysAudioPermission: vi.fn(),
+  onExportDiagnostics: vi.fn().mockResolvedValue(undefined),
 }
 
 describe('SettingsView', () => {
   afterEach(() => vi.useRealTimers())
+
+  it('explains this Mac and marks the backend-recommended model', () => {
+    render(<SettingsView {...base} />)
+    expect(screen.getByRole('region', { name: 'Detected Mac hardware' })).toHaveTextContent(
+      'Apple silicon · 16 GB memory · 8 CPU cores',
+    )
+    expect(screen.getByRole('radio', { name: /whisper small/i })).toHaveTextContent(
+      'RecommendedMinute’s default for this 16 GB Mac.',
+    )
+    expect(screen.getByRole('radio', { name: /whisper medium/i })).toHaveTextContent('Near memory limit')
+  })
+
+  it('exports a privacy-safe diagnostics report', () => {
+    const onExportDiagnostics = vi.fn().mockResolvedValue(undefined)
+    render(<SettingsView {...base} onExportDiagnostics={onExportDiagnostics} />)
+    expect(screen.getByText(/never includes note titles/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Export diagnostics' }))
+    expect(onExportDiagnostics).toHaveBeenCalledTimes(1)
+  })
 
   it('groups the transcription models under a radiogroup with one radio per STT entry', () => {
     render(<SettingsView {...base} />)

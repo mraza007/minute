@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, vi } from 'vitest'
 import type { NoteMeta, StoredSegment, SummaryDoc } from '../ipc/types'
 import { NoteView, type NoteViewProps } from './NoteView'
@@ -36,6 +36,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     selectedSummary: null,
     selectedMarkdown: meta ? `# ${meta.title}` : '',
     selectedAudioPath: null,
+    selectedNoteStorage: { totalBytes: 12_000_000, audioBytes: 11_000_000, documentBytes: 1_000_000 },
     transcriptLoading: false,
     pendingSeek: null,
     onPendingSeekApplied: vi.fn(),
@@ -58,6 +59,23 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     onRegenerateSummary: vi.fn(),
     onAsk: vi.fn(),
     onGoSettings: vi.fn(),
+    onSetPinned: vi.fn(),
+    onAddMarker: vi.fn().mockResolvedValue(undefined),
+    onUpdateMarker: vi.fn().mockResolvedValue(undefined),
+    onDeleteMarker: vi.fn().mockResolvedValue(undefined),
+    onRenameSpeaker: vi.fn(),
+    onMergeSpeakers: vi.fn().mockResolvedValue({
+      from: 'Speaker 1',
+      into: 'Speaker 2',
+      segmentIndices: [0],
+      checksum: 'merge-checksum',
+    }),
+    onUndoSpeakerMerge: vi.fn().mockResolvedValue(undefined),
+    onDeleteAudio: vi.fn().mockResolvedValue(undefined),
+    onStartRecording: vi.fn(),
+    processingFailure: null,
+    onRetryProcessing: vi.fn(),
+    onDismissProcessing: vi.fn(),
     ...overrides,
   }
 }
@@ -65,7 +83,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
 describe('NoteView', () => {
   it('shows an empty-library message when there is no selected note', () => {
     render(<NoteView {...makeProps({ meta: null, selectedMeta: null })} />)
-    expect(screen.getByText(/no notes yet/i)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: /no notes yet/i })).toBeInTheDocument()
   })
 
   it('renders the selected note title from real note metadata', () => {
@@ -131,6 +149,301 @@ describe('NoteView', () => {
     expect(screen.getByText('AI notes')).toBeInTheDocument()
   })
 
+  it('renders a post-recording overview with summary, decisions, actions, and markers', () => {
+    const meta = noteFixture({
+      status: 'ready',
+      markers: [{ seconds: 94, label: 'Pricing decision' }],
+    })
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          selectedTranscript: [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'Hello.' }],
+          selectedSummary: summaryFixture(),
+        })}
+      />,
+    )
+    expect(screen.getByText('Discussed the Q3 roadmap.')).toBeInTheDocument()
+    expect(screen.getByText('Ship the beta by Friday')).toBeInTheDocument()
+    expect(screen.getByText('Write release notes')).toBeInTheDocument()
+    expect(screen.getByText('Pricing decision')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open transcript' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask this note' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+  })
+
+  it('keeps overview content usable and offers retry when summarization fails', () => {
+    const onRegenerateSummary = vi.fn()
+    const meta = noteFixture()
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          summaryStatus: 'error',
+          summaryError: 'Model stopped unexpectedly.',
+          onRegenerateSummary,
+        })}
+      />,
+    )
+    expect(screen.getByText('Model stopped unexpectedly.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open transcript' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry summary' }))
+    expect(onRegenerateSummary).toHaveBeenCalledWith(meta.id)
+  })
+
+  it('filters transcript turns, submits a speaker rename, and returns focus to the filter', async () => {
+    const onRenameSpeaker = vi.fn()
+    const meta = noteFixture()
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' },
+      { speaker: 'Speaker 2', start: 4, end: 7, text: 'Second voice.' },
+    ]
+    render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, onRenameSpeaker })}
+      />,
+    )
+    const speakerFilter = screen.getByRole('combobox', { name: 'Filter transcript by speaker' })
+    fireEvent.change(speakerFilter, {
+      target: { value: 'Speaker 2' },
+    })
+    expect(screen.queryByText('First voice.')).not.toBeInTheDocument()
+    expect(screen.getByText('Second voice.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Rename speaker' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Speaker name' }), {
+      target: { value: 'Sam' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onRenameSpeaker).toHaveBeenCalledWith(meta.id, 'Speaker 2', 'Sam')
+    await waitFor(() => expect(speakerFilter).toHaveFocus())
+  })
+
+  it('returns focus to the speaker rename trigger when editing is cancelled with Escape', async () => {
+    const meta = noteFixture()
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' },
+      { speaker: 'Speaker 2', start: 4, end: 7, text: 'Second voice.' },
+    ]
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments })} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter transcript by speaker' }), {
+      target: { value: 'Speaker 2' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Rename speaker' }))
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Speaker name' }), { key: 'Escape' })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename speaker' })).toHaveFocus())
+  })
+
+  it('merges a filtered speaker into another speaker and offers exact undo', async () => {
+    const undo = {
+      from: 'Speaker 1',
+      into: 'Speaker 2',
+      segmentIndices: [0],
+      checksum: 'merge-checksum',
+    }
+    const onMergeSpeakers = vi.fn().mockResolvedValue(undo)
+    const onUndoSpeakerMerge = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture()
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' },
+      { speaker: 'Speaker 2', start: 4, end: 7, text: 'Second voice.' },
+    ]
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          selectedTranscript: segments,
+          onMergeSpeakers,
+          onUndoSpeakerMerge,
+        })}
+      />,
+    )
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter transcript by speaker' }), {
+      target: { value: 'Speaker 1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Merge speaker' }))
+    expect(screen.getByRole('combobox', { name: 'Merge into speaker' })).toHaveValue('Speaker 2')
+    fireEvent.click(screen.getByRole('button', { name: 'Merge' }))
+
+    await waitFor(() => expect(onMergeSpeakers).toHaveBeenCalledWith(meta.id, 'Speaker 1', 'Speaker 2'))
+    expect(await screen.findByText(/merged into/)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: 'Filter transcript by speaker' })).toHaveFocus()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(onUndoSpeakerMerge).toHaveBeenCalledWith(meta.id, undo))
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Filter transcript by speaker' })).toHaveFocus()
+  })
+
+  it('pins the current note from its header', () => {
+    const onSetPinned = vi.fn()
+    const meta = noteFixture({ pinned: false })
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, onSetPinned })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pin note' }))
+    expect(onSetPinned).toHaveBeenCalledWith(meta.id, true)
+  })
+
+  it('adds a marker at the captured playback position', async () => {
+    const OriginalAudio = window.Audio
+    let audio!: HTMLAudioElement
+    const audioSpy = vi.spyOn(window, 'Audio').mockImplementation(function (...args: ConstructorParameters<typeof Audio>) {
+      audio = new OriginalAudio(...args)
+      return audio
+    } as unknown as typeof Audio)
+    const onAddMarker = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture()
+
+    try {
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            selectedAudioPath: '/notes/abc/audio.wav',
+            onAddMarker,
+          })}
+        />,
+      )
+      Object.defineProperty(audio, 'duration', { configurable: true, value: meta.durationSec })
+      audio.currentTime = 94
+      act(() => {
+        audio.dispatchEvent(new Event('loadedmetadata'))
+        audio.dispatchEvent(new Event('timeupdate'))
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add marker at 01:34' }))
+      const input = screen.getByRole('textbox', { name: 'New marker label at 01:34' })
+      fireEvent.change(input, { target: { value: 'Pricing decision' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save marker' }))
+
+      await waitFor(() => expect(onAddMarker).toHaveBeenCalledWith(meta.id, 94, 'Pricing decision'))
+      expect(screen.queryByRole('textbox', { name: 'New marker label at 01:34' })).not.toBeInTheDocument()
+    } finally {
+      audioSpy.mockRestore()
+    }
+  })
+
+  it('does not offer a fake marker action when completed audio is unavailable', () => {
+    const meta = noteFixture()
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedAudioPath: null })} />)
+    expect(screen.getByRole('button', { name: 'Add marker unavailable without audio' })).toBeDisabled()
+  })
+
+  it('edits a persisted marker inline and preserves its timestamp', async () => {
+    const onUpdateMarker = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture({ markers: [{ seconds: 94, label: 'Old label' }] })
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          onUpdateMarker,
+        })}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Edit marker Old label' }))
+    const input = screen.getByRole('textbox', { name: 'Marker label at 01:34' })
+    expect(input).toHaveValue('Old label')
+    fireEvent.change(input, { target: { value: 'Pricing decision' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onUpdateMarker).toHaveBeenCalledWith(meta.id, 0, 'Pricing decision'))
+    await waitFor(() => {
+      expect(screen.queryByRole('textbox', { name: 'Marker label at 01:34' })).not.toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Edit marker Old label' })).toHaveFocus()
+    })
+  })
+
+  it('returns focus to the marker edit trigger when Escape closes the editor', async () => {
+    const meta = noteFixture({ markers: [{ seconds: 94, label: 'Pricing decision' }] })
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, noteTab: 'overview' })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit marker Pricing decision' }))
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Marker label at 01:34' }), { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Edit marker Pricing decision' })).toHaveFocus()
+    })
+  })
+
+  it('requires confirmation before deleting a persisted marker', async () => {
+    const onDeleteMarker = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture({ markers: [{ seconds: 94, label: 'Pricing decision' }] })
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          onDeleteMarker,
+        })}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Delete marker Pricing decision' }))
+    expect(onDeleteMarker).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete marker Pricing decision' }))
+    await waitFor(() => expect(onDeleteMarker).toHaveBeenCalledWith(meta.id, 0))
+  })
+
+  it('offers exact marker undo and explains per-note audio retention', async () => {
+    const onDeleteMarker = vi.fn().mockResolvedValue(undefined)
+    const onAddMarker = vi.fn().mockResolvedValue(undefined)
+    const onDeleteAudio = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture({ markers: [{ seconds: 94, label: 'Pricing decision' }] })
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          onDeleteMarker,
+          onAddMarker,
+          onDeleteAudio,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('12 MB total · 11 MB audio · 1 MB notes')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete marker Pricing decision' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete marker Pricing decision' }))
+    await waitFor(() => screen.getByText('Marker “Pricing decision” deleted.'))
+    const undo = screen.getByRole('button', { name: 'Undo' })
+    await waitFor(() => expect(undo).toHaveFocus())
+    fireEvent.click(undo)
+    await waitFor(() => expect(onAddMarker).toHaveBeenCalledWith(meta.id, 94, 'Pricing decision'))
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Recording markers' })).toHaveFocus())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove original audio' }))
+    expect(onDeleteAudio).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm remove audio' }))
+    await waitFor(() => expect(onDeleteAudio).toHaveBeenCalledTimes(1))
+  })
+
+  it('offers refresh recovery without hiding the selected note', () => {
+    const onRetryProcessing = vi.fn()
+    render(
+      <NoteView
+        {...makeProps({
+          processingFailure: { stage: 'preparing', message: 'Library read failed.' },
+          onRetryProcessing,
+        })}
+      />,
+    )
+    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    expect(screen.getByText('Library read failed.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry refresh' }))
+    expect(onRetryProcessing).toHaveBeenCalledTimes(1)
+  })
+
   describe('status pill', () => {
     it('shows a "Finalizing transcript…" pill when the selected note is mid-finalization', () => {
       const meta = noteFixture({ id: 'note-1', status: 'recording' })
@@ -144,6 +457,20 @@ describe('NoteView', () => {
       render(<NoteView {...makeProps({ meta, selectedMeta: meta, sttStatusNoteId: null, sttStatus: 'idle' })} />)
       expect(screen.getByText('Transcribed')).toBeInTheDocument()
       expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
+    })
+
+    it('shows persistent recovery guidance instead of a success pill after capture failure', () => {
+      const meta = noteFixture({
+        id: 'note-1',
+        status: 'transcribed',
+        captureWarning: 'Audio finalization was incomplete: disk full',
+      })
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta })} />)
+
+      expect(screen.getByText('Needs review')).toBeInTheDocument()
+      expect(screen.getByText('Part of this recording may be missing.')).toBeInTheDocument()
+      expect(screen.getByText(/disk full/)).toBeInTheDocument()
+      expect(screen.queryByText('Transcribed')).not.toBeInTheDocument()
     })
 
     it('shows a green "Ready" pill when the selected note has status ready', () => {
@@ -270,7 +597,7 @@ describe('NoteView', () => {
       const meta = noteFixture()
       const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'Thanks for making time.' }]
       render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, selectedAudioPath: null })} />)
-      expect(screen.getByRole('button', { name: 'Play from 00:00' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Audio unavailable at 00:00' })).toBeDisabled()
     })
 
     it('makes transcript timestamps seekable once audio is present', () => {
@@ -335,7 +662,7 @@ describe('NoteView', () => {
       act(() => {
         audioInstances[0].dispatchEvent(new Event('error'))
       })
-      expect(screen.getByRole('button', { name: 'Play from 00:00' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Audio unavailable at 00:00' })).toBeDisabled()
     })
 
     it('makes ask-history citations inert once the element errors', () => {
@@ -581,7 +908,7 @@ describe('NoteView', () => {
       expect(screen.queryByRole('heading', { name: 'Client call — Acme' })).not.toBeInTheDocument()
     })
 
-    it('pressing Enter commits the new title via onRename and exits edit mode', () => {
+    it('pressing Enter commits the new title, exits edit mode, and restores focus', async () => {
       const onRename = vi.fn()
       const meta = noteFixture()
       render(<NoteView {...makeProps({ meta, selectedMeta: meta, onRename })} />)
@@ -593,9 +920,10 @@ describe('NoteView', () => {
 
       expect(onRename).toHaveBeenCalledWith(meta.id, 'New title')
       expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
     })
 
-    it('pressing Escape reverts the draft and does not call onRename', () => {
+    it('pressing Escape reverts the draft and restores focus without renaming', async () => {
       const onRename = vi.fn()
       render(<NoteView {...makeProps({ onRename })} />)
 
@@ -606,6 +934,7 @@ describe('NoteView', () => {
 
       expect(onRename).not.toHaveBeenCalled()
       expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
     })
 
     it('does not call onRename when the title is unchanged', () => {
@@ -646,26 +975,28 @@ describe('NoteView', () => {
       const meta = noteFixture()
       render(<NoteView {...makeProps({ meta, selectedMeta: meta, onDelete })} />)
 
-      fireEvent.click(screen.getByTitle('Delete'))
+      fireEvent.click(screen.getByRole('button', { name: `Delete note ${meta.title}` }))
       expect(onDelete).not.toHaveBeenCalled()
-      expect(screen.getByTitle('Confirm delete?')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: `Confirm delete note ${meta.title}` })).toBeInTheDocument()
+      expect(screen.getByText(`Press again to confirm deletion of ${meta.title}`)).toBeInTheDocument()
 
-      fireEvent.click(screen.getByTitle('Confirm delete?'))
+      fireEvent.click(screen.getByRole('button', { name: `Confirm delete note ${meta.title}` }))
       expect(onDelete).toHaveBeenCalledWith(meta.id)
     })
 
     it('disarms the confirmation after the timeout elapses without a second click', () => {
       const onDelete = vi.fn()
-      render(<NoteView {...makeProps({ onDelete })} />)
+      const meta = noteFixture()
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, onDelete })} />)
 
-      fireEvent.click(screen.getByTitle('Delete'))
-      expect(screen.getByTitle('Confirm delete?')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: `Delete note ${meta.title}` }))
+      expect(screen.getByRole('button', { name: `Confirm delete note ${meta.title}` })).toBeInTheDocument()
 
       act(() => {
         vi.advanceTimersByTime(4000)
       })
 
-      expect(screen.getByTitle('Delete')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: `Delete note ${meta.title}` })).toBeInTheDocument()
       expect(onDelete).not.toHaveBeenCalled()
     })
   })

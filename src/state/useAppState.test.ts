@@ -3,6 +3,7 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
+  AudioInputDevice,
   Hardware,
   ModelStatus,
   NoteMeta,
@@ -95,7 +96,7 @@ interface SetupOpts {
   /** What `start_recording` resolves with — defaults to a fixed id. */
   startRecordingId?: string
   /** Controls `stop_recording`'s outcome: resolves with `result` (defaults to `notes[0]`), or rejects with `reject`. */
-  stopRecording?: { result?: NoteMeta; reject?: string }
+  stopRecording?: { result?: NoteMeta; reject?: string; wait?: Promise<void> }
   /** Controls `list_notes`/`storage_stats` after a successful `stop_recording`, independent of `stopRecording.reject`. */
   postStopRefreshRejects?: boolean
   /** `get_note(id)`'s response — defaults to `{ meta: notes.find(id) ?? notes[0], transcript: { segments: [] } }`. */
@@ -116,6 +117,10 @@ interface SetupOpts {
   sysAudioAvailability?: SysAudioAvailability
   /** `request_sys_audio_permission`'s response — defaults to whatever `sysAudioAvailability` currently is (a no-op re-check); override to simulate the prompt actually changing the result. */
   requestSysAudioPermissionResult?: SysAudioAvailability
+  /** Default microphone returned to the recording preflight. */
+  audioInputName?: string | null
+  /** Full microphone list returned to the recording preflight. */
+  audioInputDevices?: AudioInputDevice[]
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -146,6 +151,25 @@ function setupIPC(opts: SetupOpts = {}) {
           return recommendation
         case 'storage_stats':
           return storage
+        case 'audio_input_status':
+          {
+            const devices = opts.audioInputDevices ?? (
+              opts.audioInputName === null
+                ? []
+                : [{
+                    id: 'default-input',
+                    name: opts.audioInputName ?? 'MacBook Pro Microphone',
+                    isDefault: true,
+                  }]
+            )
+            return {
+              devices,
+              defaultDeviceId: devices.find(device => device.isDefault)?.id ?? null,
+              permission: 'authorized',
+            }
+          }
+        case 'request_microphone_permission':
+          return 'authorized'
         case 'start_recording':
           return opts.startRecordingId ?? '20260722-130000'
         case 'pause_recording':
@@ -153,6 +177,9 @@ function setupIPC(opts: SetupOpts = {}) {
           return null
         case 'stop_recording':
           if (opts.stopRecording?.reject) throw opts.stopRecording.reject
+          if (opts.stopRecording?.wait) {
+            return opts.stopRecording.wait.then(() => opts.stopRecording?.result ?? notes[0])
+          }
           return opts.stopRecording?.result ?? notes[0]
         case 'get_note': {
           const { id } = args as { id: string }
@@ -166,7 +193,84 @@ function setupIPC(opts: SetupOpts = {}) {
           const match = notes.find(n => n.id === id) ?? notes[0]
           return { ...match, title }
         }
-        case 'delete_note':
+        case 'set_note_pinned': {
+          const { id, pinned } = args as { id: string; pinned: boolean }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return { ...match, pinned }
+        }
+        case 'add_note_marker': {
+          const { id, seconds, label } = args as { id: string; seconds: number; label: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return { ...match, markers: [...(match.markers ?? []), { seconds, label }] }
+        }
+        case 'update_note_marker': {
+          const { id, index, label } = args as { id: string; index: number; label: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            ...match,
+            markers: (match.markers ?? []).map((marker, markerIndex) => (
+              markerIndex === index ? { ...marker, label } : marker
+            )),
+          }
+        }
+        case 'delete_note_marker': {
+          const { id, index } = args as { id: string; index: number }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            ...match,
+            markers: (match.markers ?? []).filter((_, markerIndex) => markerIndex !== index),
+          }
+        }
+        case 'rename_speaker':
+          return { segments: [] }
+        case 'merge_speakers': {
+          const { id, from, into } = args as { id: string; from: string; into: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            transcript: { segments: [] },
+            meta: { ...match, speakers: Math.max(1, match.speakers - 1) },
+            undo: {
+              from,
+              into,
+              segmentIndices: [0],
+              checksum: 'merge-checksum',
+            },
+          }
+        }
+        case 'undo_speaker_merge': {
+          const { id } = args as { id: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            transcript: { segments: [] },
+            meta: match,
+          }
+        }
+        case 'delete_note': {
+          const { id } = args as { id: string }
+          const match = notes.find(note => note.id === id) ?? notes[0]
+          return {
+            id,
+            title: match.title,
+            trashName: `${id}-trash`,
+            checksum: 'recovery-checksum',
+          }
+        }
+        case 'note_storage_stats':
+          return { totalBytes: 12_000, audioBytes: 10_000, documentBytes: 2_000 }
+        case 'delete_note_audio': {
+          const { id } = args as { id: string }
+          const match = notes.find(note => note.id === id) ?? notes[0]
+          return { ...match, audioDeleted: true }
+        }
+        case 'delete_notes':
+          return []
+        case 'restore_note':
+          return notes[0]
+        case 'restore_notes':
+          return notes
+        case 'export_notes':
+        case 'export_diagnostics':
+          return '/tmp/export'
         case 'reveal_note':
           return null
         case 'get_settings':
@@ -492,7 +596,18 @@ describe('useAppState', () => {
     const noteId = '20260722-130000'
 
     function recordingState(overrides: Partial<RecordingStateEvent> = {}): RecordingStateEvent {
-      return { noteId, state: 'recording', elapsed: 0, systemAudioActive: false, ...overrides }
+      return {
+        noteId,
+        state: 'recording',
+        elapsed: 0,
+        systemAudioActive: false,
+        microphoneName: 'MacBook Pro Microphone',
+        inputRms: 0.08,
+        inputPeak: 0.4,
+        inputSequence: 1,
+        inputError: null,
+        ...overrides,
+      }
     }
 
     function segment(overrides: Partial<TranscriptSegmentEvent> = {}): TranscriptSegmentEvent {
@@ -515,11 +630,102 @@ describe('useAppState', () => {
       const calls: Array<{ cmd: string; args: unknown }> = []
       const result = await loadedAndRecording({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
 
-      expect(calls.some(c => c.cmd === 'start_recording' && (c.args as { modelId: string }).modelId === 'whisper-small')).toBe(true)
+      expect(
+        calls.some(
+          c =>
+            c.cmd === 'start_recording' &&
+            (c.args as { modelId: string; includeSystemAudio: boolean }).modelId === 'whisper-small' &&
+            (c.args as { modelId: string; includeSystemAudio: boolean }).includeSystemAudio === false,
+        ),
+      ).toBe(true)
       expect(result.current.recElapsed).toBe(0)
       expect(result.current.recTime).toBe('00:00')
       expect(result.current.liveSegments).toEqual([])
       expect(result.current.sttStatus).toBe('idle')
+    })
+
+    it('renames the active recording through the persisted note title', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const result = await loadedAndRecording({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      expect(result.current.recordingTitle).toBe('New recording')
+
+      await act(async () => {
+        await result.current.renameActiveRecording('Onboarding flow review')
+      })
+
+      expect(
+        calls.some(
+          call =>
+            call.cmd === 'rename_note' &&
+            (call.args as { id: string; title: string }).id === noteId &&
+            (call.args as { id: string; title: string }).title === 'Onboarding flow review',
+        ),
+      ).toBe(true)
+      expect(result.current.recordingTitle).toBe('Onboarding flow review')
+    })
+
+    it('opens the preflight and refreshes the real microphone list each time', async () => {
+      setupIPC({ audioInputName: 'Studio Display Microphone' })
+      const result = await loaded()
+
+      act(() => result.current.openRecordingPreflight())
+      expect(result.current.recordingPreflightOpen).toBe(true)
+      await waitFor(() => expect(result.current.preflightMicrophoneLoading).toBe(false))
+      expect(result.current.preflightMicrophoneDevices).toEqual([
+        { id: 'default-input', name: 'Studio Display Microphone', isDefault: true },
+      ])
+      expect(result.current.selectedPreflightMicrophoneId).toBe('default-input')
+
+      act(() => result.current.closeRecordingPreflight())
+      expect(result.current.recordingPreflightOpen).toBe(false)
+    })
+
+    it('passes the chosen microphone id explicitly to start_recording', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        audioInputDevices: [
+          { id: 'built-in', name: 'MacBook Pro Microphone', isDefault: true },
+          { id: 'studio', name: 'Studio Display Microphone', isDefault: false },
+        ],
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+
+      act(() => result.current.openRecordingPreflight())
+      await waitFor(() => expect(result.current.preflightMicrophoneLoading).toBe(false))
+      act(() => result.current.selectPreflightMicrophone('studio'))
+      act(() => result.current.closeRecordingPreflight())
+      act(() => result.current.openRecordingPreflight())
+      await waitFor(() => expect(result.current.preflightMicrophoneLoading).toBe(false))
+      expect(result.current.selectedPreflightMicrophoneId).toBe('studio')
+      act(() => result.current.startRec())
+
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+      expect(
+        calls.some(
+          call =>
+            call.cmd === 'start_recording' &&
+            (call.args as { inputDeviceId: string | null }).inputDeviceId === 'studio',
+        ),
+      ).toBe(true)
+      expect(result.current.microphoneName).toBe('Studio Display Microphone')
+    })
+
+    it('passes an enabled, available system-audio choice explicitly to start_recording', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      await loadedAndRecording({
+        settings: settingsFixture({ captureSystemAudio: true }),
+        sysAudioAvailability: 'ready',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+
+      expect(
+        calls.some(
+          c =>
+            c.cmd === 'start_recording' &&
+            (c.args as { includeSystemAudio: boolean }).includeSystemAudio === true,
+        ),
+      ).toBe(true)
     })
 
     it('startRec rejecting reports lastError and stays off the recording view', async () => {
@@ -637,6 +843,46 @@ describe('useAppState', () => {
       expect(result.current.systemAudioActive).toBe(true)
     })
 
+    it('recording-state events expose the microphone opened by the backend', async () => {
+      const result = await loadedAndRecording()
+      expect(result.current.microphoneName).toBe('Default microphone')
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ microphoneName: 'Studio Display Microphone' }))
+      })
+      expect(result.current.microphoneName).toBe('Studio Display Microphone')
+    })
+
+    it('recording-state telemetry escalates sustained silence and repeated clipping without stopping capture', async () => {
+      const result = await loadedAndRecording()
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ elapsed: 1, inputRms: 0, inputPeak: 0.2, inputSequence: 10 }))
+        await emit('recording-state', recordingState({ elapsed: 11, inputRms: 0, inputPeak: 0.2, inputSequence: 11 }))
+      })
+      expect(result.current.captureHealth).toBe('silent')
+      expect(result.current.isRecording).toBe(true)
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ elapsed: 12, inputRms: 0.2, inputPeak: 0.99, inputSequence: 12 }))
+        await emit('recording-state', recordingState({ elapsed: 13, inputRms: 0.2, inputPeak: 0.99, inputSequence: 13 }))
+      })
+      expect(result.current.captureHealth).toBe('clipping')
+      expect(result.current.isRecording).toBe(true)
+    })
+
+    it('recording-state telemetry identifies a stream whose callback sequence stops moving', async () => {
+      const result = await loadedAndRecording()
+
+      await act(async () => {
+        await emit('recording-state', recordingState({ elapsed: 1, inputSequence: 40 }))
+        await emit('recording-state', recordingState({ elapsed: 2, inputSequence: 40 }))
+        await emit('recording-state', recordingState({ elapsed: 3, inputSequence: 40 }))
+        await emit('recording-state', recordingState({ elapsed: 4, inputSequence: 40 }))
+      })
+      expect(result.current.captureHealth).toBe('disconnected')
+    })
+
     it('a systemAudioActive recording-state event for a different noteId is ignored', async () => {
       const result = await loadedAndRecording()
 
@@ -733,6 +979,26 @@ describe('useAppState', () => {
       await waitFor(() => expect(result.current.lastError).toContain('no active recording'))
     })
 
+    it('persists a timestamped marker against the current recording time', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const result = await loadedAndRecording({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      await act(async () => {
+        await emit('recording-state', recordingState({ elapsed: 74 }))
+      })
+
+      await act(async () => {
+        await result.current.addRecordingMarker('Pricing decision')
+      })
+
+      expect(calls).toContainEqual({
+        cmd: 'add_note_marker',
+        args: { id: noteId, seconds: 74, label: 'Pricing decision' },
+      })
+      expect(result.current.recordingMarkers).toEqual([
+        { seconds: 74, label: 'Pricing decision' },
+      ])
+    })
+
     it('stopRec sets stopping, then on success refreshes notes/storage, selects the new note, and returns to notes', async () => {
       const newNote = noteFixture({ id: noteId, title: 'New recording' })
       const otherNote = noteFixture({ id: 'older-note', title: 'Older note' })
@@ -749,6 +1015,35 @@ describe('useAppState', () => {
       expect(result.current.notes).toEqual([newNote, otherNote])
       expect(result.current.sel).toBe(0)
       expect(result.current.liveSegments).toEqual([])
+      expect(result.current.processingStage).toBe('idle')
+      expect(result.current.noteTab).toBe('overview')
+      expect(result.current.processingFailure).toBeNull()
+    })
+
+    it('stopRec exposes saving and finalizing phases before preparing the completed note', async () => {
+      let releaseStop!: () => void
+      const wait = new Promise<void>(resolve => {
+        releaseStop = resolve
+      })
+      const newNote = noteFixture({ id: noteId, title: 'New recording' })
+      const result = await loadedAndRecording({
+        notes: [newNote],
+        stopRecording: { result: newNote, wait },
+      })
+
+      act(() => result.current.stopRec())
+      expect(result.current.processingStage).toBe('saving')
+
+      await act(async () => {
+        await emit('stt-status', sttStatus({ state: 'finalizing' }))
+      })
+      expect(result.current.processingStage).toBe('finalizing')
+
+      await act(async () => {
+        releaseStop()
+      })
+      await waitFor(() => expect(result.current.view).toBe('notes'))
+      expect(result.current.processingStage).toBe('idle')
     })
 
     it('stopRec selects the correct index when the new note is not first in the refreshed list', async () => {
@@ -773,6 +1068,10 @@ describe('useAppState', () => {
       await waitFor(() => expect(result.current.lastError).toContain('wav writer thread panicked'))
       expect(result.current.stopping).toBe(false)
       expect(result.current.view).toBe('recording')
+      expect(result.current.processingFailure).toEqual({
+        stage: 'saving',
+        message: 'wav writer thread panicked',
+      })
     })
 
     it('stopRec: when stop_recording succeeds but the post-stop list_notes/storage_stats refresh rejects, still clears sttStatus and navigates to notes (stale list) instead of getting stuck on the recording view', async () => {
@@ -800,6 +1099,10 @@ describe('useAppState', () => {
       expect(result.current.sttStatus).toBe('idle')
       expect(result.current.sttError).toBeNull()
       expect(result.current.sttStatusNoteId).toBeNull()
+      expect(result.current.processingFailure).toEqual({
+        stage: 'preparing',
+        message: 'Error: list_notes unavailable',
+      })
     })
   })
 
@@ -1082,6 +1385,88 @@ describe('useAppState', () => {
       })
     })
 
+    it('updates a note’s pinned state from the backend response', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+
+      act(() => result.current.setNotePinned('note-a', true))
+
+      await waitFor(() => expect(result.current.notes[0].pinned).toBe(true))
+      expect(calls).toContainEqual({
+        cmd: 'set_note_pinned',
+        args: { id: 'note-a', pinned: true },
+      })
+    })
+
+    it('adds a marker to a completed note and refreshes selected detail', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+      const initialGetCalls = calls.filter(call => call.cmd === 'get_note').length
+
+      await act(async () => {
+        await result.current.addNoteMarker('note-a', 94, 'Pricing decision')
+      })
+
+      expect(calls).toContainEqual({
+        cmd: 'add_note_marker',
+        args: { id: 'note-a', seconds: 94, label: 'Pricing decision' },
+      })
+      expect(result.current.notes[0].markers).toEqual([{ seconds: 94, label: 'Pricing decision' }])
+      expect(calls.filter(call => call.cmd === 'get_note')).toHaveLength(initialGetCalls + 1)
+    })
+
+    it('renames a speaker and force-refreshes the selected transcript', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+      const initialGetCalls = calls.filter(call => call.cmd === 'get_note').length
+
+      act(() => result.current.renameSpeaker('note-a', 'Speaker 1', 'Sam'))
+
+      await waitFor(() => expect(calls.filter(call => call.cmd === 'get_note')).toHaveLength(initialGetCalls + 1))
+      expect(calls).toContainEqual({
+        cmd: 'rename_speaker',
+        args: { id: 'note-a', from: 'Speaker 1', to: 'Sam' },
+      })
+    })
+
+    it('merges speakers, updates note metadata, and reverses with the exact undo token', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+
+      let undo!: Awaited<ReturnType<typeof result.current.mergeSpeakers>>
+      await act(async () => {
+        undo = await result.current.mergeSpeakers('note-a', 'Speaker 1', 'Speaker 2')
+      })
+
+      expect(undo).toEqual({
+        from: 'Speaker 1',
+        into: 'Speaker 2',
+        segmentIndices: [0],
+        checksum: 'merge-checksum',
+      })
+      expect(result.current.notes[0].speakers).toBe(noteA.speakers - 1)
+      expect(calls).toContainEqual({
+        cmd: 'merge_speakers',
+        args: { id: 'note-a', from: 'Speaker 1', into: 'Speaker 2' },
+      })
+
+      await act(async () => {
+        await result.current.undoSpeakerMerge('note-a', undo)
+      })
+      expect(result.current.notes[0].speakers).toBe(noteA.speakers)
+      expect(calls).toContainEqual({
+        cmd: 'undo_speaker_merge',
+        args: { id: 'note-a', undo },
+      })
+    })
+
     describe('deleteNote', () => {
       it('invokes delete_note, refreshes notes, and keeps the same index (selecting the next note)', async () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
@@ -1100,6 +1485,14 @@ describe('useAppState', () => {
         expect(calls.some(c => c.cmd === 'delete_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
         await waitFor(() => expect(result.current.notes).toEqual([noteB]))
         expect(result.current.sel).toBe(0)
+        expect(result.current.deletedNoteUndo).toEqual([
+          {
+            id: 'note-a',
+            title: noteA.title,
+            trashName: 'note-a-trash',
+            checksum: 'recovery-checksum',
+          },
+        ])
       })
 
       it('clamps the selection index when the deleted note was last in the list', async () => {

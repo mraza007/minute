@@ -23,32 +23,50 @@
 // manifest exists at all, which would surface immediately as a broken
 // invoke in every affected view, not silently).
 const APP_COMMANDS: &[&str] = &[
-  "hardware_info",
-  "list_models",
-  "recommended_models",
-  "list_notes",
-  "get_note",
-  "search_notes",
-  "rename_note",
-  "toggle_action_item",
-  "summarize_note",
-  "ask_note",
-  "delete_note",
-  "storage_stats",
-  "reveal_note",
-  "get_settings",
-  "set_settings",
-  "download_model",
-  "cancel_download",
-  "delete_model",
-  "start_recording",
-  "pause_recording",
-  "resume_recording",
-  "stop_recording",
-  "popup_start",
-  "popup_dismiss",
-  "sys_audio_status",
-  "request_sys_audio_permission",
+    "hardware_info",
+    "list_models",
+    "recommended_models",
+    "list_notes",
+    "get_note",
+    "search_notes",
+    "rename_note",
+    "set_note_pinned",
+    "add_note_marker",
+    "update_note_marker",
+    "delete_note_marker",
+    "rename_speaker",
+    "merge_speakers",
+    "undo_speaker_merge",
+    "toggle_action_item",
+    "summarize_note",
+    "ask_note",
+    "delete_note",
+    "restore_note",
+    "delete_notes",
+    "restore_notes",
+    "note_storage_stats",
+    "delete_note_audio",
+    "export_notes",
+    "export_diagnostics",
+    "storage_stats",
+    "reveal_note",
+    "get_settings",
+    "set_settings",
+    "download_model",
+    "cancel_download",
+    "delete_model",
+    "audio_input_status",
+    "request_microphone_permission",
+    "start_audio_input_preview",
+    "stop_audio_input_preview",
+    "start_recording",
+    "pause_recording",
+    "resume_recording",
+    "stop_recording",
+    "popup_start",
+    "popup_dismiss",
+    "sys_audio_status",
+    "request_sys_audio_permission",
 ];
 
 // Stage 5 Task 4: `ScreenCaptureKit.framework` doesn't exist before macOS
@@ -84,17 +102,17 @@ const APP_COMMANDS: &[&str] = &[
 // left as an ordinary hard link, unchanged.
 #[cfg(target_os = "macos")]
 fn weak_link_macos_13_only_frameworks() {
-  println!("cargo:rustc-link-arg=-weak_framework");
-  println!("cargo:rustc-link-arg=ScreenCaptureKit");
+    println!("cargo:rustc-link-arg=-weak_framework");
+    println!("cargo:rustc-link-arg=ScreenCaptureKit");
 }
 
 #[cfg(not(target_os = "macos"))]
 fn weak_link_macos_13_only_frameworks() {}
 
 fn main() {
-  weak_link_macos_13_only_frameworks();
+    weak_link_macos_13_only_frameworks();
 
-  let attributes =
-    tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
-  tauri_build::try_build(attributes).expect("failed to run tauri-build");
+    let attributes = tauri_build::Attributes::new()
+        .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
+    tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

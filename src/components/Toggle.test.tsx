@@ -21,12 +21,13 @@ describe('Toggle', () => {
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('translates the knob 16px (2 -> 18 left, track 40 − knob 20 − inset 2) when on, and leaves it untranslated when off', () => {
+  it('exposes the visual state used to position the thumb', () => {
     const { rerender } = render(<Toggle on={true} onToggle={vi.fn()} label="Encrypt" />)
-    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '2px', transform: 'translateX(16px)' })
+    expect(screen.getByRole('switch')).toHaveAttribute('data-state', 'on')
+    expect(screen.getByTestId('toggle-knob')).toHaveClass('toggle-thumb')
 
     rerender(<Toggle on={false} onToggle={vi.fn()} label="Encrypt" />)
-    expect(screen.getByTestId('toggle-knob')).toHaveStyle({ left: '2px', transform: 'translateX(0)' })
+    expect(screen.getByRole('switch')).toHaveAttribute('data-state', 'off')
   })
 
   it('renders the label text', () => {

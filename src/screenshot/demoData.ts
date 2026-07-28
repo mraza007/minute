@@ -48,6 +48,12 @@ export const NOTES: NoteMeta[] = [
     speakers: 3,
     audioDeleted: false,
     sources: ['mic'],
+    pinned: true,
+    markers: [
+      { seconds: 472, label: 'Launch date decision' },
+      { seconds: 1100, label: 'Illustrations follow-up' },
+      { seconds: 1390, label: 'Telemetry rollout' },
+    ],
   },
   {
     id: SAM_NOTE_ID,
@@ -294,7 +300,7 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
 ]
 
 export const HARDWARE: Hardware = { totalRamGb: 36, appleSilicon: true, cores: 12 }
-export const RECOMMENDATION: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
+export const RECOMMENDATION: Recommendation = { stt: 'whisper-large-v3-turbo', llm: 'qwen3.5-9b' }
 export const SETTINGS: Settings = {
   sttModel: 'whisper-small',
   llmModel: 'qwen3.5-4b',

@@ -7,6 +7,7 @@
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
+  AudioInputLevelEvent,
   AskAnswerEvent,
   AskStatusEvent,
   MeetingDetectedEvent,
@@ -46,6 +47,10 @@ export function onTranscriptSegment(
 
 export function onSttStatus(cb: (payload: SttStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SttStatusEvent>('stt-status', (event) => cb(event.payload))
+}
+
+export function onAudioInputLevel(cb: (payload: AudioInputLevelEvent) => void): Promise<UnlistenFn> {
+  return listen<AudioInputLevelEvent>('audio-input-level', event => cb(event.payload))
 }
 
 export function onSummaryStatus(cb: (payload: SummaryStatusEvent) => void): Promise<UnlistenFn> {

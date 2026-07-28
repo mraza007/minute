@@ -1,10 +1,12 @@
 //! Folder-per-note persistence: note metadata, transcripts, and library scanning.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
@@ -19,6 +21,15 @@ pub enum NoteStatus {
     Ready,
 }
 
+/// A user-authored reference point in a recording, persisted in meta.json
+/// so it is available both while recording and in the finalized note.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteMarker {
+    pub seconds: f64,
+    pub label: String,
+}
+
 /// Metadata for a single note, stored as `notes/<id>/meta.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +41,10 @@ pub struct NoteMeta {
     pub model: String,
     pub status: NoteStatus,
     pub speakers: u32,
+    /// Persisted when capture or WAV finalization was not clean. Older
+    /// libraries load this as absent and older builds ignore the new field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_warning: Option<String>,
     /// Set `true` once the 30-day audio sweep (see [`sweep_candidates`]/
     /// [`Store::run_audio_sweep`]) has deleted this note's `audio.wav`.
     /// `#[serde(default)]` so `meta.json` files written before this field
@@ -50,6 +65,18 @@ pub struct NoteMeta {
     /// construction (system audio didn't exist as a capture path yet).
     #[serde(default = "default_sources")]
     pub sources: Vec<String>,
+    /// User-controlled library priority. Defaults off for existing notes.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Timestamped reference points created during a recording.
+    #[serde(default)]
+    pub markers: Vec<NoteMarker>,
+    /// User-confirmed mapping from this note's raw diarization label to its
+    /// corrected display name. Scoped to one note: "Speaker 1" is stable
+    /// within a diarization session but does not identify a person across
+    /// unrelated recordings.
+    #[serde(default)]
+    pub speaker_aliases: HashMap<String, String>,
 }
 
 /// Default for [`NoteMeta::sources`] — see that field's own docs for why
@@ -74,6 +101,35 @@ pub struct StoredSegment {
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub segments: Vec<StoredSegment>,
+}
+
+/// Exact information required to reverse one speaker merge without
+/// accidentally renaming turns that already belonged to the destination
+/// speaker before the merge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerMergeUndo {
+    pub from: String,
+    pub into: String,
+    pub segment_indices: Vec<usize>,
+    pub checksum: String,
+}
+
+/// Result of merging one persisted speaker into another.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerMergeResult {
+    pub transcript: Transcript,
+    pub meta: NoteMeta,
+    pub undo: SpeakerMergeUndo,
+}
+
+/// Result of reversing a speaker merge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerMergeUndoResult {
+    pub transcript: Transcript,
+    pub meta: NoteMeta,
 }
 
 /// Which field of a note a [`SearchHit`] matched against — a title
@@ -128,6 +184,45 @@ pub struct StorageStats {
     pub notes_bytes: u64,
 }
 
+/// Exact token for restoring a note moved into Minute's private recovery
+/// area. The checksum prevents a frontend from changing either path segment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedNoteUndo {
+    pub id: String,
+    pub title: String,
+    pub trash_name: String,
+    pub checksum: String,
+}
+
+/// Per-note disk usage for the note inspector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteStorageStats {
+    pub total_bytes: u64,
+    pub audio_bytes: u64,
+    pub document_bytes: u64,
+}
+
+/// Privacy-safe support snapshot. It intentionally contains aggregate
+/// counts only: no titles, ids, transcript text, filenames, or full paths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsSnapshot {
+    pub generated_at: String,
+    pub app_version: String,
+    pub os: String,
+    pub architecture: String,
+    pub note_count: usize,
+    pub recording_notes: usize,
+    pub transcribed_notes: usize,
+    pub ready_notes: usize,
+    pub notes_with_system_audio: usize,
+    pub notes_with_audio_removed: usize,
+    pub storage: StorageStats,
+    pub privacy: String,
+}
+
 const META_FILE: &str = "meta.json";
 const META_TMP_FILE: &str = "meta.json.tmp";
 const TRANSCRIPT_FILE: &str = "transcript.json";
@@ -137,6 +232,9 @@ const SUMMARY_FILE: &str = "summary.json";
 const SUMMARY_TMP_FILE: &str = "summary.json.tmp";
 const NOTE_MD_FILE: &str = "note.md";
 const NOTE_MD_TMP_FILE: &str = "note.md.tmp";
+const RECOVERY_DIR: &str = ".minute-trash";
+const EXPORTS_DIR: &str = "exports";
+const DIAGNOSTICS_DIR: &str = "diagnostics";
 
 /// [`Store::search_notes`]'s total hit cap across every note — a single
 /// query result set never grows past this, regardless of library size.
@@ -192,7 +290,9 @@ pub type SharedStore = Arc<Mutex<Store>>;
 /// should degrade to "maybe-inconsistent state" rather than bricking the
 /// whole app for the rest of the session.
 pub fn lock_store(store: &SharedStore) -> MutexGuard<'_, Store> {
-    store.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Opens (creating if needed) a store rooted at `root` and hands it back
@@ -315,12 +415,7 @@ impl Store {
     /// guarantees the id and `createdAt` are always derived from the same
     /// UTC instant rather than producing mixed-offset metadata depending on
     /// what the caller happened to pass.
-    pub fn create_note(
-        &self,
-        title: &str,
-        model: &str,
-        now: OffsetDateTime,
-    ) -> Result<NoteMeta> {
+    pub fn create_note(&self, title: &str, model: &str, now: OffsetDateTime) -> Result<NoteMeta> {
         let now = now.to_offset(UtcOffset::UTC);
         let base_id = Self::format_id(now);
         let mut id = base_id.clone();
@@ -344,8 +439,12 @@ impl Store {
             model: model.to_string(),
             status: NoteStatus::Recording,
             speakers: 1,
+            capture_warning: None,
             audio_deleted: false,
             sources: default_sources(),
+            pinned: false,
+            markers: Vec::new(),
+            speaker_aliases: HashMap::new(),
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -384,12 +483,19 @@ impl Store {
         Ok(meta)
     }
 
+    /// Marks a finalized note whose capture is usable but incomplete.
+    pub fn set_capture_warning(&self, id: &str, warning: String) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        meta.capture_warning = Some(warning);
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
     /// Atomically writes a note's full transcript (write to `.tmp`, then
     /// rename over the final path so readers never see a partial file).
     pub fn write_transcript(&self, id: &str, transcript: &Transcript) -> Result<()> {
-        let json = serde_json::to_string_pretty(transcript).map_err(|e| {
-            MinuteError::Other(format!("failed to serialize transcript.json: {e}"))
-        })?;
+        let json = serde_json::to_string_pretty(transcript)
+            .map_err(|e| MinuteError::Other(format!("failed to serialize transcript.json: {e}")))?;
         let tmp_path = self.transcript_tmp_path(id);
         fs::write(&tmp_path, json)?;
         fs::rename(&tmp_path, self.transcript_path(id))?;
@@ -411,7 +517,12 @@ impl Store {
     /// Appends one segment to a note's transcript (read-modify-write, atomic
     /// write via `write_transcript`). Fine at this scale — transcripts are
     /// small and appends are infrequent (chunk cadence, not per-word).
-    pub fn append_segment(&self, id: &str, segment: StoredSegment) -> Result<()> {
+    pub fn append_segment(&self, id: &str, mut segment: StoredSegment) -> Result<()> {
+        if let Ok(meta) = self.read_meta(id) {
+            if let Some(alias) = meta.speaker_aliases.get(&segment.speaker) {
+                segment.speaker = alias.clone();
+            }
+        }
         let mut transcript = self.read_transcript(id)?;
         transcript.segments.push(segment);
         self.write_transcript(id, &transcript)
@@ -635,7 +746,10 @@ impl Store {
             let transcript = match self.read_transcript(&meta.id) {
                 Ok(t) => t,
                 Err(e) => {
-                    log::warn!("search: skipping unreadable transcript for note {}: {e}", meta.id);
+                    log::warn!(
+                        "search: skipping unreadable transcript for note {}: {e}",
+                        meta.id
+                    );
                     Transcript::default()
                 }
             };
@@ -674,31 +788,385 @@ impl Store {
         Ok(meta)
     }
 
-    /// Deletes a note's directory by moving it to the OS trash. If the trash
-    /// call itself errors (e.g. unsupported/sandboxed CI environments), falls
-    /// back to a permanent `fs::remove_dir_all` so the operation still
-    /// succeeds rather than leaving a note the UI can no longer act on.
-    pub fn delete_note(&self, id: &str) -> Result<()> {
-        self.delete_note_impl(id, |dir| trash::delete(dir).map_err(|e| e.to_string()))
+    /// Pins or unpins a note in the local library.
+    pub fn set_note_pinned(&self, id: &str, pinned: bool) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        meta.pinned = pinned;
+        self.write_meta(&meta)?;
+        Ok(meta)
     }
 
-    /// Implementation seam behind `delete_note`: `trash_fn` performs the
-    /// actual trash call. Injected so tests can force the permanent-delete
-    /// fallback path deterministically, without depending on a real OS
-    /// trash being available in CI/sandboxed environments.
-    fn delete_note_impl(
+    /// Adds a timestamped marker and keeps markers ordered by time.
+    pub fn add_note_marker(&self, id: &str, seconds: f64, label: &str) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(MinuteError::Other(
+                "marker label cannot be empty".to_string(),
+            ));
+        }
+        meta.markers.push(NoteMarker {
+            seconds: seconds.max(0.0),
+            label: label.to_string(),
+        });
+        meta.markers.sort_by(|a, b| a.seconds.total_cmp(&b.seconds));
+        self.write_meta(&meta)?;
+        self.write_note_md(id)?;
+        Ok(meta)
+    }
+
+    /// Renames an existing marker without changing its timestamp.
+    pub fn update_note_marker(&self, id: &str, index: usize, label: &str) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(MinuteError::Other(
+                "marker label cannot be empty".to_string(),
+            ));
+        }
+        let marker = meta
+            .markers
+            .get_mut(index)
+            .ok_or_else(|| MinuteError::Other(format!("marker index out of bounds: {index}")))?;
+        marker.label = label.to_string();
+        self.write_meta(&meta)?;
+        self.write_note_md(id)?;
+        Ok(meta)
+    }
+
+    /// Deletes an existing marker by its persisted display order.
+    pub fn delete_note_marker(&self, id: &str, index: usize) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        if index >= meta.markers.len() {
+            return Err(MinuteError::Other(format!(
+                "marker index out of bounds: {index}"
+            )));
+        }
+        meta.markers.remove(index);
+        self.write_meta(&meta)?;
+        self.write_note_md(id)?;
+        Ok(meta)
+    }
+
+    /// Rewrites every matching transcript speaker label and refreshes note.md.
+    pub fn rename_speaker(&self, id: &str, from: &str, to: &str) -> Result<Transcript> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err(MinuteError::Other(
+                "speaker name cannot be empty".to_string(),
+            ));
+        }
+        let mut transcript = self.read_transcript(id)?;
+        if from != to
+            && transcript
+                .segments
+                .iter()
+                .any(|segment| segment.speaker == to)
+        {
+            return Err(MinuteError::Other(
+                "speaker name already exists; use merge speakers instead".to_string(),
+            ));
+        }
+        let mut changed = false;
+        for segment in &mut transcript.segments {
+            if segment.speaker == from {
+                segment.speaker = to.to_string();
+                changed = true;
+            }
+        }
+        if !changed {
+            return Err(MinuteError::Other(format!("speaker not found: {from}")));
+        }
+        let mut meta = self.persist_speaker_edit(id, &transcript)?;
+        meta.speaker_aliases
+            .insert(from.to_string(), to.to_string());
+        self.write_meta(&meta)?;
+        Ok(transcript)
+    }
+
+    /// Merges every turn attributed to `from` into an already-existing
+    /// destination speaker and returns an exact, index-based undo token.
+    pub fn merge_speakers(&self, id: &str, from: &str, into: &str) -> Result<SpeakerMergeResult> {
+        let from = from.trim();
+        let into = into.trim();
+        if from.is_empty() || into.is_empty() {
+            return Err(MinuteError::Other(
+                "speaker names cannot be empty".to_string(),
+            ));
+        }
+        if from == into {
+            return Err(MinuteError::Other(
+                "cannot merge a speaker into itself".to_string(),
+            ));
+        }
+
+        let mut transcript = self.read_transcript(id)?;
+        if !transcript
+            .segments
+            .iter()
+            .any(|segment| segment.speaker == into)
+        {
+            return Err(MinuteError::Other(format!(
+                "destination speaker not found: {into}"
+            )));
+        }
+        let segment_indices = transcript
+            .segments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, segment)| (segment.speaker == from).then_some(index))
+            .collect::<Vec<_>>();
+        if segment_indices.is_empty() {
+            return Err(MinuteError::Other(format!("speaker not found: {from}")));
+        }
+        for index in &segment_indices {
+            transcript.segments[*index].speaker = into.to_string();
+        }
+        let mut meta = self.persist_speaker_edit(id, &transcript)?;
+        meta.speaker_aliases
+            .insert(from.to_string(), into.to_string());
+        self.write_meta(&meta)?;
+        let checksum = speaker_merge_undo_checksum(id, from, into, &segment_indices, &transcript)?;
+        Ok(SpeakerMergeResult {
+            transcript,
+            meta,
+            undo: SpeakerMergeUndo {
+                from: from.to_string(),
+                into: into.to_string(),
+                segment_indices,
+                checksum,
+            },
+        })
+    }
+
+    /// Reverses exactly the turns changed by [`Store::merge_speakers`].
+    /// The full token is validated before any mutation reaches disk.
+    pub fn undo_speaker_merge(
         &self,
         id: &str,
-        trash_fn: impl Fn(&Path) -> std::result::Result<(), String>,
-    ) -> Result<()> {
-        let dir = self.note_dir(id);
-        if let Err(trash_err) = trash_fn(&dir) {
-            log::warn!(
-                "trash::delete failed for note {id} ({trash_err}); falling back to permanent delete"
-            );
-            fs::remove_dir_all(&dir)?;
+        undo: &SpeakerMergeUndo,
+    ) -> Result<SpeakerMergeUndoResult> {
+        if undo.from.trim().is_empty() || undo.into.trim().is_empty() || undo.from == undo.into {
+            return Err(MinuteError::Other(
+                "invalid speaker merge undo token".to_string(),
+            ));
         }
-        Ok(())
+        if undo.segment_indices.is_empty() {
+            return Err(MinuteError::Other(
+                "speaker merge undo token has no turns".to_string(),
+            ));
+        }
+        let unique_indices = undo.segment_indices.iter().copied().collect::<HashSet<_>>();
+        if unique_indices.len() != undo.segment_indices.len() {
+            return Err(MinuteError::Other(
+                "speaker merge undo token contains duplicate turns".to_string(),
+            ));
+        }
+
+        let mut transcript = self.read_transcript(id)?;
+        let expected_checksum = speaker_merge_undo_checksum(
+            id,
+            &undo.from,
+            &undo.into,
+            &undo.segment_indices,
+            &transcript,
+        )?;
+        if undo.checksum != expected_checksum {
+            return Err(MinuteError::Other(
+                "speaker merge undo token is stale or invalid".to_string(),
+            ));
+        }
+        for index in &undo.segment_indices {
+            let segment = transcript.segments.get(*index).ok_or_else(|| {
+                MinuteError::Other(format!("speaker merge undo turn is missing: {index}"))
+            })?;
+            if segment.speaker != undo.into {
+                return Err(MinuteError::Other(format!(
+                    "speaker merge can no longer be undone at turn {index}"
+                )));
+            }
+        }
+        for index in &undo.segment_indices {
+            transcript.segments[*index].speaker = undo.from.clone();
+        }
+        let mut meta = self.persist_speaker_edit(id, &transcript)?;
+        if meta.speaker_aliases.get(&undo.from) == Some(&undo.into) {
+            meta.speaker_aliases.remove(&undo.from);
+            self.write_meta(&meta)?;
+        }
+        Ok(SpeakerMergeUndoResult { transcript, meta })
+    }
+
+    /// Persists a transcript speaker edit, keeps the list-level speaker
+    /// count honest, and refreshes the generated markdown.
+    fn persist_speaker_edit(&self, id: &str, transcript: &Transcript) -> Result<NoteMeta> {
+        self.write_transcript(id, transcript)?;
+        let mut meta = self.read_meta(id)?;
+        meta.speakers = transcript
+            .segments
+            .iter()
+            .map(|segment| segment.speaker.as_str())
+            .collect::<HashSet<_>>()
+            .len() as u32;
+        self.write_meta(&meta)?;
+        self.write_note_md(id)?;
+        Ok(meta)
+    }
+
+    /// Moves a note into Minute's private recovery area and returns the exact
+    /// token needed to restore it. Nothing is permanently erased here.
+    pub fn delete_note(&self, id: &str) -> Result<DeletedNoteUndo> {
+        let meta = self.read_meta(id)?;
+        let source = self.note_dir(id);
+        let recovery_root = self.root.join(RECOVERY_DIR);
+        fs::create_dir_all(&recovery_root)?;
+        let stamp = OffsetDateTime::now_utc().unix_timestamp_nanos();
+        let mut trash_name = format!("{id}-{stamp}");
+        let mut suffix = 2;
+        while recovery_root.join(&trash_name).exists() {
+            trash_name = format!("{id}-{stamp}-{suffix}");
+            suffix += 1;
+        }
+        fs::rename(&source, recovery_root.join(&trash_name))?;
+        let checksum = deleted_note_undo_checksum(id, &trash_name);
+        Ok(DeletedNoteUndo {
+            id: id.to_string(),
+            title: meta.title,
+            trash_name,
+            checksum,
+        })
+    }
+
+    /// Restores one recoverable deletion. The destination must remain empty;
+    /// a newly-created note can never be overwritten by undo.
+    pub fn restore_note(&self, undo: &DeletedNoteUndo) -> Result<NoteMeta> {
+        if undo.checksum != deleted_note_undo_checksum(&undo.id, &undo.trash_name) {
+            return Err(MinuteError::Other(
+                "invalid note recovery token".to_string(),
+            ));
+        }
+        let source = self.root.join(RECOVERY_DIR).join(&undo.trash_name);
+        let destination = self.note_dir(&undo.id);
+        if !source.is_dir() {
+            return Err(MinuteError::Other(
+                "recoverable note is no longer available".to_string(),
+            ));
+        }
+        if destination.exists() {
+            return Err(MinuteError::Other(format!(
+                "cannot restore note {} because that id already exists",
+                undo.id
+            )));
+        }
+        fs::rename(source, destination)?;
+        self.read_meta(&undo.id)
+    }
+
+    /// Disk usage for one note. A concurrent delete is treated as an empty
+    /// result rather than failing the entire inspector.
+    pub fn note_storage_stats(&self, id: &str) -> Result<NoteStorageStats> {
+        let (total_bytes, audio_bytes) = note_dir_stats(&self.note_dir(id))?;
+        Ok(NoteStorageStats {
+            total_bytes,
+            audio_bytes,
+            document_bytes: total_bytes.saturating_sub(audio_bytes),
+        })
+    }
+
+    /// Removes only the original audio while preserving the transcript,
+    /// summary, metadata, and markdown.
+    pub fn delete_note_audio(&self, id: &str) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        let audio_path = self.note_dir(id).join(AUDIO_FILE);
+        if let Err(error) = fs::remove_file(&audio_path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error.into());
+            }
+        }
+        meta.audio_deleted = true;
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Exports the selected notes as ordinary Markdown files plus a small
+    /// manifest in a timestamped folder and returns that folder path.
+    pub fn export_notes(&self, ids: &[String]) -> Result<PathBuf> {
+        if ids.is_empty() {
+            return Err(MinuteError::Other(
+                "select at least one note to export".to_string(),
+            ));
+        }
+        let stamp = OffsetDateTime::now_utc().unix_timestamp();
+        let export_dir = self
+            .root
+            .join(EXPORTS_DIR)
+            .join(format!("minute-export-{stamp}"));
+        fs::create_dir_all(&export_dir)?;
+        let mut manifest = Vec::new();
+        for (index, id) in ids.iter().enumerate() {
+            let (meta, transcript) = self.get_note(id)?;
+            let summary = self.read_summary(id)?;
+            let markdown = render_note_md(&meta, summary.as_ref(), &transcript);
+            let filename = format!("{:03}-{}.md", index + 1, safe_export_name(&meta.title));
+            fs::write(export_dir.join(&filename), markdown)?;
+            manifest.push(serde_json::json!({
+                "title": meta.title,
+                "createdAt": meta.created_at,
+                "file": filename,
+            }));
+        }
+        let manifest_json = serde_json::to_string_pretty(&serde_json::json!({
+            "formatVersion": 1,
+            "exportedAt": OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string()),
+            "notes": manifest,
+        }))
+        .map_err(|error| {
+            MinuteError::Other(format!("failed to serialize export manifest: {error}"))
+        })?;
+        fs::write(export_dir.join("manifest.json"), manifest_json)?;
+        Ok(export_dir)
+    }
+
+    /// Writes a privacy-safe diagnostics JSON file and returns its path.
+    pub fn export_diagnostics(&self, app_version: &str) -> Result<PathBuf> {
+        let notes = self.list_notes()?;
+        let storage = storage_stats(&self.root)?;
+        let snapshot = DiagnosticsSnapshot {
+            generated_at: OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string()),
+            app_version: app_version.to_string(),
+            os: std::env::consts::OS.to_string(),
+            architecture: std::env::consts::ARCH.to_string(),
+            note_count: notes.len(),
+            recording_notes: notes.iter().filter(|note| note.status == NoteStatus::Recording).count(),
+            transcribed_notes: notes
+                .iter()
+                .filter(|note| note.status == NoteStatus::Transcribed)
+                .count(),
+            ready_notes: notes.iter().filter(|note| note.status == NoteStatus::Ready).count(),
+            notes_with_system_audio: notes
+                .iter()
+                .filter(|note| note.sources.iter().any(|source| source == "system"))
+                .count(),
+            notes_with_audio_removed: notes.iter().filter(|note| note.audio_deleted).count(),
+            storage,
+            privacy: "Aggregate operational metadata only. No note ids, titles, transcript text, filenames, or paths."
+                .to_string(),
+        };
+        let dir = self.root.join(DIAGNOSTICS_DIR);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!(
+            "minute-diagnostics-{}.json",
+            OffsetDateTime::now_utc().unix_timestamp()
+        ));
+        let json = serde_json::to_string_pretty(&snapshot).map_err(|error| {
+            MinuteError::Other(format!("failed to serialize diagnostics: {error}"))
+        })?;
+        fs::write(&path, json)?;
+        Ok(path)
     }
 
     /// Runs the 30-day audio sweep: for every note [`sweep_candidates`]
@@ -726,19 +1194,69 @@ impl Store {
             let audio_path = self.note_dir(&meta.id).join(AUDIO_FILE);
             if let Err(e) = fs::remove_file(&audio_path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!("audio sweep: failed to delete audio.wav for note {}: {e}", meta.id);
+                    log::warn!(
+                        "audio sweep: failed to delete audio.wav for note {}: {e}",
+                        meta.id
+                    );
                     continue;
                 }
             }
             meta.audio_deleted = true;
             if let Err(e) = self.write_meta(&meta) {
-                log::warn!("audio sweep: failed to persist audioDeleted for note {}: {e}", meta.id);
+                log::warn!(
+                    "audio sweep: failed to persist audioDeleted for note {}: {e}",
+                    meta.id
+                );
                 continue;
             }
             swept += 1;
         }
         Ok(swept)
     }
+}
+
+fn deleted_note_undo_checksum(id: &str, trash_name: &str) -> String {
+    let digest = Sha256::digest(format!("minute-note-recovery\0{id}\0{trash_name}").as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn safe_export_name(title: &str) -> String {
+    let cleaned = title
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric()
+                || character == '-'
+                || character == '_'
+                || character == ' '
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let compact = cleaned.split_whitespace().collect::<Vec<_>>().join("-");
+    let trimmed = compact.trim_matches('-');
+    if trimmed.is_empty() {
+        "untitled".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+fn speaker_merge_undo_checksum(
+    id: &str,
+    from: &str,
+    into: &str,
+    segment_indices: &[usize],
+    transcript: &Transcript,
+) -> Result<String> {
+    let payload =
+        serde_json::to_vec(&(id, from, into, segment_indices, transcript)).map_err(|error| {
+            MinuteError::Other(format!("failed to fingerprint speaker merge: {error}"))
+        })?;
+    let digest = Sha256::digest(payload);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Which notes the 30-day audio sweep should delete `audio.wav` for, given
@@ -1071,7 +1589,14 @@ fn transcript_body(segments: &[StoredSegment]) -> String {
     }
     segments
         .iter()
-        .map(|seg| format!("**{}** ({})\n{}", seg.speaker, format_mm_ss(seg.start), seg.text))
+        .map(|seg| {
+            format!(
+                "**{}** ({})\n{}",
+                seg.speaker,
+                format_mm_ss(seg.start),
+                seg.text
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -1092,7 +1617,11 @@ fn transcript_body(segments: &[StoredSegment]) -> String {
 /// list is empty, rather than rendered with no bullets under it. Action
 /// items render as GitHub-flavored task list items: `- [x] text` when done,
 /// `- [ ] text` otherwise.
-pub fn render_note_md(meta: &NoteMeta, summary: Option<&SummaryDoc>, transcript: &Transcript) -> String {
+pub fn render_note_md(
+    meta: &NoteMeta,
+    summary: Option<&SummaryDoc>,
+    transcript: &Transcript,
+) -> String {
     let minutes = (meta.duration_sec / 60.0).round() as i64;
     let mut out = format!(
         "# {}\n\n**Date:** {} · **Duration:** {} min · **Speakers:** {}",
@@ -1129,7 +1658,20 @@ pub fn render_note_md(meta: &NoteMeta, summary: Option<&SummaryDoc>, transcript:
         }
     }
 
-    out.push_str(&format!("\n\n## Transcript\n\n{}", transcript_body(&transcript.segments)));
+    if !meta.markers.is_empty() {
+        let markers = meta
+            .markers
+            .iter()
+            .map(|marker| format!("- [{}] {}", format_mm_ss(marker.seconds), marker.label))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!("\n\n## Markers\n\n{markers}"));
+    }
+
+    out.push_str(&format!(
+        "\n\n## Transcript\n\n{}",
+        transcript_body(&transcript.segments)
+    ));
     out
 }
 
@@ -1194,7 +1736,9 @@ mod tests {
         // Wall clock reads 10:15:30 with a +05:00 offset — i.e. 05:15:30 UTC.
         let local = datetime!(2026-07-23 10:15:30 +5);
 
-        let meta = store.create_note("Standup", "whisper-small", local).unwrap();
+        let meta = store
+            .create_note("Standup", "whisper-small", local)
+            .unwrap();
 
         assert_eq!(meta.id, "20260723-051530");
         assert!(
@@ -1260,11 +1804,17 @@ mod tests {
         let updated = store
             .set_note_sources(&meta.id, vec!["mic".to_string(), "system".to_string()])
             .unwrap();
-        assert_eq!(updated.sources, vec!["mic".to_string(), "system".to_string()]);
+        assert_eq!(
+            updated.sources,
+            vec!["mic".to_string(), "system".to_string()]
+        );
 
         // Persisted, not just returned — a fresh read confirms the write.
         let (read_back, _) = store.get_note(&meta.id).unwrap();
-        assert_eq!(read_back.sources, vec!["mic".to_string(), "system".to_string()]);
+        assert_eq!(
+            read_back.sources,
+            vec!["mic".to_string(), "system".to_string()]
+        );
     }
 
     #[test]
@@ -1288,6 +1838,26 @@ mod tests {
     }
 
     #[test]
+    fn capture_warning_defaults_absent_and_persists_for_recovery() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        assert_eq!(meta.capture_warning, None);
+
+        store.finalize_note(&meta.id, 42.5, 2).unwrap();
+        let warning = "Audio finalization was incomplete: disk full".to_string();
+        let updated = store
+            .set_capture_warning(&meta.id, warning.clone())
+            .unwrap();
+        assert_eq!(updated.capture_warning.as_deref(), Some(warning.as_str()));
+
+        let (read_back, _) = store.get_note(&meta.id).unwrap();
+        assert_eq!(read_back.capture_warning.as_deref(), Some(warning.as_str()));
+        assert_eq!(read_back.status, NoteStatus::Transcribed);
+    }
+
+    #[test]
     fn note_meta_without_sources_field_parses_as_mic_only_default() {
         // A meta.json written by any pre-Stage-5-Task-5 build has no
         // "sources" key at all — `#[serde(default = "default_sources")]`
@@ -1307,11 +1877,48 @@ mod tests {
             "status": "transcribed",
             "speakers": 1,
         });
-        fs::write(store.meta_path(id), serde_json::to_string(&legacy_json).unwrap()).unwrap();
+        fs::write(
+            store.meta_path(id),
+            serde_json::to_string(&legacy_json).unwrap(),
+        )
+        .unwrap();
 
         let (meta, _) = store.get_note(id).unwrap();
 
         assert_eq!(meta.sources, vec!["mic".to_string()]);
+        assert_eq!(meta.capture_warning, None);
+    }
+
+    #[test]
+    fn current_capture_warning_is_ignored_by_previous_version_metadata_reader() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct V050NoteMeta {
+            id: String,
+            title: String,
+            status: NoteStatus,
+            sources: Vec<String>,
+        }
+
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Recoverable call",
+                "whisper-small",
+                datetime!(2026-07-23 10:15:30 UTC),
+            )
+            .unwrap();
+        let current = store
+            .set_capture_warning(&meta.id, "disk full".to_string())
+            .unwrap();
+        let json = serde_json::to_string(&current).unwrap();
+
+        let previous: V050NoteMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(previous.id, current.id);
+        assert_eq!(previous.title, current.title);
+        assert_eq!(previous.status, NoteStatus::Recording);
+        assert_eq!(previous.sources, vec!["mic".to_string()]);
     }
 
     #[test]
@@ -1337,6 +1944,305 @@ mod tests {
         assert_eq!(renamed.title, "Renamed");
         assert_eq!(renamed.id, meta.id);
         assert_eq!(renamed.created_at, meta.created_at);
+    }
+
+    #[test]
+    fn legacy_note_defaults_pinned_and_markers() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = "20260723-101530";
+        fs::create_dir_all(store.note_dir(id)).unwrap();
+        let legacy_json = serde_json::json!({
+            "id": id,
+            "title": "Standup",
+            "createdAt": "2026-07-23T10:15:30.000Z",
+            "durationSec": 60.0,
+            "model": "whisper-small",
+            "status": "transcribed",
+            "speakers": 1,
+            "sources": ["mic"],
+        });
+        fs::write(
+            store.meta_path(id),
+            serde_json::to_string(&legacy_json).unwrap(),
+        )
+        .unwrap();
+
+        let (meta, _) = store.get_note(id).unwrap();
+
+        assert!(!meta.pinned);
+        assert!(meta.markers.is_empty());
+    }
+
+    #[test]
+    fn pin_marker_and_speaker_rename_persist_and_refresh_markdown() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Planning", "whisper-small", now).unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 0.0,
+                            end: 5.0,
+                            text: "Opening context.".into(),
+                        },
+                        StoredSegment {
+                            speaker: "Speaker 2".into(),
+                            start: 74.0,
+                            end: 82.0,
+                            text: "We should ship Friday.".into(),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+
+        let pinned = store.set_note_pinned(&meta.id, true).unwrap();
+        assert!(pinned.pinned);
+        store.add_note_marker(&meta.id, 74.0, "Ship date").unwrap();
+        store
+            .add_note_marker(&meta.id, 18.0, "Open question")
+            .unwrap();
+        let transcript = store.rename_speaker(&meta.id, "Speaker 2", "Sam").unwrap();
+
+        assert_eq!(transcript.segments[1].speaker, "Sam");
+        let (persisted, persisted_transcript) = store.get_note(&meta.id).unwrap();
+        assert!(persisted.pinned);
+        assert_eq!(
+            persisted.markers,
+            vec![
+                NoteMarker {
+                    seconds: 18.0,
+                    label: "Open question".into()
+                },
+                NoteMarker {
+                    seconds: 74.0,
+                    label: "Ship date".into()
+                },
+            ],
+        );
+        assert_eq!(persisted_transcript.segments[1].speaker, "Sam");
+
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(markdown.contains("## Markers"));
+        assert!(markdown.contains("- [00:18] Open question"));
+        assert!(markdown.contains("- [01:14] Ship date"));
+        assert!(markdown.contains("**Sam** (01:14)"));
+    }
+
+    #[test]
+    fn merge_speakers_returns_exact_undo_and_restores_only_changed_turns() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Planning", "whisper-small", now).unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 0.0,
+                            end: 5.0,
+                            text: "Opening context.".into(),
+                        },
+                        StoredSegment {
+                            speaker: "Sam".into(),
+                            start: 6.0,
+                            end: 10.0,
+                            text: "Existing Sam turn.".into(),
+                        },
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 11.0,
+                            end: 15.0,
+                            text: "Second source turn.".into(),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+
+        let merged = store.merge_speakers(&meta.id, "Speaker 1", "Sam").unwrap();
+        assert_eq!(
+            merged.undo,
+            SpeakerMergeUndo {
+                from: "Speaker 1".into(),
+                into: "Sam".into(),
+                segment_indices: vec![0, 2],
+                checksum: merged.undo.checksum.clone(),
+            }
+        );
+        assert!(merged
+            .transcript
+            .segments
+            .iter()
+            .all(|segment| segment.speaker == "Sam"));
+        assert_eq!(merged.meta.speakers, 1);
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(!markdown.contains("**Speaker 1**"));
+        assert!(markdown.contains("**Sam**"));
+
+        let restored = store.undo_speaker_merge(&meta.id, &merged.undo).unwrap();
+        assert_eq!(restored.transcript.segments[0].speaker, "Speaker 1");
+        assert_eq!(restored.transcript.segments[1].speaker, "Sam");
+        assert_eq!(restored.transcript.segments[2].speaker, "Speaker 1");
+        assert_eq!(restored.meta.speakers, 2);
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(markdown.contains("**Speaker 1**"));
+        assert!(markdown.contains("**Sam**"));
+    }
+
+    #[test]
+    fn confirmed_speaker_name_applies_to_later_turns_from_the_same_raw_label() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Long interview",
+                "whisper-small",
+                datetime!(2026-07-23 10:15:30 UTC),
+            )
+            .unwrap();
+        store
+            .append_segment(
+                &meta.id,
+                StoredSegment {
+                    speaker: "Speaker 2".into(),
+                    start: 0.0,
+                    end: 2.0,
+                    text: "First turn.".into(),
+                },
+            )
+            .unwrap();
+
+        store
+            .rename_speaker(&meta.id, "Speaker 2", "Jordan")
+            .unwrap();
+        store
+            .append_segment(
+                &meta.id,
+                StoredSegment {
+                    speaker: "Speaker 2".into(),
+                    start: 3.0,
+                    end: 5.0,
+                    text: "Later turn.".into(),
+                },
+            )
+            .unwrap();
+
+        let (persisted_meta, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(
+            persisted_meta.speaker_aliases.get("Speaker 2"),
+            Some(&"Jordan".to_string())
+        );
+        assert_eq!(transcript.segments[0].speaker, "Jordan");
+        assert_eq!(transcript.segments[1].speaker, "Jordan");
+    }
+
+    #[test]
+    fn speaker_merge_rejects_invalid_or_stale_operations_without_mutating_transcript() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Planning", "whisper-small", now).unwrap();
+        let original = Transcript {
+            segments: vec![
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 0.0,
+                    end: 5.0,
+                    text: "Opening context.".into(),
+                },
+                StoredSegment {
+                    speaker: "Sam".into(),
+                    start: 6.0,
+                    end: 10.0,
+                    text: "Existing Sam turn.".into(),
+                },
+            ],
+        };
+        store.write_transcript(&meta.id, &original).unwrap();
+
+        assert!(store.rename_speaker(&meta.id, "Speaker 1", "Sam").is_err());
+        assert!(store
+            .merge_speakers(&meta.id, "Speaker 1", "Missing")
+            .is_err());
+        assert!(store.merge_speakers(&meta.id, "Sam", "Sam").is_err());
+        assert_eq!(store.read_transcript(&meta.id).unwrap(), original);
+
+        let merged = store.merge_speakers(&meta.id, "Speaker 1", "Sam").unwrap();
+        let stale = SpeakerMergeUndo {
+            from: merged.undo.from.clone(),
+            into: merged.undo.into.clone(),
+            segment_indices: vec![1],
+            checksum: merged.undo.checksum.clone(),
+        };
+        assert!(store.undo_speaker_merge(&meta.id, &stale).is_err());
+        assert_eq!(
+            store.read_transcript(&meta.id).unwrap(),
+            merged.transcript,
+            "a rejected undo must leave the merged transcript untouched"
+        );
+    }
+
+    #[test]
+    fn marker_rejects_blank_labels_without_mutating_the_note() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Planning", "whisper-small", now).unwrap();
+
+        assert!(store.add_note_marker(&meta.id, 12.0, "   ").is_err());
+        let (persisted, _) = store.get_note(&meta.id).unwrap();
+        assert!(persisted.markers.is_empty());
+    }
+
+    #[test]
+    fn update_and_delete_marker_persist_and_refresh_markdown() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Planning", "whisper-small", now).unwrap();
+        store
+            .add_note_marker(&meta.id, 18.0, "Open question")
+            .unwrap();
+        store.add_note_marker(&meta.id, 74.0, "Old label").unwrap();
+
+        let updated = store.update_note_marker(&meta.id, 1, "Ship date").unwrap();
+        assert_eq!(updated.markers[1].label, "Ship date");
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(markdown.contains("- [01:14] Ship date"));
+        assert!(!markdown.contains("Old label"));
+
+        let deleted = store.delete_note_marker(&meta.id, 0).unwrap();
+        assert_eq!(
+            deleted.markers,
+            vec![NoteMarker {
+                seconds: 74.0,
+                label: "Ship date".into()
+            }],
+        );
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(!markdown.contains("Open question"));
+        assert!(markdown.contains("- [01:14] Ship date"));
+    }
+
+    #[test]
+    fn marker_update_and_delete_reject_out_of_bounds_indices() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Planning", "whisper-small", now).unwrap();
+
+        assert!(store.update_note_marker(&meta.id, 0, "Missing").is_err());
+        assert!(store.delete_note_marker(&meta.id, 0).is_err());
     }
 
     #[test]
@@ -1463,7 +2369,9 @@ mod tests {
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
 
-        let good = store.create_note("Good note", "whisper-small", now).unwrap();
+        let good = store
+            .create_note("Good note", "whisper-small", now)
+            .unwrap();
 
         let corrupt_dir = store.note_dir("20260723-000000-corrupt");
         fs::create_dir_all(&corrupt_dir).unwrap();
@@ -1488,7 +2396,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("No transcript yet", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("No transcript yet", "whisper-small", now)
+            .unwrap();
 
         let (_meta, transcript) = store.get_note(&meta.id).unwrap();
         assert!(transcript.segments.is_empty());
@@ -1499,7 +2409,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("With audio", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("With audio", "whisper-small", now)
+            .unwrap();
 
         let audio_bytes = vec![0u8; 4096];
         fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), &audio_bytes).unwrap();
@@ -1525,7 +2437,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Has audio", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Has audio", "whisper-small", now)
+            .unwrap();
         fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), b"fake wav bytes").unwrap();
 
         let target = store.reveal_target(&meta.id);
@@ -1538,7 +2452,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("No audio yet", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("No audio yet", "whisper-small", now)
+            .unwrap();
 
         let target = store.reveal_target(&meta.id);
 
@@ -1562,7 +2478,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Has audio", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Has audio", "whisper-small", now)
+            .unwrap();
         let expected = store.note_dir(&meta.id).join(AUDIO_FILE);
         fs::write(&expected, b"fake wav bytes").unwrap();
 
@@ -1574,7 +2492,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("No audio yet", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("No audio yet", "whisper-small", now)
+            .unwrap();
 
         assert_eq!(audio_path(&store.note_dir(&meta.id)), None);
     }
@@ -1599,9 +2519,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let mut meta = store.create_note("Swept but stray wav", "whisper-small", now).unwrap();
+        let mut meta = store
+            .create_note("Swept but stray wav", "whisper-small", now)
+            .unwrap();
         meta.audio_deleted = true;
-        fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), b"stray wav bytes").unwrap();
+        fs::write(
+            store.note_dir(&meta.id).join(AUDIO_FILE),
+            b"stray wav bytes",
+        )
+        .unwrap();
 
         assert_eq!(resolved_audio_path(&meta, &store.note_dir(&meta.id)), None);
     }
@@ -1611,11 +2537,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Has audio", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Has audio", "whisper-small", now)
+            .unwrap();
         let expected = store.note_dir(&meta.id).join(AUDIO_FILE);
         fs::write(&expected, b"real wav bytes").unwrap();
 
-        assert_eq!(resolved_audio_path(&meta, &store.note_dir(&meta.id)), Some(expected));
+        assert_eq!(
+            resolved_audio_path(&meta, &store.note_dir(&meta.id)),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -1623,7 +2554,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("No audio yet", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("No audio yet", "whisper-small", now)
+            .unwrap();
 
         assert_eq!(resolved_audio_path(&meta, &store.note_dir(&meta.id)), None);
     }
@@ -1647,7 +2580,11 @@ mod tests {
             "status": "recording",
             "speakers": meta.speakers,
         });
-        fs::write(store.meta_path(&meta.id), serde_json::to_string(&legacy_json).unwrap()).unwrap();
+        fs::write(
+            store.meta_path(&meta.id),
+            serde_json::to_string(&legacy_json).unwrap(),
+        )
+        .unwrap();
 
         let (read_back, _) = store.get_note(&meta.id).unwrap();
         assert!(!read_back.audio_deleted);
@@ -1664,13 +2601,18 @@ mod tests {
             model: "whisper-small".to_string(),
             status,
             speakers: 1,
+            capture_warning: None,
             audio_deleted,
             sources: default_sources(),
+            pinned: false,
+            markers: Vec::new(),
+            speaker_aliases: HashMap::new(),
         }
     }
 
     fn rfc3339(dt: OffsetDateTime) -> String {
-        dt.format(&time::format_description::well_known::Rfc3339).unwrap()
+        dt.format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
     }
 
     #[test]
@@ -1688,7 +2630,12 @@ mod tests {
         // yet swept, only strictly older than that.
         let now = datetime!(2026-07-23 00:00:00 UTC);
         let exactly_30_days = now - Duration::days(30);
-        let meta = sweep_meta("boundary", &rfc3339(exactly_30_days), NoteStatus::Ready, false);
+        let meta = sweep_meta(
+            "boundary",
+            &rfc3339(exactly_30_days),
+            NoteStatus::Ready,
+            false,
+        );
 
         assert!(sweep_candidates(&[meta], now).is_empty());
     }
@@ -1706,7 +2653,12 @@ mod tests {
     fn sweep_candidates_excludes_recording_status_no_matter_how_old() {
         let now = datetime!(2026-07-23 00:00:00 UTC);
         let ancient = now - Duration::days(365);
-        let meta = sweep_meta("still-recording", &rfc3339(ancient), NoteStatus::Recording, false);
+        let meta = sweep_meta(
+            "still-recording",
+            &rfc3339(ancient),
+            NoteStatus::Recording,
+            false,
+        );
 
         assert!(sweep_candidates(&[meta], now).is_empty());
     }
@@ -1715,9 +2667,17 @@ mod tests {
     fn sweep_candidates_includes_transcribed_status_not_just_ready() {
         let now = datetime!(2026-07-23 00:00:00 UTC);
         let ancient = now - Duration::days(60);
-        let meta = sweep_meta("transcribed-old", &rfc3339(ancient), NoteStatus::Transcribed, false);
+        let meta = sweep_meta(
+            "transcribed-old",
+            &rfc3339(ancient),
+            NoteStatus::Transcribed,
+            false,
+        );
 
-        assert_eq!(sweep_candidates(&[meta], now), vec!["transcribed-old".to_string()]);
+        assert_eq!(
+            sweep_candidates(&[meta], now),
+            vec!["transcribed-old".to_string()]
+        );
     }
 
     #[test]
@@ -1746,7 +2706,12 @@ mod tests {
             sweep_meta("eligible", &rfc3339(ancient), NoteStatus::Ready, false),
             sweep_meta("too-young", &rfc3339(recent), NoteStatus::Ready, false),
             sweep_meta("recording", &rfc3339(ancient), NoteStatus::Recording, false),
-            sweep_meta("already-deleted", &rfc3339(ancient), NoteStatus::Transcribed, true),
+            sweep_meta(
+                "already-deleted",
+                &rfc3339(ancient),
+                NoteStatus::Transcribed,
+                true,
+            ),
         ];
 
         assert_eq!(sweep_candidates(&notes, now), vec!["eligible".to_string()]);
@@ -1760,16 +2725,32 @@ mod tests {
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
 
-        let old = store.create_note("Old note", "whisper-small", now - Duration::days(40)).unwrap();
+        let old = store
+            .create_note("Old note", "whisper-small", now - Duration::days(40))
+            .unwrap();
         store.finalize_note(&old.id, 60.0, 1).unwrap();
         fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
         store
-            .append_segment(&old.id, StoredSegment { speaker: "Speaker 1".into(), start: 0.0, end: 1.0, text: "hi".into() })
+            .append_segment(
+                &old.id,
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 0.0,
+                    end: 1.0,
+                    text: "hi".into(),
+                },
+            )
             .unwrap();
 
-        let recent = store.create_note("Recent note", "whisper-small", now - Duration::days(1)).unwrap();
+        let recent = store
+            .create_note("Recent note", "whisper-small", now - Duration::days(1))
+            .unwrap();
         store.finalize_note(&recent.id, 60.0, 1).unwrap();
-        fs::write(store.note_dir(&recent.id).join(AUDIO_FILE), b"recent wav bytes").unwrap();
+        fs::write(
+            store.note_dir(&recent.id).join(AUDIO_FILE),
+            b"recent wav bytes",
+        )
+        .unwrap();
 
         let swept = store.run_audio_sweep(now).unwrap();
 
@@ -1791,7 +2772,9 @@ mod tests {
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
 
-        let old = store.create_note("No audio", "whisper-small", now - Duration::days(40)).unwrap();
+        let old = store
+            .create_note("No audio", "whisper-small", now - Duration::days(40))
+            .unwrap();
         store.finalize_note(&old.id, 60.0, 1).unwrap();
         // Deliberately no audio.wav written for this note.
 
@@ -1809,8 +2792,14 @@ mod tests {
         let now = datetime!(2026-07-23 10:15:30 UTC);
 
         // create_note leaves status at Recording; never finalized.
-        let recording = store.create_note("Still recording", "whisper-small", now - Duration::days(90)).unwrap();
-        fs::write(store.note_dir(&recording.id).join(AUDIO_FILE), b"live wav bytes").unwrap();
+        let recording = store
+            .create_note("Still recording", "whisper-small", now - Duration::days(90))
+            .unwrap();
+        fs::write(
+            store.note_dir(&recording.id).join(AUDIO_FILE),
+            b"live wav bytes",
+        )
+        .unwrap();
 
         let swept = store.run_audio_sweep(now).unwrap();
 
@@ -1837,35 +2826,134 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("To delete", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("To delete", "whisper-small", now)
+            .unwrap();
 
-        store.delete_note(&meta.id).unwrap();
+        let undo = store.delete_note(&meta.id).unwrap();
 
         let notes = store.list_notes().unwrap();
         assert!(notes.iter().all(|n| n.id != meta.id));
         assert!(!store.note_dir(&meta.id).exists());
+        assert!(store.root.join(RECOVERY_DIR).join(undo.trash_name).is_dir());
     }
 
     #[test]
-    fn delete_note_falls_back_to_permanent_delete_when_trash_errors() {
+    fn delete_note_can_be_restored_without_overwriting_an_existing_note() {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
         let meta = store
-            .create_note("Trash unavailable", "whisper-small", now)
+            .create_note("Recover me", "whisper-small", now)
             .unwrap();
-
-        // Force the trash call to always fail, exercising the fallback path
-        // deterministically instead of depending on a real OS trash.
-        store
-            .delete_note_impl(&meta.id, |_dir| {
-                Err("simulated trash failure".to_string())
-            })
-            .unwrap();
+        let undo = store.delete_note(&meta.id).unwrap();
 
         assert!(!store.note_dir(&meta.id).exists());
-        let notes = store.list_notes().unwrap();
-        assert!(notes.iter().all(|n| n.id != meta.id));
+        let restored = store.restore_note(&undo).unwrap();
+        assert_eq!(restored, meta);
+        assert!(store.note_dir(&meta.id).is_dir());
+        assert!(store.restore_note(&undo).is_err());
+
+        let mut tampered = undo;
+        tampered.trash_name.push_str("-changed");
+        assert!(store.restore_note(&tampered).is_err());
+    }
+
+    #[test]
+    fn diagnostics_exclude_private_note_content() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Confidential acquisition target",
+                "whisper-small",
+                datetime!(2026-07-23 10:15:30 UTC),
+            )
+            .unwrap();
+        store
+            .append_segment(
+                &meta.id,
+                StoredSegment {
+                    speaker: "Alice".to_string(),
+                    start: 0.0,
+                    end: 1.0,
+                    text: "Project Nightingale is secret".to_string(),
+                },
+            )
+            .unwrap();
+
+        let path = store.export_diagnostics("0.6.0").unwrap();
+        let report = fs::read_to_string(path).unwrap();
+        assert!(!report.contains(&meta.id));
+        assert!(!report.contains("Confidential acquisition target"));
+        assert!(!report.contains("Project Nightingale"));
+        assert!(!report.contains("Alice"));
+        assert!(report.contains("\"noteCount\": 1"));
+    }
+
+    #[test]
+    fn per_note_storage_and_audio_cleanup_preserve_documents() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Storage test",
+                "whisper-small",
+                datetime!(2026-07-23 10:15:30 UTC),
+            )
+            .unwrap();
+        fs::write(store.note_dir(&meta.id).join(AUDIO_FILE), vec![0u8; 4_096]).unwrap();
+        store
+            .append_segment(
+                &meta.id,
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 0.0,
+                    end: 1.0,
+                    text: "Preserve this transcript.".into(),
+                },
+            )
+            .unwrap();
+
+        let before = store.note_storage_stats(&meta.id).unwrap();
+        assert_eq!(before.audio_bytes, 4_096);
+        assert!(before.document_bytes > 0);
+
+        let updated = store.delete_note_audio(&meta.id).unwrap();
+        assert!(updated.audio_deleted);
+        assert!(!store.note_dir(&meta.id).join(AUDIO_FILE).exists());
+        let (_, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(transcript.segments[0].text, "Preserve this transcript.");
+        assert_eq!(store.note_storage_stats(&meta.id).unwrap().audio_bytes, 0);
+    }
+
+    #[test]
+    fn bulk_export_writes_markdown_and_manifest() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let first = store
+            .create_note(
+                "Alpha / planning",
+                "whisper-small",
+                datetime!(2026-07-23 10:15:30 UTC),
+            )
+            .unwrap();
+        let second = store
+            .create_note(
+                "Beta review",
+                "whisper-small",
+                datetime!(2026-07-23 10:15:31 UTC),
+            )
+            .unwrap();
+
+        let export = store
+            .export_notes(&[first.id.clone(), second.id.clone()])
+            .unwrap();
+        assert!(export.join("001-Alpha---planning.md").is_file());
+        assert!(export.join("002-Beta-review.md").is_file());
+        let manifest = fs::read_to_string(export.join("manifest.json")).unwrap();
+        assert!(manifest.contains("Alpha / planning"));
+        assert!(manifest.contains("Beta review"));
     }
 
     // --- write_summary / read_summary ------------------------------------------
@@ -1876,7 +2964,10 @@ mod tests {
         SummaryDoc {
             summary: "Discussed Q3 roadmap.".to_string(),
             decisions: vec!["Ship by Friday".to_string()],
-            action_items: vec![ActionItem { text: "Write release notes".to_string(), done: false }],
+            action_items: vec![ActionItem {
+                text: "Write release notes".to_string(),
+                done: false,
+            }],
         }
     }
 
@@ -1937,10 +3028,15 @@ mod tests {
         let meta = store.create_note("Standup", "whisper-small", now).unwrap();
         store.finalize_note(&meta.id, 42.0, 1).unwrap();
 
-        let updated = store.write_summary_and_finalize(&meta.id, &sample_summary()).unwrap();
+        let updated = store
+            .write_summary_and_finalize(&meta.id, &sample_summary())
+            .unwrap();
 
         assert_eq!(updated.status, NoteStatus::Ready);
-        assert_eq!(store.read_summary(&meta.id).unwrap(), Some(sample_summary()));
+        assert_eq!(
+            store.read_summary(&meta.id).unwrap(),
+            Some(sample_summary())
+        );
     }
 
     #[test]
@@ -1950,7 +3046,9 @@ mod tests {
         let now = datetime!(2026-07-23 10:15:30 UTC);
         let meta = store.create_note("Standup", "whisper-small", now).unwrap();
 
-        store.write_summary_and_finalize(&meta.id, &sample_summary()).unwrap();
+        store
+            .write_summary_and_finalize(&meta.id, &sample_summary())
+            .unwrap();
 
         let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
         assert!(markdown.contains("## Summary"));
@@ -2072,8 +3170,12 @@ mod tests {
             model: "whisper-small".to_string(),
             status: NoteStatus::Transcribed,
             speakers: 4,
+            capture_warning: None,
             audio_deleted: false,
             sources: default_sources(),
+            pinned: false,
+            markers: Vec::new(),
+            speaker_aliases: HashMap::new(),
         };
         overrides(&mut meta);
         meta
@@ -2086,8 +3188,18 @@ mod tests {
         let meta = md_meta(|_| {});
         let transcript = Transcript {
             segments: vec![
-                StoredSegment { speaker: "Speaker 1".into(), start: 41.0, end: 62.0, text: "Thanks for making time.".into() },
-                StoredSegment { speaker: "Speaker 1".into(), start: 94.0, end: 110.0, text: "Short answer: nowhere.".into() },
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 41.0,
+                    end: 62.0,
+                    text: "Thanks for making time.".into(),
+                },
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 94.0,
+                    end: 110.0,
+                    text: "Short answer: nowhere.".into(),
+                },
             ],
         };
 
@@ -2149,10 +3261,19 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             summary: "Reviewed the roadmap and aligned on priorities.".to_string(),
-            decisions: vec!["Ship the beta by Friday".to_string(), "Skip the redesign this quarter".to_string()],
+            decisions: vec![
+                "Ship the beta by Friday".to_string(),
+                "Skip the redesign this quarter".to_string(),
+            ],
             action_items: vec![
-                ActionItem { text: "Write release notes".to_string(), done: true },
-                ActionItem { text: "Schedule the retro".to_string(), done: false },
+                ActionItem {
+                    text: "Write release notes".to_string(),
+                    done: true,
+                },
+                ActionItem {
+                    text: "Schedule the retro".to_string(),
+                    done: false,
+                },
             ],
         };
 
@@ -2220,7 +3341,10 @@ mod tests {
         let summary = SummaryDoc {
             summary: "x".to_string(),
             decisions: vec![],
-            action_items: vec![ActionItem { text: "Follow up".to_string(), done: false }],
+            action_items: vec![ActionItem {
+                text: "Follow up".to_string(),
+                done: false,
+            }],
         };
 
         let markdown = render_note_md(&meta, Some(&summary), &Transcript::default());
@@ -2374,8 +3498,14 @@ mod tests {
         // double-s-spelled query against an eszett-spelled haystack (and
         // vice versa) is expected to come back with no match, not a panic
         // or a mangled snippet.
-        assert_eq!(find_snippet("Wir treffen uns in der Straße heute", "strasse"), None);
-        assert_eq!(find_snippet("Wir treffen uns in der Strasse heute", "straße"), None);
+        assert_eq!(
+            find_snippet("Wir treffen uns in der Straße heute", "strasse"),
+            None
+        );
+        assert_eq!(
+            find_snippet("Wir treffen uns in der Strasse heute", "straße"),
+            None
+        );
         // The double-s spelling on both sides still matches normally.
         assert!(find_snippet("Wir treffen uns in der Strasse heute", "strasse").is_some());
     }
@@ -2398,7 +3528,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Client Call — Acme", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Client Call — Acme", "whisper-small", now)
+            .unwrap();
 
         let hits = store.search_notes("acme").unwrap();
 
@@ -2418,7 +3550,12 @@ mod tests {
         store
             .append_segment(
                 &meta.id,
-                StoredSegment { speaker: "Speaker 1".into(), start: 12.5, end: 15.0, text: "Let's discuss the ROADMAP next.".into() },
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 12.5,
+                    end: 15.0,
+                    text: "Let's discuss the ROADMAP next.".into(),
+                },
             )
             .unwrap();
 
@@ -2436,11 +3573,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Budget planning", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Budget planning", "whisper-small", now)
+            .unwrap();
         store
             .append_segment(
                 &meta.id,
-                StoredSegment { speaker: "Speaker 1".into(), start: 0.0, end: 2.0, text: "The budget is tight this quarter.".into() },
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 0.0,
+                    end: 2.0,
+                    text: "The budget is tight this quarter.".into(),
+                },
             )
             .unwrap();
 
@@ -2458,16 +3602,25 @@ mod tests {
         let now = datetime!(2026-07-23 10:15:30 UTC);
 
         // Older note only matches via its transcript.
-        let transcript_note = store.create_note("Standup", "whisper-small", now - Duration::hours(2)).unwrap();
+        let transcript_note = store
+            .create_note("Standup", "whisper-small", now - Duration::hours(2))
+            .unwrap();
         store
             .append_segment(
                 &transcript_note.id,
-                StoredSegment { speaker: "Speaker 1".into(), start: 0.0, end: 2.0, text: "Sprint update".into() },
+                StoredSegment {
+                    speaker: "Speaker 1".into(),
+                    start: 0.0,
+                    end: 2.0,
+                    text: "Sprint update".into(),
+                },
             )
             .unwrap();
 
         // Newer note matches via its title.
-        let title_note = store.create_note("Sprint kickoff", "whisper-small", now).unwrap();
+        let title_note = store
+            .create_note("Sprint kickoff", "whisper-small", now)
+            .unwrap();
 
         let hits = store.search_notes("sprint").unwrap();
 
@@ -2484,8 +3637,16 @@ mod tests {
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
 
-        let older = store.create_note("Roadmap review — v1", "whisper-small", now - Duration::hours(3)).unwrap();
-        let newer = store.create_note("Roadmap review — v2", "whisper-small", now).unwrap();
+        let older = store
+            .create_note(
+                "Roadmap review — v1",
+                "whisper-small",
+                now - Duration::hours(3),
+            )
+            .unwrap();
+        let newer = store
+            .create_note("Roadmap review — v2", "whisper-small", now)
+            .unwrap();
 
         let hits = store.search_notes("roadmap").unwrap();
 
@@ -2499,7 +3660,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Long meeting", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Long meeting", "whisper-small", now)
+            .unwrap();
         for i in 0..5 {
             store
                 .append_segment(
@@ -2527,7 +3690,11 @@ mod tests {
         let now = datetime!(2026-07-23 10:15:30 UTC);
         for i in 0..60i64 {
             store
-                .create_note(&format!("Keyword meeting {i}"), "whisper-small", now - Duration::minutes(i))
+                .create_note(
+                    &format!("Keyword meeting {i}"),
+                    "whisper-small",
+                    now - Duration::minutes(i),
+                )
                 .unwrap();
         }
 
@@ -2542,7 +3709,9 @@ mod tests {
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
         // create_note never writes transcript.json — only append_segment does.
-        store.create_note("Keyword title only", "whisper-small", now).unwrap();
+        store
+            .create_note("Keyword title only", "whisper-small", now)
+            .unwrap();
 
         let hits = store.search_notes("keyword").unwrap();
 
@@ -2555,7 +3724,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        let meta = store.create_note("Keyword title", "whisper-small", now).unwrap();
+        let meta = store
+            .create_note("Keyword title", "whisper-small", now)
+            .unwrap();
         fs::write(store.transcript_path(&meta.id), "not valid json {{{").unwrap();
 
         let hits = store.search_notes("keyword").unwrap();
@@ -2579,7 +3750,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let now = datetime!(2026-07-23 10:15:30 UTC);
-        store.create_note("会議 🎉 planning NEEDLE session", "whisper-small", now).unwrap();
+        store
+            .create_note("会議 🎉 planning NEEDLE session", "whisper-small", now)
+            .unwrap();
 
         let hits = store.search_notes("needle").unwrap();
 

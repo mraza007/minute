@@ -10,8 +10,16 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run --passWithNoTests",
+    "test:accessibility": "vitest run src/accessibility.test.tsx",
+    "test:soak": "vitest run src/reliability/recordingSoak.test.ts",
+    "test:scale": "vitest run src/performance/libraryScale.test.tsx",
+    "test:visual": "node scripts/visual-regression.mjs",
+    "test:visual:update": "UPDATE_VISUAL_BASELINES=1 node scripts/visual-regression.mjs",
+    "check:release": "node scripts/check-release.mjs",
+    "verify:macos-bundle": "bash scripts/verify-macos-bundle.sh",
     "test:watch": "vitest",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "verify": "npm run lint && npm run test && npm run build && npm run test:rust && npm run check:release"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.8",
@@ -28,8 +36,12 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "agent-browser": "^0.27.0",
+    "axe-core": "^4.12.1",
     "jsdom": "^29.1.1",
     "oxlint": "^1.71.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1",
     "vitest": "^4.1.10"

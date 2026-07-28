@@ -183,7 +183,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tauri::{AppHandle, Emitter};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 use crate::audio::TARGET_SAMPLE_RATE;
 use crate::error::{MinuteError, Result};
@@ -274,11 +276,8 @@ fn run_full_and_extract(state: &mut WhisperState, samples: &[f32]) -> Result<Vec
 #[allow(dead_code)]
 pub fn transcribe_samples(model_path: &Path, samples: &[f32]) -> Result<Vec<Segment>> {
     ensure_whisper_logging_redirected();
-    let ctx = WhisperContext::new_with_params(
-        model_path,
-        WhisperContextParameters::default(),
-    )
-    .map_err(|e| MinuteError::Other(format!("failed to load whisper model: {e}")))?;
+    let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+        .map_err(|e| MinuteError::Other(format!("failed to load whisper model: {e}")))?;
     let mut state = ctx
         .create_state()
         .map_err(|e| MinuteError::Other(format!("failed to create whisper state: {e}")))?;
@@ -474,22 +473,20 @@ fn run_worker(model_path: std::path::PathBuf, sample_rx: Receiver<Arc<Vec<f32>>>
     }));
 
     let load_start = Instant::now();
-    let whisper_ctx = match WhisperContext::new_with_params(
-        &model_path,
-        WhisperContextParameters::default(),
-    ) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            log::warn!("failed to load whisper model {model_path:?}: {e}");
-            (ctx.emit)(SttEvent::SttStatus(SttStatusPayload {
-                note_id: ctx.note_id.clone(),
-                state: SttStatusState::Error,
-                error: Some(e.to_string()),
-            }));
-            while sample_rx.recv().is_ok() {}
-            return;
-        }
-    };
+    let whisper_ctx =
+        match WhisperContext::new_with_params(&model_path, WhisperContextParameters::default()) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                log::warn!("failed to load whisper model {model_path:?}: {e}");
+                (ctx.emit)(SttEvent::SttStatus(SttStatusPayload {
+                    note_id: ctx.note_id.clone(),
+                    state: SttStatusState::Error,
+                    error: Some(e.to_string()),
+                }));
+                while sample_rx.recv().is_ok() {}
+                return;
+            }
+        };
 
     let mut state = match whisper_ctx.create_state() {
         Ok(state) => state,
@@ -750,7 +747,12 @@ mod tests {
     /// for the test to inspect afterward. Returns `(ctx, events)` — kept as
     /// a `TestGuard`-style tuple rather than a struct since every caller
     /// destructures it immediately.
-    fn test_ctx() -> (WorkerCtx, String, Arc<Mutex<Vec<SttEvent>>>, tempfile::TempDir) {
+    fn test_ctx() -> (
+        WorkerCtx,
+        String,
+        Arc<Mutex<Vec<SttEvent>>>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_shared(dir.path().to_path_buf());
         let note_id = lock_store(&store)
@@ -769,7 +771,11 @@ mod tests {
     }
 
     fn stored_segments(ctx: &WorkerCtx) -> Vec<StoredSegment> {
-        lock_store(&ctx.store).get_note(&ctx.note_id).unwrap().1.segments
+        lock_store(&ctx.store)
+            .get_note(&ctx.note_id)
+            .unwrap()
+            .1
+            .segments
     }
 
     #[test]
@@ -855,10 +861,7 @@ mod tests {
 
         // Chunk starts at 7.0s: first segment straddles the overlap and is
         // dropped (as above), second is past it and kept.
-        let raw = vec![
-            seg(0.0, 0.5, "dropped"),
-            seg(2.0, 3.0, "brand new words"),
-        ];
+        let raw = vec![seg(0.0, 0.5, "dropped"), seg(2.0, 3.0, "brand new words")];
         handle_window_segments(&raw, 7.0, &mut emitted_until, &ctx);
 
         assert_eq!(emitted_until, 10.0);

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { LiveTranscriptGroup } from '../state/adapters'
 import { RecordingView } from './RecordingView'
 
@@ -8,10 +8,21 @@ const base = {
   togglePause: vi.fn(),
   stopRec: vi.fn(),
   stopping: false,
+  processingStage: 'idle' as const,
   sttStatus: 'ready' as const,
   sttError: null as string | null,
   modelName: 'Whisper small',
   systemAudioActive: false,
+  microphoneName: 'MacBook Pro Microphone',
+  captureHealth: 'healthy' as const,
+  elapsed: 0,
+  title: 'New recording',
+  renameTitle: vi.fn(() => Promise.resolve()),
+  markers: [],
+  addMarker: vi.fn(() => Promise.resolve()),
+  processingFailure: null,
+  onRetryProcessing: vi.fn(),
+  onDismissProcessingFailure: vi.fn(),
 }
 
 describe('RecordingView', () => {
@@ -34,6 +45,8 @@ describe('RecordingView', () => {
     render(<RecordingView {...base} paused={true} />)
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
+    expect(screen.getByText('Capture paused')).toBeInTheDocument()
+    expect(screen.getByText('Paused · on-device')).toBeInTheDocument()
   })
 
   it('shows the live transcript privacy label', () => {
@@ -43,27 +56,28 @@ describe('RecordingView', () => {
 
   it('shows the model name and "on-device" in the caption', () => {
     render(<RecordingView {...base} modelName="Whisper medium" />)
-    expect(screen.getByText('Whisper medium · on-device')).toBeInTheDocument()
+    expect(screen.getAllByText('Whisper medium')).toHaveLength(2)
+    expect(screen.getByText('Live · on-device')).toBeInTheDocument()
   })
 
-  describe('system audio segmented option (Stage 5 Task 5)', () => {
-    it('reflects aria-checked false and stays display-only when system audio is not active', () => {
+  describe('capture source visibility', () => {
+    it('prominently names the microphone opened by the backend', () => {
+      render(<RecordingView {...base} microphoneName="Studio Display Microphone" />)
+      expect(screen.getAllByText('Studio Display Microphone')).toHaveLength(2)
+      expect(screen.getByText('Microphone only · macOS default input')).toBeInTheDocument()
+    })
+
+    it('explains when system audio is not part of the recording', () => {
       render(<RecordingView {...base} systemAudioActive={false} />)
-      const radio = screen.getByRole('radio', { name: /system audio/i })
-      expect(radio).toHaveAttribute('aria-checked', 'false')
-      expect(radio).toBeDisabled()
+      expect(screen.getByText('Not part of this recording')).toBeInTheDocument()
+      expect(screen.getByText(/Turn on system audio in Settings/)).toBeInTheDocument()
     })
 
-    it('reflects aria-checked true when system audio is active, and stays display-only', () => {
+    it('shows system audio as an active capture source when it is included', () => {
       render(<RecordingView {...base} systemAudioActive={true} />)
-      const radio = screen.getByRole('radio', { name: /system audio/i })
-      expect(radio).toHaveAttribute('aria-checked', 'true')
-      expect(radio).toBeDisabled()
-    })
-
-    it('keeps the Microphone option checked regardless of systemAudioActive', () => {
-      render(<RecordingView {...base} systemAudioActive={true} />)
-      expect(screen.getByRole('radio', { name: /microphone/i })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByText('Microphone + system audio · macOS default input')).toBeInTheDocument()
+      expect(screen.getByText('Apps and call audio')).toBeInTheDocument()
+      expect(screen.queryByText(/Turn on system audio in Settings/)).not.toBeInTheDocument()
     })
   })
 
@@ -79,6 +93,79 @@ describe('RecordingView', () => {
     expect(screen.getByText('Speaker 2')).toBeInTheDocument()
     expect(screen.getByText('01:20')).toBeInTheDocument()
     expect(screen.getByText('Doing well, thanks')).toBeInTheDocument()
+    expect(screen.getByText('Hello there, how are you').closest('.script-line')).toHaveClass('live-script-line')
+  })
+
+  it('only renders working recording actions', () => {
+    render(<RecordingView {...base} />)
+    expect(screen.getByRole('button', { name: /stop & transcribe/i })).toHaveAttribute('aria-keyshortcuts', 'Meta+Enter')
+    expect(screen.getByRole('button', { name: 'Pause' })).toHaveAttribute('aria-keyshortcuts', 'Space')
+    expect(screen.getByRole('button', { name: /add marker/i })).toHaveAttribute('aria-keyshortcuts', 'Meta+Shift+M')
+  })
+
+  it('edits and persists the working recording title', async () => {
+    const renameTitle = vi.fn(() => Promise.resolve())
+    render(<RecordingView {...base} renameTitle={renameTitle} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit recording title' }))
+    const input = screen.getByRole('textbox', { name: 'Recording title' })
+    fireEvent.change(input, { target: { value: 'Onboarding flow review' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(renameTitle).toHaveBeenCalledWith('Onboarding flow review'))
+  })
+
+  it('cancels a working-title edit with Escape', () => {
+    const renameTitle = vi.fn(() => Promise.resolve())
+    render(<RecordingView {...base} renameTitle={renameTitle} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit recording title' }))
+    const input = screen.getByRole('textbox', { name: 'Recording title' })
+    fireEvent.change(input, { target: { value: 'Discard this' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+
+    expect(renameTitle).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: 'New recording' })).toBeInTheDocument()
+  })
+
+  it('collapses and restores the recording details rail', () => {
+    render(<RecordingView {...base} />)
+    const toggle = screen.getByRole('button', { name: 'Hide details' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('complementary', { name: 'Recording details' })).not.toBeInTheDocument()
+
+    const restore = screen.getByRole('button', { name: 'Show details' })
+    expect(restore).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(restore)
+    expect(screen.getByRole('complementary', { name: 'Recording details' })).toBeInTheDocument()
+  })
+
+  it('supports Space to pause and Command-Enter to stop outside interactive controls', () => {
+    const togglePause = vi.fn()
+    const stopRec = vi.fn()
+    render(<RecordingView {...base} togglePause={togglePause} stopRec={stopRec} />)
+
+    fireEvent.keyDown(window, { key: ' ', code: 'Space' })
+    fireEvent.keyDown(window, { key: 'Enter', code: 'Enter', metaKey: true })
+
+    expect(togglePause).toHaveBeenCalledTimes(1)
+    expect(stopRec).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trigger recording shortcuts while the title field has focus', () => {
+    const togglePause = vi.fn()
+    const stopRec = vi.fn()
+    render(<RecordingView {...base} togglePause={togglePause} stopRec={stopRec} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit recording title' }))
+    const input = screen.getByRole('textbox', { name: 'Recording title' })
+    fireEvent.keyDown(input, { key: ' ', code: 'Space' })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', metaKey: true })
+
+    expect(togglePause).not.toHaveBeenCalled()
+    expect(stopRec).not.toHaveBeenCalled()
   })
 
   it('shows the blinking transcribing indicator when segments exist and sttStatus is ready', () => {
@@ -112,33 +199,137 @@ describe('RecordingView', () => {
     expect(screen.queryByText('transcribing…')).not.toBeInTheDocument()
   })
 
-  it('disables the stop button and shows "Finishing…" while stopping', () => {
-    render(<RecordingView {...base} stopping={true} />)
-    const btn = screen.getByRole('button', { name: /finishing/i })
-    expect(btn).toBeDisabled()
+  it('replaces recording controls with an explicit saving handoff while stopping', () => {
+    render(<RecordingView {...base} stopping={true} processingStage="saving" elapsed={74} />)
+    expect(screen.getByRole('heading', { name: 'Turning your recording into notes' })).toBeInTheDocument()
+    expect(screen.getAllByText('Saving audio').length).toBeGreaterThan(0)
+    expect(screen.getByText('01:14')).toBeInTheDocument()
+    expect(screen.getByText('Keep Minute open while this finishes.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /stop & transcribe/i })).not.toBeInTheDocument()
   })
 
-  it('shows an honest live insights placeholder — no fake AI content during a real recording', () => {
+  it('shows completed and active processing stages without hiding source metadata', () => {
+    render(
+      <RecordingView
+        {...base}
+        stopping={true}
+        processingStage="finalizing"
+        elapsed={65}
+        microphoneName="Studio Display Microphone"
+      />,
+    )
+    const savingStep = screen.getByText('Saving audio').closest('li')
+    const finalizingStep = screen.getByText('Finalizing transcript').closest('li')
+    expect(savingStep).toHaveAttribute('data-state', 'complete')
+    expect(finalizingStep).toHaveAttribute('data-state', 'active')
+    expect(screen.getAllByText('Studio Display Microphone').length).toBeGreaterThan(0)
+    expect(screen.getByText('01:05')).toBeInTheDocument()
+  })
+
+  it('surfaces capture silence with recovery guidance while recording continues', () => {
+    render(<RecordingView {...base} captureHealth="silent" />)
+    expect(screen.getByText('No input detected')).toBeInTheDocument()
+    expect(screen.getByText('Check that the microphone is not muted or covered.')).toBeInTheDocument()
+  })
+
+  it('shows an honest observed transcript delay and reassures that audio capture is safe', () => {
+    const liveSegments: LiveTranscriptGroup[] = [
+      { speaker: 'Speaker 1', start: 0, end: 8, text: 'Earlier words' },
+    ]
+    render(<RecordingView {...base} liveSegments={liveSegments} elapsed={31} />)
+    expect(screen.getAllByText('Transcript about 23s behind').length).toBeGreaterThan(0)
+    expect(screen.getByText('Audio capture is safe while the transcript catches up.')).toBeInTheDocument()
+  })
+
+  it('announces recording-health categories without repeating changing lag seconds', () => {
+    const liveSegments: LiveTranscriptGroup[] = [
+      { speaker: 'Speaker 1', start: 0, end: 8, text: 'Earlier words' },
+    ]
+    const { rerender } = render(<RecordingView {...base} liveSegments={liveSegments} elapsed={31} />)
+    const status = screen.getByRole('status', { name: 'Recording health updates' })
+    const announcement = status.textContent
+    expect(announcement).toContain('Transcript is behind.')
+    expect(announcement).not.toContain('23s')
+
+    rerender(<RecordingView {...base} liveSegments={liveSegments} elapsed={32} />)
+    expect(screen.getAllByText('Transcript about 24s behind').length).toBeGreaterThan(0)
+    expect(status).toHaveTextContent(announcement ?? '')
+  })
+
+  it('uses the context rail for useful recording details instead of placeholder content', () => {
     render(<RecordingView {...base} />)
-    expect(screen.getByText('Live insights')).toBeInTheDocument()
-    expect(screen.getByText('Live insights arrive in a later update.')).toBeInTheDocument()
-    expect(screen.getByText('Transcription runs on-device — nothing leaves this machine.')).toBeInTheDocument()
-    expect(screen.queryByText('ACTION ITEMS · SO FAR')).not.toBeInTheDocument()
-    expect(screen.queryByText('KEY POINTS')).not.toBeInTheDocument()
-    expect(screen.queryByText(/Acme expansion offsets SMB shortfall/)).not.toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Recording details' })).toHaveClass('recording-details')
+    expect(screen.getByText('Sources are fixed until you stop.')).toBeInTheDocument()
+    expect(screen.getByText('Audio, transcript, and model processing stay on this Mac.')).toBeInTheDocument()
+    expect(screen.queryByText('Live insights arrive in a later update.')).not.toBeInTheDocument()
+  })
+
+  it('adds a labeled marker at the current recording time', async () => {
+    const addMarker = vi.fn().mockResolvedValue(undefined)
+    render(<RecordingView {...base} elapsed={74} addMarker={addMarker} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /add marker/i }))
+    expect(screen.getByText('01:14')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Marker label' }), {
+      target: { value: 'Pricing decision' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save marker' }))
+
+    await waitFor(() => expect(addMarker).toHaveBeenCalledWith('Pricing decision'))
+    expect(screen.queryByRole('textbox', { name: 'Marker label' })).not.toBeInTheDocument()
+  })
+
+  it('opens the marker composer with the visible ⌘⇧M shortcut', () => {
+    render(<RecordingView {...base} />)
+    fireEvent.keyDown(window, { key: 'm', metaKey: true, shiftKey: true })
+    expect(screen.getByRole('textbox', { name: 'Marker label' })).toBeInTheDocument()
+  })
+
+  it('lists persisted markers in recording details', () => {
+    render(
+      <RecordingView
+        {...base}
+        markers={[
+          { seconds: 18, label: 'Open question' },
+          { seconds: 74, label: 'Decision' },
+        ]}
+      />,
+    )
+    expect(screen.getByText('Markers · 2')).toBeInTheDocument()
+    expect(screen.getByText('Open question')).toBeInTheDocument()
+    expect(screen.getByText('Decision')).toBeInTheDocument()
+  })
+
+  it('keeps capture available and offers retry after a save failure', () => {
+    const onRetryProcessing = vi.fn()
+    const onDismissProcessingFailure = vi.fn()
+    render(
+      <RecordingView
+        {...base}
+        processingFailure={{ stage: 'saving', message: 'Disk temporarily unavailable.' }}
+        onRetryProcessing={onRetryProcessing}
+        onDismissProcessingFailure={onDismissProcessingFailure}
+      />,
+    )
+    expect(screen.getByText(/audio capture is still active/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry finish' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue recording' }))
+    expect(onRetryProcessing).toHaveBeenCalledTimes(1)
+    expect(onDismissProcessingFailure).toHaveBeenCalledTimes(1)
   })
 
   it('renders 56 waveform bars', () => {
     const { container } = render(<RecordingView {...base} />)
     const bars = container.querySelectorAll('[data-testid="waveform-bars"] > span')
     expect(bars).toHaveLength(56)
+    expect(screen.getByTestId('waveform-bars')).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('sets animationPlayState to paused on waveform bars when paused', () => {
     const { container } = render(<RecordingView {...base} paused={true} />)
     const bars = container.querySelectorAll('[data-testid="waveform-bars"] > span')
     expect(bars[0]).toHaveStyle({ animationPlayState: 'paused' })
+    expect(screen.getByTestId('waveform-bars')).toHaveAttribute('data-paused', 'true')
   })
 
   it('does not set animationPlayState when not paused', () => {

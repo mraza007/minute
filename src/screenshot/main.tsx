@@ -23,10 +23,13 @@ import { applyThemeOverride } from './themeOverride'
 const params = new URLSearchParams(window.location.search)
 const state = (params.get('state') ?? 'note') as ScreenshotState
 const theme = params.get('theme') === 'dark' ? 'dark' : 'light'
+if (params.get('motion') === 'reduced') {
+  document.documentElement.setAttribute('data-reduced-motion', 'true')
+}
 
 mockConvertFileSrc('macos')
 installFakeAudio()
-installMockIpc(state)
+installMockIpc(state, params)
 
 if (state === 'popup') {
   // The production popup window (popup.html, created `transparent: true` —

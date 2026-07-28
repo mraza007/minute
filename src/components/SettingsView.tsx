@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
-import type { ModelStatus, StorageStats, SysAudioAvailability } from '../ipc/types'
+import type { Hardware, ModelStatus, Recommendation, StorageStats, SysAudioAvailability } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
+import { assessModelSuitability } from '../state/modelSuitability'
+import { HardwareSummary, ModelSuitabilityLine } from './ModelSuitability'
 import { Toggle } from './Toggle'
 
 const REMOVE_CONFIRM_TIMEOUT_MS = 4000
 
 export interface SettingsViewProps {
   models: ModelStatus[]
+  hardware: Hardware | null
+  recommendation: Recommendation | null
   downloads: Record<string, DownloadProgressState>
   sttModel: string
   setSttModel: (id: string) => void
@@ -28,6 +32,7 @@ export interface SettingsViewProps {
   /** Screen Recording permission/macOS-version gate for the toggle above — see `sysAudioStatus`'s docs for what each state means. */
   sysAudioAvailability: SysAudioAvailability
   onRequestSysAudioPermission: () => void
+  onExportDiagnostics: () => Promise<void>
 }
 
 /**
@@ -169,6 +174,8 @@ function ModelSecondaryAction({ entry, downloads, downloadModel, cancelDownload,
 }
 
 interface SelectableModelRowProps extends ModelRowAction {
+  hardware: Hardware | null
+  recommendation: Recommendation | null
   selected: boolean
   onSelect: () => void
   /** True iff this is the single row that owns the radiogroup's tab stop right now (roving tabindex) — see `rovingSttId`/`rovingLlmId` in `SettingsView`. */
@@ -182,9 +189,21 @@ interface SelectableModelRowProps extends ModelRowAction {
  * its Download/Cancel affordance but the radio itself stays inert (not
  * `selectable`) until the model actually finishes installing.
  */
-function SelectableModelRow({ entry, downloads, selected, onSelect, roving, downloadModel, cancelDownload, deleteModel }: SelectableModelRowProps) {
+function SelectableModelRow({
+  entry,
+  hardware,
+  recommendation,
+  downloads,
+  selected,
+  onSelect,
+  roving,
+  downloadModel,
+  cancelDownload,
+  deleteModel,
+}: SelectableModelRowProps) {
   const info = modelStatusToSttInfo(entry, selected ? entry.id : '', downloads)
   const progress = downloads[entry.id]
+  const suitability = assessModelSuitability(entry, hardware, recommendation)
   // Only an installed model can actually be selected as the in-use STT
   // model — a not-yet-downloaded or still-downloading row shows its state
   // but the radio itself is inert until the download finishes (the
@@ -193,27 +212,6 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, roving, down
 
   return (
     <div
-      role="radio"
-      aria-checked={selected}
-      aria-disabled={!selectable}
-      // Roving tabindex: only one selectable row is ever a Tab stop at a
-      // time (the selected one, or the first selectable row if none is
-      // selected yet) — Up/Down (handled by the radiogroup container) moves
-      // both focus and selection among selectable rows, same as the native
-      // <input type="radio"> group pattern.
-      tabIndex={selectable ? (roving ? 0 : -1) : -1}
-      data-model-id={entry.id}
-      onClick={selectable ? onSelect : undefined}
-      onKeyDown={
-        selectable
-          ? e => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect()
-              }
-            }
-          : undefined
-      }
       className="model-card"
       // A ruled row, selected by a margin marker — the same selection
       // language the sidebar and search palette use, rather than a card
@@ -228,7 +226,6 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, roving, down
         borderBottom: '1px solid var(--rule)',
         background: selected ? 'var(--selected-tint)' : 'transparent',
         padding: '13px 14px',
-        cursor: selectable ? 'pointer' : 'default',
         lineHeight: 1.5,
         transition: 'background .15s',
         fontFamily: 'inherit',
@@ -236,34 +233,67 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, roving, down
         color: 'inherit',
       }}
     >
-      <span
+      <div
+        role="radio"
+        aria-checked={selected}
+        aria-disabled={!selectable}
+        // Roving tabindex: only one selectable row is ever a Tab stop at a
+        // time (the selected one, or the first selectable row if none is
+        // selected yet) — Up/Down (handled by the radiogroup container) moves
+        // both focus and selection among selectable rows, same as the native
+        // <input type="radio"> group pattern.
+        tabIndex={selectable ? (roving ? 0 : -1) : -1}
+        data-model-id={entry.id}
+        onClick={selectable ? onSelect : undefined}
+        onKeyDown={
+          selectable
+            ? e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelect()
+                }
+              }
+            : undefined
+        }
         style={{
-          width: 15,
-          height: 15,
-          flex: 'none',
-          marginTop: 3,
-          borderRadius: '50%',
-          boxSizing: 'border-box',
-          background: 'transparent',
-          border: selected ? '4.5px solid var(--accent)' : '1.5px solid var(--control-border)',
-          transition: 'border .15s',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 13,
+          minWidth: 0,
+          flex: 1,
+          cursor: selectable ? 'pointer' : 'default',
         }}
-      />
-      <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--serif)', fontSize: 13.5 }}>
-        <b style={{ fontWeight: 700 }}>{info.displayName}</b> — {info.desc}
-        <br />
+      >
         <span
           style={{
-            fontFamily: 'var(--sans)',
-            fontSize: 11,
-            color: selected ? 'var(--accent-text)' : 'var(--ink-faint)',
-            fontWeight: selected ? 600 : 400,
+            width: 15,
+            height: 15,
+            flex: 'none',
+            marginTop: 3,
+            borderRadius: '50%',
+            boxSizing: 'border-box',
+            background: 'transparent',
+            border: selected ? '4.5px solid var(--accent)' : '1.5px solid var(--control-border)',
+            transition: 'border .15s',
           }}
-        >
-          {info.sub}
+        />
+        <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--serif)', fontSize: 13.5 }}>
+          <b style={{ fontWeight: 700 }}>{info.displayName}</b> — {info.desc}
+          <br />
+          <span
+            style={{
+              fontFamily: 'var(--sans)',
+              fontSize: 11,
+              color: selected ? 'var(--accent-text)' : 'var(--ink-faint)',
+              fontWeight: selected ? 600 : 400,
+            }}
+          >
+            {info.sub}
+          </span>
+          <ModelSuitabilityLine result={suitability} />
+          {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
         </span>
-        {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
-      </span>
+      </div>
       <span style={{ flex: 'none' }}>
         <ModelSecondaryAction entry={entry} downloads={downloads} downloadModel={downloadModel} cancelDownload={cancelDownload} deleteModel={deleteModel} />
       </span>
@@ -273,6 +303,8 @@ function SelectableModelRow({ entry, downloads, selected, onSelect, roving, down
 
 export function SettingsView({
   models,
+  hardware,
+  recommendation,
   downloads,
   sttModel,
   setSttModel,
@@ -291,6 +323,7 @@ export function SettingsView({
   toggleCaptureSystemAudio,
   sysAudioAvailability,
   onRequestSysAudioPermission,
+  onExportDiagnostics,
 }: SettingsViewProps) {
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
@@ -325,11 +358,13 @@ export function SettingsView({
   const pct = (n: number) => (totalBytes > 0 ? (n / totalBytes) * 100 : 0)
 
   return (
-    <main style={{ flex: 1, overflow: 'auto', background: 'var(--panel)' }}>
+    <main style={{ flex: 1, minWidth: 0, overflow: 'auto', background: 'var(--panel)' }}>
       <div style={{ maxWidth: 720, padding: '30px 34px 48px' }}>
         <h1 style={{ margin: '0 0 28px', fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 28, lineHeight: 1.14, letterSpacing: '-.014em' }}>
           Settings
         </h1>
+
+        <HardwareSummary hardware={hardware} />
 
         <Section title="Transcription model">
           <div
@@ -343,6 +378,8 @@ export function SettingsView({
               <SelectableModelRow
                 key={m.id}
                 entry={m}
+                hardware={hardware}
+                recommendation={recommendation}
                 downloads={downloads}
                 selected={sttModel === m.id}
                 roving={m.id === rovingSttId}
@@ -367,6 +404,8 @@ export function SettingsView({
               <SelectableModelRow
                 key={m.id}
                 entry={m}
+                hardware={hardware}
+                recommendation={recommendation}
                 downloads={downloads}
                 selected={llmModel === m.id}
                 roving={m.id === rovingLlmId}
@@ -455,6 +494,18 @@ export function SettingsView({
             <Toggle on={tDel} onToggle={toggleDel} label="Delete original audio 30 days after transcription" />
           </div>
           <div style={noteTextStyle}>Your library inherits FileVault full-disk encryption.</div>
+        </Section>
+
+        <Section title="Diagnostics">
+          <button type="button" className="btn-light" style={secondaryBtnStyle} onClick={() => void onExportDiagnostics()}>
+            Export diagnostics
+          </button>
+          <div style={noteTextStyle}>
+            Creates a local JSON report with app, platform, status counts, and storage totals for troubleshooting.
+          </div>
+          <div style={fineTextStyle}>
+            Never includes note titles, transcript text, note identifiers, filenames, or filesystem paths.
+          </div>
         </Section>
       </div>
     </main>

@@ -8,6 +8,8 @@ describe('TitleBar', () => {
     render(<TitleBar {...base} />)
     expect(screen.getByRole('button', { name: /new recording/i })).toBeInTheDocument()
     expect(screen.queryByText(/REC/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Minute')).not.toBeInTheDocument()
+    expect(screen.queryByText('on-device')).not.toBeInTheDocument()
   })
 
   it('shows REC pill with time while recording, and hides New recording', () => {
