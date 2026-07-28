@@ -15,6 +15,22 @@
         margin: 0;
         height: 100%;
       }
+
+      /* CI runners can be configured to reserve layout space for classic
+         scrollbars while developer Macs use overlay scrollbars. That host
+         preference shifted columns and text wrapping despite identical app
+         CSS. Captures exercise scrolling semantically in browser tests; the
+         regression image itself hides the host chrome so its geometry stays
+         deterministic across both environments. */
+      * {
+        scrollbar-width: none;
+      }
+
+      *::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+        display: none;
+      }
     </style>
   </head>
   <body>

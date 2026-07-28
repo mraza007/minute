@@ -18,7 +18,7 @@
     "check:release": "node scripts/check-release.mjs",
     "verify:macos-bundle": "bash scripts/verify-macos-bundle.sh",
     "test:watch": "vitest",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:rust": "TAURI_CONFIG='{\"bundle\":{\"macOS\":{\"frameworks\":[]}}}' cargo test --manifest-path src-tauri/Cargo.toml",
     "verify": "npm run lint && npm run test && npm run build && npm run test:rust && npm run check:release"
   },
   "dependencies": {
