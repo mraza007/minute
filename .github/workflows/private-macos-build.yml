@@ -15,9 +15,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,12 +43,15 @@ jobs:
             --release \
             --target "${{ matrix.target }}"
           target="${{ matrix.target }}"
-          arch="${target%%-*}"
           TAURI_ENV_DEBUG=false \
             TAURI_ENV_TARGET_TRIPLE="$target" \
-            TAURI_ENV_ARCH="$arch" \
+            TAURI_ENV_ARCH="${{ matrix.arch }}" \
             scripts/stage-frameworks.sh
       - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app
+        env:
+          TAURI_ENV_DEBUG: "false"
+          TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
+          TAURI_ENV_ARCH: ${{ matrix.arch }}
       - name: Verify architecture and ad-hoc signature
         run: |
           expected_arch="${{ matrix.target }}"

@@ -35,9 +35,9 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 src_tauri_dir="$(dirname "$script_dir")"
 dest="$src_tauri_dir/frameworks"
 
-profile="debug"
-if [[ "${TAURI_ENV_DEBUG:-}" == "false" ]]; then
-  profile="release"
+profile="release"
+if [[ "${TAURI_ENV_DEBUG:-false}" == "true" ]]; then
+  profile="debug"
 fi
 expected_arch="${TAURI_ENV_ARCH:-}"
 if [[ "$expected_arch" == "aarch64" ]]; then
