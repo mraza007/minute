@@ -9,9 +9,9 @@
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute for macOS (Apple Silicon)](https://github.com/mraza007/minute/releases/latest)**
+**[⬇ Download the current private build for Apple Silicon](https://github.com/mraza007/minute/releases/download/private-v0.6.0-20260728/Minute-aarch64-apple-darwin-private.zip)**
 
-or grab the DMG directly: [Minute_0.6.0_aarch64.dmg](https://github.com/mraza007/minute/releases/download/v0.6.0/Minute_0.6.0_aarch64.dmg)
+Using an Intel Mac? [Download the Intel private build](https://github.com/mraza007/minute/releases/download/private-v0.6.0-20260728/Minute-x86_64-apple-darwin-private.zip).
 
 Current downloads are ad-hoc signed and are not notarized. After copying
 Minute to Applications, try opening it once, then use **System Settings →
@@ -200,8 +200,9 @@ requirements shown up front.
 
 ## Install
 
-Grab the DMG from the [latest release](https://github.com/mraza007/minute/releases/latest)
-(see the download link up top), or build it from source:
+Grab the architecture-appropriate ZIP from
+[Installing a private build](#installing-a-private-build), or build Minute
+from source:
 
 ```bash
 git clone https://github.com/mraza007/minute.git
@@ -262,6 +263,20 @@ shasum -a 256 -c Minute-aarch64-apple-darwin-private.zip.sha256
 The expected result ends in `OK`.
 
 ### Installing a private build
+
+Download the attached build that matches your Mac:
+
+| Mac | Private build attachment | SHA-256 checksum |
+| --- | --- | --- |
+| Apple Silicon (M1 or newer) | [Minute-aarch64-apple-darwin-private.zip](https://github.com/mraza007/minute/releases/download/private-v0.6.0-20260728/Minute-aarch64-apple-darwin-private.zip) | [checksum](https://github.com/mraza007/minute/releases/download/private-v0.6.0-20260728/Minute-aarch64-apple-darwin-private.zip.sha256) |
+| Intel | [Minute-x86_64-apple-darwin-private.zip](https://github.com/mraza007/minute/releases/download/private-v0.6.0-20260728/Minute-x86_64-apple-darwin-private.zip) | [checksum](https://github.com/mraza007/minute/releases/download/private-v0.6.0-20260728/Minute-x86_64-apple-darwin-private.zip.sha256) |
+
+These attachments are built from the
+[`private-v0.6.0-20260728` tag](https://github.com/mraza007/minute/tree/private-v0.6.0-20260728)
+by the
+[private macOS build workflow](https://github.com/mraza007/minute/actions/workflows/private-macos-build.yml).
+Choose **Apple menu → About This Mac** if you are unsure which processor your
+Mac uses.
 
 1. Unzip the architecture-appropriate download.
 2. Drag `Minute.app` into **Applications**.
