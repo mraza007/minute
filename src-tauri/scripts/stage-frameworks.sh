@@ -44,15 +44,20 @@ if [[ "$expected_arch" == "aarch64" ]]; then
   expected_arch="arm64"
 fi
 
-# Tauri exposes a target triple for both native and explicit cross-builds,
-# but Cargo writes native builds to target/<profile> and explicit --target
-# builds to target/<triple>/<profile>. Pick the newest candidate matching
-# the requested architecture so a stale build in the other directory can
-# never supply the bundle's executable or dylibs.
+# Cargo writes native builds to target/<profile> and explicit --target builds
+# to target/<triple>/<profile>. Tauri exposes the architecture to
+# beforeBundleCommand, but does not consistently expose the full target triple
+# there. Include every explicit macOS target directory, then pick the newest
+# candidate matching the requested architecture so a stale build for a
+# different target can never supply the bundle's executable or dylibs.
 candidate_dirs=()
 if [[ -n "${TAURI_ENV_TARGET_TRIPLE:-}" ]]; then
   candidate_dirs+=("$src_tauri_dir/target/${TAURI_ENV_TARGET_TRIPLE}/$profile")
 fi
+for candidate in "$src_tauri_dir"/target/*-apple-darwin/"$profile"; do
+  [[ -d "$candidate" ]] || continue
+  candidate_dirs+=("$candidate")
+done
 candidate_dirs+=("$src_tauri_dir/target/$profile")
 
 lib_dir=""
@@ -200,4 +205,4 @@ if [[ "$staged_sorted" != "$expected_sorted" ]]; then
   exit 1
 fi
 
-echo "stage-frameworks: staged ${#copied[@]} dylib(s) into $dest"
+echo "stage-frameworks: staged ${#copied[@]} dylib(s) from ${lib_dir#"$src_tauri_dir/"} into $dest"
