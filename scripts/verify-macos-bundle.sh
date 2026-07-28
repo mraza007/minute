@@ -5,6 +5,10 @@ app_path="${1:?usage: verify-macos-bundle.sh APP_PATH EXPECTED_ARCH [require-tea
 expected_arch="${2:?usage: verify-macos-bundle.sh APP_PATH EXPECTED_ARCH [require-team]}"
 trust_mode="${3:-adhoc}"
 
+if [[ "$expected_arch" == "aarch64" ]]; then
+  expected_arch="arm64"
+fi
+
 if [[ ! -d "$app_path" ]]; then
   echo "bundle verification: app not found: $app_path" >&2
   exit 1
