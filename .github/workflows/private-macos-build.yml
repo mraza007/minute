@@ -32,6 +32,20 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run verify
+      - name: Compile target and stage bundle frameworks
+        working-directory: src-tauri
+        env:
+          TAURI_CONFIG: '{"bundle":{"macOS":{"frameworks":[]}}}'
+        run: |
+          cargo build \
+            --release \
+            --target "${{ matrix.target }}"
+          target="${{ matrix.target }}"
+          arch="${target%%-*}"
+          TAURI_ENV_DEBUG=false \
+            TAURI_ENV_TARGET_TRIPLE="$target" \
+            TAURI_ENV_ARCH="$arch" \
+            scripts/stage-frameworks.sh
       - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app
       - name: Verify architecture and ad-hoc signature
         run: |
