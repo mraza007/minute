@@ -1204,6 +1204,36 @@ fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
     }
 }
 
+/// Hand-rolled chat formatting for models whose baked template llama.cpp's
+/// pattern-matching formatter can't recognize — `apply_chat_template`
+/// doesn't evaluate real Jinja (see the module docs), it matches the
+/// template string against a hardcoded set of known formats and returns
+/// `-1` ("ffi error -1") for anything else.
+///
+/// The case that actually hits this: **Gemma 4's canonical chat template**
+/// (published 2026-07) dropped the classic `<start_of_turn>` markers the
+/// vendored llama.cpp detects Gemma by, replacing them with
+/// `<|turn>role\n ... <turn|>` — so every Gemma 4 summary failed with
+/// "ffi error -1" (issue #8), while Qwen kept working (its template
+/// contains `<|im_start|>` and matches the ChatML formatter). The Gemma
+/// branch below reproduces, byte-for-byte, what Gemma 4's own template
+/// emits for a single user turn with a generation prompt — read directly
+/// from the GGUF's baked `tokenizer.chat_template` Jinja: `bos` (added by
+/// tokenization's `AddBos::Always`, not here), `<|turn>user\n`, trimmed
+/// content, `<turn|>\n`, then `<|turn>model\n`. Other unrecognized
+/// families fall back to plain ChatML — the same shape llama.cpp itself
+/// used as a fallback in versions that had one.
+fn manual_chat_prompt(model_id: &str, content: &str) -> String {
+    if model_id.starts_with("gemma") {
+        format!("<|turn>user\n{}<turn|>\n<|turn>model\n", content.trim())
+    } else {
+        format!(
+            "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            content.trim()
+        )
+    }
+}
+
 /// The actual decode/sample loop, run against `loaded`'s model: chat-template
 /// `prompt` (appending [`NO_THINK_TAG`] to the user content, then
 /// [`apply_no_think_prefill`]ing the templated result — see the constants'
@@ -1225,18 +1255,40 @@ fn generate_with_loaded(
     prompt: &str,
     params: &GenerationParams,
 ) -> Result<String> {
-    let tmpl = loaded
+    // Qwen's `/no_think` suffix is only appended for Qwen ids — it's that
+    // family's own convention; to any other model it's just a stray line
+    // of user content.
+    let content = if loaded.model_id.starts_with("qwen") {
+        format!("{prompt}\n{NO_THINK_TAG}")
+    } else {
+        prompt.to_string()
+    };
+    let messages = vec![LlamaChatMessage::new("user".to_string(), content.clone())
+        .map_err(|e| MinuteError::Other(format!("chat message construction failed: {e}")))?];
+    // Template application can fail for a model llama.cpp's formatter
+    // doesn't recognize (returns "ffi error -1" — Gemma 4, issue #8) or a
+    // GGUF with no baked template at all. Neither is fatal: fall back to
+    // the hand-rolled per-family format instead of failing the summary.
+    let templated = match loaded
         .model
         .chat_template(None)
-        .map_err(|e| MinuteError::Other(format!("model has no baked-in chat template: {e}")))?;
-    let content = format!("{prompt}\n{NO_THINK_TAG}");
-    let messages = vec![LlamaChatMessage::new("user".to_string(), content)
-        .map_err(|e| MinuteError::Other(format!("chat message construction failed: {e}")))?];
-    let templated = loaded
-        .model
-        .apply_chat_template(&tmpl, &messages, true)
-        .map_err(|e| MinuteError::Other(format!("chat template application failed: {e}")))?;
-    let templated = apply_no_think_prefill(&templated, &loaded.model_id);
+        .map_err(|e| e.to_string())
+        .and_then(|tmpl| {
+            loaded
+                .model
+                .apply_chat_template(&tmpl, &messages, true)
+                .map_err(|e| e.to_string())
+        }) {
+        Ok(templated) => apply_no_think_prefill(&templated, &loaded.model_id),
+        Err(e) => {
+            log::warn!(
+                "llm: chat template application failed for {} ({e}); using the built-in \
+                 fallback format",
+                loaded.model_id
+            );
+            manual_chat_prompt(&loaded.model_id, &content)
+        }
+    };
 
     let prompt_tokens = loaded
         .model
@@ -3809,6 +3861,26 @@ mod tests {
         assert_eq!(out, "prefix");
     }
 
+    // --- manual_chat_prompt: the unrecognized-template fallback (issue #8) ---
+
+    #[test]
+    fn manual_chat_prompt_reproduces_gemma_4s_turn_format() {
+        // Byte-for-byte what Gemma 4's baked template emits for one user
+        // turn plus a generation prompt (bos comes from AddBos::Always at
+        // tokenization, not from this string).
+        let out = manual_chat_prompt("gemma-4-e4b", "  Summarize this.  ");
+        assert_eq!(out, "<|turn>user\nSummarize this.<turn|>\n<|turn>model\n");
+    }
+
+    #[test]
+    fn manual_chat_prompt_falls_back_to_chatml_for_unknown_families() {
+        let out = manual_chat_prompt("some-future-model", "Summarize this.");
+        assert_eq!(
+            out,
+            "<|im_start|>user\nSummarize this.<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
     // --- e2e: real model, real generation (manual only) ----------------------
     //
     // `real_llm_loads_and_generates` is Task 1's model-support proof: it
@@ -4138,6 +4210,56 @@ mod tests {
         .expect("generation failed — the fitting retry should have made this succeed");
         eprintln!("fit + generation took {:?}", fit_start.elapsed());
         assert!(!raw.trim().is_empty(), "expected non-empty model output");
+    }
+
+    /// Issue #8, as a test: Gemma 4 E4B — the recommended summary model on
+    /// 16-31 GB Macs — has a baked chat template the vendored llama.cpp's
+    /// pattern-matcher can't recognize, so `apply_chat_template` returned
+    /// "ffi error -1" and every Gemma summary failed. With the
+    /// `manual_chat_prompt` fallback, the same pipeline must produce a real
+    /// summary. Requires the Gemma GGUF already at the app-data models dir
+    /// (5.3 GB — fetch from the catalog URL). Run manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///     real_llm_summarizes_with_gemma4 -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_llm_summarizes_with_gemma4() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let model_path = PathBuf::from(&home)
+            .join("Library/Application Support/dev.minute.app/models/llm/gemma-4-E4B-it-Q4_K_M.gguf");
+        assert!(model_path.exists(), "expected gemma-4-e4b model at {model_path:?}");
+
+        let segments = fake_product_launch_transcript();
+        let prompt = build_summary_prompt(
+            "Aurora launch planning",
+            &segments,
+            usize::MAX,
+            SummaryStyle::Standard,
+            "",
+        );
+
+        let mut state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now(),
+        };
+        state
+            .ensure_loaded("gemma-4-e4b", &model_path, None)
+            .expect("failed to load gemma-4-e4b");
+
+        // Before the manual-format fallback this call failed with
+        // "chat template application failed: ffi error -1".
+        let raw = state
+            .generate_with_params(&prompt, GenerationParams::default())
+            .expect("generation failed");
+        eprintln!("raw model output: {raw:?}");
+
+        let doc = extract_summary_json(&raw)
+            .expect("failed to extract a SummaryDoc from Gemma's output");
+        eprintln!("extracted SummaryDoc: {doc:?}");
+        assert!(!doc.summary.trim().is_empty(), "expected a non-empty summary");
     }
 
     #[test]
