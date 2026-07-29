@@ -5,13 +5,13 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.1.0-c8412a)
+![version](https://img.shields.io/badge/version-1.1.1-c8412a)
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute 1.1.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.1.0/Minute-1.1.0-arm64.zip)**
+**[⬇ Download Minute 1.1.1 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.1.1/Minute-1.1.1-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.1.0/Minute-1.1.0-x86_64.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.1.1/Minute-1.1.1-x86_64.zip).
 
 </div>
 
