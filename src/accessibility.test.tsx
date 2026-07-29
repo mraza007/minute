@@ -22,6 +22,9 @@ const settings: Settings = {
   meetingDetection: false,
   captureSystemAudio: false,
   libraryRoot: null,
+  llmContextTokens: null,
+  summaryStyle: 'standard',
+  summaryInstructions: '',
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {

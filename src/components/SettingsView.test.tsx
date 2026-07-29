@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Hardware, ModelStatus, Recommendation, StorageStats } from '../ipc/types'
-import { SettingsView } from './SettingsView'
+import { SettingsView, storageBarSegments } from './SettingsView'
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -75,6 +75,12 @@ const base = {
   sysAudioAvailability: 'ready' as const,
   onRequestSysAudioPermission: vi.fn(),
   onExportDiagnostics: vi.fn().mockResolvedValue(undefined),
+  summaryStyle: 'standard' as const,
+  setSummaryStyle: vi.fn(),
+  llmContextTokens: null,
+  setLlmContextTokens: vi.fn(),
+  summaryInstructions: '',
+  setSummaryInstructions: vi.fn(),
 }
 
 describe('SettingsView', () => {
@@ -311,10 +317,10 @@ describe('SettingsView', () => {
     expect(screen.getByText('Zoom, Teams, Webex, Slack, FaceTime, Discord, and browser calls.')).toBeInTheDocument()
   })
 
-  describe('Recording card — Capture system audio (Stage 5 Task 5)', () => {
-    it('renders the Recording card with its toggle off by default', () => {
+  describe('System audio card — Capture system audio (Stage 5 Task 5)', () => {
+    it('renders the System audio card with its toggle off by default', () => {
       render(<SettingsView {...base} />)
-      expect(screen.getByText('Recording')).toBeInTheDocument()
+      expect(screen.getByText('System audio')).toBeInTheDocument()
       const toggle = screen.getByRole('switch', { name: /capture system audio/i })
       expect(toggle).toHaveAttribute('aria-checked', 'false')
     })
@@ -392,6 +398,99 @@ describe('SettingsView', () => {
       render(<SettingsView {...base} movingLibrary />)
       const button = screen.getByRole('button', { name: 'Moving…' })
       expect(button).toBeDisabled()
+    })
+  })
+
+  describe('storage bar segments', () => {
+    it('floors tiny non-zero categories so they stay visible next to multi-GB models', () => {
+      const segments = storageBarSegments(3_200_000_000, 7_000_000, 7_600)
+      const [modelsSeg, audioSeg, notesSeg] = segments
+      expect(audioSeg.pct).toBeGreaterThanOrEqual(1.5)
+      expect(notesSeg.pct).toBeGreaterThanOrEqual(1.5)
+      expect(modelsSeg.pct).toBeGreaterThan(90)
+      const sum = segments.reduce((acc, s) => acc + s.pct, 0)
+      expect(sum).toBeLessThanOrEqual(100.0001)
+    })
+
+    it('keeps true proportions when no category is tiny, and zero stays zero', () => {
+      const balanced = storageBarSegments(500, 300, 200)
+      expect(balanced.map(s => Math.round(s.pct))).toEqual([50, 30, 20])
+      const withZero = storageBarSegments(1_000, 0, 1_000)
+      expect(withZero[1].pct).toBe(0)
+    })
+  })
+
+  describe('grouped page structure', () => {
+    it('renders the three group chapters as headings', () => {
+      render(<SettingsView {...base} />)
+      expect(screen.getByRole('heading', { level: 2, name: 'Models' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 2, name: 'Recording' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 2, name: 'Data' })).toBeInTheDocument()
+    })
+  })
+
+  describe('Summary behavior — style and context window', () => {
+    it('reflects the current summary style via aria-checked', () => {
+      render(<SettingsView {...base} summaryStyle="detailed" />)
+      const group = screen.getByRole('radiogroup', { name: 'Summary style' })
+      expect(within(group).getByRole('radio', { name: 'Detailed' })).toHaveAttribute('aria-checked', 'true')
+      expect(within(group).getByRole('radio', { name: 'Standard' })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('wires the style picker to its handler', () => {
+      const setSummaryStyle = vi.fn()
+      render(<SettingsView {...base} setSummaryStyle={setSummaryStyle} />)
+      fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Summary style' })).getByRole('radio', { name: 'Short' }))
+      expect(setSummaryStyle).toHaveBeenCalledWith('short')
+    })
+
+    it('defaults the context window to Auto and wires a manual pick', () => {
+      const setLlmContextTokens = vi.fn()
+      render(<SettingsView {...base} setLlmContextTokens={setLlmContextTokens} />)
+      const group = screen.getByRole('radiogroup', { name: 'Context window' })
+      expect(within(group).getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(within(group).getByRole('radio', { name: '16k' }))
+      expect(setLlmContextTokens).toHaveBeenCalledWith(16_384)
+    })
+
+    it('returns to automatic when Auto is picked over an override', () => {
+      const setLlmContextTokens = vi.fn()
+      render(<SettingsView {...base} llmContextTokens={32_768} setLlmContextTokens={setLlmContextTokens} />)
+      const group = screen.getByRole('radiogroup', { name: 'Context window' })
+      expect(within(group).getByRole('radio', { name: '32k' })).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(within(group).getByRole('radio', { name: 'Auto' }))
+      expect(setLlmContextTokens).toHaveBeenCalledWith(null)
+    })
+
+    it('shows the persisted custom instructions and commits an edit via the Save button', () => {
+      const setSummaryInstructions = vi.fn()
+      render(<SettingsView {...base} summaryInstructions="Focus on deadlines." setSummaryInstructions={setSummaryInstructions} />)
+      const box = screen.getByLabelText('Custom instructions')
+      expect(box).toHaveValue('Focus on deadlines.')
+
+      fireEvent.change(box, { target: { value: 'Write the summary in German.' } })
+      // Typing alone must not persist — only Save does.
+      expect(setSummaryInstructions).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(setSummaryInstructions).toHaveBeenCalledWith('Write the summary in German.')
+    })
+
+    it('disables Save while the draft matches the persisted value and shows Saved', () => {
+      render(<SettingsView {...base} summaryInstructions="Keep it brief." />)
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+      expect(screen.getByText('Saved')).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText('Custom instructions'), { target: { value: 'Keep it very brief.' } })
+      expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+      expect(screen.queryByText('Saved')).not.toBeInTheDocument()
+    })
+
+    it('saving an emptied box clears the instructions', () => {
+      const setSummaryInstructions = vi.fn()
+      render(<SettingsView {...base} summaryInstructions="Old instructions." setSummaryInstructions={setSummaryInstructions} />)
+      fireEvent.change(screen.getByLabelText('Custom instructions'), { target: { value: '' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(setSummaryInstructions).toHaveBeenCalledWith('')
     })
   })
 })

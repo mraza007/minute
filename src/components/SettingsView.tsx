@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
-import type { Hardware, ModelStatus, Recommendation, StorageStats, SysAudioAvailability } from '../ipc/types'
+import type { Hardware, ModelStatus, Recommendation, StorageStats, SummaryStyle, SysAudioAvailability } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
 import { assessModelSuitability } from '../state/modelSuitability'
@@ -41,6 +41,15 @@ export interface SettingsViewProps {
   sysAudioAvailability: SysAudioAvailability
   onRequestSysAudioPermission: () => void
   onExportDiagnostics: () => Promise<void>
+  /** Settings' summary style — adjusts prompt guidance and response length backend-side. */
+  summaryStyle: SummaryStyle
+  setSummaryStyle: (style: SummaryStyle) => void
+  /** Summarizer context-window override in tokens; `null` = automatic (RAM-tiered). */
+  llmContextTokens: number | null
+  setLlmContextTokens: (tokens: number | null) => void
+  /** Free-text instructions appended to the summary prompt; committed via the section's Save button. */
+  summaryInstructions: string
+  setSummaryInstructions: (text: string) => void
 }
 
 /**
@@ -54,9 +63,9 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   return (
     <section style={{ marginBottom: 34 }}>
       <div className="sec-head" style={{ marginBottom: hint ? 7 : 14 }}>
-        <h2 className="mlab" style={{ margin: 0 }}>
+        <h3 className="mlab" style={{ margin: 0 }}>
           {title}
-        </h2>
+        </h3>
       </div>
       {hint && (
         <p style={{ margin: '0 0 14px', fontFamily: 'var(--serif)', fontSize: 13, color: 'var(--ink-muted)', lineHeight: 1.55 }}>
@@ -66,6 +75,130 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
       {children}
     </section>
   )
+}
+
+/**
+ * A top-level settings group — the page's three chapters (Models,
+ * Recording, Data), each holding the [`Section`]s that used to sit in one
+ * flat run. A serif chapter heading over a full-strength rule; the sections
+ * inside keep their micro-label + hairline treatment, so the hierarchy
+ * reads like a printed document's chapters and subheads.
+ */
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section aria-label={title} style={{ marginBottom: 46 }}>
+      <h2
+        style={{
+          margin: '0 0 22px',
+          fontFamily: 'var(--serif)',
+          fontWeight: 400,
+          fontSize: 19,
+          lineHeight: 1.2,
+          letterSpacing: '-.012em',
+          paddingBottom: 8,
+          borderBottom: '1px solid var(--ink)',
+        }}
+      >
+        {title}
+      </h2>
+      {children}
+    </section>
+  )
+}
+
+/**
+ * A one-of-N picker rendered as a squared segmented control — radio
+ * semantics (`radiogroup`/`radio` + `aria-checked`), paper styling (ink
+ * fill for the selected segment, hairline separators). Generic over the
+ * option value so the context-window picker can carry `number | null`.
+ */
+function SegmentedControl<T>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string
+  options: { value: T; label: string }[]
+  value: T
+  onChange: (value: T) => void
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} style={{ display: 'inline-flex', border: '1px solid var(--rule)' }}>
+      {options.map((option, i) => {
+        const selected = Object.is(option.value, value)
+        return (
+          <button
+            key={option.label}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={() => onChange(option.value)}
+            style={{
+              padding: '5px 13px',
+              fontSize: 12,
+              fontFamily: 'inherit',
+              letterSpacing: '.01em',
+              border: 'none',
+              borderLeft: i > 0 ? '1px solid var(--rule)' : 'none',
+              background: selected ? 'var(--ink)' : 'transparent',
+              color: selected ? 'var(--panel)' : 'var(--ink-muted)',
+              cursor: 'pointer',
+            }}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Label beside a segmented control — the row's left column. */
+const pickerLabelStyle: CSSProperties = { fontSize: 12.5, fontWeight: 600, minWidth: 118 }
+
+/** Every non-zero category keeps at least this share of the storage bar —
+ *  see `storageBarSegments`. */
+const MIN_STORAGE_SLICE_PCT = 1.5
+
+/**
+ * The storage bar's segments, as percentages that always sum to ≤ 100.
+ * Proportional to bytes, except every non-zero category is floored at
+ * [`MIN_STORAGE_SLICE_PCT`] (with the others scaled down to fit): true
+ * proportions render audio/notes invisibly thin next to multi-GB models —
+ * 3.2 GB of models vs 7 MB of audio is a 99.8%/0.2% split — and a bar that
+ * looks single-colored reads as broken rather than as "models dominate".
+ * Exported for tests.
+ */
+export function storageBarSegments(
+  modelsBytes: number,
+  audioBytes: number,
+  notesBytes: number,
+): { key: string; pct: number; color: string }[] {
+  const total = modelsBytes + audioBytes + notesBytes
+  const raw = [
+    { key: 'models', bytes: modelsBytes, color: 'var(--ink)' },
+    { key: 'audio', bytes: audioBytes, color: 'var(--accent)' },
+    { key: 'notes', bytes: notesBytes, color: 'var(--ink-faint)' },
+  ]
+  if (total <= 0) return raw.map(({ key, color }) => ({ key, color, pct: 0 }))
+
+  // Tiny-but-present categories are pinned at the floor; the remaining
+  // width is split among the rest in proportion to their true sizes — so
+  // the floor never gets scaled back under itself.
+  const rawPct = (bytes: number) => (bytes / total) * 100
+  const isFloored = (bytes: number) => bytes > 0 && rawPct(bytes) < MIN_STORAGE_SLICE_PCT
+  const flooredTotal = raw.filter(s => isFloored(s.bytes)).length * MIN_STORAGE_SLICE_PCT
+  const unflooredRawTotal = raw
+    .filter(s => !isFloored(s.bytes))
+    .reduce((acc, s) => acc + rawPct(s.bytes), 0)
+  const scale = unflooredRawTotal > 0 ? (100 - flooredTotal) / unflooredRawTotal : 0
+
+  return raw.map(({ key, color, bytes }) => ({
+    key,
+    color,
+    pct: bytes <= 0 ? 0 : isFloored(bytes) ? MIN_STORAGE_SLICE_PCT : rawPct(bytes) * scale,
+  }))
 }
 
 /** Body copy under a control — serif, because it's explanatory prose about
@@ -336,7 +469,20 @@ export function SettingsView({
   sysAudioAvailability,
   onRequestSysAudioPermission,
   onExportDiagnostics,
+  summaryStyle,
+  setSummaryStyle,
+  llmContextTokens,
+  setLlmContextTokens,
+  summaryInstructions,
+  setSummaryInstructions,
 }: SettingsViewProps) {
+  // Local draft for the custom-instructions textarea — committed by its
+  // explicit Save button (not per keystroke, which would write
+  // settings.json per character; not on blur, which saves invisibly).
+  // Re-seeded if the persisted value changes underneath (e.g. initial load
+  // finishing after this view mounted).
+  const [instructionsDraft, setInstructionsDraft] = useState(summaryInstructions)
+  useEffect(() => setInstructionsDraft(summaryInstructions), [summaryInstructions])
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
 
@@ -366,8 +512,6 @@ export function SettingsView({
   const modelsBytes = storage?.modelsBytes ?? 0
   const audioBytes = storage?.audioBytes ?? 0
   const notesBytes = storage?.notesBytes ?? 0
-  const totalBytes = modelsBytes + audioBytes + notesBytes
-  const pct = (n: number) => (totalBytes > 0 ? (n / totalBytes) * 100 : 0)
 
   return (
     <main style={{ flex: 1, minWidth: 0, overflow: 'auto', background: 'var(--panel)' }}>
@@ -376,6 +520,7 @@ export function SettingsView({
           Settings
         </h1>
 
+        <Group title="Models">
         <HardwareSummary hardware={hardware} />
 
         <Section title="Transcription model">
@@ -430,6 +575,87 @@ export function SettingsView({
           </div>
         </Section>
 
+        <Section title="Summary behavior" hint="Applies to the next summary you generate — Regenerate an existing note to restyle it.">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <div style={pickerLabelStyle}>Summary style</div>
+            <SegmentedControl
+              label="Summary style"
+              value={summaryStyle}
+              onChange={setSummaryStyle}
+              options={[
+                { value: 'short', label: 'Short' },
+                { value: 'standard', label: 'Standard' },
+                { value: 'detailed', label: 'Detailed' },
+              ]}
+            />
+          </div>
+          <div style={noteTextStyle}>
+            Short keeps it to the essentials; Detailed covers every topic, decision, and follow-up.
+          </div>
+          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <div style={pickerLabelStyle}>Context window</div>
+            <SegmentedControl
+              label="Context window"
+              value={llmContextTokens}
+              onChange={setLlmContextTokens}
+              options={[
+                { value: null, label: 'Auto' },
+                { value: 8_192, label: '8k' },
+                { value: 16_384, label: '16k' },
+                { value: 32_768, label: '32k' },
+              ]}
+            />
+          </div>
+          <div style={noteTextStyle}>
+            How much transcript the summarizer reads at once. Auto picks the largest window that fits this Mac’s
+            memory; a larger window summarizes longer meetings whole but uses more memory while generating.
+          </div>
+          <div style={{ marginTop: 18, maxWidth: 520 }}>
+            <label htmlFor="summary-custom-instructions" style={{ ...pickerLabelStyle, display: 'block', marginBottom: 8 }}>
+              Custom instructions
+            </label>
+            <textarea
+              id="summary-custom-instructions"
+              value={instructionsDraft}
+              maxLength={2000}
+              rows={3}
+              placeholder="e.g. Write the summary in German. Focus on engineering decisions and deadlines."
+              onChange={e => setInstructionsDraft(e.target.value)}
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                padding: '8px 10px',
+                fontFamily: 'inherit',
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                color: 'var(--ink)',
+                background: 'transparent',
+                border: '1px solid var(--rule)',
+              }}
+            />
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                type="button"
+                className="btn-light"
+                style={{ ...secondaryBtnStyle, flex: 'none' }}
+                disabled={instructionsDraft === summaryInstructions}
+                onClick={() => setSummaryInstructions(instructionsDraft)}
+              >
+                Save
+              </button>
+              {instructionsDraft === summaryInstructions && summaryInstructions !== '' && (
+                <span style={{ fontSize: 11.5, color: 'var(--ink-muted)' }}>Saved</span>
+              )}
+            </div>
+          </div>
+          <div style={noteTextStyle}>
+            Added to the summarizer’s prompt — steer language, tone, or focus. The summary’s structure (overview,
+            decisions, action items) always stays intact.
+          </div>
+        </Section>
+        </Group>
+
+        <Group title="Recording">
         <Section title="Meeting detection">
           <Toggle on={meetingDetection} onToggle={toggleMeetingDetection} label="Offer to record when a meeting starts" />
           <div style={noteTextStyle}>
@@ -439,16 +665,15 @@ export function SettingsView({
         </Section>
 
         {/*
-          Placement decision (Stage 5 Task 5): its own "Recording" section,
-          not folded into "Meeting detection" above — system audio applies
-          to every recording (manually started or popup-triggered), not
-          just meeting-detected ones, so nesting it under that section would
+          Placement decision (Stage 5 Task 5): its own section, not folded
+          into "Meeting detection" above — system audio applies to every
+          recording (manually started or popup-triggered), not just
+          meeting-detected ones, so nesting it under that section would
           misleadingly imply a dependency between the two features that
-          doesn't exist. A dedicated section also leaves room for future
-          recording-only settings without overloading either existing
-          one's scope.
+          doesn't exist. (Titled "System audio" since the settings page
+          gained its grouped chapters — the group itself is "Recording".)
         */}
-        <Section title="Recording">
+        <Section title="System audio">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Toggle
               on={captureSystemAudio}
@@ -471,14 +696,26 @@ export function SettingsView({
             <div style={fineTextStyle}>A freshly granted permission may need Minute to restart before it takes effect.</div>
           )}
         </Section>
+        </Group>
 
+        <Group title="Data">
         <Section title="Storage">
           {/* Square-cut, flush to the measure — a printed bar chart rather
-              than a rounded progress pill. */}
+              than a rounded progress pill. True proportions would render
+              audio/notes invisible next to multi-GB models (99.8% vs
+              slivers thinner than a pixel), so every non-zero category
+              gets a small minimum slice — see `storageBarSegments`. */}
           <div style={{ display: 'flex', height: 10, overflow: 'hidden', background: 'var(--control-track)', maxWidth: 520 }}>
-            <div style={{ width: `${pct(modelsBytes)}%`, background: 'var(--ink)' }} />
-            <div style={{ width: `${pct(audioBytes)}%`, background: 'var(--accent)' }} />
-            <div style={{ width: `${pct(notesBytes)}%`, background: 'var(--ink-faint)' }} />
+            {storageBarSegments(modelsBytes, audioBytes, notesBytes).map((segment, i) => (
+              <div
+                key={segment.key}
+                style={{
+                  width: `${segment.pct}%`,
+                  background: segment.color,
+                  borderLeft: i > 0 && segment.pct > 0 ? '1px solid var(--panel)' : 'none',
+                }}
+              />
+            ))}
           </div>
           <div
             style={{
@@ -542,6 +779,7 @@ export function SettingsView({
             Never includes note titles, transcript text, note identifiers, filenames, or filesystem paths.
           </div>
         </Section>
+        </Group>
       </div>
     </main>
   )

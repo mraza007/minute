@@ -15,6 +15,9 @@ const settings: Settings = {
   meetingDetection: false,
   captureSystemAudio: false,
   libraryRoot: null,
+  llmContextTokens: null,
+  summaryStyle: 'standard',
+  summaryInstructions: '',
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {

@@ -286,6 +286,12 @@ export default function App() {
               sysAudioAvailability={s.sysAudioAvailability}
               onRequestSysAudioPermission={s.requestSysAudioPermission}
               onExportDiagnostics={s.exportDiagnostics}
+              summaryStyle={s.tSummaryStyle}
+              setSummaryStyle={s.setSummaryStyle}
+              llmContextTokens={s.tLlmContextTokens}
+              setLlmContextTokens={s.setLlmContextTokens}
+              summaryInstructions={s.tSummaryInstructions}
+              setSummaryInstructions={s.setSummaryInstructions}
             />
           )}
         </div>

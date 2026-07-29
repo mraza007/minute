@@ -248,6 +248,9 @@ export interface NoteStorageStats {
  * honored backend-side only when `sysAudioStatus()` reports `'ready'`
  * regardless of this value (see that command's docs).
  */
+/** `settings::SummaryStyle`, serialized lowercase — how long/detailed generated summaries should be. */
+export type SummaryStyle = 'short' | 'standard' | 'detailed'
+
 export interface Settings {
   sttModel: string | null
   llmModel: string | null
@@ -256,6 +259,11 @@ export interface Settings {
   captureSystemAudio: boolean
   /** Set only by the `move_library` command, never via `setSettings` — see `SettingsPatch`. */
   libraryRoot: string | null
+  /** Summarizer context-window override in tokens; `null` = automatic (RAM-tiered). */
+  llmContextTokens: number | null
+  summaryStyle: SummaryStyle
+  /** Free-text instructions appended to the summary prompt's rules; empty = none. */
+  summaryInstructions: string
 }
 
 /**
@@ -270,6 +278,11 @@ export interface SettingsPatch {
   deleteAudioAfter30d?: boolean
   meetingDetection?: boolean
   captureSystemAudio?: boolean
+  /** `0` means "back to automatic" (clears the override) — see `settings::SettingsPatch`'s docs. */
+  llmContextTokens?: number
+  summaryStyle?: SummaryStyle
+  /** `''` clears the instructions. */
+  summaryInstructions?: string
 }
 
 // --- events ----------------------------------------------------------------

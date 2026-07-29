@@ -12,6 +12,7 @@ import type {
   NoteStorageStats,
   SpeakerMergeUndo,
   StorageStats,
+  SummaryStyle,
   SysAudioAvailability,
   TranscriptSegmentEvent,
 } from '../ipc/types'
@@ -138,6 +139,14 @@ export function useAppState() {
   // `SettingsView`'s own handling of the two together.
   const [tCaptureSystemAudio, setTCaptureSystemAudio] = useState(false)
   const [sysAudioAvailability, setSysAudioAvailability] = useState<SysAudioAvailability>('unsupported')
+
+  // Settings-backed summary behavior (style + context-window override) —
+  // same optimistic-set-then-persist shape as the toggles above, but these
+  // are pickers rather than booleans. Seeded from `get_settings` in the
+  // initial load effect below.
+  const [tSummaryStyle, setTSummaryStyle] = useState<SummaryStyle>('standard')
+  const [tLlmContextTokens, setTLlmContextTokens] = useState<number | null>(null)
+  const [tSummaryInstructions, setTSummaryInstructions] = useState('')
 
   // --- ⌘K search palette + sidebar filter ---------------------------------
   //
@@ -670,6 +679,11 @@ export function useAppState() {
           setTDel(loadedSettings.deleteAudioAfter30d)
           setTMeetingDetection(loadedSettings.meetingDetection)
           setTCaptureSystemAudio(loadedSettings.captureSystemAudio)
+          // Defensive `??` — a harness whose `get_settings` stub predates
+          // these fields resolves them to `undefined`.
+          setTSummaryStyle(loadedSettings.summaryStyle ?? 'standard')
+          setTLlmContextTokens(loadedSettings.llmContextTokens ?? null)
+          setTSummaryInstructions(loadedSettings.summaryInstructions ?? '')
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1140,6 +1154,48 @@ export function useAppState() {
   }, [reportError])
 
   /**
+   * Settings screen's "Summary style" picker — same optimistic-set-then-
+   * persist shape as the toggles above. Takes effect on the next
+   * summarization (manual or auto); already-generated summaries are
+   * untouched until regenerated.
+   */
+  const setSummaryStyle = useCallback(
+    (style: SummaryStyle) => {
+      setTSummaryStyle(style)
+      ipc.setSettings({ summaryStyle: style }).catch(reportError)
+    },
+    [reportError],
+  )
+
+  /**
+   * Settings screen's "Context window" picker. `null` means automatic
+   * (RAM-tiered, the default) — sent over the wire as the `0` sentinel,
+   * since an omitted patch field means "leave unchanged" (see
+   * `SettingsPatch.llmContextTokens`'s docs).
+   */
+  const setLlmContextTokens = useCallback(
+    (tokens: number | null) => {
+      setTLlmContextTokens(tokens)
+      ipc.setSettings({ llmContextTokens: tokens ?? 0 }).catch(reportError)
+    },
+    [reportError],
+  )
+
+  /**
+   * Settings screen's "Custom instructions" text — committed by the view's
+   * explicit Save button (not per keystroke; a textarea would otherwise
+   * write settings.json on every character). Empty string clears — see
+   * `SettingsPatch.summaryInstructions`'s docs.
+   */
+  const setSummaryInstructions = useCallback(
+    (text: string) => {
+      setTSummaryInstructions(text)
+      ipc.setSettings({ summaryInstructions: text }).catch(reportError)
+    },
+    [reportError],
+  )
+
+  /**
    * Settings screen's "Grant permission…" affordance for system audio:
    * triggers the Screen Recording consent prompt (a no-op re-check, not a
    * re-prompt, if already decided — see `requestSysAudioPermission`'s own
@@ -1275,6 +1331,12 @@ export function useAppState() {
     toggleMeetingDetection,
     tCaptureSystemAudio,
     toggleCaptureSystemAudio,
+    tSummaryStyle,
+    setSummaryStyle,
+    tLlmContextTokens,
+    setLlmContextTokens,
+    tSummaryInstructions,
+    setSummaryInstructions,
     sysAudioAvailability,
     requestSysAudioPermission,
     recordingPreflightOpen,
