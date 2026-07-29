@@ -4,12 +4,20 @@
 <dict>
   <!--
     Minute is distributed outside the Mac App Store and does not use the App
-    Sandbox. Microphone and Screen Recording access are protected by the
-    purpose strings in Info.plist and by macOS consent prompts.
+    Sandbox, but release builds enable the hardened runtime. Under the
+    hardened runtime the NSMicrophoneUsageDescription purpose string is not
+    sufficient on its own: without the audio-input entitlement macOS denies
+    microphone capture without ever showing the consent prompt, and the app
+    never appears under Privacy & Security → Microphone (issue #1).
+
+    Screen Recording has no hardened-runtime entitlement; its TCC prompt is
+    governed by the purpose string alone.
 
     Production builds deliberately do not disable library validation. Tauri
     signs the app executable and bundled llama/ggml dylibs with the same
     Developer ID identity.
   -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
 </dict>
 </plist>

@@ -29,6 +29,12 @@ done
 
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
+entitlements="$(codesign -d --entitlements :- "$app_path" 2>/dev/null || true)"
+if ! grep -q 'com.apple.security.device.audio-input' <<<"$entitlements"; then
+  echo "bundle verification: app lacks com.apple.security.device.audio-input; the hardened runtime denies the microphone without ever prompting" >&2
+  exit 1
+fi
+
 if [[ "$trust_mode" == "require-team" ]]; then
   for binary in "${binaries[@]}"; do
     signature="$(codesign -dv --verbose=4 "$binary" 2>&1)"
@@ -55,7 +61,6 @@ if [[ "$trust_mode" == "require-team" ]]; then
     fi
   done
 
-  entitlements="$(codesign -d --entitlements :- "$app_path" 2>/dev/null || true)"
   if grep -q 'com.apple.security.cs.disable-library-validation' <<<"$entitlements"; then
     echo "bundle verification: production app disables library validation" >&2
     exit 1

@@ -6,6 +6,7 @@ const releaseConfig = JSON.parse(await readFile('src-tauri/tauri.release.conf.js
 const cargoToml = await readFile('src-tauri/Cargo.toml', 'utf8')
 const infoPlist = await readFile('src-tauri/Info.plist', 'utf8')
 const releaseEntitlements = await readFile('src-tauri/Entitlements.release.plist', 'utf8')
+const devEntitlements = await readFile('src-tauri/Entitlements.plist', 'utf8')
 
 const cargoVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1]
 const failures = []
@@ -34,6 +35,12 @@ if (releaseEntitlements.includes('com.apple.security.cs.disable-library-validati
 }
 if (releaseEntitlements.includes('com.apple.security.get-task-allow')) {
   failures.push('release entitlements enable get-task-allow')
+}
+if (!releaseEntitlements.includes('com.apple.security.device.audio-input')) {
+  failures.push('release entitlements are missing com.apple.security.device.audio-input; the hardened runtime denies the microphone without prompting')
+}
+if (!devEntitlements.includes('com.apple.security.device.audio-input')) {
+  failures.push('dev entitlements are missing com.apple.security.device.audio-input; the hardened runtime denies the microphone without prompting')
 }
 if (!infoPlist.includes('NSMicrophoneUsageDescription')) failures.push('microphone privacy copy is missing from Info.plist')
 if (!infoPlist.includes('NSScreenCaptureUsageDescription')) failures.push('screen-capture privacy copy is missing from Info.plist')

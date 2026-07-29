@@ -13,5 +13,12 @@
   -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+  <!--
+    These builds also enable the hardened runtime, which denies microphone
+    capture without prompting unless the audio-input entitlement is present —
+    the purpose string in Info.plist is not sufficient on its own (issue #1).
+  -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
 </dict>
 </plist>
