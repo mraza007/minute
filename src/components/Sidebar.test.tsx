@@ -19,6 +19,8 @@ const base = {
   onOpenShortcuts: vi.fn(),
   onBulkExport: vi.fn().mockResolvedValue(undefined),
   onBulkDelete: vi.fn().mockResolvedValue(undefined),
+  onRenameNote: vi.fn(),
+  onRevealNote: vi.fn(),
 }
 
 describe('Sidebar', () => {
@@ -220,5 +222,28 @@ describe('Sidebar', () => {
       expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
       expect(screen.getByText('Today')).toBeInTheDocument()
     })
+  })
+
+  it('shows a glyph instead of repeated initials for default-titled notes when collapsed', () => {
+    const notes = [
+      { ...demoNotes[0], id: 'n1', title: 'New recording' },
+      { ...demoNotes[1], id: 'n2', title: 'Pricing workshop' },
+    ]
+    render(<Sidebar {...base} notes={notes} selectedNoteId="n1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
+    expect(screen.queryByText('NR')).not.toBeInTheDocument()
+    expect(screen.getByText('PW')).toBeInTheDocument()
+  })
+
+  it('expands a collapsed sidebar when Rename is chosen from the context menu', () => {
+    render(<Sidebar {...base} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
+    // Collapsed rows are monograms — the inline rename input has no room, so
+    // choosing Rename must expand the sidebar first.
+    const collapsedRow = screen.getAllByRole('button', { name: new RegExp(demoNotes[0].title) })[0]
+    fireEvent.contextMenu(collapsedRow)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    expect(screen.getByRole('textbox', { name: `Rename ${demoNotes[0].title}` })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse library sidebar' })).toBeInTheDocument()
   })
 })

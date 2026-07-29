@@ -49,6 +49,7 @@ reqwest = { version = "0.13.3", default-features = false, features = ["stream", 
 time = { version = "0.3.54", features = ["formatting", "macros", "parsing"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "rt", "time"] }
+tauri-plugin-dialog = "2"
 
 # Meeting detection (Stage 5 Task 1): mic-in-use + running-app checks, both
 # permission-free on macOS. `cargo tree -i coreaudio-sys` (checked before

@@ -56,6 +56,14 @@ pub struct Settings {
     /// docs).
     #[serde(default)]
     pub capture_system_audio: bool,
+    /// Absolute path of the folder the notes library lives in, when the user
+    /// has moved it via Settings → Storage (the `move_library` command is the
+    /// only writer — deliberately not part of [`SettingsPatch`], so a plain
+    /// `set_settings` can never re-point the library without actually moving
+    /// it). `None` means the default app-data root. `#[serde(default)]` so
+    /// older `settings.json` files load unchanged.
+    #[serde(default)]
+    pub library_root: Option<String>,
 }
 
 impl Default for Settings {
@@ -68,6 +76,7 @@ impl Default for Settings {
             delete_audio_after_30d: true,
             meeting_detection: false,
             capture_system_audio: false,
+            library_root: None,
         }
     }
 }
@@ -238,6 +247,7 @@ mod tests {
             delete_audio_after_30d: false,
             meeting_detection: true,
             capture_system_audio: true,
+            library_root: None,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -276,6 +286,7 @@ mod tests {
                 delete_audio_after_30d: false,
                 meeting_detection: false,
                 capture_system_audio: false,
+                library_root: None,
             }
         );
     }
@@ -309,6 +320,7 @@ mod tests {
                 delete_audio_after_30d: false,
                 meeting_detection: false,
                 capture_system_audio: false,
+                library_root: None,
             }
         );
     }
@@ -343,6 +355,7 @@ mod tests {
                 delete_audio_after_30d: false,
                 meeting_detection: true,
                 capture_system_audio: false,
+                library_root: None,
             }
         );
     }
@@ -373,6 +386,7 @@ mod tests {
             delete_audio_after_30d: true,
             meeting_detection: true,
             capture_system_audio: true,
+            library_root: None,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -433,6 +447,7 @@ mod tests {
             delete_audio_after_30d: true,
             meeting_detection: false,
             capture_system_audio: false,
+            library_root: None,
         };
         let patch = SettingsPatch {
             stt_model: None,
@@ -459,6 +474,7 @@ mod tests {
             delete_audio_after_30d: true,
             meeting_detection: true,
             capture_system_audio: true,
+            library_root: None,
         };
         let mut settings = original.clone();
 

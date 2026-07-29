@@ -278,6 +278,16 @@ body {
   user-select: none;
   cursor: default;
 }
+
+/* The meeting-popup window is a transparent panel — only the rounded pill
+   should paint (see popup.html and popup.rs's `transparent(true)`). This
+   stylesheet is shared with that window, so the `--canvas` background above
+   must be un-painted there or the pill sits inside an opaque rectangle with
+   square corners (issue #3). Keyed on popup.html's `data-window` attribute;
+   it must stay AFTER the `body` rule above to win the cascade. */
+body[data-window="popup"] {
+  background: transparent;
+}
 a { color: var(--ink); }
 a:hover { color: var(--accent-text); }
 
@@ -1871,6 +1881,62 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   contain-intrinsic-size: auto 52px;
 }
 
+/* Note right-click menu — same panel language as .action-toast: hairline
+   border, warm panel, one soft shadow. */
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 96;
+  min-width: 168px;
+  padding: 5px;
+  border: 1px solid var(--rule-strong);
+  background: var(--panel);
+  box-shadow: 0 14px 38px rgba(18, 17, 15, .16);
+  animation: shortcut-sheet-in 120ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+html[data-reduced-motion="true"] .context-menu { animation: none; }
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 500 12.5px/1.3 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu-item:hover,
+.context-menu-item:focus-visible {
+  background: var(--panel-warm);
+  outline: none;
+}
+
+.context-menu-item[data-destructive="true"] {
+  color: var(--accent-text);
+}
+
+/* Inline sidebar rename — sits where the row's title/meta usually render. */
+.side-row-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 6px 18px;
+  padding: 4px 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  background: transparent;
+  color: var(--ink);
+  font: 500 13px/1.4 var(--serif);
+}
+
 .action-toast {
   position: fixed;
   right: 22px;
@@ -2595,6 +2661,25 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 }
 .side-row[aria-current='true'] .side-row-title { color: var(--ink); font-weight: 600; }
 
+/* The grab strip between the note leaf and the AI-notes panel. Invisible at
+   rest — the panel's own border-left hairline stays the visual divider — and
+   shows an accent wash on hover/keyboard focus so the affordance is
+   discoverable without adding permanent chrome. */
+.panel-resizer {
+  flex: none;
+  width: 6px;
+  margin-right: -6px;
+  position: relative;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+.panel-resizer:hover,
+.panel-resizer:focus-visible {
+  background: rgba(var(--accent-rgb), .30);
+  outline: none;
+}
+
 /* Recording: a single hairline across the very top edge of the window.
    .impeccable.md's "quiet by default, loud when recording", spent in one
    place — unmissable peripherally, and it costs no layout. */
@@ -2664,12 +2749,24 @@ button:focus-visible,
 [role="tab"]:focus-visible,
 [role="switch"]:focus-visible,
 [role="slider"]:focus-visible,
-input:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible,
 select:focus-visible,
-textarea:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Text fields get their visible focus (WCAG 2.4.7) from the accent-colored
+   ruled underline, reinforced to 2px total while focused, instead of the
+   outline ring above: browsers treat text fields as always focus-visible,
+   so the ring fired on plain mouse clicks too — and a 2px accent rectangle
+   around a quiet one-line field reads as an error state, not focus. */
+input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-bottom-color: var(--accent);
+  box-shadow: 0 1px 0 0 var(--accent);
 }
 input.input-focus:focus-visible { outline: none; }
 

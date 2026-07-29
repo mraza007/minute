@@ -21,6 +21,7 @@ const settings: Settings = {
   deleteAudioAfter30d: true,
   meetingDetection: false,
   captureSystemAudio: false,
+  libraryRoot: null,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {

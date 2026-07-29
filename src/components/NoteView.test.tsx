@@ -1000,4 +1000,31 @@ describe('NoteView', () => {
       expect(onDelete).not.toHaveBeenCalled()
     })
   })
+
+  describe('AI notes panel resize', () => {
+    it('widens with ArrowLeft and persists the width', () => {
+      window.localStorage.removeItem('minute.aiPanelWidth')
+      render(<NoteView {...makeProps()} />)
+      const separator = screen.getByRole('separator', { name: 'Resize AI notes panel' })
+      expect(separator).toHaveAttribute('aria-valuenow', '316')
+      fireEvent.keyDown(separator, { key: 'ArrowLeft' })
+      expect(separator).toHaveAttribute('aria-valuenow', '332')
+      expect(window.localStorage.getItem('minute.aiPanelWidth')).toBe('332')
+    })
+
+    it('clamps to its bounds and restores the default on Home', () => {
+      window.localStorage.setItem('minute.aiPanelWidth', '9999')
+      render(<NoteView {...makeProps()} />)
+      const separator = screen.getByRole('separator', { name: 'Resize AI notes panel' })
+      // A stored out-of-range width loads clamped to the max…
+      expect(separator).toHaveAttribute('aria-valuenow', '520')
+      fireEvent.keyDown(separator, { key: 'ArrowLeft' })
+      expect(separator).toHaveAttribute('aria-valuenow', '520')
+      // …and Home resets to the default.
+      fireEvent.keyDown(separator, { key: 'Home' })
+      expect(separator).toHaveAttribute('aria-valuenow', '316')
+      expect(window.localStorage.getItem('minute.aiPanelWidth')).toBe('316')
+      window.localStorage.removeItem('minute.aiPanelWidth')
+    })
+  })
 })

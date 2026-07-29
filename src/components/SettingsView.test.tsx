@@ -61,6 +61,10 @@ const base = {
   cancelDownload: vi.fn(),
   deleteModel: vi.fn(),
   storage,
+  libraryPath: '~/Library/Application Support/dev.minute.app',
+  libraryTitle: '/Users/test/Library/Application Support/dev.minute.app',
+  movingLibrary: false,
+  onChangeLibraryFolder: vi.fn().mockResolvedValue(undefined),
   noteCount: 14,
   tDel: true,
   toggleDel: vi.fn(),
@@ -372,6 +376,22 @@ describe('SettingsView', () => {
       expect(screen.queryByRole('button', { name: /grant permission/i })).not.toBeInTheDocument()
       expect(screen.queryByText('Requires macOS 13 or later.')).not.toBeInTheDocument()
       expect(screen.queryByText(/may need Minute to restart/)).not.toBeInTheDocument()
+    })
+  })
+
+  describe('library location', () => {
+    it('shows the current library path with a working Change… button', () => {
+      const onChangeLibraryFolder = vi.fn().mockResolvedValue(undefined)
+      render(<SettingsView {...base} onChangeLibraryFolder={onChangeLibraryFolder} />)
+      expect(screen.getByText('~/Library/Application Support/dev.minute.app')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Change…' }))
+      expect(onChangeLibraryFolder).toHaveBeenCalledTimes(1)
+    })
+
+    it('disables the button and shows progress copy while a move is in flight', () => {
+      render(<SettingsView {...base} movingLibrary />)
+      const button = screen.getByRole('button', { name: 'Moving…' })
+      expect(button).toBeDisabled()
     })
   })
 })

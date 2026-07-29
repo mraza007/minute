@@ -16,6 +16,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     deleteAudioAfter30d: true,
     meetingDetection: false,
     captureSystemAudio: false,
+    libraryRoot: null,
     ...overrides,
   }
 }

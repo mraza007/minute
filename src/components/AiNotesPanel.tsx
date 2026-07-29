@@ -39,6 +39,8 @@ export interface AiNotesPanelProps {
   onSeekCitation: (seconds: number) => void
   /** Overview already renders summary/decisions/actions in the main leaf. */
   overviewMode?: boolean
+  /** Panel width in px — owned by NoteView's resize separator. Defaults to the classic 316. */
+  width?: number
 }
 
 const panelStyle: CSSProperties = {
@@ -400,6 +402,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   onAsk,
   onSeekCitation,
   overviewMode = false,
+  width,
 }: AiNotesPanelProps) {
   const summarizing = status === 'running'
   const answering = askStatus === 'running'
@@ -412,7 +415,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   const statusAnnouncement = summarizing ? 'Summarizing on-device…' : answering ? 'Answering…' : ''
 
   return (
-    <div style={panelStyle}>
+    <div style={width !== undefined ? { ...panelStyle, width } : panelStyle}>
       <div style={{ padding: '24px 26px 20px', display: 'flex', alignItems: 'baseline', gap: 9 }}>
         <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 17, letterSpacing: '-.005em' }}>
           {overviewMode ? 'Ask & export' : 'AI notes'}

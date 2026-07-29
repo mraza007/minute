@@ -21,6 +21,14 @@ export interface SettingsViewProps {
   cancelDownload: (id: string) => void
   deleteModel: (id: string) => void
   storage: StorageStats | null
+  /** Where the notes library currently lives, home-abbreviated (`library_info.displayPath`) — `null` until loaded. */
+  libraryPath: string | null
+  /** Full absolute library path for the row's hover tooltip — `null` until loaded. */
+  libraryTitle: string | null
+  /** True while a library move is in flight — disables the Change… button. */
+  movingLibrary: boolean
+  /** Opens the native folder picker, then moves the library — see `useAppState.changeLibraryFolder`. */
+  onChangeLibraryFolder: () => Promise<void>
   noteCount: number
   tDel: boolean
   toggleDel: () => void
@@ -314,6 +322,10 @@ export function SettingsView({
   cancelDownload,
   deleteModel,
   storage,
+  libraryPath,
+  libraryTitle,
+  movingLibrary,
+  onChangeLibraryFolder,
   noteCount,
   tDel,
   toggleDel,
@@ -493,7 +505,30 @@ export function SettingsView({
           <div style={{ marginTop: 18 }}>
             <Toggle on={tDel} onToggle={toggleDel} label="Delete original audio 30 days after transcription" />
           </div>
-          <div style={noteTextStyle}>Your library inherits FileVault full-disk encryption.</div>
+          <div style={{ marginTop: 18, display: 'flex', alignItems: 'baseline', gap: 12, maxWidth: 520 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600 }}>Library location</div>
+              <div
+                style={{ fontSize: 11.5, color: 'var(--ink-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={libraryTitle ?? undefined}
+              >
+                {libraryPath ?? '—'}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn-light"
+              style={{ ...secondaryBtnStyle, flex: 'none' }}
+              disabled={movingLibrary}
+              onClick={() => void onChangeLibraryFolder()}
+            >
+              {movingLibrary ? 'Moving…' : 'Change…'}
+            </button>
+          </div>
+          <div style={noteTextStyle}>
+            Recordings, transcripts, and notes move to the folder you choose. Models stay in app data.
+          </div>
+          <div style={fineTextStyle}>Your library inherits FileVault full-disk encryption.</div>
         </Section>
 
         <Section title="Diagnostics">

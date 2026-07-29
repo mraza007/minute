@@ -14,6 +14,7 @@ use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
 use llm::{LlmBusy, SharedLlmEngine, SummaryDoc};
 use settings::{Settings, SettingsPatch, SharedSettings};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use store::{
     lock_store, render_note_md, DeletedNoteUndo, NoteMeta, NoteStorageStats, SearchHit,
@@ -272,6 +273,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn abbreviate_home_replaces_the_home_prefix_with_a_tilde() {
+        assert_eq!(
+            abbreviate_home("/Users/sam/Library/App Support/dev.minute.app", Some("/Users/sam")),
+            "~/Library/App Support/dev.minute.app"
+        );
+        assert_eq!(abbreviate_home("/Users/sam", Some("/Users/sam")), "~");
+    }
+
+    #[test]
+    fn abbreviate_home_leaves_foreign_and_lookalike_paths_alone() {
+        assert_eq!(abbreviate_home("/Volumes/T7/Minute", Some("/Users/sam")), "/Volumes/T7/Minute");
+        // A sibling like /Users/samantha must not be truncated to ~antha.
+        assert_eq!(
+            abbreviate_home("/Users/samantha/Minute", Some("/Users/sam")),
+            "/Users/samantha/Minute"
+        );
+        assert_eq!(abbreviate_home("/Users/sam/Minute", None), "/Users/sam/Minute");
+    }
+
+    #[test]
     fn toggle_action_item_blocked_while_generating() {
         assert_eq!(
             toggle_action_item_blocked(true),
@@ -439,6 +460,100 @@ fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
     store::storage_stats(&root).map_err(|e| e.to_string())
 }
 
+/// Where the notes library currently lives — the folder Settings → Storage
+/// displays. `is_default` distinguishes "still in app data" from a
+/// user-chosen folder, without the frontend having to know the app-data path.
+/// `display_path` is the same location with the home directory abbreviated to
+/// `~` — what the Settings row shows; `path` stays absolute for tooltips and
+/// as the folder picker's starting location.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibraryInfo {
+    path: String,
+    display_path: String,
+    is_default: bool,
+}
+
+/// `/Users/sam/Library/…` → `~/Library/…`; a path outside the home directory
+/// (or with no resolvable home) is returned unchanged.
+fn abbreviate_home(path: &str, home: Option<&str>) -> String {
+    match home {
+        Some(home) if !home.is_empty() => match path.strip_prefix(home) {
+            Some(rest) if rest.is_empty() => "~".to_string(),
+            Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+            _ => path.to_string(),
+        },
+        _ => path.to_string(),
+    }
+}
+
+#[tauri::command]
+fn library_info(app: AppHandle, state: State<SharedStore>) -> Result<LibraryInfo, String> {
+    let root = lock_store(&state).root().to_path_buf();
+    let default_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    let is_default = default_root
+        .canonicalize()
+        .map(|canonical| canonical == root)
+        .unwrap_or(root == default_root);
+    let path = root.to_string_lossy().into_owned();
+    let home = std::env::var("HOME").ok();
+    Ok(LibraryInfo {
+        display_path: abbreviate_home(&path, home.as_deref()),
+        path,
+        is_default,
+    })
+}
+
+/// Moves the notes library to `new_root` (a folder the user picked) and
+/// persists the choice as `settings.libraryRoot` — see
+/// `store::Store::move_library` for the on-disk semantics and guards.
+/// Rejected outright while a recording is active: the recorder and STT
+/// worker hold open file handles and note paths under the old root, and a
+/// mid-recording move would strand them. The freshly allowed asset-protocol
+/// scope is what keeps audio playback working from the new location without
+/// a restart; the `$APPDATA/notes/**` scope from `tauri.conf.json` covers
+/// the default location only.
+#[tauri::command]
+fn move_library(
+    app: AppHandle,
+    state: State<SharedStore>,
+    settings: State<SharedSettings>,
+    recorder: State<audio::SharedRecorderState>,
+    new_root: String,
+) -> Result<LibraryInfo, String> {
+    if audio::is_recording_active(&recorder) {
+        return Err("stop the current recording before moving the library".to_string());
+    }
+
+    let new_root = PathBuf::from(new_root);
+    {
+        let mut store = lock_store(&state);
+        store.move_library(new_root).map_err(|e| e.to_string())?;
+
+        let moved_root = store.root().to_path_buf();
+        // Persist while still holding the store lock, so a concurrent second
+        // move can't interleave between the move and the save. Settings live
+        // at the app-data root (not the library root) — the app must be able
+        // to find the library before it has found the library.
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+        let mut settings = settings::lock_settings(&settings);
+        settings.library_root = Some(moved_root.to_string_lossy().into_owned());
+        settings::save_settings(&app_data_dir, &settings).map_err(|e| e.to_string())?;
+
+        app.asset_protocol_scope()
+            .allow_directory(moved_root.join("notes"), true)
+            .map_err(|e| format!("failed to allow the new library in the asset scope: {e}"))?;
+    }
+
+    library_info(app, state)
+}
+
 /// Best-effort recording finalize on app close/exit. If a recording is
 /// still active — the user quit (⌘Q / red-button close) instead of
 /// clicking "Stop & transcribe" — this runs the exact same stop path
@@ -482,6 +597,7 @@ pub fn run() {
     // platforms either way.
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
+    let builder = builder.plugin(tauri_plugin_dialog::init());
 
     let app = builder
         .invoke_handler(tauri::generate_handler![
@@ -507,6 +623,8 @@ pub fn run() {
             delete_notes,
             restore_notes,
             note_storage_stats,
+            library_info,
+            move_library,
             delete_note_audio,
             export_notes,
             export_diagnostics,
@@ -574,7 +692,29 @@ pub fn run() {
             // `SharedStore` rather than each opening their own `Store` — see the
             // concurrency contract on `store::Store`. `open_shared` is the only
             // way to obtain one; `Store::new` itself is private to `store.rs`.
-            let shared_store: SharedStore = store::open_shared(app_data_dir);
+            //
+            // The store roots at `settings.libraryRoot` when the user has moved
+            // the library (see the `move_library` command); a persisted folder
+            // that no longer exists (unplugged disk, deleted folder) falls back
+            // to the default app-data root rather than failing startup — the
+            // library isn't lost, it's just wherever the folder went, and the
+            // user can re-point Settings once it's back.
+            let library_root = settings::lock_settings(
+                app.state::<SharedSettings>().inner(),
+            )
+            .library_root
+            .clone()
+            .map(PathBuf::from)
+            .filter(|root| root.is_dir());
+            let store_root = library_root.unwrap_or_else(|| app_data_dir.clone());
+            if store_root != app_data_dir {
+                // The static `$APPDATA/notes/**` asset scope from
+                // tauri.conf.json doesn't cover a custom library — allow it
+                // here or audio playback silently 404s after a restart.
+                app.asset_protocol_scope()
+                    .allow_directory(store_root.join("notes"), true)?;
+            }
+            let shared_store: SharedStore = store::open_shared(store_root);
 
             // 30-day audio sweep (Task 3): if the user has opted into
             // `deleteAudioAfter30d`, walk the note library once at launch and

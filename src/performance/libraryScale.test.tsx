@@ -42,6 +42,8 @@ describe('large synthetic library', () => {
         onOpenShortcuts={noop}
         onBulkExport={noopAsync}
         onBulkDelete={noopAsync}
+        onRenameNote={noop}
+        onRevealNote={noop}
       />,
     )
     const elapsedMs = performance.now() - started

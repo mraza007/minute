@@ -42,6 +42,10 @@ if (!releaseEntitlements.includes('com.apple.security.device.audio-input')) {
 if (!devEntitlements.includes('com.apple.security.device.audio-input')) {
   failures.push('dev entitlements are missing com.apple.security.device.audio-input; the hardened runtime denies the microphone without prompting')
 }
+const mainCapability = JSON.parse(await readFile('src-tauri/capabilities/default.json', 'utf8'))
+if (!mainCapability.permissions?.includes('core:window:allow-start-dragging')) {
+  failures.push('main window capability is missing core:window:allow-start-dragging; core:default does not include it, and without it the window cannot be moved at all (issue #5)')
+}
 if (!infoPlist.includes('NSMicrophoneUsageDescription')) failures.push('microphone privacy copy is missing from Info.plist')
 if (!infoPlist.includes('NSScreenCaptureUsageDescription')) failures.push('screen-capture privacy copy is missing from Info.plist')
 

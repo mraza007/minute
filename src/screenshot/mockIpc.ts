@@ -217,6 +217,12 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           return null
         case 'storage_stats':
           return STORAGE
+        case 'library_info':
+          return {
+            path: '/Users/sam/Library/Application Support/dev.minute.app',
+            displayPath: '~/Library/Application Support/dev.minute.app',
+            isDefault: true,
+          }
         case 'audio_input_status':
           return {
             devices: [

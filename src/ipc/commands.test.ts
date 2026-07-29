@@ -452,6 +452,7 @@ describe('ipc/commands', () => {
       deleteAudioAfter30d: true,
       meetingDetection: false,
       captureSystemAudio: false,
+      libraryRoot: null,
     }
     const calls = captureIPC(() => settings)
 
@@ -469,6 +470,7 @@ describe('ipc/commands', () => {
       deleteAudioAfter30d: true,
       meetingDetection: false,
       captureSystemAudio: false,
+      libraryRoot: null,
     }
     const calls = captureIPC(() => updated)
 

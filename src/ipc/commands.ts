@@ -9,6 +9,7 @@ import type {
   AudioInputStatus,
   DeletedNoteUndo,
   Hardware,
+  LibraryInfo,
   ModelStatus,
   MicrophonePermission,
   NoteMeta,
@@ -117,6 +118,13 @@ export const exportNotes = (ids: string[]): Promise<string> =>
 export const exportDiagnostics = (): Promise<string> => invokeCmd('export_diagnostics')
 
 export const storageStats = (): Promise<StorageStats> => invokeCmd('storage_stats')
+
+/** Where the notes library currently lives (Settings → Storage). */
+export const libraryInfo = (): Promise<LibraryInfo> => invokeCmd('library_info')
+
+/** Moves the whole notes library into `newRoot` and persists the choice — see `lib.rs::move_library`. */
+export const moveLibrary = (newRoot: string): Promise<LibraryInfo> =>
+  invokeCmd('move_library', { newRoot })
 
 /** Reveals a note in Finder (its audio.wav if present, else the note's folder). */
 export const revealNote = (id: string): Promise<void> => invokeCmd('reveal_note', { id })

@@ -49,6 +49,8 @@ const APP_COMMANDS: &[&str] = &[
     "export_notes",
     "export_diagnostics",
     "storage_stats",
+    "library_info",
+    "move_library",
     "reveal_note",
     "get_settings",
     "set_settings",

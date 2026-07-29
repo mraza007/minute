@@ -83,6 +83,20 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closeSearch, openSearch, s.searchOpen, s.recordingPreflightOpen])
 
+  // Suppress the webview's own right-click menu ("Reload", …) everywhere
+  // except editable fields, which keep the native cut/copy/paste menu. Note
+  // rows offer their own menu (see Sidebar); this runs after that handler's
+  // bubble phase, so both compose.
+  useEffect(() => {
+    function handleContextMenu(e: MouseEvent) {
+      const target = e.target instanceof Element ? e.target : null
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return
+      e.preventDefault()
+    }
+    document.addEventListener('contextmenu', handleContextMenu)
+    return () => document.removeEventListener('contextmenu', handleContextMenu)
+  }, [])
+
   useEffect(() => {
     function handleShortcutReference(event: KeyboardEvent) {
       if (!event.metaKey || event.key !== '/') return
@@ -172,6 +186,8 @@ export default function App() {
             onOpenShortcuts={openShortcuts}
             onBulkExport={s.exportNotes}
             onBulkDelete={s.deleteNotes}
+            onRenameNote={s.renameNote}
+            onRevealNote={s.revealNote}
           />
           {s.view === 'notes' && (
             <NoteView
@@ -256,6 +272,10 @@ export default function App() {
               cancelDownload={s.cancelDownload}
               deleteModel={s.deleteModel}
               storage={s.storage}
+              libraryPath={s.libraryInfo?.displayPath ?? null}
+              libraryTitle={s.libraryInfo?.path ?? null}
+              movingLibrary={s.movingLibrary}
+              onChangeLibraryFolder={s.changeLibraryFolder}
               noteCount={s.notes.length}
               tDel={s.tDel}
               toggleDel={s.toggleDel}

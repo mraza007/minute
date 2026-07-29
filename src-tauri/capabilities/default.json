@@ -7,6 +7,7 @@
   ],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
     "allow-hardware-info",
     "allow-list-models",
     "allow-recommended-models",
@@ -33,6 +34,8 @@
     "allow-export-notes",
     "allow-export-diagnostics",
     "allow-storage-stats",
+    "allow-library-info",
+    "allow-move-library",
     "allow-reveal-note",
     "allow-get-settings",
     "allow-set-settings",
@@ -48,6 +51,7 @@
     "allow-resume-recording",
     "allow-stop-recording",
     "allow-sys-audio-status",
-    "allow-request-sys-audio-permission"
+    "allow-request-sys-audio-permission",
+    "dialog:default"
   ]
 }

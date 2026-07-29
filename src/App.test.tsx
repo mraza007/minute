@@ -1,6 +1,6 @@
 import { emit } from '@tauri-apps/api/event'
 import { mockIPC } from '@tauri-apps/api/mocks'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import App from './App'
 import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats } from './ipc/types'
@@ -14,6 +14,7 @@ const settings: Settings = {
   deleteAudioAfter30d: true,
   meetingDetection: false,
   captureSystemAudio: false,
+  libraryRoot: null,
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
@@ -84,7 +85,9 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'list_models':
           return models
         case 'list_notes':
-          return opts.listNotes ? opts.listNotes() : notes
+          // Fresh array each call, like the real store — a same-reference
+          // return would let React's setNotes bail out on refetches.
+          return opts.listNotes ? opts.listNotes() : [...notes]
         case 'hardware_info':
           return hardware
         case 'recommended_models':
@@ -119,7 +122,10 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'rename_note': {
           const { id, title } = args as { id: string; title: string }
           const match = notes.find(n => n.id === id) ?? notes[0] ?? noteFixture()
-          return { ...match, title }
+          // Mutate the fixture so the follow-up `list_notes` refetch reflects
+          // the rename, the way the real store does.
+          match.title = title
+          return { ...match }
         }
         case 'delete_note': {
           const { id } = args as { id: string }
@@ -266,6 +272,53 @@ describe('App', () => {
     fireEvent.click(screen.getByText('Client call — Acme'))
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
     expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+  })
+
+  describe('note right-click menu', () => {
+    async function openMenuOnFirstNote() {
+      setupIPC()
+      render(<App />)
+      const sidebar = within(await screen.findByRole('navigation', { name: 'Notes' }))
+      const row = await sidebar.findByRole('button', { name: /Client call — Acme/ })
+      fireEvent.contextMenu(row)
+      return screen.getByRole('menu', { name: /Actions for .Client call — Acme./ })
+    }
+
+    it('opens on right-click with the full action set and closes on Escape', async () => {
+      const menu = await openMenuOnFirstNote()
+      for (const label of ['Rename', 'Pin', 'Reveal in Finder', 'Export…', 'Delete']) {
+        expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument()
+      }
+      fireEvent.keyDown(menu, { key: 'Escape' })
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    })
+
+    it('deletes the note via the menu, with the undo toast', async () => {
+      const menu = await openMenuOnFirstNote()
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete' }))
+      await waitFor(() => expect(screen.getByText(/moved to recovery/)).toBeInTheDocument())
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    })
+
+    it('renames the note inline via the menu', async () => {
+      const menu = await openMenuOnFirstNote()
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Rename' }))
+      const input = screen.getByRole('textbox', { name: 'Rename Client call — Acme' })
+      fireEvent.change(input, { target: { value: 'Acme kickoff' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      const sidebar = within(screen.getByRole('navigation', { name: 'Notes' }))
+      await waitFor(() => expect(sidebar.getByRole('button', { name: /Acme kickoff/ })).toBeInTheDocument())
+    })
+
+    it('suppresses the default context menu outside editable fields only', async () => {
+      setupIPC()
+      render(<App />)
+      await screen.findByRole('button', { name: /new recording/i })
+      const onHeading = fireEvent.contextMenu(screen.getByRole('button', { name: /new recording/i }))
+      expect(onHeading).toBe(false)
+      const onInput = fireEvent.contextMenu(screen.getByLabelText('Search notes'))
+      expect(onInput).toBe(true)
+    })
   })
 
   it('shows the sidebar and NoteView empty states when the note library is empty', async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type {
   NoteMarker,
   NoteMeta,
@@ -701,6 +701,18 @@ function DeleteNoteButton({ id, title, onDelete }: { id: string; title: string; 
   )
 }
 
+// AI-notes panel resize bounds. The floor keeps the ask input and action
+// buttons usable; the ceiling keeps the transcript column from collapsing at
+// the window's 1180px minimum width.
+const AI_PANEL_MIN_WIDTH = 280
+const AI_PANEL_MAX_WIDTH = 520
+const AI_PANEL_DEFAULT_WIDTH = 316
+const AI_PANEL_WIDTH_KEY = 'minute.aiPanelWidth'
+
+function clampAiPanelWidth(width: number): number {
+  return Math.min(AI_PANEL_MAX_WIDTH, Math.max(AI_PANEL_MIN_WIDTH, width))
+}
+
 export function NoteView({
   meta,
   selectedMeta,
@@ -762,6 +774,57 @@ export function NoteView({
   const [markerAddDraft, setMarkerAddDraft] = useState('')
   const [markerAddPending, setMarkerAddPending] = useState(false)
   const addMarkerButtonRef = useRef<HTMLButtonElement>(null)
+
+  // AI-notes panel width, resizable via the separator between the leaf and
+  // the panel. A plain UI preference, so it persists in localStorage rather
+  // than settings.json — it doesn't need to survive the app-data folder or
+  // sync anywhere.
+  const [aiPanelWidth, setAiPanelWidth] = useState(() => {
+    const stored = Number(window.localStorage.getItem(AI_PANEL_WIDTH_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampAiPanelWidth(stored) : AI_PANEL_DEFAULT_WIDTH
+  })
+
+  const applyAiPanelWidth = useCallback((width: number) => {
+    const clamped = clampAiPanelWidth(width)
+    setAiPanelWidth(clamped)
+    window.localStorage.setItem(AI_PANEL_WIDTH_KEY, String(clamped))
+  }, [])
+
+  const handleAiPanelResizeStart = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      const startX = e.clientX
+      const startWidth = aiPanelWidth
+      const onMove = (ev: PointerEvent) => {
+        // The panel sits to the separator's right, so dragging left widens it.
+        setAiPanelWidth(clampAiPanelWidth(startWidth + (startX - ev.clientX)))
+      }
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        applyAiPanelWidth(startWidth + (startX - ev.clientX))
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [aiPanelWidth, applyAiPanelWidth],
+  )
+
+  const handleAiPanelResizeKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        applyAiPanelWidth(aiPanelWidth + 16)
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        applyAiPanelWidth(aiPanelWidth - 16)
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        applyAiPanelWidth(AI_PANEL_DEFAULT_WIDTH)
+      }
+    },
+    [aiPanelWidth, applyAiPanelWidth],
+  )
 
   function focusSpeakerFilter() {
     requestAnimationFrame(() => speakerFilterRef.current?.focus())
@@ -1369,7 +1432,21 @@ export function NoteView({
           </div>
         )}
       </div>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize AI notes panel"
+        aria-valuemin={AI_PANEL_MIN_WIDTH}
+        aria-valuemax={AI_PANEL_MAX_WIDTH}
+        aria-valuenow={aiPanelWidth}
+        tabIndex={0}
+        className="panel-resizer"
+        onPointerDown={handleAiPanelResizeStart}
+        onKeyDown={handleAiPanelResizeKeyDown}
+        onDoubleClick={() => applyAiPanelWidth(AI_PANEL_DEFAULT_WIDTH)}
+      />
       <AiNotesPanel
+        width={aiPanelWidth}
         summary={summary}
         status={summaryStatus}
         error={summaryError}

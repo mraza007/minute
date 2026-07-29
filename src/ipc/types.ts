@@ -208,6 +208,15 @@ export interface StorageStats {
   notesBytes: number
 }
 
+/** `lib.rs::LibraryInfo` — where the notes library currently lives. */
+export interface LibraryInfo {
+  /** Absolute path — tooltip + the folder picker's starting location. */
+  path: string
+  /** Same location with the home directory abbreviated to `~` — what Settings displays. */
+  displayPath: string
+  isDefault: boolean
+}
+
 export interface DeletedNoteUndo {
   id: string
   title: string
@@ -245,6 +254,8 @@ export interface Settings {
   deleteAudioAfter30d: boolean
   meetingDetection: boolean
   captureSystemAudio: boolean
+  /** Set only by the `move_library` command, never via `setSettings` — see `SettingsPatch`. */
+  libraryRoot: string | null
 }
 
 /**

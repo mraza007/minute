@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS: Settings = {
   deleteAudioAfter30d: true,
   meetingDetection: false,
   captureSystemAudio: false,
+  libraryRoot: null,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

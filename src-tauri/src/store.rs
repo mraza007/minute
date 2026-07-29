@@ -295,6 +295,22 @@ pub fn lock_store(store: &SharedStore) -> MutexGuard<'_, Store> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Recursively copies `src` into `dst` (created fresh) — the cross-volume
+/// fallback for [`Store::move_library`] when a plain `fs::rename` fails.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Opens (creating if needed) a store rooted at `root` and hands it back
 /// already wrapped as a [`SharedStore`] — the only way to obtain a `Store`
 /// from outside this module. `Store::new` itself is private, so there is
@@ -325,6 +341,71 @@ impl Store {
     /// lock-free disk I/O (see the free [`storage_stats`] function).
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Moves the whole notes library (`<root>/notes/`) into `new_root` and
+    /// re-roots this store there, so every subsequent read/write goes to the
+    /// new location. All-or-nothing from the caller's perspective:
+    ///
+    /// - `new_root` must be an existing directory (the folder picker
+    ///   guarantees this in practice) that is not the current root, not
+    ///   inside the current notes dir, and must not already contain a
+    ///   `notes/` entry — refusing to merge into or clobber an existing
+    ///   library beats guessing which of two libraries wins.
+    /// - Same-volume moves are a single `fs::rename`. When that fails
+    ///   (e.g. `EXDEV` for an external disk), falls back to copy + delete;
+    ///   a failed copy removes the partial destination and leaves the store
+    ///   on its original root, so a half-move can never take effect.
+    ///
+    /// Holding `&mut self` (via the store lock) is what makes this safe
+    /// against concurrent note writes — nothing else can touch the library
+    /// mid-move. The caller (the `move_library` command) is responsible for
+    /// rejecting an active recording *before* taking the lock, since a
+    /// recording holds note paths from the old root across lock releases.
+    pub fn move_library(&mut self, new_root: PathBuf) -> Result<()> {
+        if !new_root.is_dir() {
+            return Err(MinuteError::Other(
+                "the chosen folder does not exist or is not a directory".to_string(),
+            ));
+        }
+        let old_notes = self.notes_root();
+        // Canonicalize so "the same folder via a different path spelling"
+        // (symlinks, `..`) can't sneak past the self-move guards.
+        let canonical_new = new_root.canonicalize()?;
+        let canonical_old_root = self.root.canonicalize()?;
+        if canonical_new == canonical_old_root {
+            return Err(MinuteError::Other(
+                "the library already lives in that folder".to_string(),
+            ));
+        }
+        if let Ok(canonical_old_notes) = old_notes.canonicalize() {
+            if canonical_new.starts_with(&canonical_old_notes) {
+                return Err(MinuteError::Other(
+                    "the chosen folder is inside the current library".to_string(),
+                ));
+            }
+        }
+        let new_notes = canonical_new.join("notes");
+        if new_notes.exists() {
+            return Err(MinuteError::Other(
+                "the chosen folder already contains a \"notes\" folder".to_string(),
+            ));
+        }
+
+        if fs::rename(&old_notes, &new_notes).is_err() {
+            // Different volume (or anything else rename can't do): copy the
+            // tree, then delete the original only after the copy fully
+            // succeeded. On failure, drop the partial copy — the original
+            // library hasn't been touched.
+            if let Err(copy_err) = copy_dir_recursive(&old_notes, &new_notes) {
+                let _ = fs::remove_dir_all(&new_notes);
+                return Err(copy_err);
+            }
+            fs::remove_dir_all(&old_notes)?;
+        }
+
+        self.root = canonical_new;
+        Ok(())
     }
 
     fn notes_root(&self) -> PathBuf {
@@ -3759,5 +3840,76 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].snippet.contains("NEEDLE"));
         assert!(hits[0].snippet.contains('会'));
+    }
+
+    // --- move_library -------------------------------------------------------
+
+    #[test]
+    fn move_library_moves_notes_and_reroots_the_store() {
+        let old = tempdir().unwrap();
+        let new = tempdir().unwrap();
+        let mut store = store_at(old.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        store.move_library(new.path().to_path_buf()).unwrap();
+
+        // The store now reads the same note from the new location…
+        let (read_back, _) = store.get_note(&meta.id).unwrap();
+        assert_eq!(read_back.title, "Standup");
+        assert!(store.root().starts_with(new.path().canonicalize().unwrap()));
+        // …and the old location no longer holds a library.
+        assert!(!old.path().join("notes").exists());
+        assert!(new.path().join("notes").join(&meta.id).join("meta.json").exists());
+    }
+
+    #[test]
+    fn move_library_rejects_a_destination_with_an_existing_notes_folder() {
+        let old = tempdir().unwrap();
+        let new = tempdir().unwrap();
+        std::fs::create_dir(new.path().join("notes")).unwrap();
+        let mut store = store_at(old.path());
+
+        let err = store.move_library(new.path().to_path_buf()).unwrap_err();
+
+        assert!(err.to_string().contains("already contains"));
+        // Untouched: the store still reads/writes the old root.
+        assert!(old.path().join("notes").exists());
+        assert!(store.root().ends_with(old.path().file_name().unwrap()));
+    }
+
+    #[test]
+    fn move_library_rejects_the_current_root() {
+        let old = tempdir().unwrap();
+        let mut store = store_at(old.path());
+
+        let err = store.move_library(old.path().to_path_buf()).unwrap_err();
+
+        assert!(err.to_string().contains("already lives"));
+        assert!(old.path().join("notes").exists());
+    }
+
+    #[test]
+    fn move_library_rejects_a_missing_destination() {
+        let old = tempdir().unwrap();
+        let mut store = store_at(old.path());
+
+        let err = store
+            .move_library(old.path().join("does-not-exist"))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn move_library_rejects_a_folder_inside_the_current_library() {
+        let old = tempdir().unwrap();
+        let mut store = store_at(old.path());
+        let inside = old.path().join("notes").join("sub");
+        std::fs::create_dir_all(&inside).unwrap();
+
+        let err = store.move_library(inside).unwrap_err();
+
+        assert!(err.to_string().contains("inside the current library"));
     }
 }

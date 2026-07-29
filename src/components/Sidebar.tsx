@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import type { NoteListItem, View } from '../types'
+import { NoteContextMenu } from './NoteContextMenu'
 
 interface SidebarProps {
   notes: NoteListItem[]
@@ -30,6 +31,8 @@ interface SidebarProps {
   onOpenShortcuts: () => void
   onBulkExport: (ids: string[]) => Promise<void>
   onBulkDelete: (ids: string[]) => Promise<void>
+  onRenameNote: (id: string, title: string) => void
+  onRevealNote: (id: string) => void
 }
 
 const navBase: CSSProperties = {
@@ -81,6 +84,8 @@ export const Sidebar = memo(function Sidebar({
   onOpenShortcuts,
   onBulkExport,
   onBulkDelete,
+  onRenameNote,
+  onRevealNote,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(() =>
     typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1280px)').matches : false,
@@ -93,6 +98,17 @@ export const Sidebar = memo(function Sidebar({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [bulkDeleteArmed, setBulkDeleteArmed] = useState(false)
   const [bulkPending, setBulkPending] = useState(false)
+  /** The row whose right-click menu is open, and where to place it. */
+  const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  /** The row currently renaming inline (context menu's Rename). */
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+
+  /** Commits an inline rename the same way NoteView's title edit does: only a non-blank, actually-changed draft calls out. */
+  function commitRename(note: NoteListItem, draft: string) {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== note.title) onRenameNote(note.id, trimmed)
+    setRenamingId(null)
+  }
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
@@ -323,24 +339,65 @@ export const Sidebar = memo(function Sidebar({
                   onChange={() => toggleSelected(note.id)}
                 />
               )}
-              <button
-                onClick={() => onSelect(note.id)}
-                className="side-row"
-                aria-current={note.id === selectedNoteId ? 'true' : undefined}
-                aria-label={collapsed ? `${note.title} ${note.meta}` : undefined}
-                title={note.title}
-              >
-                {collapsed ? (
-                  <span className="side-row-monogram" aria-hidden="true">
-                    {note.title.split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase()}
-                  </span>
-                ) : (
-                  <>
-                    <span className="side-row-title">{note.title}</span>
-                    <span className="side-row-meta">{note.meta}</span>
-                  </>
-                )}
-              </button>
+              {renamingId === note.id && !collapsed ? (
+                <input
+                  className="side-row-rename"
+                  defaultValue={note.title}
+                  aria-label={`Rename ${note.title}`}
+                  autoFocus
+                  onFocus={e => e.currentTarget.select()}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') commitRename(note, e.currentTarget.value)
+                    if (e.key === 'Escape') setRenamingId(null)
+                  }}
+                  onBlur={e => commitRename(note, e.currentTarget.value)}
+                />
+              ) : (
+                <button
+                  onClick={() => onSelect(note.id)}
+                  onContextMenu={e => {
+                    e.preventDefault()
+                    setContextMenu({ id: note.id, x: e.clientX, y: e.clientY })
+                  }}
+                  className="side-row"
+                  aria-current={note.id === selectedNoteId ? 'true' : undefined}
+                  aria-label={collapsed ? `${note.title} ${note.meta}` : undefined}
+                  title={note.title}
+                >
+                  {collapsed ? (
+                    // Initials only mean something once a note has a real
+                    // title — a library of default-titled notes would render
+                    // as a column of identical "NR" monograms, so those show
+                    // a quiet note glyph instead.
+                    note.title === 'New recording' ? (
+                      <svg
+                        className="side-row-monogram"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"></path>
+                        <path d="M15 3v6h6"></path>
+                      </svg>
+                    ) : (
+                      <span className="side-row-monogram" aria-hidden="true">
+                        {note.title.split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase()}
+                      </span>
+                    )
+                  ) : (
+                    <>
+                      <span className="side-row-title">{note.title}</span>
+                      <span className="side-row-meta">{note.meta}</span>
+                    </>
+                  )}
+                </button>
+              )}
               {!collapsed && (
                 <button
                   type="button"
@@ -359,6 +416,34 @@ export const Sidebar = memo(function Sidebar({
           </div>
         ))}
       </div>
+
+      {contextMenu && (() => {
+        const menuNote = notes.find(n => n.id === contextMenu.id)
+        if (!menuNote) return null
+        return (
+          <NoteContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            label={`Actions for “${menuNote.title}”`}
+            onClose={() => setContextMenu(null)}
+            actions={[
+              {
+                label: 'Rename',
+                onAction: () => {
+                  // The inline rename input only renders in the expanded rows
+                  // — a collapsed monogram has no room for it, so expand first.
+                  setCollapsed(false)
+                  setRenamingId(menuNote.id)
+                },
+              },
+              { label: menuNote.pinned ? 'Unpin' : 'Pin', onAction: () => onTogglePinned(menuNote.id, !menuNote.pinned) },
+              { label: 'Reveal in Finder', onAction: () => onRevealNote(menuNote.id) },
+              { label: 'Export…', onAction: () => void onBulkExport([menuNote.id]) },
+              { label: 'Delete', destructive: true, onAction: () => void onBulkDelete([menuNote.id]) },
+            ]}
+          />
+        )
+      })()}
 
       <div style={{ padding: '12px 18px 14px', borderTop: '1px solid var(--rule)' }}>
         <button
@@ -400,8 +485,8 @@ export const Sidebar = memo(function Sidebar({
             strokeLinejoin="round"
             aria-hidden="true"
           >
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
             <circle cx="12" cy="12" r="3"></circle>
-            <path d="M12 1v3m0 16v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M1 12h3m16 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path>
           </svg>
           <span className="sidebar-nav-label">Settings</span>
         </button>

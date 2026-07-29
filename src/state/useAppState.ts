@@ -5,6 +5,7 @@ import type {
   AudioInputDevice,
   DeletedNoteUndo,
   Hardware,
+  LibraryInfo,
   MicrophonePermission,
   NoteMarker,
   NoteMeta,
@@ -52,6 +53,9 @@ export function useAppState() {
   const [notes, setNotes] = useState<NoteMeta[]>([])
   const [hardware, setHardware] = useState<Hardware | null>(null)
   const [storage, setStorage] = useState<StorageStats | null>(null)
+  const [libraryInfo, setLibraryInfo] = useState<LibraryInfo | null>(null)
+  /** True while a `move_library` call is in flight — Settings disables the Change… button on it. */
+  const [movingLibrary, setMovingLibrary] = useState(false)
   const [selectedNoteStorage, setSelectedNoteStorage] = useState<NoteStorageStats | null>(null)
   const [deletedNoteUndo, setDeletedNoteUndo] = useState<DeletedNoteUndo[] | null>(null)
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null)
@@ -572,6 +576,38 @@ export function useAppState() {
     }
   }, [reportError])
 
+  /**
+   * Settings → Storage "Change…": presents the native folder picker (the
+   * dialog plugin), then asks the backend to move the whole library there.
+   * The backend rejects a move while a recording is active or when the
+   * destination already contains a `notes` folder — those surface through
+   * the normal error banner. A cancelled picker is a plain no-op.
+   */
+  const changeLibraryFolder = useCallback(async () => {
+    if (movingLibrary) return
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      // Starting at the current library folder lets the picker double as
+      // "show me where it lives now" before choosing somewhere else.
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: 'Choose a folder for your Minute library',
+        defaultPath: libraryInfo?.path,
+      })
+      if (typeof picked !== 'string') return
+      setMovingLibrary(true)
+      const info = await ipc.moveLibrary(picked)
+      setLibraryInfo(info)
+      setStorage(await ipc.storageStats())
+      setLibraryNotice('Library moved. Your notes now live in the new folder.')
+    } catch (error) {
+      reportError(error)
+    } finally {
+      setMovingLibrary(false)
+    }
+  }, [movingLibrary, libraryInfo, reportError])
+
   const deleteSelectedNoteAudio = useCallback(async () => {
     if (!selectedNoteId) return
     try {
@@ -619,14 +655,18 @@ export function useAppState() {
       ipc.storageStats(),
       ipc.getSettings(),
       ipc.sysAudioStatus(),
+      ipc.libraryInfo(),
     ])
       .then(
-        ([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage, loadedSettings, loadedSysAudioStatus]) => {
+        ([loadedModels, loadedNotes, loadedHardware, loadedRecommendation, loadedStorage, loadedSettings, loadedSysAudioStatus, loadedLibraryInfo]) => {
           if (cancelled) return
           modelManager.applyInitialLoad(loadedModels, loadedRecommendation, loadedSettings)
           setNotes(loadedNotes)
           setHardware(loadedHardware)
           setStorage(loadedStorage)
+          // Same defensive `?? null` as sys-audio below: a harness that
+          // doesn't stub `library_info` resolves it to `null`.
+          setLibraryInfo(loadedLibraryInfo ?? null)
           setTDel(loadedSettings.deleteAudioAfter30d)
           setTMeetingDetection(loadedSettings.meetingDetection)
           setTCaptureSystemAudio(loadedSettings.captureSystemAudio)
@@ -1185,6 +1225,9 @@ export function useAppState() {
     hardware,
     recommendation: modelManager.recommendation,
     storage,
+    libraryInfo,
+    movingLibrary,
+    changeLibraryFolder,
     selectedNoteStorage,
     deletedNoteUndo,
     libraryNotice,
