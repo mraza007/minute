@@ -7,46 +7,199 @@
 ![platform](https://img.shields.io/badge/platform-macOS-black)
 ![version](https://img.shields.io/badge/version-1.0.0-c8412a)
 
-![Minute meeting overview](screenshots/hero.png)
+![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[Download for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.0.0/Minute-1.0.0-arm64.zip)**
+**[⬇ Download Minute 1.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.0.0/Minute-1.0.0-arm64.zip)**
 
-[Download for Intel](https://github.com/mraza007/minute/releases/download/v1.0.0/Minute-1.0.0-x86_64.zip)
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.0.0/Minute-1.0.0-x86_64.zip).
 
 </div>
 
-Minute is an offline meeting notetaker for macOS. It records audio, transcribes
-with Whisper, and turns the transcript into a summary, decisions, and action
-items using local models.
+Minute is a fully offline meeting notetaker for macOS. It records audio,
+transcribes it live with Whisper, and turns the transcript into a summary,
+decisions, and action items with a local LLM — all of it running on-device,
+in-process, with Metal acceleration. No account, no cloud, no server. The
+only network traffic Minute ever makes is an optional model download the
+first time you pick a bigger model.
 
-No account, cloud service, or server is required. Models download once and run
-on your Mac after that.
+## Why
 
-## Features
+Most meeting notetakers are a microphone hooked up to somebody else's
+server. Minute is a notebook: it writes to a folder on your disk, in plain
+text and WAV, and asks nothing of the network to work. Turn off Wi-Fi and
+record a meeting — it transcribes, summarizes, and answers questions about
+it exactly the same as it does online, because it never used the network in
+the first place.
 
-- Live microphone transcription
-- Optional system-audio capture on macOS 13 or later
-- Local summaries, decisions, and action items
-- Questions answered from the transcript with timestamp citations
-- Speaker names, markers, search, filters, and bulk export
-- Plain local files for recordings, transcripts, and notes
+## Meeting detection, without a permission prompt
 
-## Install
+When another app starts using your microphone — Zoom, Teams, Webex, Slack,
+FaceTime, Discord, or a browser call — Minute notices and offers a quiet
+pill above whatever you're looking at: one click starts recording, one
+click (or 12 seconds of silence) dismisses it. It's off by default; turn
+it on in Settings.
 
-Download the build for your Mac, unzip it, and drag `Minute.app` into
-Applications. Minute asks for microphone access when you start your first
-recording. System-audio capture also needs Screen Recording access.
+This is the honest version of what that pill is doing: it checks whether
+the default microphone is in use and which apps are currently running —
+both things any app on the system can already see, neither one requiring
+a permission dialog. It never opens the microphone itself and never
+listens to audio to decide whether to show up. Turn the toggle off and
+the detector thread stops existing, not just stops firing.
+
+![Minute — the meeting-detected pill, one click from recording](screenshots/popup.png)
+
+## Recording, transcribed as it happens
+
+Before recording, Minute shows exactly what it will capture: the real current
+microphone, a live input meter, system-audio availability, and a transcription
+mode with an honest fit label for this Mac. Capture sources stay visible
+throughout the meeting, so there is never any ambiguity about where the input
+is coming from.
+
+![Minute — recording preflight with microphone, input level, system audio, and model fit](screenshots/preflight.png)
+
+Once recording starts, Whisper transcribes in real time, grouped by speaker
+and scrolling live as the meeting runs. Rename the working title, pause and
+resume, or add timestamped markers with `⌘⇧M`. Minute calls out prolonged
+silence, clipping, a disconnected input, or transcription lag without hiding
+the audio capture that is still safe.
+
+Turn on **Capture system audio** in Settings and a recording captures both
+sides of the call — your microphone and what your Mac is playing — so the
+other participants land in the transcript too, not just you. It needs
+macOS 13 or later and Screen Recording permission (the one system prompt
+this whole feature ever triggers); say no, or run an older macOS, and
+recording still works exactly as before, mic-only. One caveat worth
+knowing: if you're on speakers rather than headphones, your own voice can
+get picked up twice — once by the mic, once by the system-audio stream
+playing it back out — there's no echo cancellation between the two yet.
+
+![Minute — a live recording with source, health, transcript, and marker details](screenshots/recording.png)
+
+## A summary you can act on
+
+Once a note is transcribed, a local LLM turns it into a short summary,
+a list of decisions, and action items you can check off without leaving the
+note. The post-recording overview keeps source, duration, speakers, transcript
+turns, and markers together. Every generated field comes from the local
+transcript and can be regenerated without uploading the meeting.
+
+## Ask your notes, with receipts
+
+Ask a plain-language question about a meeting — "what did we decide about
+the launch date?" — and Minute answers from the transcript, with inline
+`[mm:ss]` citations you can click to jump straight to that moment in the
+recording. It's a conversation with your own notes, not a chatbot guessing
+from a summary.
+
+![Minute — ask-your-notes answering with clickable timestamp citations](screenshots/ask.png)
+
+## Find anything, instantly
+
+⌘K searches titles and full transcript text across your whole library,
+with matches highlighted and playback ready to seek straight to the moment
+someone said the thing you're looking for.
+
+For larger libraries, notes can be pinned, filtered by recording status,
+source, or date, and sorted by newest, oldest, duration, or title. Multi-select
+supports bulk export and recoverable deletion, while per-note storage details
+make audio retention visible instead of mysterious.
+
+![Minute — the ⌘K search palette showing title and transcript hits](screenshots/search.png)
+
+## Clean up without losing work
+
+Rename speakers, filter the transcript by speaker, or merge duplicate speaker
+identities with an exact undo path. Confirmed names are remembered when Minute
+has reliable matching data. Markers remain editable after recording, deleted
+notes move into local recovery, and destructive cleanup always offers Undo.
+
+## Dark mode that still feels like paper
+
+Minute follows macOS's appearance setting. The dark theme isn't an inverted
+light theme — it's its own warm, ink-on-dark-paper palette, built to the
+same calm, analog feel as the light one.
+
+![Minute — note view in dark mode](screenshots/dark.png)
+
+## Models sized to your Mac
+
+Whisper (small / medium / large-v3-turbo) for transcription and a choice of
+local LLMs (Qwen3.5-4B, Qwen3.5-9B, Gemma 4 E4B) for summarization — pick
+what fits your hardware and disk budget, or let Minute suggest a pair based
+on the detected architecture, memory, and CPU cores. Every choice is labeled
+**Recommended**, **Good fit**, **Near memory limit**, **Below minimum**, or
+**Not supported** without pretending to have benchmarked hardware it has not.
+Everything downloads once, runs entirely offline after that, and can be
+removed just as easily.
+
+![Minute — the model manager, showing installed and available models](screenshots/models.png)
+
+## How it works
+
+Minute is a [Tauri 2](https://tauri.app) app: a React 19 + TypeScript
+frontend around a Rust backend that runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+and [llama.cpp](https://github.com/ggml-org/llama.cpp) in-process, with
+Metal acceleration on Apple Silicon — no sidecar process, no local server,
+no localhost port. The frontend talks to the backend over Tauri's IPC; the
+backend talks to whisper.cpp/llama.cpp as linked libraries.
+
+Each note is a plain folder on disk, human-readable and yours regardless of
+whether Minute is still installed:
+
+```
+~/Library/Application Support/dev.minute.app/notes/<note-id>/
+├── audio.wav         # the recording (deleted automatically after 30 days, if enabled)
+├── transcript.json   # timestamped, speaker-labeled segments
+├── summary.json      # summary, decisions, action items
+└── note.md           # everything above, rendered as one Markdown file
+```
+
+Models live alongside them, in a shared `models/` directory, downloaded once
+and reused across every note. `hardware_info` reads your Mac's RAM and chip
+to recommend a Whisper + LLM pair that fits comfortably — nothing is forced,
+every model in the catalog stays choosable, download size and RAM
+requirements shown up front.
+
+## Privacy
+
+**Nothing leaves this machine.** Concretely, not as a slogan:
+
+- Minute's [CSP](src-tauri/tauri.conf.json) has no network origin at all —
+  `default-src 'self'`, no exceptions. The only asset-loading rule is the
+  Tauri asset protocol serving your own note audio back to the player.
+- Fonts (Instrument Sans) ship bundled in the app, not fetched from Google
+  Fonts or any other CDN.
+- Transcription and summarization run as linked libraries in the same
+  process as the app itself — there is no local server, no localhost port,
+  nothing to inspect in a network tab, because there's no network activity
+  to inspect.
+- Turn off Wi-Fi before a meeting. Record, transcribe, summarize, ask
+  questions about it. Nothing about that flow behaves any differently
+  offline, because it's never anything but offline — except downloading a
+  new model, which is the one deliberate exception and always your choice.
+- A privacy-safe diagnostics export records app, model, source, storage, and
+  recovery state without including the recording or transcript.
 
 ## Requirements
 
-- macOS 11 or later
-- macOS 13 or later for system-audio capture
-- About 3 GB of free space for the default transcription and summary models
+- macOS 11 or later; macOS 13 or later for system-audio capture.
+- Apple Silicon is the tested and recommended target. A separate Intel build
+  is produced and architecture-verified, but launch and transcription on
+  physical Intel hardware remain a release-validation item.
+- Model availability depends on architecture and memory. Minute shows the
+  compatibility result before download.
+- About 3 GB of free disk space for the default Whisper small + Qwen3.5-4B
+  pair, plus space for retained recordings.
 
-Apple Silicon is the tested and recommended target. An Intel build is also
-available.
+## Install
 
-## Build from source
+Grab the architecture-appropriate ZIP above, unzip it, and drag `Minute.app`
+into Applications. On first launch, macOS asks for microphone access when you
+start your first recording. System-audio capture additionally asks for Screen
+Recording access on macOS 13 or later.
+
+You can also build Minute from source:
 
 ```bash
 git clone https://github.com/mraza007/minute.git
@@ -55,23 +208,42 @@ npm ci
 npm run tauri build
 ```
 
-Run the development build with:
-
-```bash
-npm run tauri dev
-```
-
 ## Development
 
 ```bash
-npm test
-npm run test:rust
-npm run lint
-npm run verify
+npm install
+npm run tauri dev   # run the app with hot reload
+npm test            # frontend tests (vitest)
+npm run test:rust   # Rust backend tests (cargo test)
+npm run lint        # oxlint
+npm run verify      # lint + frontend + build + Rust + release metadata
+npm run test:soak   # multi-hour logical recording soak
+npm run test:scale  # large synthetic library performance
+npm run test:visual # screenshot regression suite
 ```
 
-Minute uses Tauri, React, TypeScript, Rust, whisper.cpp, and llama.cpp.
+## Roadmap
+
+Honestly, in rough priority order:
+
+- **Real-device release matrix** — removable-microphone disconnect/reconnect,
+  physical sleep/wake, constrained-volume failure, and overnight finalization.
+- **Updates and clean-Mac validation** — signed automatic updates,
+  clean-install permission continuity, and rollback validation.
+- **Diarization quality** — speaker rename, merge, persistence, and undo are in
+  place; improving the underlying automatic speaker separation remains useful.
+- **Cross-note ask** — ask-your-notes currently answers from one note's
+  transcript at a time; asking across your whole library is the natural
+  next step.
+- **More models** — the catalog grows as good on-device options do; nothing
+  about the architecture is tied to the current lineup.
+- **Calendar-aware nudges** — meeting detection currently reacts to the mic
+  going hot in a known app; reading your calendar to know a meeting's name
+  and attendees ahead of time is scoped but parked for a later release.
+- **Per-app audio taps** — system audio currently captures the whole
+  machine's output; Apple's newer CATap API would let capture target a
+  single app's audio instead, once it's broadly available to build against.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The bundled `llama-cpp-2` sources in `src-tauri/vendor/` retain their upstream MIT/Apache-2.0 licensing; model weights downloaded in-app carry their own licenses (Whisper: MIT; Qwen: Apache-2.0; Gemma: Gemma Terms of Use).
