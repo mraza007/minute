@@ -10,6 +10,20 @@ pub enum MinuteError {
     /// recover "was this cancelled?".
     #[error("cancelled")]
     Cancelled,
+    /// A templated LLM prompt tokenized past the loaded model's context
+    /// budget — distinguished from `Other` so `llm.rs`'s prompt-fitting
+    /// loop can catch it, shrink the transcript proportionally using the
+    /// carried counts, and retry. Only reaches a user if that loop gives
+    /// up, so the message explains the situation in their terms.
+    #[error(
+        "the transcript is too long for the summary model's context \
+         ({prompt_tokens} prompt tokens + {max_tokens} response budget > {context_tokens})"
+    )]
+    PromptTooLong {
+        prompt_tokens: usize,
+        max_tokens: usize,
+        context_tokens: usize,
+    },
     #[error("{0}")]
     Other(String),
 }

@@ -2079,7 +2079,15 @@ fn auto_trigger_summarize(
         }
     };
 
-    let model_id = settings::lock_settings(settings).llm_model.clone();
+    let (model_id, preferred_context, summary_style, summary_instructions) = {
+        let guard = settings::lock_settings(settings);
+        (
+            guard.llm_model.clone(),
+            guard.llm_context_tokens,
+            guard.summary_style,
+            guard.summary_instructions.clone(),
+        )
+    };
 
     let catalog = match catalog::load_catalog() {
         Ok(catalog) => catalog,
@@ -2127,6 +2135,9 @@ fn auto_trigger_summarize(
                 busy: busy.clone(),
                 model_id: model_id.clone(),
                 model_path: model_path.clone(),
+                preferred_context,
+                summary_style,
+                summary_instructions: summary_instructions.clone(),
                 emit,
             })
         }
