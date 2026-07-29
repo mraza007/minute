@@ -1,28 +1,15 @@
 # macOS signing, notarization, and updates
 
-Minute's unsigned development build uses `bundle.macOS.signingIdentity: "-"`.
-Production releases must override that identity in CI and must not commit
-certificate material.
+Minute's development build uses `bundle.macOS.signingIdentity: "-"`. Production
+builds merge `src-tauri/tauri.release.conf.json`, which pins the Developer ID
+identity, enables hardened runtime explicitly, and replaces the development
+entitlements with `Entitlements.release.plist`.
 
-## If you do not have an Apple account or Developer Program membership
-
-There is no technical workaround that produces the same public-install trust.
-Developer ID certificates are issued through the Apple Developer Program, and
-Apple notarizes Developer-ID-signed software. Without those credentials Minute
-can still be built and ad-hoc signed for development or direct private sharing,
-but Gatekeeper will identify it as coming from an unidentified developer and a
-clean Mac will require a manual user override.
-
-Use the **Ad-hoc private macOS build** workflow for that private track. It:
-
-- builds separate Apple Silicon and Intel apps;
-- checks the main executable and every bundled dylib for the intended
-  architecture;
-- validates the ad-hoc code signature; and
-- uploads a ZIP plus SHA-256 checksum.
-
-This private track is not a production substitute: it cannot pass
-notarization, stapling, or an ordinary clean-Mac Gatekeeper assessment.
+The release flavor is deliberately separate. Development builds need
+`com.apple.security.cs.disable-library-validation` because their bundled
+llama/ggml libraries have ad-hoc identities. Production builds sign the main
+executable and every bundled library with Team ID `HL7N7FULXS`, so they keep
+library validation enabled.
 
 Tauri updater signatures are a separate cryptographic system and do not require
 an Apple account. They also do not replace Developer ID or notarization. Minute
@@ -31,23 +18,30 @@ private key or stable HTTPS endpoint. Generate and store that key before
 enabling `createUpdaterArtifacts`; never commit it or rely on it as a
 Gatekeeper bypass.
 
-Required GitHub secrets:
+Required secrets in the GitHub `release` environment:
 
 - `APPLE_CERTIFICATE`: base64 Developer ID Application `.p12`
 - `APPLE_CERTIFICATE_PASSWORD`
-- `KEYCHAIN_PASSWORD`
-- `APPLE_SIGNING_IDENTITY`
 - `APPLE_ID`
 - `APPLE_PASSWORD`: app-specific password
-- `APPLE_TEAM_ID`
 - `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` once
   updater artifacts are enabled
+
+`APPLE_SIGNING_IDENTITY` and `APPLE_TEAM_ID` are intentionally not secrets.
+The release config pins `Developer ID Application: Muhammad Raza
+(HL7N7FULXS)`, and the workflow sets the public Team ID directly. The workflow
+generates a fresh ephemeral keychain password on every run.
+
+Never commit the `.cer`, CSR, `.p12`, `.p8`, passwords, or base64 certificate
+text. Those extensions are ignored by Git.
 
 Validation sequence:
 
 1. Import the certificate into an ephemeral CI keychain.
 2. Build both Apple Silicon and Intel artifacts with `tauri-apps/tauri-action`.
-3. Verify nested frameworks and the app with `codesign --verify --deep --strict`.
+3. Verify nested frameworks and the app with `codesign --verify --deep --strict`,
+   and verify every Mach-O carries the expected Team ID, Developer ID
+   authority, and secure timestamp.
 4. Submit with `xcrun notarytool`, wait for acceptance, and staple the ticket.
 5. Run `spctl --assess --type execute --verbose` on the stapled app.
 6. Install on a clean supported Mac and verify microphone and Screen Recording
@@ -57,9 +51,43 @@ Validation sequence:
 8. Publish a draft release first, install it, test update from the previous
    version, then promote it.
 
-The workflow validates metadata without secrets on every PR. A signed,
-notarized release remains blocked until the secrets and clean-Mac validation
-environment exist.
+The workflow validates metadata without secrets on every PR. It fails before a
+build when any required release secret is missing.
+
+## Local release build
+
+The local release command uses the installed Developer ID identity and a
+Keychain-backed `notarytool` profile. First create an Apple app-specific
+password at **account.apple.com → Sign-In and Security → App-Specific
+Passwords**. Then store it without putting the password in shell history:
+
+```bash
+xcrun notarytool store-credentials minute-notary \
+  --apple-id "your Apple Account email" \
+  --team-id "HL7N7FULXS"
+```
+
+`notarytool` prompts securely for the app-specific password and validates it
+with Apple before storing it in Keychain. Once that succeeds:
+
+```bash
+npm run build:macos:release
+```
+
+Do not put the password in a repository file, command argument, or shell
+profile. The command builds the host architecture by default. Set
+`MINUTE_MACOS_TARGET` to
+`aarch64-apple-darwin` or `x86_64-apple-darwin` when validating a specific
+target. Set `MINUTE_NOTARY_PROFILE` only if you used a different profile name.
+A successful run verifies the signed bundle, submits a temporary ZIP to Apple,
+waits for acceptance, staples the ticket, runs Gatekeeper, and emits a final
+ZIP plus SHA-256 checksum.
+
+The signing identity is installed and locally verified:
+
+```text
+Developer ID Application: Muhammad Raza (HL7N7FULXS)
+```
 
 ## Local packaging preflight — July 27, 2026
 
@@ -95,6 +123,30 @@ Status: **Cross-build pass; physical Intel launch pending**
 - Launch, microphone permission, and transcription on physical Intel hardware
   remain pending because this host is Apple Silicon.
 
-Production completion still requires Apple Developer Program credentials, the
-updater key and endpoint, a notarization response from Apple, and install/update
-tests on clean Apple Silicon and Intel Macs.
+## Minute 1.0 release validation — July 29, 2026
+
+Status: **Production signing and notarization pass**
+
+- Installed and verified `Developer ID Application: Muhammad Raza
+  (HL7N7FULXS)`.
+- Built separate Apple Silicon and Intel release-flavor applications.
+- Signed the main executable and all five llama/ggml dylibs with the same
+  Developer ID identity and secure timestamps.
+- Verified both bundles with strict code-sign checks, the expected
+  architectures, Team ID `HL7N7FULXS`, and hardened runtime.
+- Removed the development-only library-validation exception from production
+  entitlements.
+- Launched the signed Apple Silicon build successfully with production library
+  validation enabled.
+- Apple accepted both Minute 1.0 notarization submissions:
+  - Apple Silicon: `60e69d55-78f9-4cf7-b8fa-bb632aad41da`
+  - Intel: `df0aa212-aeb1-447c-b699-ffde03b597c1`
+- Stapled and validated both tickets, then received `source=Notarized Developer
+  ID` from Gatekeeper for both architecture-specific apps.
+- Produced and checksum-verified `Minute-1.0.0-arm64.zip` and
+  `Minute-1.0.0-x86_64.zip` release artifacts.
+
+Production completion still requires a clean-Mac Gatekeeper and
+microphone-permission test, the GitHub release secrets, the updater key and
+endpoint, and update/rollback tests. Physical Intel launch validation also
+remains pending.

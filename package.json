@@ -1,7 +1,7 @@
 {
   "name": "local-transcription-app",
   "private": true,
-  "version": "0.7.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,7 @@
     "test:visual": "node scripts/visual-regression.mjs",
     "test:visual:update": "UPDATE_VISUAL_BASELINES=1 node scripts/visual-regression.mjs",
     "check:release": "node scripts/check-release.mjs",
+    "build:macos:release": "bash scripts/build-macos-release.sh",
     "verify:macos-bundle": "bash scripts/verify-macos-bundle.sh",
     "test:watch": "vitest",
     "test:rust": "TAURI_CONFIG='{\"bundle\":{\"macOS\":{\"frameworks\":[]}}}' cargo test --manifest-path src-tauri/Cargo.toml",

@@ -5,19 +5,17 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-0.7.0-c8412a)
+![version](https://img.shields.io/badge/version-1.0.0-c8412a)
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download the current private build for Apple Silicon](https://github.com/mraza007/minute/releases/download/v0.7.0-private.1/Minute-aarch64-apple-darwin-private.zip)**
+**[⬇ Download Minute 1.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.0.0/Minute-1.0.0-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel private build](https://github.com/mraza007/minute/releases/download/v0.7.0-private.1/Minute-x86_64-apple-darwin-private.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.0.0/Minute-1.0.0-x86_64.zip).
 
-Current downloads are ad-hoc signed and are not notarized. After copying
-Minute to Applications, try opening it once, then use **System Settings →
-Privacy & Security → Open Anyway**. See
-[Installing a private build](#installing-a-private-build) for the complete,
-safer Gatekeeper process.
+Both builds are signed with Developer ID, notarized by Apple, and carry a
+stapled notarization ticket. Unzip the download, drag Minute to Applications,
+and open it normally.
 
 </div>
 
@@ -200,9 +198,12 @@ requirements shown up front.
 
 ## Install
 
-Grab the architecture-appropriate ZIP from
-[Installing a private build](#installing-a-private-build), or build Minute
-from source:
+Grab the architecture-appropriate ZIP above, unzip it, and drag `Minute.app`
+into Applications. On first launch, macOS asks for microphone access when you
+start your first recording. System-audio capture additionally asks for Screen
+Recording access on macOS 13 or later.
+
+You can also build Minute from source:
 
 ```bash
 git clone https://github.com/mraza007/minute.git
@@ -211,99 +212,12 @@ npm ci
 npm run tauri build
 ```
 
-This produces a `.app` (and a `.dmg`) under `src-tauri/target/release/bundle/`.
-Builds are ad-hoc signed, not notarized. On first launch, Minute walks you
-through picking and downloading a transcription + summary model pair sized to
-your hardware — that is the only deliberate network access in the app.
-
-## Private macOS distribution
-
-Minute includes a manually triggered
-[Ad-hoc private macOS build](.github/workflows/private-macos-build.yml)
-workflow for small, trusted beta groups when Apple Developer Program
-credentials are not available. It:
-
-- runs the full verification suite;
-- builds separate Apple Silicon and Intel applications;
-- verifies the main executable and every bundled dynamic library against the
-  intended architecture;
-- validates the ad-hoc code signature; and
-- uploads a ZIP and SHA-256 checksum for each architecture.
-
-### Producing private builds
-
-Commit the workflow to the repository's default branch, then open **GitHub →
-Actions → Ad-hoc private macOS build → Run workflow**. GitHub repository
-readers can download the finished artifacts from the workflow run.
-
-The same workflow can be started and downloaded with the GitHub CLI:
-
-```bash
-gh workflow run private-macos-build.yml --ref main
-gh run list --workflow private-macos-build.yml --limit 1
-gh run watch RUN_ID
-gh run download RUN_ID
-```
-
-The run produces:
-
-| Recipient Mac | Artifact |
-| --- | --- |
-| Apple Silicon (`uname -m` → `arm64`) | `Minute-aarch64-apple-darwin-private.zip` |
-| Intel (`uname -m` → `x86_64`) | `Minute-x86_64-apple-darwin-private.zip` |
-
-Share the matching `.zip` and `.zip.sha256` files. For stronger tamper
-detection, send the checksum through a separate trusted channel. Recipients
-can verify it in the download folder:
-
-```bash
-shasum -a 256 -c Minute-aarch64-apple-darwin-private.zip.sha256
-```
-
-The expected result ends in `OK`.
-
-### Installing a private build
-
-Download the attached build that matches your Mac:
-
-| Mac | Private build attachment | SHA-256 checksum |
-| --- | --- | --- |
-| Apple Silicon (M1 or newer) | [Minute-aarch64-apple-darwin-private.zip](https://github.com/mraza007/minute/releases/download/v0.7.0-private.1/Minute-aarch64-apple-darwin-private.zip) | [checksum](https://github.com/mraza007/minute/releases/download/v0.7.0-private.1/Minute-aarch64-apple-darwin-private.zip.sha256) |
-| Intel | [Minute-x86_64-apple-darwin-private.zip](https://github.com/mraza007/minute/releases/download/v0.7.0-private.1/Minute-x86_64-apple-darwin-private.zip) | [checksum](https://github.com/mraza007/minute/releases/download/v0.7.0-private.1/Minute-x86_64-apple-darwin-private.zip.sha256) |
-
-These attachments are built from the
-[`v0.7.0-private.1` tag](https://github.com/mraza007/minute/tree/v0.7.0-private.1)
-by the
-[private macOS build workflow](https://github.com/mraza007/minute/actions/workflows/private-macos-build.yml).
-Choose **Apple menu → About This Mac** if you are unsure which processor your
-Mac uses.
-
-1. Unzip the architecture-appropriate download.
-2. Drag `Minute.app` into **Applications**.
-3. Try opening Minute once and dismiss the unidentified-developer warning.
-4. Open **System Settings → Privacy & Security**.
-5. Scroll to **Security**, click **Open Anyway**, authenticate, and confirm
-   **Open**.
-6. Approve Minute's microphone permission when prompted. System-audio capture
-   additionally needs Screen Recording permission on macOS 13 or later.
-
-Apple makes **Open Anyway** available for about an hour after the blocked open
-attempt and then remembers the app as an exception. Only use that override for
-a build received through a trusted channel. Do not disable Gatekeeper globally
-or instruct recipients to strip quarantine attributes. See Apple's
-[Gatekeeper installation guidance](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac).
-
-Ad-hoc distribution is intentionally limited:
-
-- macOS identifies the build as coming from an unidentified developer;
-- it cannot pass notarization, stapling, or a normal clean-Mac Gatekeeper
-  assessment;
-- private updates are replacement downloads for now; and
-- a public, low-friction release still requires a Developer ID Application
-  certificate and Apple notarization.
-
-The complete production signing plan and the no-membership fallback are
-documented in
+The ordinary source command produces an ad-hoc development build. Official
+downloads are built through Minute's production release configuration, which
+signs the app and bundled native libraries with the same Developer ID identity,
+enables hardened runtime, submits both architectures to Apple, staples the
+accepted tickets, and verifies Gatekeeper before packaging. The complete
+process is documented in
 [docs/release/SIGNING_NOTARIZATION.md](docs/release/SIGNING_NOTARIZATION.md).
 
 ## Development
@@ -326,8 +240,8 @@ Honestly, in rough priority order:
 
 - **Real-device release matrix** — removable-microphone disconnect/reconnect,
   physical sleep/wake, constrained-volume failure, and overnight finalization.
-- **Signed, notarized releases** — Developer ID, Apple notarization, stapling,
-  clean-Mac Gatekeeper installation, and signed update/rollback validation.
+- **Updates and clean-Mac validation** — signed automatic updates,
+  clean-install permission continuity, and rollback validation.
 - **Diarization quality** — speaker rename, merge, persistence, and undo are in
   place; improving the underlying automatic speaker separation remains useful.
 - **Cross-note ask** — ask-your-notes currently answers from one note's

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Minute",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "identifier": "dev.minute.app",
   "build": {
     "frontendDist": "../dist",
@@ -56,6 +56,7 @@
       "infoPlist": "Info.plist",
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-",
+      "hardenedRuntime": true,
       "entitlements": "Entitlements.plist",
       "frameworks": [
         "frameworks/libggml-base.0.dylib",

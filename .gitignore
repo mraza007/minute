@@ -27,6 +27,12 @@ dist-ssr
 src-tauri/target
 /target
 
+# Apple signing material must never enter source control.
+*.cer
+*.certSigningRequest
+*.p12
+*.p8
+
 # Local planning docs stay local; release/QA/product decisions are source.
 docs/*
 !docs/qa/

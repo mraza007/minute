@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Minute is distributed outside the Mac App Store and does not use the App
+    Sandbox. Microphone and Screen Recording access are protected by the
+    purpose strings in Info.plist and by macOS consent prompts.
+
+    Production builds deliberately do not disable library validation. Tauri
+    signs the app executable and bundled llama/ggml dylibs with the same
+    Developer ID identity.
+  -->
+</dict>
+</plist>

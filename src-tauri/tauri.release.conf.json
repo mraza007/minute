@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Muhammad Raza (HL7N7FULXS)",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.release.plist"
+    }
+  }
+}
