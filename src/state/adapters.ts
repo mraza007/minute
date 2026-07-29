@@ -187,9 +187,12 @@ export function pickInitialSttModel(
  * `settings.llmModel` (`preferredId`) if it's actually installed, else the
  * recommended LLM if it's installed, else `null` — unlike
  * `pickInitialSttModel`, there's no "first installed" fallback and no
- * placeholder id, since an LLM selection isn't required for the app to
- * function yet (Stage 3 doesn't wire summarization through this
- * selection).
+ * placeholder id.
+ *
+ * The backend's `catalog::resolve_llm_entry` (src-tauri/src/catalog.rs)
+ * mirrors this rule exactly for summarize/ask — if either side's fallback
+ * changes, the other must change with it, or Settings will display a model
+ * as "in use" that the backend refuses to run (issue #2).
  */
 export function pickInitialLlmModel(
   models: ModelStatus[],

@@ -81,7 +81,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::catalog::{self, InstallState};
+use crate::catalog;
 use crate::error::{MinuteError, Result};
 use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, SharedStore, StoredSegment};
@@ -1501,12 +1501,9 @@ pub async fn ask_note(
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
     let model_id = settings::lock_settings(&settings).llm_model.clone();
-    let installed_entry = model_id.as_deref().and_then(|model_id| {
-        let catalog = catalog::load_catalog().ok()?;
-        catalog
-            .into_iter()
-            .find(|e| e.id == model_id)
-            .filter(|e| catalog::install_state(e, &models_root) == InstallState::Installed)
+    let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
+        let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
+        catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
     });
 
     let Some(entry) = installed_entry else {
@@ -1806,12 +1803,9 @@ pub async fn summarize_note(
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
     let model_id = settings::lock_settings(&settings).llm_model.clone();
-    let installed_entry = model_id.as_deref().and_then(|model_id| {
-        let catalog = catalog::load_catalog().ok()?;
-        catalog
-            .into_iter()
-            .find(|e| e.id == model_id)
-            .filter(|e| catalog::install_state(e, &models_root) == InstallState::Installed)
+    let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
+        let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
+        catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
     });
 
     let Some(entry) = installed_entry else {

@@ -159,6 +159,34 @@ pub fn install_state(entry: &CatalogEntry, models_root: &Path) -> InstallState {
     }
 }
 
+/// Resolves which LLM entry summarization/ask should run: the persisted
+/// `settings.llmModel` (`preferred`) if that entry is installed, else the
+/// recommended LLM if *it* is installed, else `None`.
+///
+/// The recommended-model fallback must mirror the frontend's
+/// `pickInitialLlmModel` (src/state/adapters.ts) exactly: Settings
+/// preselects the recommended model with that same rule when nothing is
+/// persisted, so without the identical fallback here a downloaded-but-
+/// never-clicked recommended model shows as "Installed · in use" while
+/// summarize/ask insist there is no model — issue #2.
+pub fn resolve_llm_entry(
+    catalog: &[CatalogEntry],
+    recommendation: &Recommendation,
+    preferred: Option<&str>,
+    models_root: &Path,
+) -> Option<CatalogEntry> {
+    let installed_llm = |id: &str| {
+        catalog
+            .iter()
+            .find(|e| e.id == id && e.kind == ModelKind::Llm)
+            .filter(|e| install_state(e, models_root) == InstallState::Installed)
+    };
+    if let Some(entry) = preferred.and_then(installed_llm) {
+        return Some(entry.clone());
+    }
+    installed_llm(&recommendation.llm).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +417,87 @@ mod tests {
         let hw = detect_hardware();
         assert!(hw.total_ram_gb > 0);
         assert!(hw.cores > 0);
+    }
+
+    // --- resolve_llm_entry --------------------------------------------------
+
+    fn llm_entry(id: &str) -> CatalogEntry {
+        catalog()
+            .into_iter()
+            .find(|e| e.id == id && e.kind == ModelKind::Llm)
+            .unwrap_or_else(|| panic!("catalog.json must contain LLM entry {id}"))
+    }
+
+    fn fake_install(entry: &CatalogEntry, models_root: &Path) {
+        let path = installed_path(entry, models_root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, vec![0u8; entry.size_bytes as usize]).unwrap();
+    }
+
+    fn recommendation_of(llm: &str) -> Recommendation {
+        Recommendation {
+            stt: "whisper-small".to_string(),
+            llm: llm.to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_llm_entry_prefers_the_persisted_installed_model() {
+        let dir = tempdir().unwrap();
+        let catalog = catalog();
+        fake_install(&llm_entry("qwen3.5-4b"), dir.path());
+        fake_install(&llm_entry("qwen3.5-9b"), dir.path());
+        let resolved = resolve_llm_entry(
+            &catalog,
+            &recommendation_of("qwen3.5-9b"),
+            Some("qwen3.5-4b"),
+            dir.path(),
+        );
+        assert_eq!(resolved.map(|e| e.id), Some("qwen3.5-4b".to_string()));
+    }
+
+    #[test]
+    fn resolve_llm_entry_falls_back_to_installed_recommended_when_nothing_persisted() {
+        let dir = tempdir().unwrap();
+        let catalog = catalog();
+        fake_install(&llm_entry("qwen3.5-9b"), dir.path());
+        let resolved = resolve_llm_entry(&catalog, &recommendation_of("qwen3.5-9b"), None, dir.path());
+        assert_eq!(resolved.map(|e| e.id), Some("qwen3.5-9b".to_string()));
+    }
+
+    #[test]
+    fn resolve_llm_entry_falls_back_when_persisted_model_is_not_installed() {
+        let dir = tempdir().unwrap();
+        let catalog = catalog();
+        fake_install(&llm_entry("qwen3.5-9b"), dir.path());
+        let resolved = resolve_llm_entry(
+            &catalog,
+            &recommendation_of("qwen3.5-9b"),
+            Some("gemma-4-e4b"),
+            dir.path(),
+        );
+        assert_eq!(resolved.map(|e| e.id), Some("qwen3.5-9b".to_string()));
+    }
+
+    #[test]
+    fn resolve_llm_entry_none_when_nothing_installed() {
+        let dir = tempdir().unwrap();
+        let catalog = catalog();
+        let resolved = resolve_llm_entry(&catalog, &recommendation_of("qwen3.5-9b"), None, dir.path());
+        assert_eq!(resolved.map(|e| e.id), None);
+    }
+
+    #[test]
+    fn resolve_llm_entry_never_resolves_an_stt_entry() {
+        let dir = tempdir().unwrap();
+        let catalog = catalog();
+        fake_install(&sample_entry(), dir.path());
+        let resolved = resolve_llm_entry(
+            &catalog,
+            &recommendation_of("whisper-small"),
+            Some("whisper-small"),
+            dir.path(),
+        );
+        assert_eq!(resolved.map(|e| e.id), None);
     }
 }

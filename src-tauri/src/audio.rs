@@ -2079,9 +2079,7 @@ fn auto_trigger_summarize(
         }
     };
 
-    let Some(model_id) = settings::lock_settings(settings).llm_model.clone() else {
-        return;
-    };
+    let model_id = settings::lock_settings(settings).llm_model.clone();
 
     let catalog = match catalog::load_catalog() {
         Ok(catalog) => catalog,
@@ -2090,12 +2088,10 @@ fn auto_trigger_summarize(
             return;
         }
     };
-    let entry = catalog.into_iter().find(|e| e.id == model_id);
-    let installed = entry
-        .as_ref()
-        .map(|e| catalog::install_state(e, &models_root) == InstallState::Installed)
-        .unwrap_or(false);
-    let Some(entry) = entry.filter(|_| installed) else {
+    let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
+    let Some(entry) =
+        catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
+    else {
         return;
     };
 
