@@ -247,11 +247,15 @@ export function useAppState() {
   }, [view])
 
   /**
-   * Selects a note by id rather than list index — what the ⌘K search
-   * palette (and `requestSeek` below) use, since a search hit only carries
-   * a `noteId`, not the note's current position in `notes`. A no-op if `id`
-   * isn't found in the current list. `useCallback` (deps: `notes`) — a
-   * fresh identity only when the note list itself changes.
+   * Selects a note by id rather than list index — what the sidebar rows,
+   * the ⌘K search palette, and `requestSeek` below use, since a search hit
+   * only carries a `noteId`, not the note's current position in `notes`.
+   * A no-op if `id` isn't found in the current list. Also navigates to the
+   * notes view: every caller is a "show me this note" gesture, and without
+   * this a note picked from the sidebar (or a search hit) while Settings is
+   * open would change the selection invisibly behind the Settings pane.
+   * `useCallback` (deps: `notes`) — a fresh identity only when the note
+   * list itself changes.
    */
   const selectNoteById = useCallback(
     (id: string) => {
@@ -259,6 +263,7 @@ export function useAppState() {
         const idx = notes.findIndex(n => n.id === id)
         return idx >= 0 ? idx : prevSel
       })
+      setView('notes')
     },
     [notes],
   )

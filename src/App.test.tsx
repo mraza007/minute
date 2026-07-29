@@ -242,6 +242,32 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
   })
 
+  it('starts a recording from the Settings view and navigates to RecordingView', async () => {
+    setupIPC()
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
+    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
+    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+  })
+
+  it('leaves Settings when a note is selected from the sidebar', async () => {
+    setupIPC()
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Client call — Acme'))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
+    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+  })
+
   it('shows the sidebar and NoteView empty states when the note library is empty', async () => {
     setupIPC({ notes: [] })
     render(<App />)
