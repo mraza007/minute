@@ -1088,7 +1088,19 @@ fn generate_with_loaded(
     prompt: &str,
     params: &GenerationParams,
 ) -> Result<String> {
-    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(LLM_CONTEXT_TOKENS));
+    // `n_batch` must cover the whole prompt: `ctx.decode` below submits every
+    // prompt token in one batch, and llama.cpp enforces
+    // `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` — an abort, not an error.
+    // With the default `n_batch` (2048), any transcript longer than roughly
+    // ten minutes tokenized past the limit and crashed the whole app the
+    // moment summarization started (issue #6). Sizing it to the context
+    // ceiling makes the assert unreachable (llama.cpp clamps n_batch to
+    // n_ctx, and the guard below keeps prompts inside n_ctx); compute still
+    // proceeds in `n_ubatch`-sized micro-batches internally, so this costs
+    // batch bookkeeping memory, not compute spikes.
+    let ctx_params = LlamaContextParams::default()
+        .with_n_ctx(NonZeroU32::new(LLM_CONTEXT_TOKENS))
+        .with_n_batch(LLM_CONTEXT_TOKENS);
     let mut ctx = loaded
         .model
         .new_context(&loaded.backend, ctx_params)
@@ -1113,6 +1125,20 @@ fn generate_with_loaded(
         .map_err(|e| MinuteError::Other(format!("tokenization failed: {e}")))?;
     if prompt_tokens.is_empty() {
         return Err(MinuteError::Other("tokenized prompt was empty".to_string()));
+    }
+    // The char-budget truncation upstream (`truncate_transcript_for_prompt`)
+    // keeps typical prompts well inside the context, but chars-per-token
+    // varies by language — a dense transcript can still tokenize past it.
+    // Refuse cleanly here: past this point an over-long prompt dies inside
+    // llama.cpp (KV-cache slot asserts), taking the app with it.
+    let context_budget = LLM_CONTEXT_TOKENS as usize;
+    if prompt_tokens.len() + params.max_tokens > context_budget {
+        return Err(MinuteError::Other(format!(
+            "the transcript is too long for the summary model's context \
+             ({} prompt tokens + {} response budget > {context_budget})",
+            prompt_tokens.len(),
+            params.max_tokens
+        )));
     }
 
     let mut batch = LlamaBatch::new(prompt_tokens.len().max(512), 1);
@@ -3363,6 +3389,63 @@ mod tests {
     /// and logged if empty, not failed on — since models vary in how
     /// reliably they populate every field even when the source material has
     /// them, and this test shouldn't flake on that variance.
+    /// Issue #6's crash, as a test: a real ~30-minute meeting's prompt
+    /// tokenizes well past llama.cpp's default `n_batch` (2048), and
+    /// `llama_decode` enforces that limit with a hard `GGML_ASSERT` — an
+    /// abort that killed the whole app the moment summarization started.
+    /// With `n_batch` sized to the context (see `generate_with_loaded`),
+    /// the same prompt must complete a normal generation. Run with:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///     real_llm_survives_a_long_meeting_prompt -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_llm_survives_a_long_meeting_prompt() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let model_path = PathBuf::from(&home)
+            .join("Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf");
+        assert!(model_path.exists(), "expected qwen3.5-4b model at {model_path:?}");
+
+        // ~720 turns over ~30 minutes, like the report — long enough that
+        // the truncated transcript still dwarfs the 2048-token default batch.
+        let segments: Vec<StoredSegment> = (0..720)
+            .map(|i| {
+                let start = i as f64 * 2.5;
+                StoredSegment {
+                    speaker: "Speaker 1".to_string(),
+                    start,
+                    end: start + 2.4,
+                    text: format!(
+                        "This is turn number {i} of the meeting, where we keep discussing the \
+                         quarterly roadmap, open engineering questions, and follow-up items."
+                    ),
+                }
+            })
+            .collect();
+        let prompt = build_summary_prompt("Long meeting", &segments);
+        assert!(
+            prompt.len() > 20_000,
+            "fixture must produce a prompt long past the 2048-token default batch \
+             (got {} chars)",
+            prompt.len()
+        );
+
+        let mut state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now(),
+        };
+        state
+            .ensure_loaded("qwen3.5-4b", &model_path)
+            .expect("failed to load qwen3.5-4b");
+
+        // Before the n_batch fix this call never returned — the process
+        // aborted inside llama_decode.
+        let raw = state.generate(&prompt).expect("generation failed");
+        assert!(!raw.trim().is_empty(), "expected non-empty model output");
+    }
+
     #[test]
     #[ignore]
     fn real_llm_summarizes_transcript() {
