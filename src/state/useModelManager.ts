@@ -14,6 +14,9 @@ const DEFAULT_SETTINGS: Settings = {
   meetingDetection: false,
   captureSystemAudio: false,
   libraryRoot: null,
+  llmContextTokens: null,
+  summaryStyle: 'standard',
+  summaryInstructions: '',
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

@@ -453,6 +453,9 @@ describe('ipc/commands', () => {
       meetingDetection: false,
       captureSystemAudio: false,
       libraryRoot: null,
+      llmContextTokens: null,
+      summaryStyle: 'standard',
+      summaryInstructions: '',
     }
     const calls = captureIPC(() => settings)
 
@@ -471,6 +474,9 @@ describe('ipc/commands', () => {
       meetingDetection: false,
       captureSystemAudio: false,
       libraryRoot: null,
+      llmContextTokens: null,
+      summaryStyle: 'standard',
+      summaryInstructions: '',
     }
     const calls = captureIPC(() => updated)
 
