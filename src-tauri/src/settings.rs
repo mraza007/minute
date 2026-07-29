@@ -15,6 +15,20 @@ use crate::error::{MinuteError, Result};
 const SETTINGS_FILE: &str = "settings.json";
 const SETTINGS_TMP_FILE: &str = "settings.json.tmp";
 
+/// How long/detailed generated summaries should be — adjusts the summary
+/// prompt's instructions and the generation token cap (see
+/// `llm::generation_params_for`/`llm::build_summary_prompt`). Serialized
+/// lowercase (`"short"`/`"standard"`/`"detailed"`) in `settings.json` and
+/// over the IPC wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SummaryStyle {
+    Short,
+    #[default]
+    Standard,
+    Detailed,
+}
+
 /// Persisted settings, stored as `<app-data-root>/settings.json`.
 ///
 /// `sttModel`/`llmModel` are `None` until the user (or onboarding) actually
@@ -64,6 +78,24 @@ pub struct Settings {
     /// older `settings.json` files load unchanged.
     #[serde(default)]
     pub library_root: Option<String>,
+    /// Preferred summarizer context window in tokens; `None` = automatic
+    /// (RAM-tiered, capped at the model's trained context — see
+    /// `llm::context_tokens_for`). Set from Settings → Summary behavior.
+    /// `#[serde(default)]` so older `settings.json` files load as automatic.
+    #[serde(default)]
+    pub llm_context_tokens: Option<u32>,
+    /// How long/detailed generated summaries should be. `#[serde(default)]`
+    /// so older `settings.json` files load as [`SummaryStyle::Standard`] —
+    /// exactly the behavior they had before the setting existed.
+    #[serde(default)]
+    pub summary_style: SummaryStyle,
+    /// Free-text user instructions appended to the summary prompt's rules
+    /// (language, tone, focus areas — see `llm::build_summary_prompt`).
+    /// Empty means none; the prompt's JSON-schema scaffolding and
+    /// transcript delimiters are never editable, only augmented by this.
+    /// `#[serde(default)]` so older `settings.json` files load as empty.
+    #[serde(default)]
+    pub summary_instructions: String,
 }
 
 impl Default for Settings {
@@ -77,6 +109,9 @@ impl Default for Settings {
             meeting_detection: false,
             capture_system_audio: false,
             library_root: None,
+            llm_context_tokens: None,
+            summary_style: SummaryStyle::default(),
+            summary_instructions: String::new(),
         }
     }
 }
@@ -97,6 +132,16 @@ pub struct SettingsPatch {
     pub delete_audio_after_30d: Option<bool>,
     pub meeting_detection: Option<bool>,
     pub capture_system_audio: Option<bool>,
+    /// `Some(0)` means "back to automatic" (`Settings::llm_context_tokens =
+    /// None`) — the one field here that *does* need an explicit clear,
+    /// expressed as a sentinel rather than a double-`Option` (which serde
+    /// can't distinguish from an omitted field without custom
+    /// deserialization). Any other `Some(n)` sets the override to `n`.
+    pub llm_context_tokens: Option<u32>,
+    pub summary_style: Option<SummaryStyle>,
+    /// `Some("")` clears the instructions — unlike the model ids above, an
+    /// empty value is meaningful here, so no sentinel is needed.
+    pub summary_instructions: Option<String>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -117,6 +162,15 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.capture_system_audio {
         settings.capture_system_audio = v;
+    }
+    if let Some(v) = patch.llm_context_tokens {
+        settings.llm_context_tokens = if v == 0 { None } else { Some(v) };
+    }
+    if let Some(v) = patch.summary_style {
+        settings.summary_style = v;
+    }
+    if let Some(v) = patch.summary_instructions {
+        settings.summary_instructions = v;
     }
 }
 
@@ -248,6 +302,9 @@ mod tests {
             meeting_detection: true,
             capture_system_audio: true,
             library_root: None,
+            llm_context_tokens: None,
+            summary_style: SummaryStyle::Standard,
+            summary_instructions: String::new(),
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -287,6 +344,9 @@ mod tests {
                 meeting_detection: false,
                 capture_system_audio: false,
                 library_root: None,
+                llm_context_tokens: None,
+                summary_style: SummaryStyle::Standard,
+                summary_instructions: String::new(),
             }
         );
     }
@@ -321,6 +381,9 @@ mod tests {
                 meeting_detection: false,
                 capture_system_audio: false,
                 library_root: None,
+                llm_context_tokens: None,
+                summary_style: SummaryStyle::Standard,
+                summary_instructions: String::new(),
             }
         );
     }
@@ -356,6 +419,9 @@ mod tests {
                 meeting_detection: true,
                 capture_system_audio: false,
                 library_root: None,
+                llm_context_tokens: None,
+                summary_style: SummaryStyle::Standard,
+                summary_instructions: String::new(),
             }
         );
     }
@@ -387,6 +453,9 @@ mod tests {
             meeting_detection: true,
             capture_system_audio: true,
             library_root: None,
+            llm_context_tokens: None,
+            summary_style: SummaryStyle::Standard,
+            summary_instructions: String::new(),
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -428,6 +497,9 @@ mod tests {
             delete_audio_after_30d: Some(false),
             meeting_detection: Some(true),
             capture_system_audio: Some(true),
+            llm_context_tokens: Some(16_384),
+            summary_style: Some(SummaryStyle::Detailed),
+            summary_instructions: Some("Write in German.".to_string()),
         };
 
         apply_patch(&mut settings, patch);
@@ -437,6 +509,43 @@ mod tests {
         assert!(!settings.delete_audio_after_30d);
         assert!(settings.meeting_detection);
         assert!(settings.capture_system_audio);
+        assert_eq!(settings.llm_context_tokens, Some(16_384));
+        assert_eq!(settings.summary_style, SummaryStyle::Detailed);
+    }
+
+    #[test]
+    fn summary_behavior_fields_roundtrip_through_disk() {
+        let dir = tempdir().unwrap();
+        let settings = Settings {
+            llm_context_tokens: Some(32_768),
+            summary_style: SummaryStyle::Short,
+            ..Settings::default()
+        };
+
+        save_settings(dir.path(), &settings).unwrap();
+        let loaded = load_settings(dir.path());
+
+        assert_eq!(loaded, settings);
+        // Wire shape: camelCase key, lowercase style value.
+        let raw = fs::read_to_string(settings_path(dir.path())).unwrap();
+        assert!(raw.contains("\"llmContextTokens\": 32768"));
+        assert!(raw.contains("\"summaryStyle\": \"short\""));
+    }
+
+    #[test]
+    fn apply_patch_zero_context_tokens_means_back_to_automatic() {
+        let mut settings = Settings {
+            llm_context_tokens: Some(32_768),
+            ..Settings::default()
+        };
+        let patch = SettingsPatch {
+            llm_context_tokens: Some(0),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.llm_context_tokens, None);
     }
 
     #[test]
@@ -448,13 +557,13 @@ mod tests {
             meeting_detection: false,
             capture_system_audio: false,
             library_root: None,
+            llm_context_tokens: None,
+            summary_style: SummaryStyle::Standard,
+            summary_instructions: String::new(),
         };
         let patch = SettingsPatch {
-            stt_model: None,
-            llm_model: None,
             delete_audio_after_30d: Some(false),
-            meeting_detection: None,
-            capture_system_audio: None,
+            ..SettingsPatch::default()
         };
 
         apply_patch(&mut settings, patch);
@@ -475,6 +584,9 @@ mod tests {
             meeting_detection: true,
             capture_system_audio: true,
             library_root: None,
+            llm_context_tokens: None,
+            summary_style: SummaryStyle::Standard,
+            summary_instructions: String::new(),
         };
         let mut settings = original.clone();
 
