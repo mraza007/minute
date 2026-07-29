@@ -146,7 +146,7 @@ Status: **Production signing and notarization pass**
 - Produced and checksum-verified `Minute-1.0.0-arm64.zip` and
   `Minute-1.0.0-x86_64.zip` release artifacts.
 
-Production completion still requires a clean-Mac Gatekeeper and
-microphone-permission test, the GitHub release secrets, the updater key and
-endpoint, and update/rollback tests. Physical Intel launch validation also
-remains pending.
+Remaining automation and validation work includes a clean-Mac Gatekeeper and
+microphone-permission test, GitHub release secrets before using the CI workflow,
+an updater key and endpoint, and update/rollback tests. Physical Intel launch
+validation also remains pending.

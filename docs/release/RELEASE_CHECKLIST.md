@@ -43,4 +43,4 @@
 - [x] Public release: Apple Developer Program membership, Developer ID,
       notarization, stapling, local Gatekeeper assessment, architecture-specific
       ZIP artifacts, and SHA-256 checksums are available.
-- [ ] Retire the ad-hoc private beta releases after Minute 1.0 is public.
+- [x] Retire the ad-hoc private beta releases after Minute 1.0 is public.

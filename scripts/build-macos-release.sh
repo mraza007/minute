@@ -66,6 +66,11 @@ spctl --assess --type execute --verbose=4 "$app_path"
 version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
 artifact="src-tauri/target/$target/release/bundle/macos/Minute-$version-$expected_arch.zip"
 ditto -c -k --keepParent "$app_path" "$artifact"
-shasum -a 256 "$artifact" > "$artifact.sha256"
+artifact_dir="$(dirname "$artifact")"
+artifact_name="$(basename "$artifact")"
+(
+  cd "$artifact_dir"
+  shasum -a 256 "$artifact_name" > "$artifact_name.sha256"
+)
 
 echo "release build: signed, notarized, stapled, and Gatekeeper accepted — $artifact"
