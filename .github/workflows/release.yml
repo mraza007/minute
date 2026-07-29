@@ -85,7 +85,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: Minute __VERSION__
-          releaseBody: Signed and notarized Minute release candidate. Complete docs/release/RELEASE_CHECKLIST.md before publishing.
+          releaseBody: Minute release candidate.
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json

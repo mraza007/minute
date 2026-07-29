@@ -34,7 +34,7 @@ fi
 
 if ! xcrun notarytool history --keychain-profile "$notary_profile" --output-format json >/dev/null; then
   echo "release build: notarization profile '$notary_profile' is missing or invalid." >&2
-  echo "  Create it with the command documented in docs/release/SIGNING_NOTARIZATION.md." >&2
+  echo "  Create it with: xcrun notarytool store-credentials '$notary_profile'" >&2
   exit 1
 fi
 

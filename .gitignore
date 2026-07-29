@@ -33,14 +33,8 @@ src-tauri/target
 *.p12
 *.p8
 
-# Local planning docs stay local; release/QA/product decisions are source.
-docs/*
-!docs/qa/
-!docs/qa/**
-!docs/product/
-!docs/product/**
-!docs/release/
-!docs/release/**
+# Documentation stays local.
+docs/
 .impeccable.md
 
 # Generated visual-regression output; only baselines are source.

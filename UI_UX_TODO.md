@@ -95,11 +95,10 @@ conditions, not only the happy path.
 - [x] Verify recovery copy and actions against every automated backend failure
       class.
 
-The real-device matrix and evidence template live in
-`docs/qa/RELIABILITY_MATRIX.md`. Native microphone denial now passes, and
-low-disk failure has deterministic persistence/recovery coverage. Removable
-microphone, physical sleep/wake, constrained-volume, and overnight rows remain
-pending until the required hardware or unattended test window is available.
+Native microphone denial now passes, and low-disk failure has deterministic
+persistence/recovery coverage. Removable microphone, physical sleep/wake,
+constrained-volume, and overnight tests remain pending until the required
+hardware or unattended test window is available.
 
 ## Milestone 7 — Accessibility and alternate input
 
