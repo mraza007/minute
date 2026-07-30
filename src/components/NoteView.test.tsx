@@ -46,6 +46,10 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     sttStatusNoteId: null,
     summaryStatus: 'idle',
     summaryError: undefined,
+    diarStatus: 'idle',
+    diarError: undefined,
+    canDetectSpeakers: false,
+    onDetectSpeakers: vi.fn(),
     llmInstalled: false,
     llmModelName: '',
     askHistory: [],
@@ -220,6 +224,60 @@ describe('NoteView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onRenameSpeaker).toHaveBeenCalledWith(meta.id, 'Speaker 2', 'Sam')
     await waitFor(() => expect(speakerFilter).toHaveFocus())
+  })
+
+  it('hides "Detect speakers" until both diarization models are installed', () => {
+    const meta = noteFixture()
+    const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' }]
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments })} />)
+    expect(screen.queryByRole('button', { name: 'Detect speakers' })).not.toBeInTheDocument()
+  })
+
+  it('detects speakers automatically or with a forced count via the toolbar form', () => {
+    const onDetectSpeakers = vi.fn()
+    const meta = noteFixture()
+    const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' }]
+    render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, canDetectSpeakers: true, onDetectSpeakers })}
+      />,
+    )
+
+    // Auto run.
+    fireEvent.click(screen.getByRole('button', { name: 'Detect speakers' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detect' }))
+    expect(onDetectSpeakers).toHaveBeenCalledWith(meta.id, null)
+
+    // Re-run with an exact count.
+    fireEvent.click(screen.getByRole('button', { name: 'Detect speakers' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Number of speakers' }), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Detect' }))
+    expect(onDetectSpeakers).toHaveBeenCalledWith(meta.id, 2)
+  })
+
+  it('shows a running state and surfaces speaker-detection errors', () => {
+    const meta = noteFixture()
+    const segments: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' }]
+    const { rerender } = render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, canDetectSpeakers: true, diarStatus: 'running' })}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Detecting speakers…' })).toBeDisabled()
+
+    rerender(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          selectedTranscript: segments,
+          canDetectSpeakers: true,
+          diarStatus: 'error',
+          diarError: 'no speech was detected in this note’s audio',
+        })}
+      />,
+    )
+    expect(screen.getByText(/Speaker detection failed/)).toBeInTheDocument()
   })
 
   it('returns focus to the speaker rename trigger when editing is cancelled with Escape', async () => {

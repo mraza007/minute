@@ -55,6 +55,28 @@
     "requiresAppleSilicon": false
   },
   {
+    "id": "diar-segmentation",
+    "kind": "diarization",
+    "displayName": "Speaker segmentation",
+    "desc": "6 MB · pyannote segmentation-3.0 · finds speech turns",
+    "url": "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
+    "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+    "sizeBytes": 5992913,
+    "minRamGb": 0,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "diar-embedding",
+    "kind": "diarization",
+    "displayName": "Voice embeddings",
+    "desc": "28 MB · 3D-Speaker CAM++ multilingual · tells voices apart",
+    "url": "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/main/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+    "sha256": "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+    "sizeBytes": 28281164,
+    "minRamGb": 0,
+    "requiresAppleSilicon": false
+  },
+  {
     "id": "qwen3.5-9b",
     "kind": "llm",
     "displayName": "Qwen3.5-9B",

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
-import { onAskAnswer, onAskStatus, onSummaryStatus } from '../ipc/events'
+import { onAskAnswer, onAskStatus, onDiarStatus, onSummaryStatus } from '../ipc/events'
 import type { NoteMeta, NoteWithTranscript, StoredSegment, SummaryDoc } from '../ipc/types'
 import { useTauriEvent } from './useTauriEvent'
 
@@ -269,6 +269,59 @@ export function useNoteDetail(params: {
     [],
   )
 
+  // --- speaker detection lifecycle -----------------------------------------
+  //
+  // Per-note diarization status/error, driven by `diar-status` events —
+  // same unconditional-listener, keyed-by-note-id shape as the
+  // summarization block above (the auto pass after a recording finalizes
+  // fires whether or not NoteView is looking). On `done` the transcript's
+  // speaker labels (and meta's speaker count) just changed on disk, so the
+  // cache/refetch/refresh treatment mirrors `summary-status` 'done' exactly.
+  const [diarStatus, setDiarStatus] = useState<Record<string, SummaryEventState>>({})
+  const [diarError, setDiarError] = useState<Record<string, string>>({})
+
+  useTauriEvent(
+    onDiarStatus,
+    payload => {
+      setDiarStatus(prev => ({ ...prev, [payload.noteId]: payload.state }))
+
+      if (payload.state === 'error') {
+        setDiarError(prev => ({ ...prev, [payload.noteId]: payload.error ?? 'Speaker detection failed' }))
+        return
+      }
+      setDiarError(prev => {
+        if (!(payload.noteId in prev)) return prev
+        const next = { ...prev }
+        delete next[payload.noteId]
+        return next
+      })
+
+      if (payload.state === 'done') {
+        invalidateNoteCache(payload.noteId)
+        if (payload.noteId === selectedNoteId) {
+          loadNoteTranscript(payload.noteId, { force: true })
+        }
+        refreshNotes()
+      }
+    },
+    [],
+  )
+
+  /**
+   * "Detect speakers" button (and its re-run-with-count form): queues the
+   * diarization pass for `id`; `numSpeakers` forces an exact count, `null`
+   * is automatic. Same queued-not-finished contract as `regenerateSummary`
+   * — `diar-status` events drive the state above — and the same synchronous
+   * `.catch` for the reject-without-event cases (models not downloaded, a
+   * pass already running).
+   */
+  const detectSpeakers = useCallback((id: string, numSpeakers: number | null = null) => {
+    ipc.diarizeNote(id, numSpeakers).catch(err => {
+      setDiarStatus(prev => ({ ...prev, [id]: 'error' }))
+      setDiarError(prev => ({ ...prev, [id]: messageOf(err) }))
+    })
+  }, [])
+
   /**
    * Regenerate button / auto-trigger retry: (re)triggers summarization for
    * `id` via `summarize_note`. Resolves once the backend has *queued* the
@@ -511,6 +564,18 @@ export function useNoteDetail(params: {
       delete next[id]
       return next
     })
+    setDiarStatus(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setDiarError(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
     setAskStatusMap(prev => {
       if (!(id in prev)) return prev
       const next = { ...prev }
@@ -538,6 +603,9 @@ export function useNoteDetail(params: {
     summaryStatus,
     summaryError,
     regenerateSummary,
+    diarStatus,
+    diarError,
+    detectSpeakers,
     toggleActionItem,
     askHistory,
     askStatus,

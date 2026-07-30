@@ -1,6 +1,7 @@
 mod audio;
 mod catalog;
 mod detect;
+mod diar;
 mod download;
 mod error;
 mod llm;
@@ -275,7 +276,10 @@ mod tests {
     #[test]
     fn abbreviate_home_replaces_the_home_prefix_with_a_tilde() {
         assert_eq!(
-            abbreviate_home("/Users/sam/Library/App Support/dev.minute.app", Some("/Users/sam")),
+            abbreviate_home(
+                "/Users/sam/Library/App Support/dev.minute.app",
+                Some("/Users/sam")
+            ),
             "~/Library/App Support/dev.minute.app"
         );
         assert_eq!(abbreviate_home("/Users/sam", Some("/Users/sam")), "~");
@@ -283,13 +287,19 @@ mod tests {
 
     #[test]
     fn abbreviate_home_leaves_foreign_and_lookalike_paths_alone() {
-        assert_eq!(abbreviate_home("/Volumes/T7/Minute", Some("/Users/sam")), "/Volumes/T7/Minute");
+        assert_eq!(
+            abbreviate_home("/Volumes/T7/Minute", Some("/Users/sam")),
+            "/Volumes/T7/Minute"
+        );
         // A sibling like /Users/samantha must not be truncated to ~antha.
         assert_eq!(
             abbreviate_home("/Users/samantha/Minute", Some("/Users/sam")),
             "/Users/samantha/Minute"
         );
-        assert_eq!(abbreviate_home("/Users/sam/Minute", None), "/Users/sam/Minute");
+        assert_eq!(
+            abbreviate_home("/Users/sam/Minute", None),
+            "/Users/sam/Minute"
+        );
     }
 
     #[test]
@@ -578,7 +588,16 @@ fn finalize_active_recording_on_exit(app: &AppHandle) {
     let settings = app.state::<SharedSettings>();
     let engine = app.state::<SharedLlmEngine>();
     let llm_busy = app.state::<LlmBusy>();
-    match audio::stop_recording(app.clone(), store, recorder, settings, engine, llm_busy) {
+    let diar_busy = app.state::<diar::DiarBusy>();
+    match audio::stop_recording(
+        app.clone(),
+        store,
+        recorder,
+        settings,
+        engine,
+        llm_busy,
+        diar_busy,
+    ) {
         Ok(meta) => log::info!("finalized in-progress recording {} on app close", meta.id),
         Err(e) if e == "no active recording" => {}
         Err(e) => log::warn!("failed to finalize in-progress recording on app close: {e}"),
@@ -628,6 +647,7 @@ pub fn run() {
             toggle_action_item,
             llm::summarize_note,
             llm::ask_note,
+            diar::diarize_note,
             delete_note,
             restore_note,
             delete_notes,
@@ -709,13 +729,11 @@ pub fn run() {
             // to the default app-data root rather than failing startup — the
             // library isn't lost, it's just wherever the folder went, and the
             // user can re-point Settings once it's back.
-            let library_root = settings::lock_settings(
-                app.state::<SharedSettings>().inner(),
-            )
-            .library_root
-            .clone()
-            .map(PathBuf::from)
-            .filter(|root| root.is_dir());
+            let library_root = settings::lock_settings(app.state::<SharedSettings>().inner())
+                .library_root
+                .clone()
+                .map(PathBuf::from)
+                .filter(|root| root.is_dir());
             let store_root = library_root.unwrap_or_else(|| app_data_dir.clone());
             if store_root != app_data_dir {
                 // The static `$APPDATA/notes/**` asset scope from
@@ -767,6 +785,14 @@ pub fn run() {
             // long-running generation.
             let llm_busy: LlmBusy = llm::open_busy_flag();
             app.manage(llm_busy.clone());
+
+            // One-diarization-at-a-time gate — same single-atomic shape as
+            // `llm_busy` just above, but its own flag: a diarization pass and
+            // an LLM generation are fine to run concurrently (different
+            // hardware profiles: onnxruntime CPU threads vs Metal), it's two
+            // *diarization* passes that would thrash. See `diar::DiarBusy`.
+            let diar_busy: diar::DiarBusy = diar::open_busy_flag();
+            app.manage(diar_busy);
 
             // Idle-unload janitor (Stage 4 Task 7): a detached thread that drops
             // the loaded LLM after `llm::IDLE_UNLOAD_AFTER` of inactivity, freeing

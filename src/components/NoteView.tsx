@@ -61,6 +61,13 @@ export interface NoteViewProps {
   /** This note's summarization lifecycle, from `summaryStatus[meta.id]` — `'idle'` if no `summary-status` event has been seen for it this session. */
   summaryStatus: SummaryStatus
   summaryError?: string
+  /** This note's speaker-detection lifecycle — same collapsed shape as `summaryStatus` ('done' reads as 'idle'). */
+  diarStatus: SummaryStatus
+  diarError?: string
+  /** Whether both diarization models are installed — gates the "Detect speakers" affordance in the transcript toolbar. */
+  canDetectSpeakers: boolean
+  /** Queues the diarization pass; `numSpeakers` forces an exact count, `null` = automatic. */
+  onDetectSpeakers: (id: string, numSpeakers?: number | null) => void
   llmInstalled: boolean
   llmModelName: string
   /** This note's ask-your-notes session history (newest first) — from `useNoteDetail`'s `askHistory`, already scoped to whichever note is selected. */
@@ -750,6 +757,10 @@ export function NoteView({
   onRenameSpeaker,
   onMergeSpeakers,
   onUndoSpeakerMerge,
+  diarStatus,
+  diarError,
+  canDetectSpeakers,
+  onDetectSpeakers,
   onDeleteAudio,
   onStartRecording,
   processingFailure,
@@ -770,6 +781,10 @@ export function NoteView({
   const [speakerMergePending, setSpeakerMergePending] = useState(false)
   const [speakerMergeUndo, setSpeakerMergeUndo] = useState<SpeakerMergeUndo | null>(null)
   const [speakerUndoPending, setSpeakerUndoPending] = useState(false)
+  // "Detect speakers" re-run form: open/closed + its count draft ('auto' or
+  // a stringified 2..8) — session-local UI state, same as the merge form's.
+  const [speakerDetectOpen, setSpeakerDetectOpen] = useState(false)
+  const [speakerDetectCount, setSpeakerDetectCount] = useState('auto')
   const [markerAddSeconds, setMarkerAddSeconds] = useState<number | null>(null)
   const [markerAddDraft, setMarkerAddDraft] = useState('')
   const [markerAddPending, setMarkerAddPending] = useState(false)
@@ -1237,6 +1252,20 @@ export function NoteView({
                       )}
                     </>
                   )}
+                  {canDetectSpeakers && !speakerDetectOpen && (
+                    <button
+                      type="button"
+                      className="btn-quiet"
+                      disabled={diarStatus === 'running'}
+                      onClick={() => {
+                        setSpeakerDetectOpen(true)
+                        setSpeakerEditing(false)
+                        setSpeakerMergeOpen(false)
+                      }}
+                    >
+                      {diarStatus === 'running' ? 'Detecting speakers…' : 'Detect speakers'}
+                    </button>
+                  )}
                   {speakerEditing && (
                     <form
                       className="speaker-rename"
@@ -1321,6 +1350,43 @@ export function NoteView({
                       Cancel
                     </button>
                   </form>
+                )}
+                {speakerDetectOpen && (
+                  <form
+                    className="speaker-merge-form"
+                    onKeyDown={event => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        setSpeakerDetectOpen(false)
+                      }
+                    }}
+                    onSubmit={event => {
+                      event.preventDefault()
+                      const count = speakerDetectCount === 'auto' ? null : Number(speakerDetectCount)
+                      onDetectSpeakers(meta.id, count)
+                      setSpeakerDetectOpen(false)
+                    }}
+                  >
+                    <span>Number of speakers</span>
+                    <select
+                      autoFocus
+                      aria-label="Number of speakers"
+                      value={speakerDetectCount}
+                      onChange={event => setSpeakerDetectCount(event.target.value)}
+                    >
+                      <option value="auto">Auto</option>
+                      {[2, 3, 4, 5, 6, 7, 8].map(n => (
+                        <option key={n} value={String(n)}>{n}</option>
+                      ))}
+                    </select>
+                    <button type="submit">Detect</button>
+                    <button type="button" onClick={() => setSpeakerDetectOpen(false)}>Cancel</button>
+                  </form>
+                )}
+                {diarStatus === 'error' && diarError && (
+                  <div className="speaker-merge-notice" role="status">
+                    <span>Speaker detection failed: {diarError}</span>
+                  </div>
                 )}
                 {speakerMergeUndo && (
                   <div className="speaker-merge-notice">

@@ -9,12 +9,16 @@ use crate::error::{MinuteError, Result};
 
 const CATALOG_JSON: &str = include_str!("../catalog.json");
 
-/// Whether a catalog entry is a speech-to-text model or a summarization LLM.
+/// Whether a catalog entry is a speech-to-text model, a summarization LLM,
+/// or one of the two speaker-diarization models (issue #6's speaker half —
+/// see `diar.rs`). Diarization entries are downloaded as a pair when the
+/// user enables "Detect speakers", never offered in the STT/LLM pickers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelKind {
     Stt,
     Llm,
+    Diarization,
 }
 
 /// One downloadable model, as described in `catalog.json`.
@@ -144,6 +148,7 @@ pub fn installed_path(entry: &CatalogEntry, models_root: &Path) -> PathBuf {
     let dir = match entry.kind {
         ModelKind::Stt => "whisper",
         ModelKind::Llm => "llm",
+        ModelKind::Diarization => "diar",
     };
     let file_name = entry.url.rsplit('/').next().unwrap_or(entry.id.as_str());
     models_root.join("models").join(dir).join(file_name)
@@ -194,18 +199,23 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn catalog_parses_with_six_entries() {
+    fn catalog_parses_with_eight_entries() {
         let catalog = load_catalog().expect("catalog.json should parse");
-        assert_eq!(catalog.len(), 6);
+        assert_eq!(catalog.len(), 8);
     }
 
     #[test]
-    fn catalog_has_three_stt_and_three_llm_entries() {
+    fn catalog_has_three_stt_three_llm_and_two_diarization_entries() {
         let catalog = load_catalog().unwrap();
         let stt = catalog.iter().filter(|e| e.kind == ModelKind::Stt).count();
         let llm = catalog.iter().filter(|e| e.kind == ModelKind::Llm).count();
+        let diar = catalog
+            .iter()
+            .filter(|e| e.kind == ModelKind::Diarization)
+            .count();
         assert_eq!(stt, 3);
         assert_eq!(llm, 3);
+        assert_eq!(diar, 2);
     }
 
     #[test]
@@ -240,12 +250,20 @@ mod tests {
     }
 
     #[test]
-    fn catalog_sizes_are_over_100mb() {
+    fn catalog_sizes_are_plausible_for_their_kind() {
+        // STT/LLM weights are all in the hundreds-of-MB-to-GB range; the two
+        // diarization models are deliberately tiny (6/28 MB) — a size that
+        // small on an STT/LLM entry (or an implausibly large diarization
+        // one) would mean a mispinned url/sizeBytes pair.
         let catalog = load_catalog().unwrap();
         for entry in &catalog {
+            let (min, max) = match entry.kind {
+                ModelKind::Diarization => (1024 * 1024, 100 * 1024 * 1024),
+                _ => (100 * 1024 * 1024, u64::MAX),
+            };
             assert!(
-                entry.size_bytes > 100 * 1024 * 1024,
-                "entry {} size too small: {}",
+                entry.size_bytes > min && entry.size_bytes < max,
+                "entry {} size implausible for its kind: {}",
                 entry.id,
                 entry.size_bytes
             );
@@ -461,7 +479,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let catalog = catalog();
         fake_install(&llm_entry("qwen3.5-9b"), dir.path());
-        let resolved = resolve_llm_entry(&catalog, &recommendation_of("qwen3.5-9b"), None, dir.path());
+        let resolved =
+            resolve_llm_entry(&catalog, &recommendation_of("qwen3.5-9b"), None, dir.path());
         assert_eq!(resolved.map(|e| e.id), Some("qwen3.5-9b".to_string()));
     }
 
@@ -483,7 +502,8 @@ mod tests {
     fn resolve_llm_entry_none_when_nothing_installed() {
         let dir = tempdir().unwrap();
         let catalog = catalog();
-        let resolved = resolve_llm_entry(&catalog, &recommendation_of("qwen3.5-9b"), None, dir.path());
+        let resolved =
+            resolve_llm_entry(&catalog, &recommendation_of("qwen3.5-9b"), None, dir.path());
         assert_eq!(resolved.map(|e| e.id), None);
     }
 

@@ -25,6 +25,7 @@ use objc2::runtime::Bool;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 
 use crate::catalog::{self, InstallState};
+use crate::diar;
 use crate::error::{MinuteError, Result};
 use crate::llm::{self, LlmBusy, SharedLlmEngine};
 use crate::settings::{self, SharedSettings};
@@ -1895,6 +1896,7 @@ pub fn stop_recording(
     settings: State<SharedSettings>,
     engine: State<SharedLlmEngine>,
     llm_busy: State<LlmBusy>,
+    diar_busy: State<diar::DiarBusy>,
 ) -> std::result::Result<NoteMeta, String> {
     let active = lock_recorder_state(&recorder)
         .active
@@ -2008,9 +2010,89 @@ pub fn stop_recording(
         final_input,
     );
 
-    auto_trigger_summarize(&app, &store, &settings, &engine, &llm_busy, &note_id);
+    // Diarization runs *before* the auto-summary when it's enabled and its
+    // models are downloaded, so the summary prompt sees real "Speaker 1..N"
+    // labels instead of the live-transcription placeholder — the diar
+    // worker's `on_done` hook triggers the summary either way (success or
+    // diarization error). When it isn't spawned (setting off, models
+    // missing, a pass already running for another note), summarize
+    // directly, exactly as before the feature existed.
+    let diarizing = maybe_spawn_auto_diarize(
+        &app,
+        store.inner(),
+        settings.inner(),
+        engine.inner(),
+        llm_busy.inner(),
+        diar_busy.inner(),
+        &note_id,
+    );
+    if !diarizing {
+        auto_trigger_summarize(
+            &app,
+            store.inner(),
+            settings.inner(),
+            engine.inner(),
+            llm_busy.inner(),
+            &note_id,
+        );
+    }
 
     Ok(meta)
+}
+
+/// Spawns the post-recording diarization pass when the "Detect speakers"
+/// setting is on and both catalog models are installed. Returns whether a
+/// worker was actually spawned (in which case it owns triggering the
+/// summary via `on_done`). Never an error path — every "no" here (setting
+/// off, models missing, resolve failure, another pass busy) just means
+/// `stop_recording` falls back to summarizing immediately, and only the
+/// busy case even warrants a log line.
+fn maybe_spawn_auto_diarize(
+    app: &AppHandle,
+    store: &SharedStore,
+    settings: &SharedSettings,
+    engine: &SharedLlmEngine,
+    llm_busy: &llm::LlmBusy,
+    diar_busy: &diar::DiarBusy,
+    note_id: &str,
+) -> bool {
+    if !settings::lock_settings(settings).detect_speakers {
+        return false;
+    }
+    let Ok(models_root) = app.path().app_data_dir() else {
+        return false;
+    };
+    let Some((segmentation_model, embedding_model)) = diar::resolve_models(&models_root) else {
+        return false;
+    };
+
+    let on_done: Box<dyn FnOnce() + Send + 'static> = {
+        let app = app.clone();
+        let store = store.clone();
+        let settings = settings.clone();
+        let engine = engine.clone();
+        let llm_busy = llm_busy.clone();
+        let note_id = note_id.to_string();
+        Box::new(move || {
+            auto_trigger_summarize(&app, &store, &settings, &engine, &llm_busy, &note_id);
+        })
+    };
+
+    let spawned = diar::try_spawn_diarize(diar::DiarWorkerCtx {
+        note_id: note_id.to_string(),
+        store: store.clone(),
+        busy: diar_busy.clone(),
+        segmentation_model,
+        embedding_model,
+        fixed_speakers: None,
+        emit: Box::new(diar::tauri_emit(app.clone())),
+        on_done: Some(on_done),
+    });
+    if let Err(reason) = spawned {
+        log::info!("auto-diarize: skipped for note {note_id}: {reason}");
+        return false;
+    }
+    true
 }
 
 /// Best-effort auto-trigger for summarization right after a recording
@@ -2065,10 +2147,10 @@ pub fn stop_recording(
 /// nothing is waiting on.
 fn auto_trigger_summarize(
     app: &AppHandle,
-    store: &State<SharedStore>,
-    settings: &State<SharedSettings>,
-    engine: &State<SharedLlmEngine>,
-    busy: &State<LlmBusy>,
+    store: &SharedStore,
+    settings: &SharedSettings,
+    engine: &SharedLlmEngine,
+    busy: &LlmBusy,
     note_id: &str,
 ) {
     let models_root = match app.path().app_data_dir() {
@@ -2104,9 +2186,9 @@ fn auto_trigger_summarize(
     };
 
     let model_path = catalog::installed_path(&entry, &models_root);
-    let store = store.inner().clone();
-    let engine = engine.inner().clone();
-    let busy = busy.inner().clone();
+    let store = store.clone();
+    let engine = engine.clone();
+    let busy = busy.clone();
     let model_id = entry.id;
     let note_id = note_id.to_string();
     let app = app.clone();

@@ -35,6 +35,22 @@ function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   }
 }
 
+function diarModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
+  return {
+    id: 'diar-segmentation',
+    kind: 'diarization',
+    displayName: 'Speaker segmentation',
+    desc: 'pyannote segmentation-3.0 · finds speech turns',
+    url: 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx',
+    sha256: 'c'.repeat(64),
+    sizeBytes: 5_992_913,
+    minRamGb: 0,
+    requiresAppleSilicon: false,
+    state: 'notInstalled',
+    ...overrides,
+  }
+}
+
 const models: ModelStatus[] = [
   sttModel({ id: 'whisper-small', state: 'installed' }),
   sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'notInstalled', sizeBytes: 1_500_000_000, minRamGb: 16 }),
@@ -74,6 +90,8 @@ const base = {
   toggleCaptureSystemAudio: vi.fn(),
   sysAudioAvailability: 'ready' as const,
   onRequestSysAudioPermission: vi.fn(),
+  detectSpeakers: false,
+  toggleDetectSpeakers: vi.fn(),
   onExportDiagnostics: vi.fn().mockResolvedValue(undefined),
   summaryStyle: 'standard' as const,
   setSummaryStyle: vi.fn(),
@@ -546,6 +564,62 @@ describe('SettingsView', () => {
       fireEvent.change(screen.getByLabelText('Custom instructions'), { target: { value: '' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       expect(setSummaryInstructions).toHaveBeenCalledWith('')
+    })
+  })
+
+  describe('Speakers — Detect speakers (issue #6)', () => {
+    const diarPair = [
+      diarModel(),
+      diarModel({ id: 'diar-embedding', displayName: 'Voice embeddings', sizeBytes: 28_281_164 }),
+    ]
+
+    it('flips the setting via its toggle', () => {
+      const toggleDetectSpeakers = vi.fn()
+      render(<SettingsView {...base} toggleDetectSpeakers={toggleDetectSpeakers} />)
+      fireEvent.click(screen.getByRole('switch', { name: 'Detect speakers' }))
+      expect(toggleDetectSpeakers).toHaveBeenCalledTimes(1)
+    })
+
+    it('never lists the diarization pair in the model pickers', () => {
+      render(<SettingsView {...base} models={[...models, ...diarPair]} />)
+      const sttGroup = screen.getByRole('radiogroup', { name: 'Transcription model' })
+      const llmGroup = screen.getByRole('radiogroup', { name: 'Summary model' })
+      expect(within(sttGroup).queryByText('Speaker segmentation')).not.toBeInTheDocument()
+      expect(within(llmGroup).queryByText('Voice embeddings')).not.toBeInTheDocument()
+    })
+
+    it('offers a retry download when enabled but the models are missing', () => {
+      const downloadModel = vi.fn()
+      render(
+        <SettingsView
+          {...base}
+          models={[...models, ...diarPair]}
+          detectSpeakers
+          downloadModel={downloadModel}
+        />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Download models' }))
+      expect(downloadModel).toHaveBeenCalledWith('diar-segmentation')
+      expect(downloadModel).toHaveBeenCalledWith('diar-embedding')
+    })
+
+    it('shows in-flight download progress instead of the retry button', () => {
+      render(
+        <SettingsView
+          {...base}
+          models={[...models, ...diarPair]}
+          detectSpeakers
+          downloads={{ ...base.downloads, 'diar-segmentation': { downloaded: 3_000_000, total: 5_992_913 } }}
+        />,
+      )
+      expect(screen.queryByRole('button', { name: 'Download models' })).not.toBeInTheDocument()
+    })
+
+    it('confirms once both models are installed', () => {
+      const installedPair = diarPair.map(m => ({ ...m, state: 'installed' as const }))
+      render(<SettingsView {...base} models={[...models, ...installedPair]} detectSpeakers />)
+      expect(screen.getByText(/Speaker models installed/)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Download models' })).not.toBeInTheDocument()
     })
   })
 })

@@ -151,6 +151,12 @@ export function useAppState() {
   const [tLlmContextTokens, setTLlmContextTokens] = useState<number | null>(null)
   const [tSummaryInstructions, setTSummaryInstructions] = useState('')
 
+  // Settings-backed "detect speakers" toggle (issue #6's speaker half) —
+  // same optimistic-flip-then-persist shape as the toggles above, plus one
+  // extra behavior on enable: kicking off the paired diarization-model
+  // downloads (see `toggleDetectSpeakers` below).
+  const [tDetectSpeakers, setTDetectSpeakers] = useState(false)
+
   // Auto-update (issue #4). `tAutoUpdateCheck` starts `null` (= "settings
   // not loaded yet") so the periodic-check effect below never fires a
   // network request before knowing whether the user disabled it — it only
@@ -701,6 +707,7 @@ export function useAppState() {
           setTLlmContextTokens(loadedSettings.llmContextTokens ?? null)
           setTSummaryInstructions(loadedSettings.summaryInstructions ?? '')
           setTAutoUpdateCheck(loadedSettings.autoUpdateCheck ?? true)
+          setTDetectSpeakers(loadedSettings.detectSpeakers ?? false)
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1171,6 +1178,32 @@ export function useAppState() {
   }, [reportError])
 
   /**
+   * Settings screen's "Detect speakers" toggle — optimistic-flip-then-
+   * persist like the toggles above, with one addition: turning it *on* also
+   * starts downloading whichever of the two diarization models isn't
+   * installed yet (they're a pair — segmentation + voice embeddings, ~34 MB
+   * total — and the backend's post-recording trigger stays a silent no-op
+   * until both are on disk). Progress surfaces through the same
+   * `downloads` map every other model download uses; turning the toggle
+   * off never deletes the models (Settings' model rows own deletion).
+   */
+  const toggleDetectSpeakers = useCallback(() => {
+    const flipped = !tDetectSpeakers
+    setTDetectSpeakers(flipped)
+    ipc.setSettings({ detectSpeakers: flipped }).catch(reportError)
+    if (flipped) {
+      for (const model of modelManager.models) {
+        if (model.kind === 'diarization' && model.state === 'notInstalled') {
+          modelManager.downloadModel(model.id)
+        }
+      }
+    }
+    // modelManager is a fresh object every render; depend on the two
+    // stable-enough pieces actually used.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tDetectSpeakers, reportError, modelManager.models, modelManager.downloadModel])
+
+  /**
    * Settings screen's "Summary style" picker — same optimistic-set-then-
    * persist shape as the toggles above. Takes effect on the next
    * summarization (manual or auto); already-generated summaries are
@@ -1410,6 +1443,9 @@ export function useAppState() {
     selectedAudioPath: noteDetail.selectedAudioPath,
     summaryStatus: noteDetail.summaryStatus,
     summaryError: noteDetail.summaryError,
+    diarStatus: noteDetail.diarStatus,
+    diarError: noteDetail.diarError,
+    detectSpeakers: noteDetail.detectSpeakers,
     transcriptLoading: noteDetail.transcriptLoading,
     regenerateSummary: noteDetail.regenerateSummary,
     toggleActionItem: noteDetail.toggleActionItem,
@@ -1428,6 +1464,8 @@ export function useAppState() {
     setLlmContextTokens,
     tSummaryInstructions,
     setSummaryInstructions,
+    tDetectSpeakers,
+    toggleDetectSpeakers,
     appVersion,
     tAutoUpdateCheck: tAutoUpdateCheck ?? true,
     toggleAutoUpdateCheck,

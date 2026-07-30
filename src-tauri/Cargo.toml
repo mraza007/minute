@@ -52,6 +52,12 @@ tokio = { version = "1", features = ["fs", "rt", "time"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+# Speaker diarization (issue #6, diar.rs): the *official* k2-fsa Rust API
+# (the third-party `sherpa-rs` wrapper was archived 2026-06 in its favor).
+# Default features link the prebuilt static sherpa-onnx/onnxruntime libs —
+# no cmake at build time, no new dylibs in the bundle (verified via
+# otool -L in the spike; only OS dylibs), ~15 MB stripped binary delta.
+sherpa-onnx = "1.13.4"
 
 # Meeting detection (Stage 5 Task 1): mic-in-use + running-app checks, both
 # permission-free on macOS. `cargo tree -i coreaudio-sys` (checked before

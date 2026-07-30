@@ -217,6 +217,18 @@ export const toggleActionItem = (id: string, index: number, done: boolean): Prom
 export const askNote = (id: string, question: string): Promise<void> => invokeCmd('ask_note', { id, question })
 
 /**
+ * Detects (or re-detects) speakers for a note's transcript — the local
+ * diarization pass (`diar.rs`). Pass `numSpeakers` to force an exact
+ * speaker count (the "wrong count? re-run with N" path); omit for
+ * automatic. Resolves once the worker is queued — listen for `diar-status`
+ * events (`onDiarStatus`) for progress and the settled count. Rejects if
+ * the two diarization models aren't downloaded yet or a pass is already
+ * running.
+ */
+export const diarizeNote = (noteId: string, numSpeakers: number | null = null): Promise<void> =>
+  invokeCmd('diarize_note', { noteId, numSpeakers })
+
+/**
  * Reports whether system-audio capture is available right now (Stage 5
  * Task 4) — see `SysAudioAvailability`'s docs for what each state means.
  * Read-only: never triggers the Screen Recording prompt (that's

@@ -13,7 +13,7 @@ export interface Hardware {
 }
 
 /** `catalog::ModelKind` — `#[serde(rename_all = "lowercase")]`. */
-export type ModelKind = 'stt' | 'llm'
+export type ModelKind = 'stt' | 'llm' | 'diarization'
 
 /** `catalog::CatalogEntry` — `#[serde(rename_all = "camelCase")]`. */
 export interface CatalogEntry {
@@ -266,6 +266,8 @@ export interface Settings {
   summaryInstructions: string
   /** Whether the app checks GitHub for newer releases (metadata only, on by default). */
   autoUpdateCheck: boolean
+  /** Run the local speaker-diarization pass after each recording (opt-in). */
+  detectSpeakers: boolean
 }
 
 /**
@@ -286,6 +288,7 @@ export interface SettingsPatch {
   /** `''` clears the instructions. */
   summaryInstructions?: string
   autoUpdateCheck?: boolean
+  detectSpeakers?: boolean
 }
 
 // --- events ----------------------------------------------------------------
@@ -295,6 +298,18 @@ export interface ModelDownloadProgressEvent {
   modelId: string
   downloaded: number
   total: number
+}
+
+/** `diar.rs::DiarStatusState`, serialized lowercase. */
+export type DiarStatusState = 'running' | 'done' | 'error'
+
+/** `diar.rs::DiarStatusPayload` — event `diar-status`. */
+export interface DiarStatusPayload {
+  noteId: string
+  state: DiarStatusState
+  error: string | null
+  /** Settled speaker count — non-null only when `state` is `'done'`. */
+  speakers: number | null
 }
 
 /** `download.rs::DownloadDoneEvent` — event `model-download-done`. */

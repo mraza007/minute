@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS: Settings = {
   summaryStyle: 'standard',
   summaryInstructions: '',
   autoUpdateCheck: true,
+  detectSpeakers: false,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

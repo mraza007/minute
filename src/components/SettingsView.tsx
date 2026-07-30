@@ -40,6 +40,10 @@ export interface SettingsViewProps {
   /** Screen Recording permission/macOS-version gate for the toggle above — see `sysAudioStatus`'s docs for what each state means. */
   sysAudioAvailability: SysAudioAvailability
   onRequestSysAudioPermission: () => void
+  /** "Detect speakers" — the local diarization pass after each recording (issue #6's speaker half). */
+  detectSpeakers: boolean
+  /** Also downloads the two diarization models on enable — see `useAppState.toggleDetectSpeakers`. */
+  toggleDetectSpeakers: () => void
   onExportDiagnostics: () => Promise<void>
   /** Settings' summary style — adjusts prompt guidance and response length backend-side. */
   summaryStyle: SummaryStyle
@@ -477,6 +481,8 @@ export function SettingsView({
   toggleCaptureSystemAudio,
   sysAudioAvailability,
   onRequestSysAudioPermission,
+  detectSpeakers,
+  toggleDetectSpeakers,
   onExportDiagnostics,
   summaryStyle,
   setSummaryStyle,
@@ -502,6 +508,11 @@ export function SettingsView({
   useEffect(() => setInstructionsDraft(summaryInstructions), [summaryInstructions])
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
+  // The diarization pair behind "Detect speakers" — never listed in the
+  // model pickers above; the Speakers section drives their download and
+  // reports their state instead.
+  const diarModels = models.filter(m => m.kind === 'diarization')
+  const diarModelsInstalled = diarModels.length > 0 && diarModels.every(m => m.state === 'installed')
 
   const sttGroupRef = useRef<HTMLDivElement>(null)
   const llmGroupRef = useRef<HTMLDivElement>(null)
@@ -711,6 +722,40 @@ export function SettingsView({
           {sysAudioAvailability === 'unsupported' && <div style={fineTextStyle}>Requires macOS 13 or later.</div>}
           {sysAudioAvailability === 'notGranted' && (
             <div style={fineTextStyle}>A freshly granted permission may need Minute to restart before it takes effect.</div>
+          )}
+        </Section>
+
+        <Section title="Speakers">
+          <Toggle on={detectSpeakers} onToggle={toggleDetectSpeakers} label="Detect speakers" />
+          <div style={noteTextStyle}>
+            After each recording, label who spoke when — turns get names like “Speaker 1” and “Speaker 2” you can
+            rename or merge from the transcript. Runs entirely on this Mac using two small models (~34 MB), downloaded
+            when you turn this on.
+          </div>
+          {diarModels.some(m => downloads[m.id]) && (
+            <div style={{ marginTop: 4, maxWidth: 520 }}>
+              {diarModels
+                .filter(m => downloads[m.id])
+                .map(m => (
+                  <DownloadProgressBar key={m.id} downloaded={downloads[m.id].downloaded} total={downloads[m.id].total} />
+                ))}
+            </div>
+          )}
+          {detectSpeakers && !diarModelsInstalled && !diarModels.some(m => downloads[m.id]) && (
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={fineTextStyle}>The speaker models aren’t downloaded yet.</span>
+              <button
+                type="button"
+                className="btn-light"
+                style={{ ...secondaryBtnStyle, flex: 'none' }}
+                onClick={() => diarModels.filter(m => m.state !== 'installed').forEach(m => downloadModel(m.id))}
+              >
+                Download models
+              </button>
+            </div>
+          )}
+          {detectSpeakers && diarModelsInstalled && (
+            <div style={fineTextStyle}>Speaker models installed. New recordings are labeled automatically.</div>
           )}
         </Section>
         </Group>

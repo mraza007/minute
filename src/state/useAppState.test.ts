@@ -37,6 +37,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     summaryStyle: 'standard' as const,
     summaryInstructions: '',
     autoUpdateCheck: true,
+    detectSpeakers: false,
     libraryRoot: null,
     ...overrides,
   }

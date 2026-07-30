@@ -106,6 +106,15 @@ pub struct Settings {
     /// as `true` rather than bool's `false` default.
     #[serde(default = "default_true")]
     pub auto_update_check: bool,
+    /// Issue #6's speaker half: run the local diarization post-pass
+    /// (`diar.rs`) after each recording finishes transcribing, labeling
+    /// turns "Speaker 1..N". Opt-in (`#[serde(default)]` = `false`), same
+    /// convention as `meetingDetection` — and only effective once both
+    /// diarization models from the catalog are actually downloaded (the
+    /// Settings toggle downloads them on enable; `audio::stop_recording`'s
+    /// trigger re-checks install state every time).
+    #[serde(default)]
+    pub detect_speakers: bool,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -129,6 +138,7 @@ impl Default for Settings {
             summary_style: SummaryStyle::default(),
             summary_instructions: String::new(),
             auto_update_check: true,
+            detect_speakers: false,
         }
     }
 }
@@ -160,6 +170,7 @@ pub struct SettingsPatch {
     /// empty value is meaningful here, so no sentinel is needed.
     pub summary_instructions: Option<String>,
     pub auto_update_check: Option<bool>,
+    pub detect_speakers: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -192,6 +203,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.auto_update_check {
         settings.auto_update_check = v;
+    }
+    if let Some(v) = patch.detect_speakers {
+        settings.detect_speakers = v;
     }
 }
 
@@ -327,6 +341,7 @@ mod tests {
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
             auto_update_check: true,
+            detect_speakers: false,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -370,6 +385,7 @@ mod tests {
                 summary_style: SummaryStyle::Standard,
                 summary_instructions: String::new(),
                 auto_update_check: true,
+                detect_speakers: false,
             }
         );
     }
@@ -408,6 +424,7 @@ mod tests {
                 summary_style: SummaryStyle::Standard,
                 summary_instructions: String::new(),
                 auto_update_check: true,
+                detect_speakers: false,
             }
         );
     }
@@ -447,6 +464,7 @@ mod tests {
                 summary_style: SummaryStyle::Standard,
                 summary_instructions: String::new(),
                 auto_update_check: true,
+                detect_speakers: false,
             }
         );
     }
@@ -482,6 +500,7 @@ mod tests {
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
             auto_update_check: true,
+            detect_speakers: false,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -527,6 +546,7 @@ mod tests {
             summary_style: Some(SummaryStyle::Detailed),
             summary_instructions: Some("Write in German.".to_string()),
             auto_update_check: Some(false),
+            detect_speakers: Some(true),
         };
 
         apply_patch(&mut settings, patch);
@@ -538,6 +558,28 @@ mod tests {
         assert!(settings.capture_system_audio);
         assert_eq!(settings.llm_context_tokens, Some(16_384));
         assert_eq!(settings.summary_style, SummaryStyle::Detailed);
+        assert!(settings.detect_speakers);
+    }
+
+    #[test]
+    fn settings_json_without_detect_speakers_field_defaults_to_false() {
+        // Diarization's migration case: a settings.json written by any
+        // pre-diarization build has no "detectSpeakers" key at all —
+        // `#[serde(default)]` must make that load as `false` (opt-in, off),
+        // same shape as the meetingDetection/captureSystemAudio cases above.
+        let dir = tempdir().unwrap();
+        let pre_diar_json = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": false,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_diar_json).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!load_settings(dir.path()).detect_speakers);
     }
 
     #[test]
@@ -625,6 +667,7 @@ mod tests {
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
             auto_update_check: true,
+            detect_speakers: false,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -653,6 +696,7 @@ mod tests {
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
             auto_update_check: true,
+            detect_speakers: false,
         };
         let mut settings = original.clone();
 

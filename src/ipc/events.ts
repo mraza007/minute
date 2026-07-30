@@ -10,6 +10,7 @@ import type {
   AudioInputLevelEvent,
   AskAnswerEvent,
   AskStatusEvent,
+  DiarStatusPayload,
   MeetingDetectedEvent,
   MeetingPopupPayloadEvent,
   ModelDownloadDoneEvent,
@@ -55,6 +56,11 @@ export function onAudioInputLevel(cb: (payload: AudioInputLevelEvent) => void): 
 
 export function onSummaryStatus(cb: (payload: SummaryStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SummaryStatusEvent>('summary-status', (event) => cb(event.payload))
+}
+
+/** `diar.rs`'s speaker-detection lifecycle — see `DiarStatusPayload`'s docs. */
+export function onDiarStatus(cb: (payload: DiarStatusPayload) => void): Promise<UnlistenFn> {
+  return listen<DiarStatusPayload>('diar-status', (event) => cb(event.payload))
 }
 
 export function onAskStatus(cb: (payload: AskStatusEvent) => void): Promise<UnlistenFn> {

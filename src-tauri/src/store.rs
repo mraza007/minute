@@ -1080,6 +1080,33 @@ impl Store {
 
     /// Persists a transcript speaker edit, keeps the list-level speaker
     /// count honest, and refreshes the generated markdown.
+    /// Diarization's write path (`diar.rs`): replaces every segment's
+    /// speaker label at once with `labels` (one per segment, in order),
+    /// applying any user-confirmed `speaker_aliases` on the way in (a note
+    /// whose "Speaker 1" was already renamed to "Alice" keeps saying
+    /// "Alice" when a re-run assigns "Speaker 1" again — same alias
+    /// treatment `append_segment` gives live segments). Persists via the
+    /// same `persist_speaker_edit` the rename/merge UI uses, so
+    /// `meta.speakers` and `note.md` stay in sync. Errors if `labels`'
+    /// length doesn't match the transcript — a mismatch means the transcript
+    /// changed under the diarization pass, and relabeling anyway would
+    /// attribute turns to the wrong people.
+    pub fn update_segment_speakers(&self, id: &str, labels: &[String]) -> Result<NoteMeta> {
+        let mut transcript = self.read_transcript(id)?;
+        if transcript.segments.len() != labels.len() {
+            return Err(MinuteError::Other(format!(
+                "speaker labels ({}) do not match transcript segments ({})",
+                labels.len(),
+                transcript.segments.len()
+            )));
+        }
+        let aliases = self.read_meta(id)?.speaker_aliases;
+        for (segment, label) in transcript.segments.iter_mut().zip(labels) {
+            segment.speaker = aliases.get(label).unwrap_or(label).clone();
+        }
+        self.persist_speaker_edit(id, &transcript)
+    }
+
     fn persist_speaker_edit(&self, id: &str, transcript: &Transcript) -> Result<NoteMeta> {
         self.write_transcript(id, transcript)?;
         let mut meta = self.read_meta(id)?;
@@ -2178,6 +2205,91 @@ mod tests {
         let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
         assert!(markdown.contains("**Speaker 1**"));
         assert!(markdown.contains("**Sam**"));
+    }
+
+    #[test]
+    fn update_segment_speakers_relabels_everything_and_honors_aliases() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 0.0,
+                            end: 5.0,
+                            text: "First.".into(),
+                        },
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 6.0,
+                            end: 10.0,
+                            text: "Second.".into(),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        // A previously confirmed rename: raw "Speaker 1" is really Sam —
+        // recorded in meta.speaker_aliases by rename_speaker.
+        store.rename_speaker(&meta.id, "Speaker 1", "Sam").unwrap();
+        let updated = store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into(), "Speaker 2".into()])
+            .unwrap();
+
+        let (_, transcript) = store.get_note(&meta.id).unwrap();
+        // "Speaker 1" had been renamed to Sam, so the alias re-applies; the
+        // brand-new "Speaker 2" label passes through untouched.
+        assert_eq!(transcript.segments[0].speaker, "Sam");
+        assert_eq!(transcript.segments[1].speaker, "Speaker 2");
+        assert_eq!(updated.speakers, 2);
+        let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
+        assert!(markdown.contains("**Sam**"));
+        assert!(markdown.contains("**Speaker 2**"));
+    }
+
+    #[test]
+    fn update_segment_speakers_rejects_a_label_count_mismatch() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![StoredSegment {
+                        speaker: "Speaker 1".into(),
+                        start: 0.0,
+                        end: 5.0,
+                        text: "Only turn.".into(),
+                    }],
+                },
+            )
+            .unwrap();
+
+        let err = store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into(), "Speaker 2".into()])
+            .unwrap_err();
+        assert!(err.to_string().contains("do not match"));
+        // Nothing changed on disk.
+        let (meta_after, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(transcript.segments[0].speaker, "Speaker 1");
+        assert_eq!(meta_after.speakers, meta.speakers);
     }
 
     #[test]
@@ -3860,7 +3972,12 @@ mod tests {
         assert!(store.root().starts_with(new.path().canonicalize().unwrap()));
         // …and the old location no longer holds a library.
         assert!(!old.path().join("notes").exists());
-        assert!(new.path().join("notes").join(&meta.id).join("meta.json").exists());
+        assert!(new
+            .path()
+            .join("notes")
+            .join(&meta.id)
+            .join("meta.json")
+            .exists());
     }
 
     #[test]

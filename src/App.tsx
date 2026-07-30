@@ -122,6 +122,18 @@ export default function App() {
   const rawSummaryEventState = selectedNoteMeta ? s.summaryStatus[selectedNoteMeta.id] : undefined
   const selectedSummaryStatus = rawSummaryEventState === 'running' || rawSummaryEventState === 'error' ? rawSummaryEventState : 'idle'
 
+  // Same collapse for speaker detection (`diar-status`): 'done' and "no
+  // event" are both 'idle' — a finished pass just shows the relabeled
+  // transcript.
+  const rawDiarEventState = selectedNoteMeta ? s.diarStatus[selectedNoteMeta.id] : undefined
+  const selectedDiarStatus = rawDiarEventState === 'running' || rawDiarEventState === 'error' ? rawDiarEventState : 'idle'
+
+  // The "Detect speakers" affordance only appears once both diarization
+  // models are actually installed (the Settings toggle downloads the pair);
+  // `every` alone would be vacuously true on a catalog without them.
+  const diarModels = s.models.filter(m => m.kind === 'diarization')
+  const canDetectSpeakers = diarModels.length > 0 && diarModels.every(m => m.state === 'installed')
+
   if (s.view === 'loading') {
     return (
       <div
@@ -207,6 +219,10 @@ export default function App() {
               sttStatusNoteId={s.sttStatusNoteId}
               summaryStatus={selectedSummaryStatus}
               summaryError={selectedNoteMeta ? s.summaryError[selectedNoteMeta.id] : undefined}
+              diarStatus={selectedDiarStatus}
+              diarError={selectedNoteMeta ? s.diarError[selectedNoteMeta.id] : undefined}
+              canDetectSpeakers={canDetectSpeakers}
+              onDetectSpeakers={s.detectSpeakers}
               llmInstalled={s.llmInstalled}
               llmModelName={s.llmModelDisplayName}
               askHistory={s.askHistory}
@@ -283,6 +299,8 @@ export default function App() {
               toggleMeetingDetection={s.toggleMeetingDetection}
               captureSystemAudio={s.tCaptureSystemAudio}
               toggleCaptureSystemAudio={s.toggleCaptureSystemAudio}
+              detectSpeakers={s.tDetectSpeakers}
+              toggleDetectSpeakers={s.toggleDetectSpeakers}
               sysAudioAvailability={s.sysAudioAvailability}
               onRequestSysAudioPermission={s.requestSysAudioPermission}
               onExportDiagnostics={s.exportDiagnostics}
