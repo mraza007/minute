@@ -5,22 +5,24 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.1.1-c8412a)
+![version](https://img.shields.io/badge/version-1.5.0-c8412a)
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute 1.1.1 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.1.1/Minute-1.1.1-arm64.zip)**
+**[⬇ Download Minute 1.5.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.1.1/Minute-1.1.1-x86_64.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-x86_64.zip).
 
 </div>
 
 Minute is a fully offline meeting notetaker for macOS. It records audio,
-transcribes it live with Whisper, and turns the transcript into a summary,
-decisions, and action items with a local LLM — all of it running on-device,
-in-process, with Metal acceleration. No account, no cloud, no server. The
-only network traffic Minute ever makes is an optional model download the
-first time you pick a bigger model.
+transcribes it live with Whisper, labels who spoke, and turns the
+transcript into a summary, decisions, and action items with a local LLM —
+all of it running on-device, in-process, with Metal acceleration. No
+account, no cloud, no server. The only network traffic Minute ever makes
+is an optional model download and — unless you turn it off — a periodic
+check against GitHub for a newer version of the app itself. Neither one
+carries anything about you or your notes.
 
 ## Why
 
@@ -74,7 +76,35 @@ knowing: if you're on speakers rather than headphones, your own voice can
 get picked up twice — once by the mic, once by the system-audio stream
 playing it back out — there's no echo cancellation between the two yet.
 
+Forget to hit stop and Minute notices. After 10 minutes with nothing
+audible on either source it warns with a 10-minute countdown, then stops
+and transcribes on its own, exactly as if you'd clicked Stop — a
+forgotten recording becomes a normal note instead of an 18-hour WAV of an
+empty room. Any sound cancels the countdown; "Keep recording" silences it
+for that recording; a Settings toggle turns the whole behavior off.
+Relatedly, Whisper's habit of transcribing dead air as stray punctuation
+is filtered as it happens, so quiet stretches don't fill transcripts with
+"." lines.
+
 ![Minute — a live recording with source, health, transcript, and marker details](screenshots/recording.png)
+
+## Who said what
+
+Turn on **Detect speakers** (Settings → Recording) and every recording's
+turns get labeled by voice — Speaker 1, Speaker 2, and so on — ready for
+the rename and merge tools below. Detection runs entirely on-device
+through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): pyannote
+segmentation finds the speech turns, 3D-Speaker CAM++ voice embeddings
+tell the voices apart, two small models (~34 MB total) downloaded once
+when you enable it. It runs after transcription and before the summary,
+so summaries refer to real speakers.
+
+It works on existing notes too — a "Detect speakers" button in the
+transcript toolbar runs the same pass on any note that still has its
+audio. Automatic speaker counting is strongest on clear call audio; when
+it gets the count wrong, re-run it with the exact number of speakers and
+it's very accurate. Names you've confirmed stick: a speaker you renamed
+keeps that name across re-runs.
 
 ## A summary you can act on
 
@@ -83,6 +113,12 @@ a list of decisions, and action items you can check off without leaving the
 note. The post-recording overview keeps source, duration, speakers, transcript
 turns, and markers together. Every generated field comes from the local
 transcript and can be regenerated without uploading the meeting.
+
+Summaries are yours to shape: pick a length (short / standard / detailed),
+add standing custom instructions ("write it in German", "focus on
+engineering decisions"), and let the context window size itself to this
+Mac's memory — or pin it yourself. All of it in Settings, all applied to
+the next summary you generate.
 
 ## Ask your notes, with receipts
 
@@ -110,9 +146,10 @@ make audio retention visible instead of mysterious.
 ## Clean up without losing work
 
 Rename speakers, filter the transcript by speaker, or merge duplicate speaker
-identities with an exact undo path. Confirmed names are remembered when Minute
-has reliable matching data. Markers remain editable after recording, deleted
-notes move into local recovery, and destructive cleanup always offers Undo.
+identities with an exact undo path — the manual half of the speaker story,
+for when detection gets a label wrong or you'd rather see "Sam" than
+"Speaker 2". Markers remain editable after recording, deleted notes move
+into local recovery, and destructive cleanup always offers Undo.
 
 ## Dark mode that still feels like paper
 
@@ -130,19 +167,22 @@ what fits your hardware and disk budget, or let Minute suggest a pair based
 on the detected architecture, memory, and CPU cores. Every choice is labeled
 **Recommended**, **Good fit**, **Near memory limit**, **Below minimum**, or
 **Not supported** without pretending to have benchmarked hardware it has not.
-Everything downloads once, runs entirely offline after that, and can be
-removed just as easily.
+The two small speaker-detection models ride along the same catalog,
+fetched only when you enable that feature. Everything downloads once, runs
+entirely offline after that, and can be removed just as easily.
 
 ![Minute — the model manager, showing installed and available models](screenshots/models.png)
 
 ## How it works
 
 Minute is a [Tauri 2](https://tauri.app) app: a React 19 + TypeScript
-frontend around a Rust backend that runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
-and [llama.cpp](https://github.com/ggml-org/llama.cpp) in-process, with
-Metal acceleration on Apple Silicon — no sidecar process, no local server,
-no localhost port. The frontend talks to the backend over Tauri's IPC; the
-backend talks to whisper.cpp/llama.cpp as linked libraries.
+frontend around a Rust backend that runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+[llama.cpp](https://github.com/ggml-org/llama.cpp), and
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (speaker detection)
+in-process, with Metal acceleration on Apple Silicon — no sidecar process,
+no local server, no localhost port. The frontend talks to the backend over
+Tauri's IPC; the backend talks to the inference engines as linked
+libraries.
 
 Each note is a plain folder on disk, human-readable and yours regardless of
 whether Minute is still installed:
@@ -176,8 +216,11 @@ requirements shown up front.
   to inspect.
 - Turn off Wi-Fi before a meeting. Record, transcribe, summarize, ask
   questions about it. Nothing about that flow behaves any differently
-  offline, because it's never anything but offline — except downloading a
-  new model, which is the one deliberate exception and always your choice.
+  offline, because it's never anything but offline.
+- The two deliberate exceptions, both your choice: model downloads (only
+  when you pick one) and the automatic update check (on by default, one
+  HTTPS request to GitHub for release metadata — never anything about you
+  or your notes — with a Settings toggle that turns it off entirely).
 - A privacy-safe diagnostics export records app, model, source, storage, and
   recovery state without including the recording or transcript.
 
@@ -198,6 +241,11 @@ Grab the architecture-appropriate ZIP above, unzip it, and drag `Minute.app`
 into Applications. On first launch, macOS asks for microphone access when you
 start your first recording. System-audio capture additionally asks for Screen
 Recording access on macOS 13 or later.
+
+That's the last install you do by hand: Minute checks for new releases and
+offers a one-click **Update & restart** in Settings. Updates are
+cryptographically signed and verified against a key baked into the app —
+nothing installs without your click.
 
 You can also build Minute from source:
 
@@ -228,10 +276,9 @@ Honestly, in rough priority order:
 
 - **Real-device release matrix** — removable-microphone disconnect/reconnect,
   physical sleep/wake, constrained-volume failure, and overnight finalization.
-- **Updates and clean-Mac validation** — signed automatic updates,
-  clean-install permission continuity, and rollback validation.
-- **Diarization quality** — speaker rename, merge, persistence, and undo are in
-  place; improving the underlying automatic speaker separation remains useful.
+- **Speakers across notes** — "Speaker 1" is scoped to one note today;
+  the voice embeddings speaker detection already computes could recognize
+  that the same person appeared in last week's meeting too.
 - **Cross-note ask** — ask-your-notes currently answers from one note's
   transcript at a time; asking across your whole library is the natural
   next step.
@@ -246,4 +293,4 @@ Honestly, in rough priority order:
 
 ## License
 
-[MIT](LICENSE). The bundled `llama-cpp-2` sources in `src-tauri/vendor/` retain their upstream MIT/Apache-2.0 licensing; model weights downloaded in-app carry their own licenses (Whisper: MIT; Qwen: Apache-2.0; Gemma: Gemma Terms of Use).
+[MIT](LICENSE). The bundled `llama-cpp-2` sources in `src-tauri/vendor/` retain their upstream MIT/Apache-2.0 licensing; model weights downloaded in-app carry their own licenses (Whisper: MIT; Qwen: Apache-2.0; Gemma: Gemma Terms of Use; pyannote segmentation-3.0: MIT; 3D-Speaker CAM++: Apache-2.0).
