@@ -92,7 +92,9 @@ artifact_name="$(basename "$artifact")"
 # baked-in public key.
 updater_artifact="$artifact_dir/Minute-$version-$expected_arch.app.tar.gz"
 tar -czf "$updater_artifact" -C "$artifact_dir" "Minute.app"
-npm run tauri signer sign -- -f "$updater_key" --password "" "$updater_artifact" >/dev/null
+# The key comes from the TAURI_SIGNING_PRIVATE_KEY env var exported above —
+# passing -f here as well makes the CLI error out on conflicting options.
+npm run tauri signer sign -- --password "" "$updater_artifact" >/dev/null
 if [[ ! -s "$updater_artifact.sig" ]]; then
   echo "release build: updater signature was not produced for $updater_artifact" >&2
   exit 1
