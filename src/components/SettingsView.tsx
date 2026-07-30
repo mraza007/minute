@@ -50,6 +50,15 @@ export interface SettingsViewProps {
   /** Free-text instructions appended to the summary prompt; committed via the section's Save button. */
   summaryInstructions: string
   setSummaryInstructions: (text: string) => void
+  /** Auto-update (issue #4) — see useAppState's update-check machinery for all of these. */
+  appVersion: string
+  autoUpdateCheck: boolean
+  toggleAutoUpdateCheck: () => void
+  updateAvailable: { version: string } | null
+  updateInstalling: boolean
+  updateCheckStatus: 'idle' | 'checking' | 'upToDate' | 'error'
+  onCheckForUpdates: () => void
+  onInstallUpdate: () => void
 }
 
 /**
@@ -475,6 +484,14 @@ export function SettingsView({
   setLlmContextTokens,
   summaryInstructions,
   setSummaryInstructions,
+  appVersion,
+  autoUpdateCheck,
+  toggleAutoUpdateCheck,
+  updateAvailable,
+  updateInstalling,
+  updateCheckStatus,
+  onCheckForUpdates,
+  onInstallUpdate,
 }: SettingsViewProps) {
   // Local draft for the custom-instructions textarea — committed by its
   // explicit Save button (not per keystroke, which would write
@@ -766,6 +783,48 @@ export function SettingsView({
             Recordings, transcripts, and notes move to the folder you choose. Models stay in app data.
           </div>
           <div style={fineTextStyle}>Your library inherits FileVault full-disk encryption.</div>
+        </Section>
+
+        <Section title="Updates">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12.5, fontVariantNumeric: 'tabular-nums' }}>
+              Minute {appVersion || '—'}
+            </span>
+            {updateAvailable ? (
+              <button
+                type="button"
+                className="btn"
+                style={{ flex: 'none' }}
+                disabled={updateInstalling}
+                onClick={onInstallUpdate}
+              >
+                {updateInstalling ? 'Installing…' : `Update to ${updateAvailable.version} & restart`}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-light"
+                style={{ ...secondaryBtnStyle, flex: 'none' }}
+                disabled={updateCheckStatus === 'checking'}
+                onClick={onCheckForUpdates}
+              >
+                {updateCheckStatus === 'checking' ? 'Checking…' : 'Check now'}
+              </button>
+            )}
+            {updateCheckStatus === 'upToDate' && !updateAvailable && (
+              <span style={{ fontSize: 11.5, color: 'var(--ink-muted)' }}>You’re on the latest version.</span>
+            )}
+            {updateCheckStatus === 'error' && (
+              <span style={{ fontSize: 11.5, color: 'var(--ink-muted)' }}>Couldn’t reach GitHub — try again later.</span>
+            )}
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <Toggle on={autoUpdateCheck} onToggle={toggleAutoUpdateCheck} label="Check for updates automatically" />
+          </div>
+          <div style={noteTextStyle}>
+            Checks GitHub for new Minute releases at launch and every few hours. Only release metadata is fetched —
+            nothing about you or your notes is ever sent. Updates install only when you click.
+          </div>
         </Section>
 
         <Section title="Diagnostics">

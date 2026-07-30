@@ -292,6 +292,14 @@ export default function App() {
               setLlmContextTokens={s.setLlmContextTokens}
               summaryInstructions={s.tSummaryInstructions}
               setSummaryInstructions={s.setSummaryInstructions}
+              appVersion={s.appVersion}
+              autoUpdateCheck={s.tAutoUpdateCheck}
+              toggleAutoUpdateCheck={s.toggleAutoUpdateCheck}
+              updateAvailable={s.updateAvailable}
+              updateInstalling={s.updateInstalling}
+              updateCheckStatus={s.updateCheckStatus}
+              onCheckForUpdates={s.checkForUpdatesNow}
+              onInstallUpdate={() => void s.installUpdate()}
             />
           )}
         </div>

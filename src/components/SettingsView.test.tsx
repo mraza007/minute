@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Hardware, ModelStatus, Recommendation, StorageStats } from '../ipc/types'
 import { SettingsView, storageBarSegments } from './SettingsView'
@@ -81,6 +81,14 @@ const base = {
   setLlmContextTokens: vi.fn(),
   summaryInstructions: '',
   setSummaryInstructions: vi.fn(),
+  appVersion: '1.3.0',
+  autoUpdateCheck: true,
+  toggleAutoUpdateCheck: vi.fn(),
+  updateAvailable: null,
+  updateInstalling: false,
+  updateCheckStatus: 'idle' as const,
+  onCheckForUpdates: vi.fn(),
+  onInstallUpdate: vi.fn(),
 }
 
 describe('SettingsView', () => {
@@ -417,6 +425,53 @@ describe('SettingsView', () => {
       expect(balanced.map(s => Math.round(s.pct))).toEqual([50, 30, 20])
       const withZero = storageBarSegments(1_000, 0, 1_000)
       expect(withZero[1].pct).toBe(0)
+    })
+  })
+
+  describe('Updates section (issue #4)', () => {
+    it('shows the current version and a Check now button when up to date', () => {
+      render(<SettingsView {...base} />)
+      expect(screen.getByText('Minute 1.3.0')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Check now' })).toBeEnabled()
+    })
+
+    it('wires Check now to the handler and shows the checking state', () => {
+      const onCheckForUpdates = vi.fn()
+      render(<SettingsView {...base} onCheckForUpdates={onCheckForUpdates} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Check now' }))
+      expect(onCheckForUpdates).toHaveBeenCalledTimes(1)
+      cleanup()
+      render(<SettingsView {...base} updateCheckStatus="checking" />)
+      expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled()
+    })
+
+    it('shows the install button when an update is available and wires it', () => {
+      const onInstallUpdate = vi.fn()
+      render(<SettingsView {...base} updateAvailable={{ version: '1.4.0' }} onInstallUpdate={onInstallUpdate} />)
+      const install = screen.getByRole('button', { name: 'Update to 1.4.0 & restart' })
+      fireEvent.click(install)
+      expect(onInstallUpdate).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('button', { name: 'Check now' })).not.toBeInTheDocument()
+    })
+
+    it('shows Installing… disabled while the update applies', () => {
+      render(<SettingsView {...base} updateAvailable={{ version: '1.4.0' }} updateInstalling />)
+      expect(screen.getByRole('button', { name: 'Installing…' })).toBeDisabled()
+    })
+
+    it('reports up-to-date and error outcomes of a manual check', () => {
+      render(<SettingsView {...base} updateCheckStatus="upToDate" />)
+      expect(screen.getByText('You’re on the latest version.')).toBeInTheDocument()
+      cleanup()
+      render(<SettingsView {...base} updateCheckStatus="error" />)
+      expect(screen.getByText('Couldn’t reach GitHub — try again later.')).toBeInTheDocument()
+    })
+
+    it('wires the automatic-check toggle', () => {
+      const toggleAutoUpdateCheck = vi.fn()
+      render(<SettingsView {...base} toggleAutoUpdateCheck={toggleAutoUpdateCheck} />)
+      fireEvent.click(screen.getByRole('switch', { name: /check for updates automatically/i }))
+      expect(toggleAutoUpdateCheck).toHaveBeenCalledTimes(1)
     })
   })
 

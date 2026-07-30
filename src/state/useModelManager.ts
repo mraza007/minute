@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS: Settings = {
   llmContextTokens: null,
   summaryStyle: 'standard',
   summaryInstructions: '',
+  autoUpdateCheck: true,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

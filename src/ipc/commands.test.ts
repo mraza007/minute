@@ -456,6 +456,7 @@ describe('ipc/commands', () => {
       llmContextTokens: null,
       summaryStyle: 'standard',
       summaryInstructions: '',
+      autoUpdateCheck: true,
     }
     const calls = captureIPC(() => settings)
 
@@ -477,6 +478,7 @@ describe('ipc/commands', () => {
       llmContextTokens: null,
       summaryStyle: 'standard',
       summaryInstructions: '',
+      autoUpdateCheck: true,
     }
     const calls = captureIPC(() => updated)
 

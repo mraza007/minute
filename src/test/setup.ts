@@ -1,5 +1,18 @@
 import '@testing-library/jest-dom/vitest'
 import { clearMocks, mockConvertFileSrc } from '@tauri-apps/api/mocks'
+import { vi } from 'vitest'
+
+// The updater/process plugins call real Tauri plugin commands
+// (`plugin:updater|check`, `plugin:process|restart`) that no test harness
+// stubs — mocked globally as "no update available"/no-op so useAppState's
+// update-check effect is inert in every test unless a test overrides these
+// with its own mock.
+vi.mock('@tauri-apps/plugin-updater', () => ({
+  check: vi.fn().mockResolvedValue(null),
+}))
+vi.mock('@tauri-apps/plugin-process', () => ({
+  relaunch: vi.fn().mockResolvedValue(undefined),
+}))
 
 // Minute is macOS-only — `convertFileSrc` is real Tauri plumbing
 // (`useAudioPlayer` calls it to build the `<audio>` element's `src`) that

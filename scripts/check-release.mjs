@@ -49,6 +49,23 @@ if (!mainCapability.permissions?.includes('core:window:allow-start-dragging')) {
 if (!infoPlist.includes('NSMicrophoneUsageDescription')) failures.push('microphone privacy copy is missing from Info.plist')
 if (!infoPlist.includes('NSScreenCaptureUsageDescription')) failures.push('screen-capture privacy copy is missing from Info.plist')
 
+// Auto-update (issue #4): a release without these ships an app that can
+// never hear about the next release.
+const updaterConfig = tauriConfig.plugins?.updater
+if (!updaterConfig?.pubkey?.length) failures.push('updater public key is missing from tauri.conf.json plugins.updater.pubkey')
+if (updaterConfig?.endpoints?.[0] !== 'https://github.com/mraza007/minute/releases/latest/download/latest.json') {
+  failures.push(`unexpected updater endpoint: ${updaterConfig?.endpoints?.[0]}`)
+}
+if (tauriConfig.bundle?.createUpdaterArtifacts !== true) {
+  failures.push('bundle.createUpdaterArtifacts is not enabled; releases would ship without updater archives')
+}
+if (!mainCapability.permissions?.includes('updater:default')) {
+  failures.push('main window capability is missing updater:default')
+}
+if (!mainCapability.permissions?.includes('process:allow-restart')) {
+  failures.push('main window capability is missing process:allow-restart; the app cannot relaunch after installing an update')
+}
+
 if (failures.length > 0) {
   for (const failure of failures) process.stderr.write(`release check: ${failure}\n`)
   process.exitCode = 1

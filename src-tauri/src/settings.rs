@@ -96,6 +96,22 @@ pub struct Settings {
     /// `#[serde(default)]` so older `settings.json` files load as empty.
     #[serde(default)]
     pub summary_instructions: String,
+    /// Whether the app checks GitHub for a newer release (issue #4) — one
+    /// HTTPS request for release metadata, never anything about the user or
+    /// their notes; the check itself lives in the frontend (see
+    /// `useAppState`'s update-check effect), gated on this. On by default —
+    /// the one deliberate exception to this app's opt-in convention, with a
+    /// Settings toggle and plain-language copy explaining exactly what's
+    /// sent. `#[serde(default = ...)]` so older `settings.json` files load
+    /// as `true` rather than bool's `false` default.
+    #[serde(default = "default_true")]
+    pub auto_update_check: bool,
+}
+
+/// `serde(default = ...)` helper for fields that default to `true` —
+/// serde's plain `#[serde(default)]` on a `bool` gives `false`.
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -112,6 +128,7 @@ impl Default for Settings {
             llm_context_tokens: None,
             summary_style: SummaryStyle::default(),
             summary_instructions: String::new(),
+            auto_update_check: true,
         }
     }
 }
@@ -142,6 +159,7 @@ pub struct SettingsPatch {
     /// `Some("")` clears the instructions — unlike the model ids above, an
     /// empty value is meaningful here, so no sentinel is needed.
     pub summary_instructions: Option<String>,
+    pub auto_update_check: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -171,6 +189,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.summary_instructions {
         settings.summary_instructions = v;
+    }
+    if let Some(v) = patch.auto_update_check {
+        settings.auto_update_check = v;
     }
 }
 
@@ -305,6 +326,7 @@ mod tests {
             llm_context_tokens: None,
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
+            auto_update_check: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -347,6 +369,7 @@ mod tests {
                 llm_context_tokens: None,
                 summary_style: SummaryStyle::Standard,
                 summary_instructions: String::new(),
+                auto_update_check: true,
             }
         );
     }
@@ -384,6 +407,7 @@ mod tests {
                 llm_context_tokens: None,
                 summary_style: SummaryStyle::Standard,
                 summary_instructions: String::new(),
+                auto_update_check: true,
             }
         );
     }
@@ -422,6 +446,7 @@ mod tests {
                 llm_context_tokens: None,
                 summary_style: SummaryStyle::Standard,
                 summary_instructions: String::new(),
+                auto_update_check: true,
             }
         );
     }
@@ -456,6 +481,7 @@ mod tests {
             llm_context_tokens: None,
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
+            auto_update_check: true,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -500,6 +526,7 @@ mod tests {
             llm_context_tokens: Some(16_384),
             summary_style: Some(SummaryStyle::Detailed),
             summary_instructions: Some("Write in German.".to_string()),
+            auto_update_check: Some(false),
         };
 
         apply_patch(&mut settings, patch);
@@ -533,6 +560,43 @@ mod tests {
     }
 
     #[test]
+    fn settings_json_without_auto_update_check_defaults_to_true() {
+        // Migration case for the updater (issue #4): a settings.json written
+        // by any pre-updater build has no "autoUpdateCheck" key — it must
+        // load as `true` (the deliberate on-by-default exception; see the
+        // field's docs), which is what `#[serde(default = "default_true")]`
+        // exists for: plain `#[serde(default)]` on a bool would give `false`.
+        let dir = tempdir().unwrap();
+        let pre_updater_json = serde_json::json!({
+            "sttModel": "whisper-small",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": true,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_updater_json).unwrap(),
+        )
+        .unwrap();
+
+        assert!(load_settings(dir.path()).auto_update_check);
+    }
+
+    #[test]
+    fn apply_patch_turns_auto_update_check_off_and_it_persists() {
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        let patch = SettingsPatch {
+            auto_update_check: Some(false),
+            ..SettingsPatch::default()
+        };
+
+        let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+
+        assert!(!returned.auto_update_check);
+        assert!(!load_settings(dir.path()).auto_update_check);
+    }
+
+    #[test]
     fn apply_patch_zero_context_tokens_means_back_to_automatic() {
         let mut settings = Settings {
             llm_context_tokens: Some(32_768),
@@ -560,6 +624,7 @@ mod tests {
             llm_context_tokens: None,
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
+            auto_update_check: true,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -587,6 +652,7 @@ mod tests {
             llm_context_tokens: None,
             summary_style: SummaryStyle::Standard,
             summary_instructions: String::new(),
+            auto_update_check: true,
         };
         let mut settings = original.clone();
 

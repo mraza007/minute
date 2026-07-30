@@ -42,6 +42,18 @@ export APPLE_SIGNING_IDENTITY="$signing_identity"
 export APPLE_TEAM_ID="$team_id"
 unset APPLE_ID APPLE_PASSWORD APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
 
+# Updater signing key (issue #4): tauri's bundler requires it whenever
+# createUpdaterArtifacts is on, and the post-staple updater archive below is
+# signed with it too. Never committed — lives with the developer.
+updater_key="${MINUTE_UPDATER_KEY:-$HOME/.tauri/minute-updater.key}"
+if [[ ! -f "$updater_key" ]]; then
+  echo "release build: updater signing key not found at $updater_key" >&2
+  echo "  Generate one with: npm run tauri signer generate -- -w ~/.tauri/minute-updater.key" >&2
+  exit 1
+fi
+export TAURI_SIGNING_PRIVATE_KEY="$(cat "$updater_key")"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "$temporary_dir"' EXIT
 
@@ -73,4 +85,18 @@ artifact_name="$(basename "$artifact")"
   shasum -a 256 "$artifact_name" > "$artifact_name.sha256"
 )
 
+# Updater archive (issue #4): rebuilt HERE, from the stapled app, rather
+# than keeping the one `tauri build` produced — that one was archived
+# before notarization/stapling. Signed with the updater key; the .sig is
+# what latest.json carries and the installed app verifies against its
+# baked-in public key.
+updater_artifact="$artifact_dir/Minute-$version-$expected_arch.app.tar.gz"
+tar -czf "$updater_artifact" -C "$artifact_dir" "Minute.app"
+npm run tauri signer sign -- -f "$updater_key" --password "" "$updater_artifact" >/dev/null
+if [[ ! -s "$updater_artifact.sig" ]]; then
+  echo "release build: updater signature was not produced for $updater_artifact" >&2
+  exit 1
+fi
+
 echo "release build: signed, notarized, stapled, and Gatekeeper accepted — $artifact"
+echo "release build: updater archive signed — $updater_artifact"

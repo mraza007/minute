@@ -598,6 +598,16 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
     let builder = builder.plugin(tauri_plugin_dialog::init());
+    // Auto-update (issue #4): the updater plugin checks the static
+    // `latest.json` manifest attached to each GitHub release (see
+    // `tauri.conf.json`'s `plugins.updater`) and verifies downloads against
+    // the public key baked in there; the process plugin provides the
+    // relaunch after an install. Checks are driven from the frontend and
+    // gated by the `autoUpdateCheck` setting — nothing here phones home on
+    // its own.
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
 
     let app = builder
         .invoke_handler(tauri::generate_handler![

@@ -264,6 +264,8 @@ export interface Settings {
   summaryStyle: SummaryStyle
   /** Free-text instructions appended to the summary prompt's rules; empty = none. */
   summaryInstructions: string
+  /** Whether the app checks GitHub for newer releases (metadata only, on by default). */
+  autoUpdateCheck: boolean
 }
 
 /**
@@ -283,6 +285,7 @@ export interface SettingsPatch {
   summaryStyle?: SummaryStyle
   /** `''` clears the instructions. */
   summaryInstructions?: string
+  autoUpdateCheck?: boolean
 }
 
 // --- events ----------------------------------------------------------------

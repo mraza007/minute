@@ -18,6 +18,7 @@ const settings: Settings = {
   llmContextTokens: null,
   summaryStyle: 'standard',
   summaryInstructions: '',
+  autoUpdateCheck: true,
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {

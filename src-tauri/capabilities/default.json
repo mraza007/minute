@@ -52,6 +52,8 @@
     "allow-stop-recording",
     "allow-sys-audio-status",
     "allow-request-sys-audio-permission",
-    "dialog:default"
+    "dialog:default",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

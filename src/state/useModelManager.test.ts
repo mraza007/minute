@@ -19,6 +19,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     llmContextTokens: null,
     summaryStyle: 'standard' as const,
     summaryInstructions: '',
+    autoUpdateCheck: true,
     libraryRoot: null,
     ...overrides,
   }

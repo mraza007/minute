@@ -65,6 +65,15 @@
         "frameworks/libggml.0.dylib",
         "frameworks/libllama.0.dylib"
       ]
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5MzlCRkY3Mzk2NjgxMkIKUldRcmdXWTU5Nzg1S2E2MWw2M3FnYzNIdEJDQS9qT1ZKTHhOc0JBdDBVdXVIS3pXeGpibE5wZ2sK",
+      "endpoints": [
+        "https://github.com/mraza007/minute/releases/latest/download/latest.json"
+      ]
     }
   }
 }

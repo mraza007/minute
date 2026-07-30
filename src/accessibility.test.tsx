@@ -25,6 +25,7 @@ const settings: Settings = {
   llmContextTokens: null,
   summaryStyle: 'standard',
   summaryInstructions: '',
+  autoUpdateCheck: true,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {

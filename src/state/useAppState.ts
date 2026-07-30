@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { getVersion } from '@tauri-apps/api/app'
 import * as ipc from '../ipc/commands'
 import { onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
 import type {
@@ -147,6 +150,19 @@ export function useAppState() {
   const [tSummaryStyle, setTSummaryStyle] = useState<SummaryStyle>('standard')
   const [tLlmContextTokens, setTLlmContextTokens] = useState<number | null>(null)
   const [tSummaryInstructions, setTSummaryInstructions] = useState('')
+
+  // Auto-update (issue #4). `tAutoUpdateCheck` starts `null` (= "settings
+  // not loaded yet") so the periodic-check effect below never fires a
+  // network request before knowing whether the user disabled it — it only
+  // runs on an explicit `true`. `updateRef` holds the plugin's Update
+  // handle (the thing that can download/install); `updateAvailable` is the
+  // render-facing projection of it.
+  const [tAutoUpdateCheck, setTAutoUpdateCheck] = useState<boolean | null>(null)
+  const [appVersion, setAppVersion] = useState('')
+  const [updateAvailable, setUpdateAvailable] = useState<{ version: string } | null>(null)
+  const [updateInstalling, setUpdateInstalling] = useState(false)
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error'>('idle')
+  const updateRef = useRef<Update | null>(null)
 
   // --- ⌘K search palette + sidebar filter ---------------------------------
   //
@@ -684,6 +700,7 @@ export function useAppState() {
           setTSummaryStyle(loadedSettings.summaryStyle ?? 'standard')
           setTLlmContextTokens(loadedSettings.llmContextTokens ?? null)
           setTSummaryInstructions(loadedSettings.summaryInstructions ?? '')
+          setTAutoUpdateCheck(loadedSettings.autoUpdateCheck ?? true)
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1196,6 +1213,80 @@ export function useAppState() {
   )
 
   /**
+   * Settings screen's "Check for updates automatically" toggle — same
+   * optimistic-flip-then-persist shape as the other toggles. Flipping it
+   * off also cancels the periodic check via the effect below.
+   */
+  const toggleAutoUpdateCheck = useCallback(() => {
+    setTAutoUpdateCheck(previous => {
+      const flipped = !(previous ?? true)
+      ipc.setSettings({ autoUpdateCheck: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  /**
+   * One update check against the GitHub `latest.json` manifest. Quiet by
+   * design on the automatic path: a failed check (offline is a completely
+   * normal state for this app) logs and shows nothing. `manual` drives the
+   * Settings "Check now" button's status line instead.
+   */
+  const runUpdateCheck = useCallback(async (manual: boolean) => {
+    if (manual) setUpdateCheckStatus('checking')
+    try {
+      const update = await checkForUpdate()
+      if (update) {
+        updateRef.current = update
+        setUpdateAvailable({ version: update.version })
+        if (manual) setUpdateCheckStatus('idle')
+      } else if (manual) {
+        setUpdateCheckStatus('upToDate')
+      }
+    } catch (error) {
+      console.warn('update check failed', error)
+      if (manual) setUpdateCheckStatus('error')
+    }
+  }, [])
+
+  const checkForUpdatesNow = useCallback(() => void runUpdateCheck(true), [runUpdateCheck])
+
+  /**
+   * The "Restart to update" action: downloads the update, verifies its
+   * signature against the public key baked into the app, swaps the bundle,
+   * and relaunches. Nothing happens without this explicit click.
+   */
+  const installUpdate = useCallback(async () => {
+    const update = updateRef.current
+    if (!update || updateInstalling) return
+    setUpdateInstalling(true)
+    try {
+      await update.downloadAndInstall()
+      await relaunch()
+    } catch (error) {
+      setUpdateInstalling(false)
+      reportError(error)
+    }
+  }, [updateInstalling, reportError])
+
+  // Automatic checks: once at startup (as soon as settings confirm they're
+  // allowed) and every 6 hours after — an app that stays open across many
+  // meetings shouldn't need a relaunch to hear about a fix. Strictly gated
+  // on `true`: `null` means settings haven't loaded yet.
+  useEffect(() => {
+    if (tAutoUpdateCheck !== true) return
+    void runUpdateCheck(false)
+    const interval = setInterval(() => void runUpdateCheck(false), 6 * 60 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [tAutoUpdateCheck, runUpdateCheck])
+
+  // The running app's own version, for Settings → Updates' "Minute x.y.z"
+  // line. A harness without the app plugin mocked just leaves it '' (the
+  // view renders an em dash).
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {})
+  }, [])
+
+  /**
    * Settings screen's "Grant permission…" affordance for system audio:
    * triggers the Screen Recording consent prompt (a no-op re-check, not a
    * re-prompt, if already decided — see `requestSysAudioPermission`'s own
@@ -1337,6 +1428,14 @@ export function useAppState() {
     setLlmContextTokens,
     tSummaryInstructions,
     setSummaryInstructions,
+    appVersion,
+    tAutoUpdateCheck: tAutoUpdateCheck ?? true,
+    toggleAutoUpdateCheck,
+    updateAvailable,
+    updateInstalling,
+    updateCheckStatus,
+    checkForUpdatesNow,
+    installUpdate,
     sysAudioAvailability,
     requestSysAudioPermission,
     recordingPreflightOpen,
