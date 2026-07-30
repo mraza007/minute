@@ -255,7 +255,10 @@ pub fn build_summary_prompt(
             "at most 2 sentences — what the meeting was about and its most important outcome",
             "Keep \"decisions\" and \"action_items\" to only the clearly important ones.\n",
         ),
-        SummaryStyle::Standard => ("at most 3 sentences describing what the meeting was about", ""),
+        SummaryStyle::Standard => (
+            "at most 3 sentences describing what the meeting was about",
+            "",
+        ),
         SummaryStyle::Detailed => (
             "4 to 6 sentences covering each major topic in the order it was discussed",
             "Be thorough: capture every stated decision and every follow-up task.\n",
@@ -1488,9 +1491,8 @@ fn generate_fitting_transcript(
         }
     }
 
-    Err(last_err.unwrap_or_else(|| {
-        MinuteError::Other("prompt fitting exhausted its attempts".to_string())
-    }))
+    Err(last_err
+        .unwrap_or_else(|| MinuteError::Other("prompt fitting exhausted its attempts".to_string())))
 }
 
 // ---------------------------------------------------------------------------
@@ -2249,14 +2251,21 @@ mod tests {
 
     #[test]
     fn prompt_includes_the_meeting_title() {
-        let prompt = build_summary_prompt("Client call — Acme", &[], usize::MAX, SummaryStyle::Standard, "");
+        let prompt = build_summary_prompt(
+            "Client call — Acme",
+            &[],
+            usize::MAX,
+            SummaryStyle::Standard,
+            "",
+        );
         assert!(prompt.contains("Meeting: Client call — Acme"));
     }
 
     #[test]
     fn prompt_delimits_the_transcript_and_guards_against_injected_instructions() {
         let segments = vec![seg("Speaker 1", 41.0, "Thanks for making time.")];
-        let prompt = build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
+        let prompt =
+            build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
 
         let open = prompt
             .find("<transcript>\n")
@@ -2291,7 +2300,8 @@ mod tests {
             seg("Speaker 1", 41.0, "Thanks for making time."),
             seg("Speaker 2", 94.0, "Happy to be here."),
         ];
-        let prompt = build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
+        let prompt =
+            build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
 
         assert!(prompt.contains("[00:41] Speaker 1: Thanks for making time."));
         assert!(prompt.contains("[01:34] Speaker 2: Happy to be here."));
@@ -2311,7 +2321,13 @@ mod tests {
                 )
             })
             .collect();
-        let prompt = build_summary_prompt("Long meeting", &segments, TEST_TRANSCRIPT_BUDGET, SummaryStyle::Standard, "");
+        let prompt = build_summary_prompt(
+            "Long meeting",
+            &segments,
+            TEST_TRANSCRIPT_BUDGET,
+            SummaryStyle::Standard,
+            "",
+        );
 
         assert!(prompt.contains(OMISSION_MARKER.trim()));
         // First line's content survives (head kept).
@@ -2451,8 +2467,13 @@ mod tests {
     fn summary_prompt_omits_the_instructions_block_when_empty_or_whitespace() {
         let segments = vec![seg("Speaker 1", 0.0, "Hello.")];
         for empty in ["", "   ", "\n\t"] {
-            let prompt =
-                build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, empty);
+            let prompt = build_summary_prompt(
+                "Standup",
+                &segments,
+                usize::MAX,
+                SummaryStyle::Standard,
+                empty,
+            );
             assert!(
                 !prompt.contains("Additional instructions from the user"),
                 "instructions header must not appear for input {empty:?}"
@@ -2636,8 +2657,12 @@ mod tests {
 
     #[test]
     fn ask_prompt_includes_the_question() {
-        let prompt =
-            build_ask_prompt("Standup", &[], "What did we decide about pricing?", usize::MAX);
+        let prompt = build_ask_prompt(
+            "Standup",
+            &[],
+            "What did we decide about pricing?",
+            usize::MAX,
+        );
         assert!(prompt.contains("Question: What did we decide about pricing?"));
     }
 
@@ -4087,7 +4112,10 @@ mod tests {
         let home = std::env::var("HOME").expect("HOME must be set");
         let model_path = PathBuf::from(&home)
             .join("Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf");
-        assert!(model_path.exists(), "expected qwen3.5-4b model at {model_path:?}");
+        assert!(
+            model_path.exists(),
+            "expected qwen3.5-4b model at {model_path:?}"
+        );
 
         // ~720 turns over ~30 minutes, like the report — long enough that
         // the truncated transcript still dwarfs the 2048-token default batch.
@@ -4105,7 +4133,13 @@ mod tests {
                 }
             })
             .collect();
-        let full_prompt = build_summary_prompt("Long meeting", &segments, usize::MAX, SummaryStyle::Standard, "");
+        let full_prompt = build_summary_prompt(
+            "Long meeting",
+            &segments,
+            usize::MAX,
+            SummaryStyle::Standard,
+            "",
+        );
         assert!(
             full_prompt.len() > 20_000,
             "fixture must produce a prompt long past the 2048-token default batch \
@@ -4128,11 +4162,19 @@ mod tests {
         // out instead of being cut down to fit.
         let transcript_bytes = format_transcript_lines(&segments).len();
         let params = GenerationParams::default();
-        let available_tokens = (state.loaded_context_tokens().unwrap() as usize)
-            .saturating_sub(params.max_tokens);
+        let available_tokens =
+            (state.loaded_context_tokens().unwrap() as usize).saturating_sub(params.max_tokens);
         let raw = generate_fitting_transcript(
             |prompt| state.generate_with_params(prompt, params),
-            |budget| build_summary_prompt("Long meeting", &segments, budget, SummaryStyle::Standard, ""),
+            |budget| {
+                build_summary_prompt(
+                    "Long meeting",
+                    &segments,
+                    budget,
+                    SummaryStyle::Standard,
+                    "",
+                )
+            },
             transcript_bytes,
             available_tokens,
         )
@@ -4161,7 +4203,10 @@ mod tests {
         let home = std::env::var("HOME").expect("HOME must be set");
         let model_path = PathBuf::from(&home)
             .join("Library/Application Support/dev.minute.app/models/llm/Qwen3.5-4B-Q4_K_M.gguf");
-        assert!(model_path.exists(), "expected qwen3.5-4b model at {model_path:?}");
+        assert!(
+            model_path.exists(),
+            "expected qwen3.5-4b model at {model_path:?}"
+        );
 
         let sentence = "四半期のロードマップと未解決のエンジニアリング課題、\
                         フォローアップ項目について引き続き議論します。";
@@ -4203,7 +4248,15 @@ mod tests {
         let fit_start = Instant::now();
         let raw = generate_fitting_transcript(
             |prompt| state.generate_with_params(prompt, params),
-            |budget| build_summary_prompt("Dense meeting", &segments, budget, SummaryStyle::Standard, ""),
+            |budget| {
+                build_summary_prompt(
+                    "Dense meeting",
+                    &segments,
+                    budget,
+                    SummaryStyle::Standard,
+                    "",
+                )
+            },
             transcript_bytes,
             available_tokens,
         )
@@ -4228,9 +4281,13 @@ mod tests {
     #[ignore]
     fn real_llm_summarizes_with_gemma4() {
         let home = std::env::var("HOME").expect("HOME must be set");
-        let model_path = PathBuf::from(&home)
-            .join("Library/Application Support/dev.minute.app/models/llm/gemma-4-E4B-it-Q4_K_M.gguf");
-        assert!(model_path.exists(), "expected gemma-4-e4b model at {model_path:?}");
+        let model_path = PathBuf::from(&home).join(
+            "Library/Application Support/dev.minute.app/models/llm/gemma-4-E4B-it-Q4_K_M.gguf",
+        );
+        assert!(
+            model_path.exists(),
+            "expected gemma-4-e4b model at {model_path:?}"
+        );
 
         let segments = fake_product_launch_transcript();
         let prompt = build_summary_prompt(
@@ -4256,10 +4313,13 @@ mod tests {
             .expect("generation failed");
         eprintln!("raw model output: {raw:?}");
 
-        let doc = extract_summary_json(&raw)
-            .expect("failed to extract a SummaryDoc from Gemma's output");
+        let doc =
+            extract_summary_json(&raw).expect("failed to extract a SummaryDoc from Gemma's output");
         eprintln!("extracted SummaryDoc: {doc:?}");
-        assert!(!doc.summary.trim().is_empty(), "expected a non-empty summary");
+        assert!(
+            !doc.summary.trim().is_empty(),
+            "expected a non-empty summary"
+        );
     }
 
     #[test]
@@ -4276,7 +4336,13 @@ mod tests {
         );
 
         let segments = fake_product_launch_transcript();
-        let prompt = build_summary_prompt("Aurora launch planning", &segments, usize::MAX, SummaryStyle::Standard, "");
+        let prompt = build_summary_prompt(
+            "Aurora launch planning",
+            &segments,
+            usize::MAX,
+            SummaryStyle::Standard,
+            "",
+        );
 
         let mut state = LlmEngineState {
             loaded: None,
