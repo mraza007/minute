@@ -104,6 +104,18 @@ impl Chunker {
     }
 }
 
+/// Whether transcribed text is a dead-air hallucination: no letters or
+/// digits at all — just punctuation, symbols, or whitespace. Whisper
+/// hallucinates these on silence (issue #10: an accidental overnight
+/// recording produced ~10,000 turns of "." at 7-second intervals, one per
+/// inference window of dead air). Deliberately conservative: phrase-shaped
+/// hallucinations ("Thank you.", "Thanks for watching!") are left alone —
+/// they contain words, and dropping real speech would be far worse than
+/// keeping the occasional artifact.
+pub fn is_dead_air_text(text: &str) -> bool {
+    !text.chars().any(|c| c.is_alphanumeric())
+}
+
 // ---------------------------------------------------------------------------
 // dedupe_segments
 // ---------------------------------------------------------------------------
@@ -429,6 +441,20 @@ fn handle_window_segments(
     for seg in kept {
         if seg.end > *emitted_until {
             *emitted_until = seg.end;
+        }
+
+        // Dead-air hallucinations still advance `emitted_until` (they DID
+        // cover that stretch of audio — dropping them must not cause the
+        // next window's overlap dedupe to re-admit content) but are never
+        // persisted or shown.
+        if is_dead_air_text(&seg.text) {
+            log::debug!(
+                "stt: dropped dead-air segment {:.2}-{:.2}s: {:?}",
+                seg.start,
+                seg.end,
+                seg.text
+            );
+            continue;
         }
 
         let stored = StoredSegment {
@@ -809,6 +835,46 @@ mod tests {
         }
         match &events[1] {
             SttEvent::TranscriptSegment(payload) => assert_eq!(payload.text, "world"),
+            other => panic!("expected TranscriptSegment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_dead_air_text_flags_punctuation_only_hallucinations() {
+        // The issue #10 shapes: whisper's per-window silence artifacts.
+        assert!(is_dead_air_text("."));
+        assert!(is_dead_air_text("..."));
+        assert!(is_dead_air_text("。"));
+        assert!(is_dead_air_text("- ."));
+        assert!(is_dead_air_text("♪"));
+        assert!(is_dead_air_text(""));
+        // Anything with a letter or digit is speech, even if it's probably
+        // also a hallucination — dropping real words is the worse failure.
+        assert!(!is_dead_air_text("Thank you."));
+        assert!(!is_dead_air_text("ok"));
+        assert!(!is_dead_air_text("42."));
+        assert!(!is_dead_air_text("こんにちは。"));
+    }
+
+    #[test]
+    fn handle_window_segments_drops_dead_air_but_still_advances_emitted_until() {
+        let (ctx, _note_id, events, _dir) = test_ctx();
+        let mut emitted_until = 0.0f64;
+
+        // A "." hallucination window followed by real speech — the dot must
+        // vanish (not persisted, not emitted) while still counting as
+        // covered audio so overlap dedupe stays correct.
+        let raw = vec![seg(0.0, 7.0, "."), seg(7.0, 8.0, "hello again")];
+        handle_window_segments(&raw, 0.0, &mut emitted_until, &ctx);
+
+        assert_eq!(emitted_until, 8.0);
+        let stored = stored_segments(&ctx);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].text, "hello again");
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SttEvent::TranscriptSegment(payload) => assert_eq!(payload.text, "hello again"),
             other => panic!("expected TranscriptSegment, got {other:?}"),
         }
     }

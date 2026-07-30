@@ -130,9 +130,20 @@ fn format_mm_ss(total_seconds: f64) -> String {
 /// Renders a transcript's segments as `[mm:ss] Speaker: text` lines, one per
 /// segment, joined with newlines — the exact shape the summary prompt asks
 /// the model to read.
+///
+/// Dead-air hallucination segments (see [`stt::is_dead_air_text`]) are
+/// skipped: notes recorded before the STT-side filter existed can carry
+/// thousands of "." turns from silence (issue #10's overnight recording —
+/// 10,781 turns, ~94% dead air), and rendering those would spend the whole
+/// context budget on dots while the truncation's kept-tail crowds out the
+/// real meeting. Both the prompt builders and the callers' `transcript_bytes`
+/// measurements go through this one function, so the byte accounting the
+/// prompt-fitting loop depends on stays consistent with what's actually
+/// rendered.
 fn format_transcript_lines(segments: &[StoredSegment]) -> String {
     segments
         .iter()
+        .filter(|seg| !crate::stt::is_dead_air_text(&seg.text))
         .map(|seg| {
             format!(
                 "[{}] {}: {}",
@@ -1745,6 +1756,12 @@ fn run_ask(ctx: &AskWorkerCtx) -> Result<String> {
     }
 
     let transcript_bytes = format_transcript_lines(&transcript.segments).len();
+    // Same all-dead-air guard as `run_summarize` — see the comment there.
+    if transcript_bytes == 0 {
+        return Err(MinuteError::Other(
+            "This note has no speech to ask about — the recording was silence.".to_string(),
+        ));
+    }
 
     let raw_output = {
         let mut engine = lock_llm_engine(&ctx.engine);
@@ -1991,6 +2008,14 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     }
 
     let transcript_bytes = format_transcript_lines(&transcript.segments).len();
+    // Segments exist but every one is a dead-air hallucination (see
+    // `format_transcript_lines`) — an overnight recording of silence. Be
+    // honest instead of asking the model to summarize an empty transcript.
+    if transcript_bytes == 0 {
+        return Err(MinuteError::Other(
+            "nothing to summarize — no speech was found in this recording".to_string(),
+        ));
+    }
 
     let raw_output = {
         let mut engine = lock_llm_engine(&ctx.engine);
@@ -2231,6 +2256,42 @@ mod tests {
             end: start + 1.0,
             text: text.to_string(),
         }
+    }
+
+    #[test]
+    fn prompt_and_byte_accounting_skip_dead_air_segments() {
+        // Issue #10's transcript shape: real speech drowned in "." turns.
+        let segments = vec![
+            seg("Speaker 1", 0.0, "Let's plan the launch."),
+            seg("Speaker 1", 7.0, "."),
+            seg("Speaker 1", 14.0, "."),
+            seg("Speaker 2", 21.0, "Ship on Friday."),
+            seg("Speaker 1", 28.0, "..."),
+        ];
+        let prompt = build_summary_prompt(
+            "Overnight",
+            &segments,
+            usize::MAX,
+            SummaryStyle::Standard,
+            "",
+        );
+        assert!(prompt.contains("Let's plan the launch."));
+        assert!(prompt.contains("Ship on Friday."));
+        // No dot-only transcript lines survive (the timestamps they'd
+        // carry are the tell — the schema braces etc. legitimately contain
+        // punctuation).
+        assert!(!prompt.contains("[00:07]"));
+        assert!(!prompt.contains("[00:14]"));
+        assert!(!prompt.contains("[00:28]"));
+        // The fitting loop's byte measurement sees the same filtered render.
+        let rendered = format_transcript_lines(&segments);
+        assert_eq!(rendered.lines().count(), 2);
+    }
+
+    #[test]
+    fn all_dead_air_transcript_renders_empty() {
+        let segments = vec![seg("Speaker 1", 0.0, "."), seg("Speaker 1", 7.0, "...")];
+        assert!(format_transcript_lines(&segments).is_empty());
     }
 
     #[test]
@@ -4263,6 +4324,108 @@ mod tests {
         .expect("generation failed — the fitting retry should have made this succeed");
         eprintln!("fit + generation took {:?}", fit_start.elapsed());
         assert!(!raw.trim().is_empty(), "expected non-empty model output");
+    }
+
+    /// Issue #10's reproduction: an accidental overnight recording — ~25
+    /// minutes of real meeting followed by ~17.5 hours of dead air that
+    /// Whisper hallucinated into thousands of "." turns (the reporter's
+    /// note: 1072 minutes, 10,781 turns, "11451 prompt tokens + 1024
+    /// response budget > 8192" even though the fitting loop should have
+    /// shrunk it). Reproduces the reporter's 8 GB tier via
+    /// `preferred_context = Some(8192)`. Run manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///     real_llm_fits_an_overnight_dead_air_transcript -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_llm_fits_an_overnight_dead_air_transcript() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        // MINUTE_TEST_LLM=gemma runs the same fixture through Gemma 4 E4B —
+        // the tokenizer suspected of stalling the fitting loop in issue #10.
+        let (model_id, model_file) = match std::env::var("MINUTE_TEST_LLM").as_deref() {
+            Ok("gemma") => ("gemma-4-e4b", "gemma-4-E4B-it-Q4_K_M.gguf"),
+            _ => ("qwen3.5-4b", "Qwen3.5-4B-Q4_K_M.gguf"),
+        };
+        let model_path = PathBuf::from(&home)
+            .join("Library/Application Support/dev.minute.app/models/llm")
+            .join(model_file);
+        assert!(model_path.exists(), "expected {model_id} at {model_path:?}");
+
+        // ~25 minutes of real meeting…
+        let mut segments: Vec<StoredSegment> = (0..600)
+            .map(|i| {
+                let start = i as f64 * 2.5;
+                StoredSegment {
+                    speaker: "Speaker 1".to_string(),
+                    start,
+                    end: start + 2.4,
+                    text: format!(
+                        "This is turn {i} of the meeting, still discussing the quarterly \
+                         roadmap and follow-ups."
+                    ),
+                }
+            })
+            .collect();
+        // …then ~17.5 hours of hallucinated dead air, one "." every 7 s,
+        // exactly the shape in the reporter's transcript screenshot.
+        let dead_air_start = 600.0 * 2.5;
+        segments.extend((0..9_000).map(|i| {
+            let start = dead_air_start + i as f64 * 7.0;
+            StoredSegment {
+                speaker: "Speaker 1".to_string(),
+                start,
+                end: start + 6.9,
+                text: ".".to_string(),
+            }
+        }));
+
+        let mut state = LlmEngineState {
+            loaded: None,
+            last_used: Instant::now(),
+        };
+        state
+            .ensure_loaded(model_id, &model_path, Some(8_192))
+            .unwrap_or_else(|e| panic!("failed to load {model_id}: {e}"));
+
+        let transcript_bytes = format_transcript_lines(&segments).len();
+        let params = GenerationParams::default();
+        let ctx_tokens = state.loaded_context_tokens().unwrap() as usize;
+        let available_tokens = ctx_tokens.saturating_sub(params.max_tokens);
+        eprintln!(
+            "transcript: {} segments, {transcript_bytes} bytes; context {ctx_tokens} \
+             tokens ({available_tokens} available)",
+            segments.len()
+        );
+
+        let result = generate_fitting_transcript(
+            |prompt| {
+                eprintln!("attempt: prompt {} bytes", prompt.len());
+                state.generate_with_params(prompt, params)
+            },
+            |budget| {
+                let p = build_summary_prompt(
+                    "New recording",
+                    &segments,
+                    budget,
+                    SummaryStyle::Standard,
+                    "",
+                );
+                eprintln!("build_prompt(budget {budget}) -> {} bytes", p.len());
+                p
+            },
+            transcript_bytes,
+            available_tokens,
+        );
+        match &result {
+            Ok(raw) => eprintln!(
+                "fit OK, output: {}…",
+                raw.chars().take(80).collect::<String>()
+            ),
+            Err(e) => eprintln!("fit FAILED: {e}"),
+        }
+        result.expect("the fitting retry should make an overnight transcript summarizable");
     }
 
     /// Issue #8, as a test: Gemma 4 E4B — the recommended summary model on
