@@ -582,14 +582,21 @@ fn move_library(
 /// single active-recording slot out of `RecorderState` — a second call (or
 /// a call with nothing active) just sees `None` and returns its ordinary
 /// "no active recording" error, which is swallowed here without logging.
-fn finalize_active_recording_on_exit(app: &AppHandle) {
+/// Stops the active recording through the exact same path as the
+/// `stop_recording` command, resolving every piece of managed state off the
+/// `AppHandle` — the shared engine behind both non-command stop initiators:
+/// app-close finalization ([`finalize_active_recording_on_exit`]) and the
+/// silence auto-stop (`audio`'s recording ticker, issue #9). Returns
+/// `stop_recording`'s own result untouched, including its "no active
+/// recording" error for callers to interpret.
+pub(crate) fn stop_active_recording(app: &AppHandle) -> Result<NoteMeta, String> {
     let store = app.state::<SharedStore>();
     let recorder = app.state::<audio::SharedRecorderState>();
     let settings = app.state::<SharedSettings>();
     let engine = app.state::<SharedLlmEngine>();
     let llm_busy = app.state::<LlmBusy>();
     let diar_busy = app.state::<diar::DiarBusy>();
-    match audio::stop_recording(
+    audio::stop_recording(
         app.clone(),
         store,
         recorder,
@@ -597,7 +604,11 @@ fn finalize_active_recording_on_exit(app: &AppHandle) {
         engine,
         llm_busy,
         diar_busy,
-    ) {
+    )
+}
+
+fn finalize_active_recording_on_exit(app: &AppHandle) {
+    match stop_active_recording(app) {
         Ok(meta) => log::info!("finalized in-progress recording {} on app close", meta.id),
         Err(e) if e == "no active recording" => {}
         Err(e) => log::warn!("failed to finalize in-progress recording on app close: {e}"),
@@ -673,6 +684,7 @@ pub fn run() {
             audio::pause_recording,
             audio::resume_recording,
             audio::stop_recording,
+            audio::dismiss_auto_stop,
             popup::popup_start,
             popup::popup_dismiss,
             syscap::sys_audio_status,

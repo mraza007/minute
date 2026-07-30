@@ -27,6 +27,7 @@ const settings: Settings = {
   summaryInstructions: '',
   autoUpdateCheck: true,
   detectSpeakers: false,
+  autoStopRecording: true,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {

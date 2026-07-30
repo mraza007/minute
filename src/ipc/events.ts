@@ -10,6 +10,7 @@ import type {
   AudioInputLevelEvent,
   AskAnswerEvent,
   AskStatusEvent,
+  AutoStopStatePayload,
   DiarStatusPayload,
   MeetingDetectedEvent,
   MeetingPopupPayloadEvent,
@@ -52,6 +53,11 @@ export function onSttStatus(cb: (payload: SttStatusEvent) => void): Promise<Unli
 
 export function onAudioInputLevel(cb: (payload: AudioInputLevelEvent) => void): Promise<UnlistenFn> {
   return listen<AudioInputLevelEvent>('audio-input-level', event => cb(event.payload))
+}
+
+/** The recording ticker's auto-stop countdown (issue #9) — see `AutoStopStatePayload`'s docs. */
+export function onAutoStopState(cb: (payload: AutoStopStatePayload) => void): Promise<UnlistenFn> {
+  return listen<AutoStopStatePayload>('auto-stop-state', (event) => cb(event.payload))
 }
 
 export function onSummaryStatus(cb: (payload: SummaryStatusEvent) => void): Promise<UnlistenFn> {

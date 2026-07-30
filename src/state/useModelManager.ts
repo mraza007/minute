@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: Settings = {
   summaryInstructions: '',
   autoUpdateCheck: true,
   detectSpeakers: false,
+  autoStopRecording: true,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

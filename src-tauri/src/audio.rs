@@ -839,6 +839,17 @@ struct SharedState {
     /// for several state ticks, the frontend can distinguish a stalled or
     /// disconnected device from an ordinary silent room.
     input_sequence: AtomicU64,
+    /// Samples of *consecutive* effectively-silent audio appended to the
+    /// WAV so far (issue #9's auto-stop signal) — reset to zero the moment
+    /// any appended block peaks above [`AUTO_STOP_SILENCE_PEAK_FLOOR`].
+    /// Measured on the final written audio (the mixed block when system
+    /// audio is active), so "silent" means *neither* source had anything.
+    /// Sample-based rather than wall-clock so a paused recording (no
+    /// blocks flowing) freezes rather than accrues silence.
+    silent_run_samples: AtomicU64,
+    /// Set by the `dismiss_auto_stop` command ("Keep recording") —
+    /// suppresses auto-stop for the remainder of this recording.
+    auto_stop_disabled: AtomicBool,
 }
 
 fn store_max_f32(target: &AtomicU32, value: f32) {
@@ -988,10 +999,106 @@ fn append_and_forward(
         *lock(&shared.last_error) = Some(e.to_string());
     }
 
+    update_silence_counter(shared, samples);
+
     block_buf.extend_from_slice(samples);
     while block_buf.len() >= STT_BLOCK_SAMPLES {
         let full_block: Vec<f32> = block_buf.drain(..STT_BLOCK_SAMPLES).collect();
         try_send_stt_block(stt_tx, full_block, dropped);
+    }
+}
+
+/// Peak sample magnitude (0..1) at or above which an appended block counts
+/// as audible, resetting the silence run — ~-34 dBFS. Chosen against real
+/// data rather than a nominal noise floor: a genuinely quiet-but-real
+/// meeting mic recording measured speech *peaks* around -29 dBFS (which
+/// clears this floor) while its RMS sat near -55 dBFS (which would not
+/// have cleared an RMS-based floor — peak, not RMS, is what separates
+/// distant speech from an empty room). Typing and chair squeaks can clear
+/// it too; that only delays arming, never falsely stops.
+const AUTO_STOP_SILENCE_PEAK_FLOOR: f32 = 0.02;
+
+/// Continuous silence before the auto-stop countdown arms — issue #9.
+const AUTO_STOP_ARM_SECS: u64 = 10 * 60;
+
+/// Countdown, once armed, before the recording is actually stopped —
+/// surfaced tick-by-tick to the frontend so "Keep recording" has a real
+/// window even when someone is only half-watching.
+const AUTO_STOP_COUNTDOWN_SECS: u64 = 10 * 60;
+
+/// Extends or resets the consecutive-silence run for one appended block —
+/// see [`SharedState::silent_run_samples`]. Free function on the shared
+/// handle so the writer-thread tests can drive it directly.
+fn update_silence_counter(shared: &SharedState, samples: &[f32]) {
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak >= AUTO_STOP_SILENCE_PEAK_FLOOR {
+        shared.silent_run_samples.store(0, Ordering::Relaxed);
+    } else {
+        shared
+            .silent_run_samples
+            .fetch_add(samples.len() as u64, Ordering::Relaxed);
+    }
+}
+
+/// One decision of the per-second auto-stop state machine, driven by the
+/// recording ticker. `countdown` is the ticker's own arm state (`None` =
+/// not armed). Pure — unit-tested without a recorder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoStopTick {
+    /// Nothing to do; if a countdown was showing, tell the frontend it's
+    /// cancelled.
+    Idle { was_pending: bool },
+    /// Armed: surface the remaining seconds.
+    Pending { seconds_remaining: u64 },
+    /// Countdown exhausted — stop the recording now.
+    Fire,
+}
+
+fn auto_stop_tick(
+    enabled: bool,
+    dismissed: bool,
+    paused: bool,
+    silent_secs: u64,
+    countdown: &mut Option<u64>,
+) -> AutoStopTick {
+    if !enabled || dismissed || paused || silent_secs < AUTO_STOP_ARM_SECS {
+        let was_pending = countdown.take().is_some();
+        return AutoStopTick::Idle { was_pending };
+    }
+    let remaining = countdown.get_or_insert(AUTO_STOP_COUNTDOWN_SECS);
+    if *remaining == 0 {
+        return AutoStopTick::Fire;
+    }
+    *remaining -= 1;
+    AutoStopTick::Pending {
+        seconds_remaining: *remaining + 1,
+    }
+}
+
+/// `auto-stop-state` event payload — `pending` carries the live countdown;
+/// `cancelled` clears any banner (audio came back, the user kept the
+/// recording, or it was paused).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoStopStatePayload {
+    note_id: String,
+    state: &'static str,
+    seconds_remaining: Option<u64>,
+}
+
+fn emit_auto_stop_state(
+    app: &AppHandle,
+    note_id: &str,
+    state: &'static str,
+    seconds_remaining: Option<u64>,
+) {
+    let payload = AutoStopStatePayload {
+        note_id: note_id.to_string(),
+        state,
+        seconds_remaining,
+    };
+    if let Err(e) = app.emit("auto-stop-state", payload) {
+        log::warn!("failed to emit auto-stop-state for {note_id}: {e}");
     }
 }
 
@@ -1282,6 +1389,8 @@ impl Recorder {
             input_rms_bits: AtomicU32::new(0.0_f32.to_bits()),
             input_peak_bits: AtomicU32::new(0.0_f32.to_bits()),
             input_sequence: AtomicU64::new(0),
+            silent_run_samples: AtomicU64::new(0),
+            auto_stop_disabled: AtomicBool::new(false),
         });
         lock(&shared.tracker).start(Instant::now());
 
@@ -1702,12 +1811,17 @@ pub async fn start_recording(
     let tick_note_id = note_id.clone();
     let tick_shared = handle.shared.clone();
     let tick_microphone_name = microphone_name.clone();
+    let tick_settings = settings.inner().clone();
     let tick_handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         // The first tick fires immediately; skip it so it doesn't race the
         // `emit_recording_state` call already made below for the initial
         // "recording" state.
         ticker.tick().await;
+        // Auto-stop countdown (issue #9), owned entirely by this loop —
+        // `None` = not armed. Fed by the writer thread's silence counter;
+        // see `auto_stop_tick` for the decision rules.
+        let mut auto_stop_countdown: Option<u64> = None;
         loop {
             ticker.tick().await;
             let paused = tick_shared.paused.load(Ordering::SeqCst);
@@ -1722,6 +1836,48 @@ pub async fn start_recording(
                 &tick_microphone_name,
                 recording_input_snapshot(&tick_shared),
             );
+
+            let enabled = settings::lock_settings(&tick_settings).auto_stop_recording;
+            let dismissed = tick_shared.auto_stop_disabled.load(Ordering::Relaxed);
+            let silent_secs =
+                tick_shared.silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
+            match auto_stop_tick(
+                enabled,
+                dismissed,
+                paused,
+                silent_secs,
+                &mut auto_stop_countdown,
+            ) {
+                AutoStopTick::Idle { was_pending } => {
+                    if was_pending {
+                        emit_auto_stop_state(&tick_app, &tick_note_id, "cancelled", None);
+                    }
+                }
+                AutoStopTick::Pending { seconds_remaining } => {
+                    emit_auto_stop_state(
+                        &tick_app,
+                        &tick_note_id,
+                        "pending",
+                        Some(seconds_remaining),
+                    );
+                }
+                AutoStopTick::Fire => {
+                    log::info!(
+                        "auto-stop: recording {tick_note_id} silent for {silent_secs}s and the \
+                         countdown expired — stopping and transcribing"
+                    );
+                    // `stop_recording` (called by the helper) aborts this
+                    // very task, so the stop must run on its own thread —
+                    // and this loop must not touch anything afterwards.
+                    let stop_app = tick_app.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = crate::stop_active_recording(&stop_app) {
+                            log::warn!("auto-stop failed to stop the recording: {e}");
+                        }
+                    });
+                    break;
+                }
+            }
         }
     });
 
@@ -1865,6 +2021,32 @@ pub fn resume_recording(
         &microphone_name,
         input,
     );
+    Ok(())
+}
+
+/// "Keep recording" on the auto-stop banner: suppresses auto-stop for the
+/// remainder of the active recording (a fresh recording starts with the
+/// flag clear again) and clears the banner immediately rather than on the
+/// next tick. Errors if nothing is recording — the banner shouldn't exist
+/// then, but a click can race a stop.
+#[tauri::command]
+pub fn dismiss_auto_stop(
+    app: AppHandle,
+    recorder: State<SharedRecorderState>,
+) -> std::result::Result<(), String> {
+    let guard = lock_recorder_state(&recorder);
+    let active = guard
+        .active
+        .as_ref()
+        .ok_or_else(|| "no active recording".to_string())?;
+    active
+        .handle
+        .shared
+        .auto_stop_disabled
+        .store(true, Ordering::Relaxed);
+    let note_id = active.note_id.clone();
+    drop(guard);
+    emit_auto_stop_state(&app, &note_id, "cancelled", None);
     Ok(())
 }
 
@@ -2468,6 +2650,98 @@ mod tests {
         assert_eq!(mono, samples.to_vec());
     }
 
+    // --- auto-stop (issue #9) -----------------------------------------------
+
+    #[test]
+    fn silence_counter_accrues_on_quiet_blocks_and_resets_on_audible_ones() {
+        let shared = test_shared_state();
+        // Room noise well under the peak floor accrues…
+        update_silence_counter(&shared, &vec![0.005; 1600]);
+        update_silence_counter(&shared, &vec![0.005; 1600]);
+        assert_eq!(shared.silent_run_samples.load(Ordering::Relaxed), 3200);
+        // …one audible peak resets the whole run…
+        update_silence_counter(&shared, &[0.005, 0.5, 0.005]);
+        assert_eq!(shared.silent_run_samples.load(Ordering::Relaxed), 0);
+        // …and quiet resumes accruing from zero.
+        update_silence_counter(&shared, &vec![0.0; 800]);
+        assert_eq!(shared.silent_run_samples.load(Ordering::Relaxed), 800);
+    }
+
+    #[test]
+    fn silence_counter_treats_negative_peaks_as_audible() {
+        let shared = test_shared_state();
+        update_silence_counter(&shared, &[-0.5, 0.001]);
+        assert_eq!(shared.silent_run_samples.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn auto_stop_tick_stays_idle_below_the_arm_threshold() {
+        let mut countdown = None;
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+        assert_eq!(countdown, None);
+    }
+
+    #[test]
+    fn auto_stop_tick_counts_down_then_fires() {
+        let mut countdown = None;
+        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, &mut countdown);
+        assert_eq!(
+            first,
+            AutoStopTick::Pending {
+                seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
+            }
+        );
+        // Drain the countdown.
+        for _ in 0..AUTO_STOP_COUNTDOWN_SECS - 1 {
+            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, &mut countdown) {
+                AutoStopTick::Pending { .. } => {}
+                other => panic!("expected Pending mid-countdown, got {other:?}"),
+            }
+        }
+        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, &mut countdown);
+        assert_eq!(last, AutoStopTick::Fire);
+    }
+
+    #[test]
+    fn auto_stop_tick_cancels_when_audio_returns_mid_countdown() {
+        let mut countdown = None;
+        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, &mut countdown);
+        assert!(countdown.is_some());
+        // Audio came back: the silence run reset well below the arm bar.
+        let tick = auto_stop_tick(true, false, false, 3, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
+        assert_eq!(countdown, None);
+        // A later fresh silence stretch re-arms with a full countdown.
+        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, &mut countdown);
+        assert_eq!(
+            re_armed,
+            AutoStopTick::Pending {
+                seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
+            }
+        );
+    }
+
+    #[test]
+    fn auto_stop_tick_respects_dismiss_pause_and_the_setting() {
+        for (enabled, dismissed, paused) in [
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            let mut countdown = Some(30);
+            let tick = auto_stop_tick(
+                enabled,
+                dismissed,
+                paused,
+                AUTO_STOP_ARM_SECS * 2,
+                &mut countdown,
+            );
+            assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
+            assert_eq!(countdown, None, "case ({enabled},{dismissed},{paused})");
+        }
+    }
+
     // --- mix_into (Stage 5 Task 5) ------------------------------------------
 
     #[test]
@@ -2716,6 +2990,8 @@ mod tests {
             input_rms_bits: AtomicU32::new(0.0_f32.to_bits()),
             input_peak_bits: AtomicU32::new(0.0_f32.to_bits()),
             input_sequence: AtomicU64::new(0),
+            silent_run_samples: AtomicU64::new(0),
+            auto_stop_disabled: AtomicBool::new(false),
         })
     }
 

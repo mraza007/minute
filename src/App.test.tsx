@@ -20,6 +20,7 @@ const settings: Settings = {
   summaryInstructions: '',
   autoUpdateCheck: true,
   detectSpeakers: false,
+  autoStopRecording: true,
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {

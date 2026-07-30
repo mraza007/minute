@@ -3,7 +3,7 @@ import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
 import * as ipc from '../ipc/commands'
-import { onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
+import { onAutoStopState, onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
 import type {
   AudioInputDevice,
   DeletedNoteUndo,
@@ -156,6 +156,13 @@ export function useAppState() {
   // extra behavior on enable: kicking off the paired diarization-model
   // downloads (see `toggleDetectSpeakers` below).
   const [tDetectSpeakers, setTDetectSpeakers] = useState(false)
+
+  // Auto-stop (issue #9): the settings toggle (on by default, like
+  // autoUpdateCheck) and the live countdown from `auto-stop-state` events —
+  // `null` = no countdown pending, a number = seconds until the backend
+  // stops the recording on its own.
+  const [tAutoStopRecording, setTAutoStopRecording] = useState(true)
+  const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
 
   // Auto-update (issue #4). `tAutoUpdateCheck` starts `null` (= "settings
   // not loaded yet") so the periodic-check effect below never fires a
@@ -708,6 +715,7 @@ export function useAppState() {
           setTSummaryInstructions(loadedSettings.summaryInstructions ?? '')
           setTAutoUpdateCheck(loadedSettings.autoUpdateCheck ?? true)
           setTDetectSpeakers(loadedSettings.detectSpeakers ?? false)
+          setTAutoStopRecording(loadedSettings.autoStopRecording ?? true)
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -743,6 +751,20 @@ export function useAppState() {
     onRecordingState,
     payload => {
       if (payload.noteId !== activeNoteId) return
+      if (payload.state === 'stopped') {
+        setAutoStopSeconds(null)
+        // A stop this frontend didn't initiate — the auto-stop countdown
+        // expiring (issue #9). Run the same post-stop transition the Stop
+        // button drives, so the view doesn't stay stuck on a recording
+        // that no longer exists. `stopping` gates out the ordinary case
+        // where our own `stopRec` call produced this event.
+        if (!stopping) {
+          setStopping(true)
+          setProcessingFailure(null)
+          finishStop(payload.noteId)
+        }
+        return
+      }
       setRecElapsed(payload.elapsed)
       setPaused(payload.state === 'paused')
       setSystemAudioActive(payload.systemAudioActive)
@@ -750,6 +772,17 @@ export function useAppState() {
       const nextHealth = nextCaptureHealth(captureHealthTracker.current, payload)
       captureHealthTracker.current = nextHealth.tracker
       setCaptureHealth(nextHealth.health)
+    },
+    [],
+  )
+
+  // Auto-stop countdown (issue #9) — `pending` keeps the banner's seconds
+  // fresh, `cancelled` (audio came back, "Keep recording", pause) clears it.
+  useTauriEvent(
+    onAutoStopState,
+    payload => {
+      if (payload.noteId !== activeNoteId) return
+      setAutoStopSeconds(payload.state === 'pending' ? payload.secondsRemaining : null)
     },
     [],
   )
@@ -1061,51 +1094,67 @@ export function useAppState() {
    * render-time state) for the same stable-identity-for-RecordingView's-
    * memo reason as `togglePause`.
    */
+  /**
+   * The post-stop transition, shared by the Stop button's `stopRec` below
+   * and the backend-initiated stop path (the auto-stop countdown expiring —
+   * see the `recording-state` listener's `'stopped'` branch): refresh the
+   * notes/storage lists, select the finalized note, and reset every piece
+   * of live-recording state back to idle.
+   */
+  const finishStop = useCallback((stoppedNoteId: string) => {
+    setProcessingStage('preparing')
+    Promise.all([ipc.listNotes(), ipc.storageStats()])
+      .then(([freshNotes, freshStorage]) => {
+        setNotes(freshNotes)
+        setStorage(freshStorage)
+        invalidateNoteCache(stoppedNoteId)
+        const idx = freshNotes.findIndex(n => n.id === stoppedNoteId)
+        setSel(idx >= 0 ? idx : 0)
+      })
+      .catch(error => {
+        setProcessingFailure({ stage: 'preparing', message: messageOf(error) })
+        reportError(error)
+      })
+      .finally(() => {
+        setView('notes')
+        setActiveNoteId(null)
+        setLiveSegmentsRaw([])
+        setSttStatus('idle')
+        setSttError(null)
+        setSttStatusNoteId(null)
+        setSystemAudioActive(false)
+        setMicrophoneName('Default microphone')
+        setRecordingTitle('New recording')
+        setRecordingMarkers([])
+        captureHealthTracker.current = INITIAL_CAPTURE_HEALTH_TRACKER
+        setCaptureHealth('checking')
+        setProcessingStage('idle')
+        setStopping(false)
+        setNoteTab('overview')
+      })
+  }, [reportError, invalidateNoteCache])
+
   const stopRec = useCallback(() => {
     setProcessingFailure(null)
     setStopping(true)
+    setAutoStopSeconds(null)
     setProcessingStage('saving')
     ipc
       .stopRecording()
-      .then(newNote => {
-        setProcessingStage('preparing')
-        Promise.all([ipc.listNotes(), ipc.storageStats()])
-          .then(([freshNotes, freshStorage]) => {
-            setNotes(freshNotes)
-            setStorage(freshStorage)
-            invalidateNoteCache(newNote.id)
-            const idx = freshNotes.findIndex(n => n.id === newNote.id)
-            setSel(idx >= 0 ? idx : 0)
-          })
-          .catch(error => {
-            setProcessingFailure({ stage: 'preparing', message: messageOf(error) })
-            reportError(error)
-          })
-          .finally(() => {
-            setView('notes')
-            setActiveNoteId(null)
-            setLiveSegmentsRaw([])
-            setSttStatus('idle')
-            setSttError(null)
-            setSttStatusNoteId(null)
-            setSystemAudioActive(false)
-            setMicrophoneName('Default microphone')
-            setRecordingTitle('New recording')
-            setRecordingMarkers([])
-            captureHealthTracker.current = INITIAL_CAPTURE_HEALTH_TRACKER
-            setCaptureHealth('checking')
-            setProcessingStage('idle')
-            setStopping(false)
-            setNoteTab('overview')
-          })
-      })
+      .then(newNote => finishStop(newNote.id))
       .catch(err => {
         setStopping(false)
         setProcessingStage('idle')
         setProcessingFailure({ stage: 'saving', message: messageOf(err) })
         reportError(err)
       })
-  }, [reportError, invalidateNoteCache])
+  }, [reportError, finishStop])
+
+  /** "Keep recording" on the auto-stop banner — suppresses auto-stop for the rest of this recording; the backend confirms with a `cancelled` event. */
+  const keepRecording = useCallback(() => {
+    setAutoStopSeconds(null)
+    ipc.dismissAutoStop().catch(reportError)
+  }, [reportError])
 
   const retryProcessingFailure = useCallback(() => {
     if (processingFailure?.stage === 'saving') {
@@ -1202,6 +1251,20 @@ export function useAppState() {
     // stable-enough pieces actually used.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tDetectSpeakers, reportError, modelManager.models, modelManager.downloadModel])
+
+  /**
+   * Settings screen's "Auto-stop" toggle (issue #9) — same optimistic-
+   * flip-then-persist shape as the toggles above. The recording ticker
+   * reads the live setting every second, so flipping this mid-recording
+   * takes effect immediately.
+   */
+  const toggleAutoStopRecording = useCallback(() => {
+    setTAutoStopRecording(previous => {
+      const flipped = !previous
+      ipc.setSettings({ autoStopRecording: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
 
   /**
    * Settings screen's "Summary style" picker — same optimistic-set-then-
@@ -1466,6 +1529,10 @@ export function useAppState() {
     setSummaryInstructions,
     tDetectSpeakers,
     toggleDetectSpeakers,
+    tAutoStopRecording,
+    toggleAutoStopRecording,
+    autoStopSeconds,
+    keepRecording,
     appVersion,
     tAutoUpdateCheck: tAutoUpdateCheck ?? true,
     toggleAutoUpdateCheck,

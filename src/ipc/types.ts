@@ -268,6 +268,8 @@ export interface Settings {
   autoUpdateCheck: boolean
   /** Run the local speaker-diarization pass after each recording (opt-in). */
   detectSpeakers: boolean
+  /** Auto-stop: after 10 silent minutes mid-recording, warn with a 10-minute countdown, then stop & transcribe (on by default). */
+  autoStopRecording: boolean
 }
 
 /**
@@ -289,6 +291,7 @@ export interface SettingsPatch {
   summaryInstructions?: string
   autoUpdateCheck?: boolean
   detectSpeakers?: boolean
+  autoStopRecording?: boolean
 }
 
 // --- events ----------------------------------------------------------------
@@ -298,6 +301,14 @@ export interface ModelDownloadProgressEvent {
   modelId: string
   downloaded: number
   total: number
+}
+
+/** `audio.rs::AutoStopStatePayload` — event `auto-stop-state`. `pending`
+ * carries the live countdown; `cancelled` clears any banner. */
+export interface AutoStopStatePayload {
+  noteId: string
+  state: 'pending' | 'cancelled'
+  secondsRemaining: number | null
 }
 
 /** `diar.rs::DiarStatusState`, serialized lowercase. */

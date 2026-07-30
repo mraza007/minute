@@ -164,6 +164,9 @@ export const resumeRecording = (): Promise<void> => invokeCmd('resume_recording'
 /** Stops the active recording; resolves with the finalized note's metadata. */
 export const stopRecording = (): Promise<NoteMeta> => invokeCmd('stop_recording')
 
+/** "Keep recording" on the auto-stop banner: suppresses auto-stop for the rest of the active recording. */
+export const dismissAutoStop = (): Promise<void> => invokeCmd('dismiss_auto_stop')
+
 /**
  * Resolves the meeting-detected popup as "Start recording" (Stage 5 Task 2):
  * hides the popup, reports the accepted outcome to the detector, and brings

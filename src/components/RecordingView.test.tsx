@@ -23,6 +23,8 @@ const base = {
   processingFailure: null,
   onRetryProcessing: vi.fn(),
   onDismissProcessingFailure: vi.fn(),
+  autoStopSeconds: null,
+  onKeepRecording: vi.fn(),
 }
 
 describe('RecordingView', () => {
@@ -429,6 +431,27 @@ describe('RecordingView', () => {
       fireEvent.click(screen.getByRole('button', { name: /jump to latest/i }))
       expect(scroller.scrollTop).toBe(1000)
       expect(screen.queryByRole('button', { name: /jump to latest/i })).not.toBeInTheDocument()
+    })
+  })
+
+  describe('auto-stop banner (issue #9)', () => {
+    it('is absent while no countdown is pending', () => {
+      render(<RecordingView {...base} autoStopSeconds={null} />)
+      expect(screen.queryByText(/Nothing has been audible/)).not.toBeInTheDocument()
+    })
+
+    it('shows the countdown and wires Keep recording / Stop now', () => {
+      const onKeepRecording = vi.fn()
+      const stopRec = vi.fn()
+      render(
+        <RecordingView {...base} autoStopSeconds={594} onKeepRecording={onKeepRecording} stopRec={stopRec} />,
+      )
+      expect(screen.getByText(/stop and transcribe in 09:54/)).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Keep recording' }))
+      expect(onKeepRecording).toHaveBeenCalledTimes(1)
+      fireEvent.click(screen.getByRole('button', { name: 'Stop now' }))
+      expect(stopRec).toHaveBeenCalledTimes(1)
     })
   })
 })

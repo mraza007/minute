@@ -21,6 +21,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     summaryInstructions: '',
     autoUpdateCheck: true,
     detectSpeakers: false,
+    autoStopRecording: true,
     libraryRoot: null,
     ...overrides,
   }

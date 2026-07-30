@@ -115,6 +115,18 @@ pub struct Settings {
     /// trigger re-checks install state every time).
     #[serde(default)]
     pub detect_speakers: bool,
+    /// Issue #9: when both audio sources stay effectively silent for 10
+    /// minutes mid-recording, warn with a 10-minute countdown and then
+    /// stop & transcribe (see `audio`'s `auto_stop_tick`). On by default —
+    /// like `autoUpdateCheck`, a deliberate exception to the opt-in
+    /// convention: the failure it prevents (an accidental overnight
+    /// recording — hours of dead air, a huge transcription job, wasted
+    /// disk) is far worse than its false-positive mode (a banner with a
+    /// "Keep recording" button and a 10-minute grace window). `#[serde
+    /// (default = "default_true")]` so older `settings.json` files load
+    /// as enabled.
+    #[serde(default = "default_true")]
+    pub auto_stop_recording: bool,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -139,6 +151,7 @@ impl Default for Settings {
             summary_instructions: String::new(),
             auto_update_check: true,
             detect_speakers: false,
+            auto_stop_recording: true,
         }
     }
 }
@@ -171,6 +184,7 @@ pub struct SettingsPatch {
     pub summary_instructions: Option<String>,
     pub auto_update_check: Option<bool>,
     pub detect_speakers: Option<bool>,
+    pub auto_stop_recording: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -206,6 +220,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.detect_speakers {
         settings.detect_speakers = v;
+    }
+    if let Some(v) = patch.auto_stop_recording {
+        settings.auto_stop_recording = v;
     }
 }
 
@@ -342,6 +359,7 @@ mod tests {
             summary_instructions: String::new(),
             auto_update_check: true,
             detect_speakers: false,
+            auto_stop_recording: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -386,6 +404,7 @@ mod tests {
                 summary_instructions: String::new(),
                 auto_update_check: true,
                 detect_speakers: false,
+                auto_stop_recording: true,
             }
         );
     }
@@ -425,6 +444,7 @@ mod tests {
                 summary_instructions: String::new(),
                 auto_update_check: true,
                 detect_speakers: false,
+                auto_stop_recording: true,
             }
         );
     }
@@ -465,6 +485,7 @@ mod tests {
                 summary_instructions: String::new(),
                 auto_update_check: true,
                 detect_speakers: false,
+                auto_stop_recording: true,
             }
         );
     }
@@ -501,6 +522,7 @@ mod tests {
             summary_instructions: String::new(),
             auto_update_check: true,
             detect_speakers: false,
+            auto_stop_recording: true,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -547,6 +569,7 @@ mod tests {
             summary_instructions: Some("Write in German.".to_string()),
             auto_update_check: Some(false),
             detect_speakers: Some(true),
+            auto_stop_recording: Some(false),
         };
 
         apply_patch(&mut settings, patch);
@@ -559,6 +582,28 @@ mod tests {
         assert_eq!(settings.llm_context_tokens, Some(16_384));
         assert_eq!(settings.summary_style, SummaryStyle::Detailed);
         assert!(settings.detect_speakers);
+        assert!(!settings.auto_stop_recording);
+    }
+
+    #[test]
+    fn settings_json_without_auto_stop_recording_defaults_to_true() {
+        // Auto-stop's migration case (issue #9): a settings.json written by
+        // any earlier build has no "autoStopRecording" key — it must load
+        // as `true` (the deliberate on-by-default exception, same rationale
+        // and serde shape as autoUpdateCheck).
+        let dir = tempdir().unwrap();
+        let pre_auto_stop_json = serde_json::json!({
+            "sttModel": "whisper-small",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": true,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_auto_stop_json).unwrap(),
+        )
+        .unwrap();
+
+        assert!(load_settings(dir.path()).auto_stop_recording);
     }
 
     #[test]
@@ -668,6 +713,7 @@ mod tests {
             summary_instructions: String::new(),
             auto_update_check: true,
             detect_speakers: false,
+            auto_stop_recording: true,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -697,6 +743,7 @@ mod tests {
             summary_instructions: String::new(),
             auto_update_check: true,
             detect_speakers: false,
+            auto_stop_recording: true,
         };
         let mut settings = original.clone();
 

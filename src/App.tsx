@@ -272,6 +272,8 @@ export default function App() {
               processingFailure={s.processingFailure}
               onRetryProcessing={s.retryProcessingFailure}
               onDismissProcessingFailure={s.dismissProcessingFailure}
+              autoStopSeconds={s.autoStopSeconds}
+              onKeepRecording={s.keepRecording}
             />
           )}
           {s.view === 'settings' && (
@@ -301,6 +303,8 @@ export default function App() {
               toggleCaptureSystemAudio={s.toggleCaptureSystemAudio}
               detectSpeakers={s.tDetectSpeakers}
               toggleDetectSpeakers={s.toggleDetectSpeakers}
+              autoStopRecording={s.tAutoStopRecording}
+              toggleAutoStopRecording={s.toggleAutoStopRecording}
               sysAudioAvailability={s.sysAudioAvailability}
               onRequestSysAudioPermission={s.requestSysAudioPermission}
               onExportDiagnostics={s.exportDiagnostics}

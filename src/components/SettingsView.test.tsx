@@ -92,6 +92,8 @@ const base = {
   onRequestSysAudioPermission: vi.fn(),
   detectSpeakers: false,
   toggleDetectSpeakers: vi.fn(),
+  autoStopRecording: true,
+  toggleAutoStopRecording: vi.fn(),
   onExportDiagnostics: vi.fn().mockResolvedValue(undefined),
   summaryStyle: 'standard' as const,
   setSummaryStyle: vi.fn(),
@@ -564,6 +566,24 @@ describe('SettingsView', () => {
       fireEvent.change(screen.getByLabelText('Custom instructions'), { target: { value: '' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       expect(setSummaryInstructions).toHaveBeenCalledWith('')
+    })
+  })
+
+  describe('Auto-stop (issue #9)', () => {
+    it('flips the setting via its toggle', () => {
+      const toggleAutoStopRecording = vi.fn()
+      render(<SettingsView {...base} toggleAutoStopRecording={toggleAutoStopRecording} />)
+      fireEvent.click(
+        screen.getByRole('switch', { name: 'Stop automatically when the meeting seems over' }),
+      )
+      expect(toggleAutoStopRecording).toHaveBeenCalledTimes(1)
+    })
+
+    it('reflects the persisted on-by-default state', () => {
+      render(<SettingsView {...base} />)
+      expect(
+        screen.getByRole('switch', { name: 'Stop automatically when the meeting seems over' }),
+      ).toHaveAttribute('aria-checked', 'true')
     })
   })
 

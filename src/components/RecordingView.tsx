@@ -62,6 +62,10 @@ interface RecordingViewProps {
   processingFailure: ProcessingFailure | null
   onRetryProcessing: () => void
   onDismissProcessingFailure: () => void
+  /** Auto-stop countdown (issue #9): seconds until the backend stops this silent recording on its own; `null` = no countdown pending. */
+  autoStopSeconds: number | null
+  /** "Keep recording" on the auto-stop banner — suppresses auto-stop for the rest of this recording. */
+  onKeepRecording: () => void
 }
 
 // Persistent `role="status"` container — always mounted for the whole
@@ -656,6 +660,8 @@ export const RecordingView = memo(function RecordingView({
   processingFailure,
   onRetryProcessing,
   onDismissProcessingFailure,
+  autoStopSeconds,
+  onKeepRecording,
 }: RecordingViewProps) {
   const captureSummary = systemAudioActive ? 'Microphone + system audio' : 'Microphone only'
   const transcriptState =
@@ -789,6 +795,21 @@ export const RecordingView = memo(function RecordingView({
         ) : (
           <>
             <RecordingHealthBar captureHealth={captureHealth} transcript={transcript} />
+            {autoStopSeconds !== null && (
+              <div className="recording-recovery" role="status">
+                <span>
+                  <strong>Nothing has been audible for a while.</strong>
+                  Minute will stop and transcribe in {formatMmSs(autoStopSeconds)} unless audio
+                  returns.
+                </span>
+                <button type="button" className="btn-outline" onClick={onKeepRecording}>
+                  Keep recording
+                </button>
+                <button type="button" className="btn-quiet" onClick={stopRec}>
+                  Stop now
+                </button>
+              </div>
+            )}
             {processingFailure?.stage === 'saving' && (
               <div className="recording-recovery" role="status">
                 <span>

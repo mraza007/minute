@@ -44,6 +44,9 @@ export interface SettingsViewProps {
   detectSpeakers: boolean
   /** Also downloads the two diarization models on enable — see `useAppState.toggleDetectSpeakers`. */
   toggleDetectSpeakers: () => void
+  /** Auto-stop (issue #9): stop & transcribe after prolonged silence (on by default). */
+  autoStopRecording: boolean
+  toggleAutoStopRecording: () => void
   onExportDiagnostics: () => Promise<void>
   /** Settings' summary style — adjusts prompt guidance and response length backend-side. */
   summaryStyle: SummaryStyle
@@ -483,6 +486,8 @@ export function SettingsView({
   onRequestSysAudioPermission,
   detectSpeakers,
   toggleDetectSpeakers,
+  autoStopRecording,
+  toggleAutoStopRecording,
   onExportDiagnostics,
   summaryStyle,
   setSummaryStyle,
@@ -723,6 +728,19 @@ export function SettingsView({
           {sysAudioAvailability === 'notGranted' && (
             <div style={fineTextStyle}>A freshly granted permission may need Minute to restart before it takes effect.</div>
           )}
+        </Section>
+
+        <Section title="Auto-stop">
+          <Toggle
+            on={autoStopRecording}
+            onToggle={toggleAutoStopRecording}
+            label="Stop automatically when the meeting seems over"
+          />
+          <div style={noteTextStyle}>
+            If nothing has been audible for 10 minutes — no mic, no system audio — Minute shows a warning with a
+            10-minute countdown, then stops and transcribes on its own. Any sound, or one click, keeps it going. Saves
+            a forgotten recording from running overnight.
+          </div>
         </Section>
 
         <Section title="Speakers">
