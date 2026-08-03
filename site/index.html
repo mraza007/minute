@@ -16,40 +16,30 @@
   <style>
     :root {
       --canvas: #e7dfce;
-      --leaf: #f4efe4;
-      --chrome: #ece5d6;
       --ink: #211d18;
       --ink-2: #4d463c;
-      --ink-3: #756a5a;
-      --rule: rgba(33, 29, 24, 0.22);
+      --ink-3: #75695a;
+      --rule: rgba(33, 29, 24, 0.2);
       --rule-soft: rgba(33, 29, 24, 0.1);
       --accent: #c8412a;
       --accent-solid: #b8341d;
-      --accent-wash: rgba(200, 65, 42, 0.08);
       --serif: 'Charter', 'Iowan Old Style', 'Palatino Linotype', ui-serif, Georgia, serif;
       --sans: 'Instrument Sans', system-ui, -apple-system, sans-serif;
-      --gutter: 112px;
-      --gap: 36px;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --canvas: #17150f;
-        --leaf: #221e18;
-        --chrome: #1d1a14;
         --ink: #f0e9db;
         --ink-2: #c9c0af;
-        --ink-3: #94897a;
-        --rule: rgba(240, 233, 219, 0.24);
+        --ink-3: #948a78;
+        --rule: rgba(240, 233, 219, 0.22);
         --rule-soft: rgba(240, 233, 219, 0.1);
         --accent: #e05a42;
         --accent-solid: #b8341d;
-        --accent-wash: rgba(224, 90, 66, 0.1);
       }
     }
 
     * { box-sizing: border-box; margin: 0; }
-
-    html { scroll-behavior: smooth; }
 
     body {
       font-family: var(--sans);
@@ -57,16 +47,13 @@
       color: var(--ink);
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
-      position: relative;
-      padding-bottom: 64px; /* room for the playback strip */
     }
-    /* paper grain */
     body::before {
       content: '';
       position: fixed;
       inset: 0;
       pointer-events: none;
-      z-index: 4;
+      z-index: 1;
       opacity: 0.5;
       mix-blend-mode: multiply;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.13 0 0 0 0 0.11 0 0 0 0 0.09 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
@@ -78,27 +65,19 @@
     a { color: inherit; }
     img { max-width: 100%; height: auto; display: block; }
 
-    /* the recording edge — loud in exactly one place */
-    .rec-edge {
-      position: fixed;
-      top: 0; left: 0; right: 0;
-      height: 2px;
-      background: var(--accent);
-      z-index: 6;
-    }
-
-    .sheet {
-      max-width: 1080px;
+    .page {
+      position: relative;
+      z-index: 2;
+      max-width: 860px;
       margin: 0 auto;
-      padding: 0 28px;
+      padding: 0 24px;
     }
 
-    /* ---------- title bar ---------- */
-    .titlebar {
+    header {
       display: flex;
-      align-items: center;
-      gap: 18px;
-      padding: 20px 0 14px;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 24px 0 16px;
       border-bottom: 1px solid var(--rule);
     }
     .wordmark {
@@ -107,721 +86,259 @@
       font-weight: 700;
       text-decoration: none;
     }
-    .wordmark .dot { color: var(--accent); }
-    .titlebar nav {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      font-size: 0.85rem;
+    .wordmark span { color: var(--accent); }
+    header a[href*="github"] {
+      font-size: 0.86rem;
+      color: var(--ink-2);
+      text-decoration: none;
     }
-    .titlebar nav a { text-decoration: none; color: var(--ink-2); }
-    .titlebar nav a:hover { color: var(--ink); }
-    .rec-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 0.74rem;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      color: var(--accent);
-      font-variant-numeric: tabular-nums;
-      border: 1px solid var(--accent);
-      border-radius: 999px;
-      padding: 4px 12px;
-      white-space: nowrap;
-    }
-    .rec-chip .d {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: blink 2.2s ease-in-out infinite;
-    }
-    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    header a[href*="github"]:hover { color: var(--ink); }
 
-    /* ---------- the document: one ruled margin, all the way down ---------- */
-    .doc {
-      background:
-        linear-gradient(var(--rule) 0 0) no-repeat var(--gutter) 0 / 1px 100%;
-    }
-    .row {
-      display: grid;
-      grid-template-columns: calc(var(--gutter) - 20px) minmax(0, 1fr);
-      gap: 20px var(--gap);
-    }
-    .ts {
-      text-align: right;
-      font-size: 0.78rem;
-      color: var(--ink-3);
-      font-variant-numeric: tabular-nums;
-      padding-top: 0.4em;
-      user-select: none;
-    }
-    .ts a { text-decoration: none; color: inherit; }
-    .ts a:hover { color: var(--accent); }
-
-    /* ---------- hero ---------- */
-    .hero { padding-top: 72px; }
-    .hero .ts { padding-top: 2.2em; }
-    .kick {
-      font-size: 0.74rem;
-      font-weight: 600;
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      color: var(--ink-3);
-      margin-bottom: 18px;
-    }
-    .kick b { color: var(--accent); font-weight: 600; }
+    .hero { padding: 72px 0 0; }
     h1 {
       font-family: var(--serif);
       font-weight: 700;
-      font-size: clamp(2.5rem, 6.2vw, 4.4rem);
-      line-height: 1.04;
+      font-size: clamp(2.3rem, 5.8vw, 3.6rem);
+      line-height: 1.08;
       letter-spacing: -0.015em;
-      max-width: 16ch;
+      max-width: 18ch;
       text-wrap: balance;
     }
     h1 em { font-style: italic; color: var(--accent); }
-    .note-meta {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px 10px;
-      margin-top: 20px;
-      font-size: 0.86rem;
-      color: var(--ink-3);
-    }
-    .note-meta .ok {
-      color: #3d7a33;
-      font-weight: 600;
-      font-size: 0.74rem;
-      letter-spacing: 0.12em;
-    }
-    @media (prefers-color-scheme: dark) { .note-meta .ok { color: #8fbc7f; } }
-    .note-meta .sep { opacity: 0.55; }
     .lede {
       font-family: var(--serif);
-      font-size: clamp(1.05rem, 1.9vw, 1.28rem);
+      font-size: clamp(1.02rem, 1.8vw, 1.2rem);
       color: var(--ink-2);
-      max-width: 54ch;
-      margin-top: 22px;
+      max-width: 52ch;
+      margin-top: 18px;
     }
     .cta {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 14px;
-      margin-top: 32px;
+      gap: 16px;
+      margin-top: 30px;
     }
     .btn {
       font-size: 0.92rem;
       font-weight: 600;
       text-decoration: none;
-      padding: 12px 22px;
+      padding: 12px 24px;
       border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      gap: 9px;
+      background: var(--accent-solid);
+      color: #fdf8ee;
     }
-    .btn-primary { background: var(--accent-solid); color: #fdf8ee; }
-    .btn-primary:hover { background: #a52c17; }
-    .btn-primary .d {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #fdf8ee;
-      animation: blink 2.4s ease-in-out infinite;
+    .btn:hover { background: #a52c17; }
+    .cta a:not(.btn) {
+      font-size: 0.88rem;
+      color: var(--ink-2);
     }
-    .btn-quiet { color: var(--ink-2); border: 1px solid var(--rule); }
-    .btn-quiet:hover { color: var(--ink); border-color: var(--ink-3); }
-    .cta-note { font-size: 0.8rem; color: var(--ink-3); flex-basis: 100%; }
-    .cta-note a { color: var(--ink-3); }
-
-    /* staggered entrance — transform/opacity only */
-    .hero .in { animation: rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
-    .hero .in:nth-child(2) { animation-delay: 0.08s; }
-    .hero .in:nth-child(3) { animation-delay: 0.16s; }
-    .hero .in:nth-child(4) { animation-delay: 0.24s; }
-    .hero .in:nth-child(5) { animation-delay: 0.32s; }
-    @keyframes rise {
-      from { opacity: 0; transform: translateY(14px); }
-      to { opacity: 1; transform: none; }
+    .cta-note {
+      font-size: 0.8rem;
+      color: var(--ink-3);
+      margin-top: 12px;
     }
-    @media (prefers-reduced-motion: reduce) {
-      html { scroll-behavior: auto; }
-      *, *::before, *::after { animation: none !important; transition: none !important; }
-    }
-
-    /* ---------- markers nav ---------- */
-    .markers {
-      margin-top: 46px;
-      padding: 14px 0;
+    .facts {
+      margin-top: 26px;
+      padding-top: 16px;
       border-top: 1px solid var(--rule-soft);
-      border-bottom: 1px solid var(--rule-soft);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .marker {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 8px;
       font-size: 0.8rem;
-      text-decoration: none;
-      border: 1px solid var(--rule);
-      border-radius: 5px;
-      padding: 5px 11px;
-      color: var(--ink-2);
-      background: var(--leaf);
-    }
-    .marker b {
-      font-weight: 600;
-      color: var(--accent);
-      font-variant-numeric: tabular-nums;
-    }
-    .marker:hover { border-color: var(--accent); color: var(--ink); }
-
-    /* ---------- shots ---------- */
-    .shot { margin-top: 26px; }
-    .shot img {
-      border-radius: 9px;
-      border: 1px solid var(--rule-soft);
-    }
-    /* full-bleed right: image escapes the text column */
-    @media (min-width: 900px) {
-      .shot.bleed { margin-right: calc((100vw - 1080px) / -2 - -28px); }
-      .shot.bleed img { border-radius: 9px 0 0 9px; border-right: none; }
-    }
-
-    /* ---------- sections as transcript ---------- */
-    .row + .row { margin-top: 78px; }
-    .row + .row .ts { padding-top: 0.55em; }
-    .mark-head {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 10px;
-      font-size: 0.8rem;
-      border: 1px solid var(--rule);
-      border-left: 2px solid var(--accent);
-      border-radius: 5px;
-      padding: 5px 12px;
-      background: var(--leaf);
-      color: var(--ink-2);
-    }
-    .mark-head b { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
-    section.block h2 {
-      font-family: var(--serif);
-      font-weight: 700;
-      font-size: clamp(1.65rem, 3.2vw, 2.35rem);
-      line-height: 1.14;
-      letter-spacing: -0.01em;
-      margin-top: 20px;
-      max-width: 26ch;
-      text-wrap: balance;
-    }
-
-    .turn { margin-top: 22px; max-width: 62ch; }
-    .who {
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.13em;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
       color: var(--ink-3);
-      display: block;
-      margin-bottom: 4px;
     }
-    .who.you { color: var(--accent); }
-    .turn p {
-      font-family: var(--serif);
-      font-size: 1.07rem;
-      color: var(--ink-2);
-    }
-    .turn p strong { color: var(--ink); font-weight: 700; }
 
-    /* ---------- the ledger ---------- */
-    .ledger { margin-top: 26px; max-width: 620px; }
+    .shot { margin-top: 40px; }
+    .shot img {
+      border-radius: 8px;
+      border: 1px solid var(--rule-soft);
+    }
+
+    section { padding-top: 72px; }
+    h2 {
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: clamp(1.4rem, 2.8vw, 1.9rem);
+      line-height: 1.15;
+      letter-spacing: -0.01em;
+      max-width: 30ch;
+    }
+    section > p {
+      font-family: var(--serif);
+      font-size: 1.04rem;
+      color: var(--ink-2);
+      max-width: 58ch;
+      margin-top: 12px;
+    }
+
+    .ledger { margin-top: 24px; }
     .ledger-row {
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 20px;
       align-items: baseline;
-      padding: 13px 0;
+      padding: 12px 0;
       border-bottom: 1px solid var(--rule-soft);
       font-family: var(--serif);
-      font-size: 1.03rem;
+      font-size: 1.02rem;
     }
     .ledger-row:first-child { border-top: 1px solid var(--rule); }
     .verdict {
       font-family: var(--sans);
       font-size: 0.73rem;
       font-weight: 600;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.09em;
       text-transform: uppercase;
       color: var(--ink-3);
       white-space: nowrap;
     }
     .verdict.never { color: var(--accent); }
-    .ledger-note { font-size: 0.85rem; color: var(--ink-3); margin-top: 12px; }
-    .ledger-note a { color: var(--ink-3); }
+    .ledger + p {
+      font-size: 0.85rem;
+      color: var(--ink-3);
+      margin-top: 12px;
+      font-family: var(--sans);
+    }
+    .ledger + p a { color: var(--ink-3); }
 
-    /* ---------- action items (stack) ---------- */
-    .actions { margin-top: 26px; max-width: 620px; }
-    .action {
-      display: grid;
-      grid-template-columns: 22px 1fr;
-      gap: 14px;
-      padding: 12px 0;
-      border-bottom: 1px solid var(--rule-soft);
+    .tech {
+      margin-top: 20px;
       font-family: var(--serif);
-      font-size: 1.03rem;
+      font-size: 1.02rem;
       color: var(--ink-2);
     }
-    .action .box {
-      width: 15px; height: 15px;
-      margin-top: 5px;
-      border: 1.5px solid var(--ink-3);
-      border-radius: 3px;
-      position: relative;
-    }
-    .action.done .box { border-color: var(--accent); background: var(--accent-wash); }
-    .action.done .box::after {
-      content: '';
-      position: absolute;
-      left: 3.5px; top: 0.5px;
-      width: 5px; height: 9px;
-      border: solid var(--accent);
-      border-width: 0 2px 2px 0;
-      transform: rotate(40deg);
-    }
-    .action b { color: var(--ink); font-weight: 700; }
 
-    /* ---------- summary + fin ---------- */
-    .summary-quote {
-      font-family: var(--serif);
-      font-size: clamp(1.5rem, 3.4vw, 2.3rem);
-      font-weight: 700;
-      line-height: 1.2;
-      letter-spacing: -0.01em;
-      max-width: 22ch;
-      margin-top: 20px;
-      text-wrap: balance;
+    .fin {
+      margin-top: 88px;
+      border-top: 1px solid var(--rule);
+      padding-top: 56px;
     }
-    .summary-quote em { font-style: italic; color: var(--accent); }
+    .fin h2 { max-width: none; }
+    .fin em { font-style: italic; color: var(--accent); }
 
     footer {
-      margin-top: 90px;
+      margin-top: 72px;
       border-top: 1px solid var(--rule);
-      padding: 20px 0 34px;
+      padding: 18px 0 36px;
       display: flex;
       flex-wrap: wrap;
-      gap: 10px 26px;
+      gap: 8px 24px;
       font-size: 0.82rem;
       color: var(--ink-3);
     }
     footer a { color: var(--ink-3); }
     footer .spacer { flex: 1; }
-
-    /* ---------- playback strip ---------- */
-    .playbar {
-      position: fixed;
-      left: 0; right: 0; bottom: 0;
-      z-index: 5;
-      background: var(--chrome);
-      border-top: 1px solid var(--rule);
-    }
-    .playbar-inner {
-      max-width: 1080px;
-      margin: 0 auto;
-      padding: 10px 28px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    .play-btn {
-      width: 34px; height: 34px;
-      border-radius: 50%;
-      border: none;
-      background: var(--ink);
-      color: var(--canvas);
-      cursor: pointer;
-      display: grid;
-      place-items: center;
-      padding: 0;
-      flex: none;
-    }
-    .play-btn:hover { background: var(--accent-solid); color: #fdf8ee; }
-    .play-btn svg { display: block; }
-    .track {
-      flex: 1;
-      height: 3px;
-      background: var(--rule-soft);
-      border-radius: 2px;
-      position: relative;
-    }
-    .track .fill {
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 0%;
-      background: var(--accent);
-      border-radius: 2px;
-    }
-    .track .head {
-      position: absolute;
-      top: 50%;
-      left: 0%;
-      width: 13px; height: 13px;
-      border-radius: 50%;
-      background: var(--canvas);
-      border: 2px solid var(--accent);
-      transform: translate(-50%, -50%);
-    }
-    .clock {
-      font-size: 0.8rem;
-      color: var(--ink-2);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
-    .playbar .label {
-      font-size: 0.7rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--ink-3);
-      white-space: nowrap;
-    }
-    @media (max-width: 640px) { .playbar .label { display: none; } }
-
-    /* ---------- small screens: gutter folds inline ---------- */
-    @media (max-width: 760px) {
-      :root { --gutter: 0px; }
-      .doc { background: none; }
-      .row { grid-template-columns: 1fr; gap: 6px; }
-      .ts {
-        text-align: left;
-        padding-top: 0;
-        border-left: 2px solid var(--accent);
-        padding-left: 10px;
-      }
-      .hero .ts { padding-top: 0; }
-    }
   </style>
 </head>
 <body>
-  <div class="rec-edge" aria-hidden="true"></div>
-
-  <div class="sheet">
-    <header class="titlebar">
-      <a class="wordmark" href="#">Minute<span class="dot">.</span></a>
-      <nav aria-label="Main">
-        <a href="https://github.com/mraza007/minute">GitHub</a>
-        <a href="https://github.com/mraza007/minute/releases">Releases</a>
-        <span class="rec-chip" aria-label="Scroll progress as recording time"><span class="d"></span>REC <span id="rec-clock">00:00</span></span>
-      </nav>
+  <div class="page">
+    <header>
+      <a class="wordmark" href="#">Minute<span>.</span></a>
+      <a href="https://github.com/mraza007/minute">GitHub</a>
     </header>
 
-    <main class="doc">
-      <!-- 00:00 — title -->
-      <div class="row hero">
-        <div class="ts">00:00</div>
-        <div>
-          <p class="kick in">New recording <b>· transcribed by Minute, on this Mac</b></p>
-          <h1 class="in">Meeting notes that <em>never leave</em> your Mac.</h1>
-          <div class="note-meta in">
-            <span class="ok">● READY</span><span class="sep">·</span>
-            <span>Free</span><span class="sep">·</span>
-            <span>Open source, MIT</span><span class="sep">·</span>
-            <span>macOS</span><span class="sep">·</span>
-            <span>no account</span><span class="sep">·</span>
-            <span>stored locally</span>
-          </div>
-          <p class="lede in">
-            Minute records your meetings, transcribes them as you speak, labels
-            who said what, and writes the summary, decisions, and action items —
-            with models that run on your Mac, not somebody else's server.
-          </p>
-          <div class="cta in">
-            <a class="btn btn-primary" href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-arm64.zip">
-              <span class="d" aria-hidden="true"></span>Download for Apple Silicon
-            </a>
-            <a class="btn btn-quiet" href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-x86_64.zip">Intel build</a>
-            <span class="cta-note">Version 1.5.0 · signed &amp; notarized by Apple · <a href="https://github.com/mraza007/minute/releases/latest">all releases</a></span>
-          </div>
-
-          <nav class="markers" aria-label="Sections, as recording markers">
-            <a class="marker" href="#privacy"><b>02:14</b> Where the audio goes</a>
-            <a class="marker" href="#live"><b>07:52</b> Live transcription</a>
-            <a class="marker" href="#ask"><b>11:30</b> Ask your notes</a>
-            <a class="marker" href="#detect"><b>15:03</b> Meeting detection</a>
-            <a class="marker" href="#models"><b>19:41</b> Models</a>
-            <a class="marker" href="#hood"><b>23:10</b> Under the hood</a>
-          </nav>
-
-          <div class="shot bleed">
-            <img src="assets/hero.jpg" width="1800" height="1125"
-                 alt="Minute showing a meeting note with live transcript, speaker labels, summary, decisions, and action items" />
-          </div>
+    <main>
+      <div class="hero">
+        <h1>Meeting notes that <em>never leave</em> your Mac.</h1>
+        <p class="lede">
+          Minute records your meetings, transcribes them as you speak, labels
+          who said what, and writes the summary, decisions, and action items.
+          The models run on your Mac — not somebody else's server.
+        </p>
+        <div class="cta">
+          <a class="btn" href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-arm64.zip">Download for Apple Silicon</a>
+          <a href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-x86_64.zip">Intel build</a>
+        </div>
+        <p class="cta-note">Version 1.5.0 · signed &amp; notarized by Apple · <a href="https://github.com/mraza007/minute/releases/latest">all releases</a></p>
+        <p class="facts">Free · Open source, MIT · macOS · No account</p>
+        <div class="shot">
+          <img src="assets/hero.jpg" width="1800" height="1125"
+               alt="Minute showing a meeting note with live transcript, speaker labels, summary, decisions, and action items" />
         </div>
       </div>
 
-      <!-- 02:14 — privacy -->
-      <div class="row">
-        <div class="ts"><a href="#privacy">02:14</a></div>
-        <section class="block" id="privacy">
-          <span class="mark-head"><b>02:14</b> Where the audio goes</span>
-          <h2>The part everyone asks first.</h2>
-          <div class="turn">
-            <span class="who you">You</span>
-            <p>Where does the audio go when I hit record?</p>
-          </div>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p><strong>A folder on your disk.</strong> Audio, transcript, and
-            summary are plain files — text and WAV — that open without me.
-            Delete the app and your notes are still yours.</p>
-          </div>
-          <div class="turn">
-            <span class="who you">You</span>
-            <p>And the transcription? The AI summaries?</p>
-          </div>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p>Whisper and a local LLM, running in-process on your Mac's own
-            silicon. <strong>Turn off Wi-Fi and record</strong> — everything
-            works exactly the same, because none of it ever used the network.</p>
-          </div>
+      <section>
+        <h2>Everything the app sends over the network</h2>
+        <div class="ledger">
+          <div class="ledger-row"><span>Your audio</span><span class="verdict never">Never sent</span></div>
+          <div class="ledger-row"><span>Your transcripts &amp; notes</span><span class="verdict never">Never sent</span></div>
+          <div class="ledger-row"><span>Analytics or telemetry</span><span class="verdict never">None exists</span></div>
+          <div class="ledger-row"><span>Model download</span><span class="verdict">Once, on first use</span></div>
+          <div class="ledger-row"><span>Update check against GitHub</span><span class="verdict">Optional — switch it off</span></div>
+        </div>
+        <p>That's the whole list. Turn off Wi-Fi and everything still works.
+        The <a href="https://github.com/mraza007/minute">code is open</a> — you can check.</p>
+      </section>
 
-          <div class="ledger" role="table" aria-label="Complete list of network traffic">
-            <div class="ledger-row" role="row"><span role="cell">Your audio</span><span class="verdict never" role="cell">Never sent</span></div>
-            <div class="ledger-row" role="row"><span role="cell">Your transcripts &amp; notes</span><span class="verdict never" role="cell">Never sent</span></div>
-            <div class="ledger-row" role="row"><span role="cell">Analytics or telemetry</span><span class="verdict never" role="cell">None exists</span></div>
-            <div class="ledger-row" role="row"><span role="cell">Model download</span><span class="verdict" role="cell">Once, on first use</span></div>
-            <div class="ledger-row" role="row"><span role="cell">Update check against GitHub</span><span class="verdict" role="cell">Optional — switch it off</span></div>
-          </div>
-          <p class="ledger-note">That's the whole ledger. The
-          <a href="https://github.com/mraza007/minute">code is open</a> — you can check.</p>
-        </section>
-      </div>
+      <section>
+        <h2>Transcribed as you speak, every speaker labeled</h2>
+        <p>On-device Whisper keeps pace with the conversation, and local
+        diarization works out who said what. Timestamps play the audio.</p>
+        <div class="shot">
+          <img src="assets/recording.jpg" width="1800" height="1125" loading="lazy"
+               alt="A live recording in Minute with real-time transcription and speaker labels" />
+        </div>
+      </section>
 
-      <!-- 07:52 — live transcription -->
-      <div class="row">
-        <div class="ts"><a href="#live">07:52</a></div>
-        <section class="block" id="live">
-          <span class="mark-head"><b>07:52</b> Live transcription</span>
-          <h2>Transcribed as you speak, every speaker labeled.</h2>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p>On-device Whisper keeps pace with the conversation, and fully
-            local diarization works out who said what — so the transcript reads
-            like a conversation, not a wall of text. Timestamps play the audio;
-            the margin is the seek bar.</p>
-          </div>
-          <div class="shot bleed">
-            <img src="assets/recording.jpg" width="1800" height="1125" loading="lazy"
-                 alt="A live recording in Minute with real-time transcription and speaker labels" />
-          </div>
-        </section>
-      </div>
+      <section>
+        <h2>Ask your notes, get answers with citations</h2>
+        <p>Ask any meeting a question. Answers cite the second it was said,
+        and clicking a citation jumps there.</p>
+        <div class="shot">
+          <img src="assets/ask.jpg" width="1800" height="1125" loading="lazy"
+               alt="Asking questions about a meeting and getting answers with timestamp citations" />
+        </div>
+      </section>
 
-      <!-- 11:30 — ask -->
-      <div class="row">
-        <div class="ts"><a href="#ask">11:30</a></div>
-        <section class="block" id="ask">
-          <span class="mark-head"><b>11:30</b> Ask your notes</span>
-          <h2>Answers with receipts.</h2>
-          <div class="turn">
-            <span class="who you">You</span>
-            <p>What did we decide about the launch date?</p>
-          </div>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p>The 14th holds if Thursday's load-testing pass comes back clean
-            <strong>[03:05]</strong>; otherwise the team pushes to the 17th as
-            the fallback <strong>[07:52]</strong> — every claim cited to the
-            second it was said, computed locally like everything else.</p>
-          </div>
-          <div class="shot bleed">
-            <img src="assets/ask.jpg" width="1800" height="1125" loading="lazy"
-                 alt="Asking questions about a meeting and getting answers with timestamp citations" />
-          </div>
-        </section>
-      </div>
+      <section>
+        <h2>It notices when a meeting starts</h2>
+        <p>When Zoom, Teams, or a browser call uses your mic, a quiet pill
+        offers to record. It watches device state, never audio. Off by
+        default.</p>
+        <div class="shot">
+          <img src="assets/popup.jpg" width="1800" height="1125" loading="lazy"
+               alt="Minute's meeting-detected pill offering to start recording when Zoom is using the microphone" />
+        </div>
+      </section>
 
-      <!-- 15:03 — detection -->
-      <div class="row">
-        <div class="ts"><a href="#detect">15:03</a></div>
-        <section class="block" id="detect">
-          <span class="mark-head"><b>15:03</b> Meeting detection</span>
-          <h2>A call starts. One click and it's on the record.</h2>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p>When Zoom, Teams, or a browser call starts using your mic, a
-            quiet pill appears — one click starts recording. It watches device
-            <em>state</em>, never audio, and it's <strong>off by
-            default</strong>.</p>
-          </div>
-          <div class="shot bleed">
-            <img src="assets/popup.jpg" width="1800" height="1125" loading="lazy"
-                 alt="Minute's meeting-detected pill offering to start recording when Zoom is using the microphone" />
-          </div>
-        </section>
-      </div>
+      <section>
+        <h2>Pick your models</h2>
+        <p>Choose the Whisper size and summary model that fit your Mac's
+        memory. Offline after the download.</p>
+        <div class="shot">
+          <img src="assets/models.jpg" width="1800" height="1125" loading="lazy"
+               alt="Model manager showing Whisper and local LLM options with hardware recommendations" />
+        </div>
+      </section>
 
-      <!-- 19:41 — models -->
-      <div class="row">
-        <div class="ts"><a href="#models">19:41</a></div>
-        <section class="block" id="models">
-          <span class="mark-head"><b>19:41</b> Models</span>
-          <h2>Your hardware. Your models. Pick the brains.</h2>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p>Choose your Whisper size and summary model with honest
-            recommendations for your Mac's memory — guidance, not benchmarks.
-            Metal-accelerated, offline after the download.</p>
-          </div>
-          <div class="shot bleed">
-            <img src="assets/models.jpg" width="1800" height="1125" loading="lazy"
-                 alt="Model manager showing Whisper and local LLM options with hardware recommendations" />
-          </div>
-        </section>
-      </div>
+      <section>
+        <h2>Native, not wrapped</h2>
+        <p class="tech">A Rust app with whisper.cpp and llama.cpp compiled in,
+        running on Metal. No Electron, no Python runtime. Notes are plain text
+        and WAV in a folder you own. Signed and notarized by Apple. MIT
+        licensed.</p>
+        <div class="shot">
+          <img src="assets/dark.jpg" width="1800" height="1125" loading="lazy"
+               alt="Minute in dark mode" />
+        </div>
+      </section>
 
-      <!-- 23:10 — under the hood -->
-      <div class="row">
-        <div class="ts"><a href="#hood">23:10</a></div>
-        <section class="block" id="hood">
-          <span class="mark-head"><b>23:10</b> Under the hood</span>
-          <h2>Native, not wrapped.</h2>
-          <div class="turn">
-            <span class="who">Minute</span>
-            <p>No Electron, no Python runtime, no Docker sidecar. A Rust app
-            with whisper.cpp and llama.cpp compiled in, running on Metal —
-            signed and notarized by Apple, updating itself from GitHub
-            releases.</p>
-          </div>
-          <div class="actions" aria-label="Action items">
-            <div class="action done"><span class="box" aria-hidden="true"></span><span><b>whisper.cpp</b> — on-device transcription</span></div>
-            <div class="action done"><span class="box" aria-hidden="true"></span><span><b>llama.cpp</b> — summaries, decisions, ask</span></div>
-            <div class="action done"><span class="box" aria-hidden="true"></span><span><b>Metal</b> — Apple-silicon acceleration</span></div>
-            <div class="action done"><span class="box" aria-hidden="true"></span><span><b>Rust + Tauri 2</b> — a small, fast native app</span></div>
-            <div class="action done"><span class="box" aria-hidden="true"></span><span><b>Plain files</b> — text and WAV, no lock-in</span></div>
-            <div class="action done"><span class="box" aria-hidden="true"></span><span><b>MIT license</b> — free, forever, auditable</span></div>
-          </div>
-
-          <div class="shot bleed">
-            <img src="assets/dark.jpg" width="1800" height="1125" loading="lazy"
-                 alt="Minute in dark mode — ink on dark paper" />
-          </div>
-        </section>
-      </div>
-
-      <!-- 27:12 — summary -->
-      <div class="row">
-        <div class="ts">27:12</div>
-        <section class="block" id="fin">
-          <span class="mark-head"><b>27:12</b> Summary</span>
-          <p class="summary-quote">Your meetings are yours. <em>Keep them that
-          way.</em></p>
-          <div class="cta">
-            <a class="btn btn-primary" href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-arm64.zip">
-              <span class="d" aria-hidden="true"></span>Download for Apple Silicon
-            </a>
-            <a class="btn btn-quiet" href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-x86_64.zip">Intel build</a>
-            <span class="cta-note">Free · open source · no account</span>
-          </div>
-        </section>
+      <div class="fin">
+        <h2>Your meetings are yours. <em>Keep them that way.</em></h2>
+        <div class="cta">
+          <a class="btn" href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-arm64.zip">Download for Apple Silicon</a>
+          <a href="https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-x86_64.zip">Intel build</a>
+        </div>
       </div>
     </main>
 
     <footer>
-      <span>Minute — a notebook, not a microphone for somebody else's server.</span>
+      <span>Minute — a notebook, not a microphone.</span>
       <span class="spacer"></span>
       <a href="https://github.com/mraza007/minute">GitHub</a>
       <a href="https://github.com/mraza007/minute/releases">Releases</a>
       <a href="https://github.com/mraza007/minute/blob/main/LICENSE">MIT License</a>
     </footer>
   </div>
-
-  <div class="playbar" aria-hidden="false">
-    <div class="playbar-inner">
-      <button class="play-btn" id="play" aria-label="Play — scroll through the page like a recording">
-        <svg id="play-icon" width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M2.5 1.2v9.6L10.5 6z"/></svg>
-      </button>
-      <div class="track" aria-hidden="true">
-        <div class="fill" id="fill"></div>
-        <div class="head" id="head"></div>
-      </div>
-      <span class="clock"><span id="elapsed">00:00</span> / 28:00</span>
-      <span class="label">This page is the recording</span>
-    </div>
-  </div>
-
-  <script>
-    (function () {
-      var TOTAL = 28 * 60; // the page "lasts" 28:00, like the demo meeting
-      var fill = document.getElementById('fill');
-      var head = document.getElementById('head');
-      var elapsed = document.getElementById('elapsed');
-      var recClock = document.getElementById('rec-clock');
-      var playBtn = document.getElementById('play');
-      var playIcon = document.getElementById('play-icon');
-      var playing = false;
-      var rafId = null;
-      var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-      function fmt(s) {
-        s = Math.max(0, Math.min(TOTAL, Math.round(s)));
-        var m = Math.floor(s / 60), r = s % 60;
-        return (m < 10 ? '0' + m : m) + ':' + (r < 10 ? '0' + r : r);
-      }
-      function progress() {
-        var doc = document.documentElement;
-        var max = doc.scrollHeight - window.innerHeight;
-        return max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
-      }
-      function render() {
-        var p = progress();
-        var pct = (p * 100).toFixed(2) + '%';
-        fill.style.width = pct;
-        head.style.left = pct;
-        var t = fmt(p * TOTAL);
-        elapsed.textContent = t;
-        recClock.textContent = t;
-      }
-      window.addEventListener('scroll', render, { passive: true });
-      window.addEventListener('resize', render);
-      render();
-
-      function setIcon() {
-        playIcon.innerHTML = playing
-          ? '<rect x="2" y="1.5" width="3" height="9" rx="0.8"/><rect x="7" y="1.5" width="3" height="9" rx="0.8"/>'
-          : '<path d="M2.5 1.2v9.6L10.5 6z"/>';
-        playBtn.setAttribute('aria-label', playing
-          ? 'Pause'
-          : 'Play — scroll through the page like a recording');
-      }
-      function stop() {
-        playing = false;
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = null;
-        setIcon();
-      }
-      function step() {
-        if (!playing) return;
-        var doc = document.documentElement;
-        var max = doc.scrollHeight - window.innerHeight;
-        if (window.scrollY >= max - 1) { stop(); return; }
-        window.scrollBy(0, Math.max(1, max / (TOTAL * 6)));
-        rafId = requestAnimationFrame(step);
-      }
-      playBtn.addEventListener('click', function () {
-        if (reduced) { return; } // no auto-motion for reduced-motion users
-        playing = !playing;
-        setIcon();
-        if (playing) rafId = requestAnimationFrame(step);
-      });
-      // any manual scroll intent pauses playback
-      ['wheel', 'touchstart', 'keydown'].forEach(function (ev) {
-        window.addEventListener(ev, function () { if (playing) stop(); }, { passive: true });
-      });
-      if (reduced) playBtn.style.display = 'none';
-    })();
-  </script>
 </body>
 </html>
