@@ -32,6 +32,9 @@ export interface SettingsViewProps {
   noteCount: number
   tDel: boolean
   toggleDel: () => void
+  /** Issue #16: days after which older recordings' audio.wav gets compressed to AAC (.m4a); `null` = off. */
+  compressAudioAfterDays: number | null
+  setCompressAudioAfterDays: (days: number | null) => void
   meetingDetection: boolean
   toggleMeetingDetection: () => void
   /** Stage 5 Task 5: the "Capture system audio" default for the *next* recording — see the "Recording" card below. */
@@ -478,6 +481,8 @@ export function SettingsView({
   noteCount,
   tDel,
   toggleDel,
+  compressAudioAfterDays,
+  setCompressAudioAfterDays,
   meetingDetection,
   toggleMeetingDetection,
   captureSystemAudio,
@@ -822,6 +827,23 @@ export function SettingsView({
           </div>
           <div style={{ marginTop: 18 }}>
             <Toggle on={tDel} onToggle={toggleDel} label="Delete original audio 30 days after transcription" />
+          </div>
+          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <div style={pickerLabelStyle}>Compress audio to AAC after</div>
+            <SegmentedControl
+              label="Compress audio to AAC after"
+              value={compressAudioAfterDays}
+              onChange={setCompressAudioAfterDays}
+              options={[
+                { value: null, label: 'Off' },
+                { value: 7, label: '7 days' },
+                { value: 14, label: '14 days' },
+                { value: 30, label: '30 days' },
+              ]}
+            />
+          </div>
+          <div style={noteTextStyle}>
+            Converts older recordings to compact AAC (.m4a). Playback keeps working; the original WAV is removed.
           </div>
           <div style={{ marginTop: 18, display: 'flex', alignItems: 'baseline', gap: 12, maxWidth: 520 }}>
             <div style={{ minWidth: 0, flex: 1 }}>

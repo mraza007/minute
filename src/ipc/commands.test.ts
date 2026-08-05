@@ -459,6 +459,7 @@ describe('ipc/commands', () => {
       autoUpdateCheck: true,
       detectSpeakers: false,
       autoStopRecording: true,
+      compressAudioAfterDays: null,
     }
     const calls = captureIPC(() => settings)
 
@@ -483,6 +484,7 @@ describe('ipc/commands', () => {
       autoUpdateCheck: true,
       detectSpeakers: false,
       autoStopRecording: true,
+      compressAudioAfterDays: null,
     }
     const calls = captureIPC(() => updated)
 

@@ -127,6 +127,15 @@ pub struct Settings {
     /// as enabled.
     #[serde(default = "default_true")]
     pub auto_stop_recording: bool,
+    /// Issue #16: after this many days, compress a note's `audio.wav` to a
+    /// lossy `audio.m4a` (AAC, via macOS's `afconvert`) and remove the WAV —
+    /// see `store::compress_candidates`/`Store::run_compression_sweep`.
+    /// `None` = off (default) — unlike `deleteAudioAfter30d`'s fixed 30-day
+    /// window, this is a user-chosen day count, so `Option<u32>` rather than
+    /// a bool. `#[serde(default)]` so older `settings.json` files load as
+    /// off, same opt-in convention as `meetingDetection`/`detectSpeakers`.
+    #[serde(default)]
+    pub compress_audio_after_days: Option<u32>,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -152,6 +161,7 @@ impl Default for Settings {
             auto_update_check: true,
             detect_speakers: false,
             auto_stop_recording: true,
+            compress_audio_after_days: None,
         }
     }
 }
@@ -185,6 +195,12 @@ pub struct SettingsPatch {
     pub auto_update_check: Option<bool>,
     pub detect_speakers: Option<bool>,
     pub auto_stop_recording: Option<bool>,
+    /// `Some(0)` means "back to off" (`Settings::compress_audio_after_days =
+    /// None`) — same sentinel trick as `llm_context_tokens` above, for the
+    /// same reason (a single `Option<u32>` can't otherwise distinguish
+    /// "leave unchanged" from "explicitly clear" without a double-`Option`).
+    /// Any other `Some(n)` sets the day count to `n`.
+    pub compress_audio_after_days: Option<u32>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -223,6 +239,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.auto_stop_recording {
         settings.auto_stop_recording = v;
+    }
+    if let Some(v) = patch.compress_audio_after_days {
+        settings.compress_audio_after_days = if v == 0 { None } else { Some(v) };
     }
 }
 
@@ -360,6 +379,7 @@ mod tests {
             auto_update_check: true,
             detect_speakers: false,
             auto_stop_recording: true,
+            compress_audio_after_days: None,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -405,6 +425,7 @@ mod tests {
                 auto_update_check: true,
                 detect_speakers: false,
                 auto_stop_recording: true,
+                compress_audio_after_days: None,
             }
         );
     }
@@ -445,6 +466,7 @@ mod tests {
                 auto_update_check: true,
                 detect_speakers: false,
                 auto_stop_recording: true,
+                compress_audio_after_days: None,
             }
         );
     }
@@ -486,6 +508,7 @@ mod tests {
                 auto_update_check: true,
                 detect_speakers: false,
                 auto_stop_recording: true,
+                compress_audio_after_days: None,
             }
         );
     }
@@ -523,6 +546,7 @@ mod tests {
             auto_update_check: true,
             detect_speakers: false,
             auto_stop_recording: true,
+            compress_audio_after_days: None,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -570,6 +594,7 @@ mod tests {
             auto_update_check: Some(false),
             detect_speakers: Some(true),
             auto_stop_recording: Some(false),
+            compress_audio_after_days: Some(14),
         };
 
         apply_patch(&mut settings, patch);
@@ -583,6 +608,7 @@ mod tests {
         assert_eq!(settings.summary_style, SummaryStyle::Detailed);
         assert!(settings.detect_speakers);
         assert!(!settings.auto_stop_recording);
+        assert_eq!(settings.compress_audio_after_days, Some(14));
     }
 
     #[test]
@@ -700,6 +726,59 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_sets_compress_audio_after_days() {
+        let mut settings = Settings::default();
+        let patch = SettingsPatch {
+            compress_audio_after_days: Some(7),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.compress_audio_after_days, Some(7));
+    }
+
+    #[test]
+    fn apply_patch_zero_compress_audio_after_days_means_back_to_off() {
+        // Same sentinel trick as `llmContextTokens`'s `0` — see
+        // `SettingsPatch::compress_audio_after_days`'s docs.
+        let mut settings = Settings {
+            compress_audio_after_days: Some(30),
+            ..Settings::default()
+        };
+        let patch = SettingsPatch {
+            compress_audio_after_days: Some(0),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.compress_audio_after_days, None);
+    }
+
+    #[test]
+    fn settings_json_without_compress_audio_after_days_field_defaults_to_off() {
+        // Issue #16's migration case: a settings.json written by any
+        // pre-compression build has no "compressAudioAfterDays" key at
+        // all — `#[serde(default)]` must make that load as `None` (off),
+        // not fail to parse or fall back to full defaults for the rest of
+        // the file.
+        let dir = tempdir().unwrap();
+        let pre_compression_json = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": false,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_compression_json).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(load_settings(dir.path()).compress_audio_after_days, None);
+    }
+
+    #[test]
     fn apply_patch_with_only_one_field_leaves_the_rest_unchanged() {
         let mut settings = Settings {
             stt_model: Some("whisper-small".to_string()),
@@ -714,6 +793,7 @@ mod tests {
             auto_update_check: true,
             detect_speakers: false,
             auto_stop_recording: true,
+            compress_audio_after_days: None,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -744,6 +824,7 @@ mod tests {
             auto_update_check: true,
             detect_speakers: false,
             auto_stop_recording: true,
+            compress_audio_after_days: None,
         };
         let mut settings = original.clone();
 

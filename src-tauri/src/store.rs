@@ -53,6 +53,17 @@ pub struct NoteMeta {
     /// still has its audio.wav sitting on disk untouched.
     #[serde(default)]
     pub audio_deleted: bool,
+    /// Set `true` once the compression sweep (issue #16 — see
+    /// [`compress_candidates`]/[`Store::run_compression_sweep`]) has
+    /// converted this note's `audio.wav` to `audio.m4a` and removed the
+    /// WAV. `#[serde(default)]` so `meta.json` files written before this
+    /// field existed still parse — they default to `false` ("audio has not
+    /// been compressed"), which is correct: a pre-issue-#16 note still has
+    /// its original `audio.wav` (or has had it deleted by the unrelated
+    /// 30-day sweep, tracked separately by `audio_deleted`) untouched by
+    /// compression.
+    #[serde(default)]
+    pub audio_compressed: bool,
     /// Which audio source(s) fed this note's recording — `["mic"]` (the
     /// overwhelming common case) or `["mic", "system"]` once Stage 5 Task
     /// 5's two-source pipeline actually mixed in system audio. Written once,
@@ -219,6 +230,10 @@ pub struct DiagnosticsSnapshot {
     pub ready_notes: usize,
     pub notes_with_system_audio: usize,
     pub notes_with_audio_removed: usize,
+    /// Issue #16: notes whose `audio.wav` has been compressed to `audio.m4a`
+    /// by the compression sweep — see [`compress_candidates`]/
+    /// [`Store::run_compression_sweep`].
+    pub notes_with_audio_compressed: usize,
     pub storage: StorageStats,
     pub privacy: String,
 }
@@ -228,6 +243,19 @@ const META_TMP_FILE: &str = "meta.json.tmp";
 const TRANSCRIPT_FILE: &str = "transcript.json";
 const TRANSCRIPT_TMP_FILE: &str = "transcript.json.tmp";
 const AUDIO_FILE: &str = "audio.wav";
+/// Issue #16: the lossy AAC-in-.m4a a note's `audio.wav` gets compressed to
+/// by [`Store::run_compression_sweep`] (via macOS's `afconvert`), once it
+/// exists this fully replaces `AUDIO_FILE` for that note — see
+/// [`existing_audio_file`], which is what every audio-file-discovery
+/// call site (playback resolution, reveal-in-Finder, deletion, storage
+/// stats) actually goes through instead of hardcoding `AUDIO_FILE`.
+const AUDIO_M4A_FILE: &str = "audio.m4a";
+/// The temp name [`Store::run_compression_sweep`] writes `afconvert`'s
+/// output to before renaming it onto [`AUDIO_M4A_FILE`] — same tmp-then-
+/// rename shape as every other atomic write in this module (`META_TMP_FILE`
+/// etc.), so a process killed mid-encode never leaves a half-written
+/// `audio.m4a` that playback could pick up.
+const AUDIO_M4A_TMP_FILE: &str = "audio.m4a.tmp";
 const SUMMARY_FILE: &str = "summary.json";
 const SUMMARY_TMP_FILE: &str = "summary.json.tmp";
 const NOTE_MD_FILE: &str = "note.md";
@@ -538,6 +566,7 @@ impl Store {
             speakers: 1,
             capture_warning: None,
             audio_deleted: false,
+            audio_compressed: false,
             sources: default_sources(),
             pinned: false,
             markers: Vec::new(),
@@ -1197,14 +1226,17 @@ impl Store {
         })
     }
 
-    /// Removes only the original audio while preserving the transcript,
-    /// summary, metadata, and markdown.
+    /// Removes only the original audio — whichever file is actually present
+    /// (`audio.wav`, or `audio.m4a` if the compression sweep already
+    /// converted it — see [`existing_audio_file`]) — while preserving the
+    /// transcript, summary, metadata, and markdown.
     pub fn delete_note_audio(&self, id: &str) -> Result<NoteMeta> {
         let mut meta = self.read_meta(id)?;
-        let audio_path = self.note_dir(id).join(AUDIO_FILE);
-        if let Err(error) = fs::remove_file(&audio_path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(error.into());
+        if let Some(audio_path) = existing_audio_file(&self.note_dir(id)) {
+            if let Err(error) = fs::remove_file(&audio_path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error.into());
+                }
             }
         }
         meta.audio_deleted = true;
@@ -1276,6 +1308,7 @@ impl Store {
                 .filter(|note| note.sources.iter().any(|source| source == "system"))
                 .count(),
             notes_with_audio_removed: notes.iter().filter(|note| note.audio_deleted).count(),
+            notes_with_audio_compressed: notes.iter().filter(|note| note.audio_compressed).count(),
             storage,
             privacy: "Aggregate operational metadata only. No note ids, titles, transcript text, filenames, or paths."
                 .to_string(),
@@ -1315,14 +1348,15 @@ impl Store {
             if !candidates.contains(&meta.id) {
                 continue;
             }
-            let audio_path = self.note_dir(&meta.id).join(AUDIO_FILE);
-            if let Err(e) = fs::remove_file(&audio_path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!(
-                        "audio sweep: failed to delete audio.wav for note {}: {e}",
-                        meta.id
-                    );
-                    continue;
+            if let Some(audio_path) = existing_audio_file(&self.note_dir(&meta.id)) {
+                if let Err(e) = fs::remove_file(&audio_path) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        log::warn!(
+                            "audio sweep: failed to delete audio for note {}: {e}",
+                            meta.id
+                        );
+                        continue;
+                    }
                 }
             }
             meta.audio_deleted = true;
@@ -1336,6 +1370,150 @@ impl Store {
             swept += 1;
         }
         Ok(swept)
+    }
+
+    /// Runs the compression sweep (issue #16): for every note
+    /// [`compress_candidates`] selects against `now`/`days`, encodes
+    /// `audio.wav` to `audio.m4a` via `afconvert` and, once the output is
+    /// verified non-empty, removes the WAV and persists `audioCompressed:
+    /// true` via the normal atomic [`Store::write_meta`] path. Returns the
+    /// number of notes actually compressed.
+    ///
+    /// Whether to call this at all — and what `days` is — is entirely the
+    /// caller's decision (`Settings::compressAudioAfterDays` — see
+    /// `lib.rs`'s `setup`); this method has no opinion on the setting.
+    /// Thin wrapper around [`Self::run_compression_sweep_with_encoder`]
+    /// that supplies the real `afconvert` shell-out — see that method for
+    /// the actual sweep/bookkeeping logic and why the encoder is injected.
+    pub fn run_compression_sweep(&self, now: OffsetDateTime, days: u32) -> Result<usize> {
+        self.run_compression_sweep_with_encoder(now, days, encode_with_afconvert)
+    }
+
+    /// The compression sweep's actual logic, with the encoder step taken as
+    /// a closure rather than calling `afconvert` directly — same seam shape
+    /// as `llm::generate_fitting_transcript`'s injected `generate` closure.
+    /// This machine's CI (or the developer's) can't rely on `afconvert`
+    /// being present, deterministic, or fast, so the unit tests exercise
+    /// this method with a fake encoder (see `tests::run_compression_sweep_*`)
+    /// while `run_compression_sweep` above is what production actually
+    /// calls, with [`encode_with_afconvert`] wired in.
+    ///
+    /// Deliberately tolerant per-note, mirroring [`Self::run_audio_sweep`]:
+    /// a failed encode, an empty/missing output, a failed rename, or a
+    /// `meta.json` that can't be re-persisted is `log::warn!`'d and the
+    /// sweep moves on to the next note rather than aborting. On any of
+    /// those failures the original `audio.wav` is left untouched — a note's
+    /// only copy of its audio is never removed unless the compressed
+    /// replacement is confirmed good on disk first — and a stray tmp file
+    /// from the failed attempt is cleaned up.
+    fn run_compression_sweep_with_encoder(
+        &self,
+        now: OffsetDateTime,
+        days: u32,
+        encode: impl Fn(&Path, &Path) -> bool,
+    ) -> Result<usize> {
+        let notes = self.list_notes()?;
+        let candidates = compress_candidates(&notes, now, days);
+        let mut compressed = 0;
+        for mut meta in notes {
+            if !candidates.contains(&meta.id) {
+                continue;
+            }
+            let note_dir = self.note_dir(&meta.id);
+            let wav_path = note_dir.join(AUDIO_FILE);
+            let tmp_path = note_dir.join(AUDIO_M4A_TMP_FILE);
+            let final_path = note_dir.join(AUDIO_M4A_FILE);
+
+            // `compress_candidates` is meta-only (see its docs) and doesn't
+            // check the filesystem, so a note whose WAV has somehow gone
+            // missing without `audioDeleted` being set (a manual deletion
+            // outside the app, say) still reaches here — skip it rather
+            // than handing a nonexistent path to the encoder.
+            if !wav_path.exists() {
+                log::warn!(
+                    "compression sweep: audio.wav missing for note {} — skipping",
+                    meta.id
+                );
+                continue;
+            }
+
+            // Clean up a stray tmp file left by a previous crashed attempt —
+            // `afconvert` refuses to write over an existing file.
+            let _ = fs::remove_file(&tmp_path);
+
+            if !encode(&wav_path, &tmp_path) {
+                log::warn!(
+                    "compression sweep: afconvert failed for note {} — leaving audio.wav untouched",
+                    meta.id
+                );
+                let _ = fs::remove_file(&tmp_path);
+                continue;
+            }
+
+            let output_is_non_empty = fs::metadata(&tmp_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
+            if !output_is_non_empty {
+                log::warn!(
+                    "compression sweep: afconvert produced an empty or missing audio.m4a for note {} — leaving audio.wav untouched",
+                    meta.id
+                );
+                let _ = fs::remove_file(&tmp_path);
+                continue;
+            }
+
+            if let Err(e) = fs::rename(&tmp_path, &final_path) {
+                log::warn!(
+                    "compression sweep: failed to finalize audio.m4a for note {}: {e} — leaving audio.wav untouched",
+                    meta.id
+                );
+                let _ = fs::remove_file(&tmp_path);
+                continue;
+            }
+
+            if let Err(e) = fs::remove_file(&wav_path) {
+                log::warn!(
+                    "compression sweep: audio.m4a written but failed to remove audio.wav for note {}: {e}",
+                    meta.id
+                );
+                continue;
+            }
+
+            meta.audio_compressed = true;
+            if let Err(e) = self.write_meta(&meta) {
+                log::warn!(
+                    "compression sweep: failed to persist audioCompressed for note {}: {e}",
+                    meta.id
+                );
+                continue;
+            }
+            compressed += 1;
+        }
+        Ok(compressed)
+    }
+}
+
+/// The real `afconvert` shell-out [`Store::run_compression_sweep`] wires
+/// into [`Store::run_compression_sweep_with_encoder`] as production's
+/// encoder: 48 kbps mono AAC in an `.m4a` container — plenty for 16 kHz
+/// speech, and macOS-built-in (this app is macOS-only, so shelling out here
+/// avoids pulling in a Rust encoder crate). Returns whether the process
+/// both launched and exited successfully; any failure to even start
+/// `afconvert` (e.g. it's somehow missing from `$PATH`) is treated the same
+/// as a nonzero exit — both are "this note's compression attempt failed",
+/// handled identically by the caller.
+fn encode_with_afconvert(wav_path: &Path, out_path: &Path) -> bool {
+    match std::process::Command::new("afconvert")
+        .args(["-f", "m4af", "-d", "aac", "-b", "48000"])
+        .arg(wav_path)
+        .arg(out_path)
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(e) => {
+            log::warn!("compression sweep: failed to launch afconvert: {e}");
+            false
+        }
     }
 }
 
@@ -1438,36 +1616,107 @@ pub fn sweep_candidates(notes: &[NoteMeta], now: OffsetDateTime) -> Vec<String> 
         .collect()
 }
 
-/// The path `reveal_note` should hand to Finder for a given note directory:
-/// the note's `audio.wav` if it exists, else the note directory itself (e.g.
-/// a note whose audio was never captured, or has since been removed). Pure
-/// — no process spawn, no existence requirement on `note_dir` itself — so
-/// the selection rule is unit-testable without touching `open`.
-pub fn reveal_target(note_dir: &Path) -> PathBuf {
-    let audio = note_dir.join(AUDIO_FILE);
-    if audio.exists() {
-        audio
-    } else {
-        note_dir.to_path_buf()
-    }
+/// Which notes the compression sweep (issue #16) should encode `audio.wav`
+/// to `audio.m4a` for, given the current instant `now`, the configured
+/// `days` (`Settings::compressAudioAfterDays`), and the notes' in-memory
+/// metadata. A note is a candidate iff all four hold:
+///
+/// - its `createdAt` parses as RFC3339 and is *strictly* more than `days`×24h
+///   before `now` — same exclusive-boundary rule as [`sweep_candidates`]'s
+///   fixed 30-day window, just with a caller-supplied day count instead.
+/// - its `status` is [`NoteStatus::Ready`] or [`NoteStatus::Transcribed`] —
+///   never [`NoteStatus::Recording`]; an in-progress recording's audio is
+///   never a compression target no matter how stale its `createdAt` looks.
+/// - it isn't already `audioDeleted` — nothing to compress once the 30-day
+///   sweep (or the user's own "delete audio" action) has already removed
+///   the WAV.
+/// - it isn't already `audioCompressed` — idempotent, same as
+///   [`sweep_candidates`]'s `audioDeleted` check: once compressed, a note
+///   never becomes a candidate again.
+///
+/// Deliberately doesn't check whether `audio.wav` actually exists on disk —
+/// same reasoning as [`sweep_candidates`] staying meta-only: this function
+/// takes only `notes` + `now` + `days`, no root path, so it's unit-testable
+/// without touching the filesystem. [`Store::run_compression_sweep`]
+/// performs that existence check itself (and skips tolerantly, like every
+/// other per-note failure there, if the WAV has somehow gone missing
+/// without `audioDeleted` being set).
+///
+/// A note whose `createdAt` fails to parse is skipped (logged via
+/// `log::warn!`), same as [`sweep_candidates`] — malformed metadata must
+/// never be the reason a note's only remaining audio copy gets touched.
+pub fn compress_candidates(notes: &[NoteMeta], now: OffsetDateTime, days: u32) -> Vec<String> {
+    let cutoff = now - Duration::days(i64::from(days));
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    notes
+        .iter()
+        .filter(|meta| {
+            if meta.audio_deleted || meta.audio_compressed {
+                return false;
+            }
+            if !matches!(meta.status, NoteStatus::Ready | NoteStatus::Transcribed) {
+                return false;
+            }
+            match OffsetDateTime::parse(&meta.created_at, rfc3339) {
+                Ok(created) => created < cutoff,
+                Err(e) => {
+                    log::warn!(
+                        "compression sweep: skipping note {} — unparseable createdAt {:?} ({e})",
+                        meta.id,
+                        meta.created_at
+                    );
+                    false
+                }
+            }
+        })
+        .map(|meta| meta.id.clone())
+        .collect()
 }
 
-/// The absolute path to a note's `audio.wav`, if it's actually present on
-/// disk — `None` for a note whose audio was never captured, or has since
-/// been deleted. Pure — a plain existence check, no process spawn —
-/// mirroring [`reveal_target`]'s shape. Doesn't know about `audioDeleted` at
-/// all (it's a raw filesystem check, nothing more) — [`reveal_target`] wants
-/// exactly that (Finder should still find a stray `audio.wav` if one somehow
-/// exists). The `get_note` command instead goes through
-/// [`resolved_audio_path`], which layers the `audioDeleted` invariant on top
-/// of this.
-pub fn audio_path(note_dir: &Path) -> Option<PathBuf> {
-    let audio = note_dir.join(AUDIO_FILE);
-    if audio.exists() {
-        Some(audio)
-    } else {
-        None
+/// The note directory's audio file, whichever of the two possible names is
+/// actually on disk — `audio.wav` if present, else `audio.m4a` (issue #16's
+/// compression sweep replaces the former with the latter), else `None` if
+/// neither exists. Checked in that order because a note is never expected to
+/// carry both at once (`run_compression_sweep` only removes the WAV *after*
+/// the M4A is verified non-empty), but WAV-first is still the correct tie-
+/// break if it somehow ever did — the WAV is the higher-fidelity original.
+/// Pure — no process spawn — the single seam every audio-file-discovery call
+/// site in this module (playback resolution, reveal-in-Finder, deletion,
+/// storage stats) goes through instead of hardcoding a filename, so adding
+/// the M4A case only had to happen once, here.
+fn existing_audio_file(note_dir: &Path) -> Option<PathBuf> {
+    let wav = note_dir.join(AUDIO_FILE);
+    if wav.exists() {
+        return Some(wav);
     }
+    let m4a = note_dir.join(AUDIO_M4A_FILE);
+    if m4a.exists() {
+        return Some(m4a);
+    }
+    None
+}
+
+/// The path `reveal_note` should hand to Finder for a given note directory:
+/// the note's audio file ([`existing_audio_file`] — `audio.wav` or, once
+/// compressed, `audio.m4a`) if one exists, else the note directory itself
+/// (e.g. a note whose audio was never captured, or has since been removed).
+/// Pure — no process spawn, no existence requirement on `note_dir` itself —
+/// so the selection rule is unit-testable without touching `open`.
+pub fn reveal_target(note_dir: &Path) -> PathBuf {
+    existing_audio_file(note_dir).unwrap_or_else(|| note_dir.to_path_buf())
+}
+
+/// The absolute path to a note's audio file, if it's actually present on
+/// disk under either name ([`existing_audio_file`]) — `None` for a note
+/// whose audio was never captured, or has since been deleted. Pure — a
+/// plain existence check, no process spawn — mirroring [`reveal_target`]'s
+/// shape. Doesn't know about `audioDeleted` at all (it's a raw filesystem
+/// check, nothing more) — [`reveal_target`] wants exactly that (Finder
+/// should still find a stray audio file if one somehow exists). The
+/// `get_note` command instead goes through [`resolved_audio_path`], which
+/// layers the `audioDeleted` invariant on top of this.
+pub fn audio_path(note_dir: &Path) -> Option<PathBuf> {
+    existing_audio_file(note_dir)
 }
 
 /// The `audioPath` the `get_note` command should report for a note: `None`
@@ -1628,7 +1877,7 @@ fn note_dir_stats(note_dir: &Path) -> Result<(u64, u64)> {
             }
         };
         total += len;
-        if entry.file_name() == AUDIO_FILE {
+        if entry.file_name() == AUDIO_FILE || entry.file_name() == AUDIO_M4A_FILE {
             audio = len;
         }
     }
@@ -1636,7 +1885,9 @@ fn note_dir_stats(note_dir: &Path) -> Result<(u64, u64)> {
 }
 
 /// Storage breakdown: `models_bytes` = everything under `root/models`;
-/// `audio_bytes` = sum of every note's `audio.wav`; `notes_bytes` =
+/// `audio_bytes` = sum of every note's audio file (`audio.wav`, or
+/// `audio.m4a` once the compression sweep has converted it — see
+/// [`existing_audio_file`]); `notes_bytes` =
 /// everything else under `root/notes` (meta/transcript json, excluding
 /// audio).
 ///
@@ -2798,6 +3049,28 @@ mod tests {
     }
 
     #[test]
+    fn resolved_audio_path_falls_back_to_audio_m4a_once_compressed() {
+        // Issue #16: after the compression sweep has replaced audio.wav
+        // with audio.m4a, playback resolution must find the m4a — a note
+        // isn't "audioDeleted" (that flag is reserved for the unrelated
+        // 30-day delete sweep), it's just compressed.
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let mut meta = store
+            .create_note("Compressed", "whisper-small", now)
+            .unwrap();
+        meta.audio_compressed = true;
+        let expected = store.note_dir(&meta.id).join(AUDIO_M4A_FILE);
+        fs::write(&expected, b"aac bytes").unwrap();
+
+        assert_eq!(
+            resolved_audio_path(&meta, &store.note_dir(&meta.id)),
+            Some(expected)
+        );
+    }
+
+    #[test]
     fn note_meta_without_audio_deleted_field_parses_as_false_default() {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
@@ -2839,6 +3112,7 @@ mod tests {
             speakers: 1,
             capture_warning: None,
             audio_deleted,
+            audio_compressed: false,
             sources: default_sources(),
             pinned: false,
             markers: Vec::new(),
@@ -3055,6 +3329,301 @@ mod tests {
         let missing = dir.path().join("20260723-000000-never-existed");
 
         assert_eq!(note_dir_stats(&missing).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn note_dir_stats_counts_audio_m4a_as_audio_bytes_once_compressed() {
+        // Issue #16: once a note's audio.wav has been compressed away, the
+        // remaining audio.m4a must still be counted as audio_bytes (not
+        // notes_bytes) — the storage bar shouldn't suddenly attribute a
+        // note's audio to "Notes" just because it got smaller.
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store
+            .create_note("Compressed already", "whisper-small", now)
+            .unwrap();
+        fs::write(store.note_dir(&meta.id).join(AUDIO_M4A_FILE), b"aac bytes").unwrap();
+        fs::write(store.note_dir(&meta.id).join("meta.json"), b"{}").unwrap_or(());
+
+        let (total, audio) = note_dir_stats(&store.note_dir(&meta.id)).unwrap();
+
+        assert_eq!(audio, "aac bytes".len() as u64);
+        assert!(total >= audio);
+    }
+
+    // --- compress_candidates -------------------------------------------------
+
+    fn compress_meta(
+        id: &str,
+        created_at: &str,
+        status: NoteStatus,
+        audio_deleted: bool,
+        audio_compressed: bool,
+    ) -> NoteMeta {
+        let mut meta = sweep_meta(id, created_at, status, audio_deleted);
+        meta.audio_compressed = audio_compressed;
+        meta
+    }
+
+    #[test]
+    fn compress_candidates_selects_a_note_strictly_older_than_the_configured_days() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let just_over_7_days = now - Duration::days(7) - Duration::seconds(1);
+        let meta = compress_meta("old", &rfc3339(just_over_7_days), NoteStatus::Ready, false, false);
+
+        assert_eq!(
+            compress_candidates(&[meta], now, 7),
+            vec!["old".to_string()]
+        );
+    }
+
+    #[test]
+    fn compress_candidates_excludes_a_note_exactly_at_the_day_boundary() {
+        // Same deliberately-exclusive boundary as sweep_candidates's 30-day
+        // window: exactly N*24h old is NOT yet a candidate.
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let exactly_14_days = now - Duration::days(14);
+        let meta = compress_meta(
+            "boundary",
+            &rfc3339(exactly_14_days),
+            NoteStatus::Ready,
+            false,
+            false,
+        );
+
+        assert!(compress_candidates(&[meta], now, 14).is_empty());
+    }
+
+    #[test]
+    fn compress_candidates_excludes_a_note_younger_than_the_configured_days() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let recent = now - Duration::days(2);
+        let meta = compress_meta("recent", &rfc3339(recent), NoteStatus::Ready, false, false);
+
+        assert!(compress_candidates(&[meta], now, 30).is_empty());
+    }
+
+    #[test]
+    fn compress_candidates_excludes_recording_status_no_matter_how_old() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(365);
+        let meta = compress_meta(
+            "still-recording",
+            &rfc3339(ancient),
+            NoteStatus::Recording,
+            false,
+            false,
+        );
+
+        assert!(compress_candidates(&[meta], now, 7).is_empty());
+    }
+
+    #[test]
+    fn compress_candidates_excludes_notes_already_audio_deleted() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(60);
+        let meta = compress_meta("deleted", &rfc3339(ancient), NoteStatus::Ready, true, false);
+
+        assert!(compress_candidates(&[meta], now, 7).is_empty());
+    }
+
+    #[test]
+    fn compress_candidates_excludes_notes_already_compressed() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(60);
+        let meta = compress_meta(
+            "already-compressed",
+            &rfc3339(ancient),
+            NoteStatus::Ready,
+            false,
+            true,
+        );
+
+        assert!(compress_candidates(&[meta], now, 7).is_empty());
+    }
+
+    #[test]
+    fn compress_candidates_skips_a_note_with_malformed_created_at_without_panicking() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let meta = compress_meta("corrupt", "not-a-real-timestamp", NoteStatus::Ready, false, false);
+
+        assert!(compress_candidates(&[meta], now, 7).is_empty());
+    }
+
+    #[test]
+    fn compress_candidates_includes_transcribed_status_not_just_ready() {
+        let now = datetime!(2026-07-23 00:00:00 UTC);
+        let ancient = now - Duration::days(30);
+        let meta = compress_meta(
+            "transcribed-old",
+            &rfc3339(ancient),
+            NoteStatus::Transcribed,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            compress_candidates(&[meta], now, 7),
+            vec!["transcribed-old".to_string()]
+        );
+    }
+
+    // --- run_compression_sweep (fs, fake encoder) -----------------------------
+
+    /// A fake `afconvert` for `run_compression_sweep_with_encoder`'s tests —
+    /// production tests can't rely on the real binary being present,
+    /// deterministic, or fast (see `Store::run_compression_sweep_with_encoder`'s
+    /// docs). Writes `contents` to `out_path` and returns `true` unless
+    /// `wav_path` doesn't exist, mirroring `afconvert`'s own real failure
+    /// mode (it can't encode audio that isn't there).
+    fn fake_encoder(contents: &'static [u8]) -> impl Fn(&Path, &Path) -> bool {
+        move |wav_path: &Path, out_path: &Path| {
+            if !wav_path.exists() {
+                return false;
+            }
+            fs::write(out_path, contents).is_ok()
+        }
+    }
+
+    #[test]
+    fn run_compression_sweep_encodes_old_audio_removes_wav_and_sets_the_flag() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store
+            .create_note("Old note", "whisper-small", now - Duration::days(20))
+            .unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
+
+        let recent = store
+            .create_note("Recent note", "whisper-small", now - Duration::days(1))
+            .unwrap();
+        store.finalize_note(&recent.id, 60.0, 1).unwrap();
+        fs::write(
+            store.note_dir(&recent.id).join(AUDIO_FILE),
+            b"recent wav bytes",
+        )
+        .unwrap();
+
+        let compressed = store
+            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b"aac payload"))
+            .unwrap();
+
+        assert_eq!(compressed, 1);
+        assert!(!store.note_dir(&old.id).join(AUDIO_FILE).exists());
+        assert!(store.note_dir(&old.id).join(AUDIO_M4A_FILE).exists());
+        assert!(!store.note_dir(&old.id).join(AUDIO_M4A_TMP_FILE).exists());
+        let (old_meta, _) = store.get_note(&old.id).unwrap();
+        assert!(old_meta.audio_compressed);
+        assert!(!old_meta.audio_deleted);
+
+        assert!(store.note_dir(&recent.id).join(AUDIO_FILE).exists());
+        let (recent_meta, _) = store.get_note(&recent.id).unwrap();
+        assert!(!recent_meta.audio_compressed);
+    }
+
+    #[test]
+    fn run_compression_sweep_leaves_the_wav_untouched_when_afconvert_fails() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store
+            .create_note("Old note", "whisper-small", now - Duration::days(20))
+            .unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
+
+        let failing_encoder = |_wav: &Path, _out: &Path| false;
+        let compressed = store
+            .run_compression_sweep_with_encoder(now, 7, failing_encoder)
+            .unwrap();
+
+        assert_eq!(compressed, 0);
+        assert!(store.note_dir(&old.id).join(AUDIO_FILE).exists());
+        assert!(!store.note_dir(&old.id).join(AUDIO_M4A_FILE).exists());
+        let (meta, _) = store.get_note(&old.id).unwrap();
+        assert!(!meta.audio_compressed);
+    }
+
+    #[test]
+    fn run_compression_sweep_leaves_the_wav_untouched_when_output_is_empty() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store
+            .create_note("Old note", "whisper-small", now - Duration::days(20))
+            .unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
+
+        // Encoder "succeeds" but writes an empty file — must be treated the
+        // same as a failed encode: the WAV is the only real audio, so it's
+        // never removed on the strength of a suspicious empty output.
+        let compressed = store
+            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b""))
+            .unwrap();
+
+        assert_eq!(compressed, 0);
+        assert!(store.note_dir(&old.id).join(AUDIO_FILE).exists());
+        assert!(!store.note_dir(&old.id).join(AUDIO_M4A_FILE).exists());
+        assert!(!store.note_dir(&old.id).join(AUDIO_M4A_TMP_FILE).exists());
+        let (meta, _) = store.get_note(&old.id).unwrap();
+        assert!(!meta.audio_compressed);
+    }
+
+    #[test]
+    fn run_compression_sweep_tolerates_a_note_whose_wav_is_already_missing() {
+        // compress_candidates is meta-only (see its docs) — a note without
+        // audioDeleted/audioCompressed set but whose WAV vanished some other
+        // way (a manual delete outside the app) must be skipped, not panic
+        // or hand a nonexistent path to the encoder.
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store
+            .create_note("No wav", "whisper-small", now - Duration::days(20))
+            .unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        // Deliberately no audio.wav written.
+
+        let compressed = store
+            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b"aac payload"))
+            .unwrap();
+
+        assert_eq!(compressed, 0);
+        let (meta, _) = store.get_note(&old.id).unwrap();
+        assert!(!meta.audio_compressed);
+    }
+
+    #[test]
+    fn run_compression_sweep_never_touches_a_still_recording_note() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let recording = store
+            .create_note("Still recording", "whisper-small", now - Duration::days(90))
+            .unwrap();
+        fs::write(
+            store.note_dir(&recording.id).join(AUDIO_FILE),
+            b"live wav bytes",
+        )
+        .unwrap();
+
+        let compressed = store
+            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b"aac payload"))
+            .unwrap();
+
+        assert_eq!(compressed, 0);
+        assert!(store.note_dir(&recording.id).join(AUDIO_FILE).exists());
+        let (meta, _) = store.get_note(&recording.id).unwrap();
+        assert!(!meta.audio_compressed);
     }
 
     #[test]
@@ -3438,6 +4007,7 @@ mod tests {
             speakers: 4,
             capture_warning: None,
             audio_deleted: false,
+            audio_compressed: false,
             sources: default_sources(),
             pinned: false,
             markers: Vec::new(),

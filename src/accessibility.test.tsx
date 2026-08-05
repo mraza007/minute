@@ -28,6 +28,7 @@ const settings: Settings = {
   autoUpdateCheck: true,
   detectSpeakers: false,
   autoStopRecording: true,
+  compressAudioAfterDays: null,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {

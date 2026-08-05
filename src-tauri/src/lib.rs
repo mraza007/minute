@@ -719,6 +719,11 @@ pub fn run() {
             // flipped after launch only affects the *next* launch's sweep, not a
             // currently-running one).
             let sweep_enabled = settings::lock_settings(&shared_settings).delete_audio_after_30d;
+            // Same one-shot read for the compression sweep below (issue
+            // #16) — like `sweep_enabled` above, a later toggle only takes
+            // effect on the *next* launch, not the currently-running sweep.
+            let compress_after_days =
+                settings::lock_settings(&shared_settings).compress_audio_after_days;
             // Same one-shot read for the meeting detector below — unlike the
             // sweep flag, a later toggle *does* keep working live (via
             // `set_settings` -> `detect::set_enabled_live`), so this only decides
@@ -773,15 +778,37 @@ pub fn run() {
             // visibility; a failure (e.g. the notes dir vanished) is
             // `log::warn!`'d rather than surfaced to the user — this is
             // best-effort housekeeping, not a user-facing operation.
-            if sweep_enabled {
+            // Compression sweep (issue #16): if the user has opted into
+            // `compressAudioAfterDays`, encode `audio.wav` to `audio.m4a`
+            // (via macOS's `afconvert`) for anything
+            // `store::compress_candidates` selects — see that function's
+            // docs for the exact eligibility rule. Runs in the *same*
+            // detached thread as the delete sweep above, strictly after it:
+            // a note old enough for both sweeps in one launch should end up
+            // fully swept (`audioDeleted: true`, nothing left to compress)
+            // rather than racing the two against each other — running them
+            // sequentially on one thread is the simplest way to guarantee
+            // that ordering. Same fire-and-forget contract as the delete
+            // sweep: no event, `log::info!`/`log::warn!` only.
+            if sweep_enabled || matches!(compress_after_days, Some(days) if days > 0) {
                 let sweep_store = shared_store.clone();
                 std::thread::spawn(move || {
-                    match lock_store(&sweep_store).run_audio_sweep(time::OffsetDateTime::now_utc())
-                    {
-                        Ok(count) => {
-                            log::info!("audio sweep: deleted audio.wav for {count} note(s)")
+                    let now = time::OffsetDateTime::now_utc();
+                    if sweep_enabled {
+                        match lock_store(&sweep_store).run_audio_sweep(now) {
+                            Ok(count) => {
+                                log::info!("audio sweep: deleted audio.wav for {count} note(s)")
+                            }
+                            Err(e) => log::warn!("audio sweep failed: {e}"),
                         }
-                        Err(e) => log::warn!("audio sweep failed: {e}"),
+                    }
+                    if let Some(days) = compress_after_days.filter(|&days| days > 0) {
+                        match lock_store(&sweep_store).run_compression_sweep(now, days) {
+                            Ok(count) => log::info!(
+                                "compression sweep: compressed audio.wav for {count} note(s)"
+                            ),
+                            Err(e) => log::warn!("compression sweep failed: {e}"),
+                        }
                     }
                 });
             }

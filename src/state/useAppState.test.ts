@@ -39,6 +39,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     autoUpdateCheck: true,
     detectSpeakers: false,
     autoStopRecording: true,
+    compressAudioAfterDays: null,
     libraryRoot: null,
     ...overrides,
   }
@@ -429,6 +430,38 @@ describe('useAppState', () => {
 
     act(() => result.current.toggleDel())
     expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.deleteAudioAfter30d === false)).toBe(
+      true,
+    )
+  })
+
+  it('initializes tCompressAudioAfterDays from persisted settings, defaulting to null (off)', async () => {
+    setupIPC({ settings: settingsFixture({ compressAudioAfterDays: 14 }) })
+    const result = await loaded()
+    expect(result.current.tCompressAudioAfterDays).toBe(14)
+  })
+
+  it('setCompressAudioAfterDays sets local state and persists the value via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+
+    act(() => result.current.setCompressAudioAfterDays(7))
+
+    expect(result.current.tCompressAudioAfterDays).toBe(7)
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.compressAudioAfterDays === 7)).toBe(
+      true,
+    )
+  })
+
+  it('setCompressAudioAfterDays(null) sends the 0 sentinel to clear the override', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ settings: settingsFixture({ compressAudioAfterDays: 30 }), onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+
+    act(() => result.current.setCompressAudioAfterDays(null))
+
+    expect(result.current.tCompressAudioAfterDays).toBe(null)
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.compressAudioAfterDays === 0)).toBe(
       true,
     )
   })

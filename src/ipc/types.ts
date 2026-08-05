@@ -284,6 +284,8 @@ export interface Settings {
   detectSpeakers: boolean
   /** Auto-stop: after 10 silent minutes mid-recording, warn with a 10-minute countdown, then stop & transcribe (on by default). */
   autoStopRecording: boolean
+  /** Issue #16: after this many days, compress a note's `audio.wav` to lossy `.m4a` (AAC) and remove the WAV. `null` = off (default). */
+  compressAudioAfterDays: number | null
 }
 
 /**
@@ -306,6 +308,8 @@ export interface SettingsPatch {
   autoUpdateCheck?: boolean
   detectSpeakers?: boolean
   autoStopRecording?: boolean
+  /** `0` means "back to off" (clears the override) — see `settings::SettingsPatch::compress_audio_after_days`'s docs. */
+  compressAudioAfterDays?: number
 }
 
 // --- events ----------------------------------------------------------------

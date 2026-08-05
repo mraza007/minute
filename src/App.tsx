@@ -303,6 +303,8 @@ export default function App() {
               noteCount={s.notes.length}
               tDel={s.tDel}
               toggleDel={s.toggleDel}
+              compressAudioAfterDays={s.tCompressAudioAfterDays}
+              setCompressAudioAfterDays={s.setCompressAudioAfterDays}
               meetingDetection={s.tMeetingDetection}
               toggleMeetingDetection={s.toggleMeetingDetection}
               captureSystemAudio={s.tCaptureSystemAudio}

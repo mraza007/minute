@@ -84,6 +84,8 @@ const base = {
   noteCount: 14,
   tDel: true,
   toggleDel: vi.fn(),
+  compressAudioAfterDays: null,
+  setCompressAudioAfterDays: vi.fn(),
   meetingDetection: false,
   toggleMeetingDetection: vi.fn(),
   captureSystemAudio: false,
@@ -535,6 +537,24 @@ describe('SettingsView', () => {
       expect(within(group).getByRole('radio', { name: '32k' })).toHaveAttribute('aria-checked', 'true')
       fireEvent.click(within(group).getByRole('radio', { name: 'Auto' }))
       expect(setLlmContextTokens).toHaveBeenCalledWith(null)
+    })
+
+    it('defaults the compress-audio picker to Off and wires a manual pick', () => {
+      const setCompressAudioAfterDays = vi.fn()
+      render(<SettingsView {...base} setCompressAudioAfterDays={setCompressAudioAfterDays} />)
+      const group = screen.getByRole('radiogroup', { name: 'Compress audio to AAC after' })
+      expect(within(group).getByRole('radio', { name: 'Off' })).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(within(group).getByRole('radio', { name: '14 days' }))
+      expect(setCompressAudioAfterDays).toHaveBeenCalledWith(14)
+    })
+
+    it('returns to Off when the compress-audio picker is reset over an existing selection', () => {
+      const setCompressAudioAfterDays = vi.fn()
+      render(<SettingsView {...base} compressAudioAfterDays={30} setCompressAudioAfterDays={setCompressAudioAfterDays} />)
+      const group = screen.getByRole('radiogroup', { name: 'Compress audio to AAC after' })
+      expect(within(group).getByRole('radio', { name: '30 days' })).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(within(group).getByRole('radio', { name: 'Off' }))
+      expect(setCompressAudioAfterDays).toHaveBeenCalledWith(null)
     })
 
     it('shows the persisted custom instructions and commits an edit via the Save button', () => {

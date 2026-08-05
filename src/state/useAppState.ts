@@ -126,6 +126,13 @@ export function useAppState() {
   // in its place instead of a toggle.
   const [tDel, setTDel] = useState(true)
 
+  // Settings-backed "compress audio after N days" picker (issue #16) —
+  // same optimistic-set-then-persist shape as `tLlmContextTokens`/
+  // `setLlmContextTokens` further down (a picker, not a toggle, with the
+  // same `null` = off / `0` = clear-the-override wire convention). Seeded
+  // from `get_settings` in the initial load effect below.
+  const [tCompressAudioAfterDays, setTCompressAudioAfterDays] = useState<number | null>(null)
+
   // Settings-backed meeting-detection toggle (Stage 5 Task 3) — same
   // optimistic-flip-then-persist shape as `tDel`/`toggleDel` just above.
   // Seeded from `get_settings` in the initial load effect below; also set
@@ -706,6 +713,9 @@ export function useAppState() {
           // doesn't stub `library_info` resolves it to `null`.
           setLibraryInfo(loadedLibraryInfo ?? null)
           setTDel(loadedSettings.deleteAudioAfter30d)
+          // Defensive `??` — a harness whose `get_settings` stub predates
+          // this field resolves it to `undefined`.
+          setTCompressAudioAfterDays(loadedSettings.compressAudioAfterDays ?? null)
           setTMeetingDetection(loadedSettings.meetingDetection)
           setTCaptureSystemAudio(loadedSettings.captureSystemAudio)
           // Defensive `??` — a harness whose `get_settings` stub predates
@@ -1295,6 +1305,20 @@ export function useAppState() {
   )
 
   /**
+   * Settings screen's "Compress audio to AAC after" picker (issue #16).
+   * `null` means off (the default) — sent over the wire as the `0`
+   * sentinel, same convention as `setLlmContextTokens` above (see
+   * `SettingsPatch.compressAudioAfterDays`'s docs).
+   */
+  const setCompressAudioAfterDays = useCallback(
+    (days: number | null) => {
+      setTCompressAudioAfterDays(days)
+      ipc.setSettings({ compressAudioAfterDays: days ?? 0 }).catch(reportError)
+    },
+    [reportError],
+  )
+
+  /**
    * Settings screen's "Custom instructions" text — committed by the view's
    * explicit Save button (not per keystroke; a textarea would otherwise
    * write settings.json on every character). Empty string clears — see
@@ -1517,6 +1541,8 @@ export function useAppState() {
     askQuestion: noteDetail.askQuestion,
     llmBusy: noteDetail.llmBusy,
     tDel,
+    tCompressAudioAfterDays,
+    setCompressAudioAfterDays,
     tMeetingDetection,
     toggleMeetingDetection,
     tCaptureSystemAudio,

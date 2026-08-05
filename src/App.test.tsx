@@ -21,6 +21,7 @@ const settings: Settings = {
   autoUpdateCheck: true,
   detectSpeakers: false,
   autoStopRecording: true,
+  compressAudioAfterDays: null,
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
