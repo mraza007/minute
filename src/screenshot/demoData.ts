@@ -132,6 +132,7 @@ export const AURORA_TRANSCRIPT: StoredSegment[] = [
 export const AURORA_SUMMARY: SummaryDoc = {
   summary:
     "Aurora's transcription pipeline holds to the original date if Thursday's load-testing pass comes back clean above 40 concurrent streams; if not, launch slips three days rather than ship on unverified hardware. Design trims the onboarding illustration set to the three screens directly in the launch path and backfills the rest after launch. Engineering adds frame-drop telemetry behind the existing debug flag for the first week to catch regressions early.",
+  topics: [],
   decisions: [
     'Launch date holds at the 14th, with the 17th as the hard fallback if Thursday’s load-testing numbers are still red.',
     'Onboarding illustrations ship for 3 of 5 screens at launch; the remaining 2 backfill after, noted in release notes.',

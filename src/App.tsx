@@ -115,12 +115,18 @@ export default function App() {
   // several of the props below (summaryStatus/summaryError) key off its id.
   const selectedNoteMeta = s.notes[s.sel] ?? s.notes[0] ?? null
 
-  // NoteView/AiNotesPanel only distinguish 'idle' | 'running' | 'error' —
-  // `summaryStatus`'s `'done'` (and "no event seen this session") both
-  // collapse to 'idle' here, since 'done' carries no special UI once it's
-  // landed (the panel just shows the real summary at that point).
+  // NoteView/AiNotesPanel distinguish 'idle' | 'queued' | 'running' |
+  // 'error' — `summaryStatus`'s `'done'` (and "no event seen this session")
+  // both collapse to 'idle' here, since 'done' carries no special UI once
+  // it's landed (the panel just shows the real summary at that point).
+  // `'queued'` (issue #11) does pass through: a note waiting its turn looks
+  // identical to an un-summarized one otherwise, and offering Generate for
+  // work that's already scheduled is how you get it summarized twice.
   const rawSummaryEventState = selectedNoteMeta ? s.summaryStatus[selectedNoteMeta.id] : undefined
-  const selectedSummaryStatus = rawSummaryEventState === 'running' || rawSummaryEventState === 'error' ? rawSummaryEventState : 'idle'
+  const selectedSummaryStatus =
+    rawSummaryEventState === 'queued' || rawSummaryEventState === 'running' || rawSummaryEventState === 'error'
+      ? rawSummaryEventState
+      : 'idle'
 
   // Same collapse for speaker detection (`diar-status`): 'done' and "no
   // event" are both 'idle' — a finished pass just shows the relabeled

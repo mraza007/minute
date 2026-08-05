@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -206,6 +206,36 @@ export function pickInitialLlmModel(
   }
   const recommendedInstalled = installedLlm.find(m => m.id === recommendation.llm)
   return recommendedInstalled?.id ?? null
+}
+
+/**
+ * Whether a loaded `SummaryDoc` actually has something to show — any prose
+ * summary, any decision, or any action item.
+ *
+ * Exists because "a summary object came back from `get_note`" is not the
+ * same question as "this note has a summary", and the UI cares about the
+ * second one. Every recovery affordance is gated on the note having *no*
+ * summary (the Overview tab's "Generate summary", `AiNotesPanel`'s
+ * `GenerateSummaryButton`) or on an explicit error status (the Overview
+ * tab's "Retry summary"). A note carrying a present-but-empty `SummaryDoc`
+ * satisfies neither condition, so before this predicate it rendered a blank
+ * Summary section with no way to re-run it at all — issue #13.
+ *
+ * `run_summarize` no longer persists an empty result (see
+ * `require_nonempty_summary` in src-tauri/src/llm.rs), but that only stops
+ * *new* notes from reaching that state; notes summarized before that guard
+ * are already on disk as status `ready` with an empty doc, and this is what
+ * gets them their Generate button back.
+ *
+ * Stricter than the backend guard on one point: a whitespace-only summary
+ * counts as empty here. The backend asks "did the model return anything at
+ * all", this asks "will the user see anything", and a summary of `"   "`
+ * renders as an empty section — the same dead end, so it takes the same
+ * exit.
+ */
+export function hasSummaryContent(summary: SummaryDoc | null | undefined): boolean {
+  if (!summary) return false
+  return summary.summary.trim() !== '' || summary.decisions.length > 0 || summary.actionItems.length > 0
 }
 
 /**

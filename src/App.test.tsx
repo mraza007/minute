@@ -462,7 +462,7 @@ describe('App', () => {
         meta: summarized && id === noteId ? readyNote : finishedNote,
         transcript: { segments: [] },
         summary: summarized
-          ? { summary: 'Auto-generated summary of the call.', decisions: [], actionItems: [] }
+          ? { summary: 'Auto-generated summary of the call.', topics: [], decisions: [], actionItems: [] }
           : null,
         markdown: '# Auto-summarized note',
         audioPath: null,

@@ -1608,6 +1608,7 @@ describe('useAppState', () => {
     const segmentsA: StoredSegment[] = [{ speaker: 'Speaker 1', start: 0, end: 1, text: 'hello from A' }]
     const noteSummary: SummaryDoc = {
       summary: 'Discussed Q3 roadmap.',
+      topics: [],
       decisions: ['Ship by Friday'],
       actionItems: [{ text: 'Write release notes', done: false }],
     }
@@ -1723,7 +1724,7 @@ describe('useAppState', () => {
         return {
           meta: noteA,
           transcript: { segments: segmentsA },
-          summary: { summary: 'x', decisions: [], actionItems: [{ text: 'Write release notes', done: false }], ...overrides },
+          summary: { summary: 'x', topics: [], decisions: [], actionItems: [{ text: 'Write release notes', done: false }], ...overrides },
           markdown: '# note',
           audioPath: null,
         }
@@ -1760,7 +1761,7 @@ describe('useAppState', () => {
         ).toBe(true)
 
         await act(async () => {
-          resolveToggle({ summary: 'x', decisions: [], actionItems: [{ text: 'Write release notes', done: true }] })
+          resolveToggle({ summary: 'x', topics: [], decisions: [], actionItems: [{ text: 'Write release notes', done: true }] })
           await pending
         })
 
@@ -1813,7 +1814,7 @@ describe('useAppState', () => {
             return {
               meta: noteA,
               transcript: { segments: segmentsA },
-              summary: { summary: 'x', decisions: [], actionItems },
+              summary: { summary: 'x', topics: [], decisions: [], actionItems },
               markdown: '# note',
               audioPath: null,
             }
@@ -1835,7 +1836,7 @@ describe('useAppState', () => {
 
         // B resolves first: confirmed, triggers a forced refetch.
         await act(async () => {
-          resolveB({ summary: 'x', decisions: [], actionItems: [{ text: 'Item A', done: false }, { text: 'Item B', done: true }] })
+          resolveB({ summary: 'x', topics: [], decisions: [], actionItems: [{ text: 'Item A', done: false }, { text: 'Item B', done: true }] })
           await pendingB
         })
         await waitFor(() => expect(getNoteCalls).toBeGreaterThanOrEqual(2))

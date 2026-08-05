@@ -13,7 +13,7 @@ export interface AiNotesPanelProps {
   /** The selected note's persisted summary, or `null` if it hasn't been summarized (yet, or ever). */
   summary: SummaryDoc | null
   /** This note's summarization lifecycle — driven by `summary-status` events. `'idle'` covers both "never summarized" and "summarized in a past session, no event this session". */
-  status: 'idle' | 'running' | 'error'
+  status: 'idle' | 'queued' | 'running' | 'error'
   /** The most recent summarization error for this note, if `status === 'error'`. */
   error?: string
   /** Display name of the currently selected summary model, for the "Summarizing on-device — {modelName}" banner. */
@@ -113,6 +113,31 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
     >
       <Spinner />
       Summarizing on-device — {modelName}
+    </div>
+  )
+}
+
+/**
+ * Issue #11: this note is in the summarize queue, waiting for whatever is
+ * generating right now. No spinner — nothing is happening for *this* note
+ * yet, and a spinner would claim otherwise.
+ */
+function QueuedBanner() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        marginBottom: 20,
+        paddingBottom: 16,
+        borderBottom: '1px solid var(--rule)',
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: 'var(--ink-muted)',
+      }}
+    >
+      Queued — starts when the current one finishes
     </div>
   )
 }
@@ -405,6 +430,10 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   width,
 }: AiNotesPanelProps) {
   const summarizing = status === 'running'
+  const queued = status === 'queued'
+  // Both states must lock the same controls: a Regenerate click while
+  // queued would re-enqueue work that is already scheduled.
+  const pending = summarizing || queued
   const answering = askStatus === 'running'
 
   // Composes the one persistent status announcement below out of whichever
@@ -412,7 +441,13 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   // ever is (both share the backend's single `LlmBusy` slot), but the two
   // fields driving this are independent booleans, so the composition still
   // has to pick explicitly rather than assume mutual exclusion.
-  const statusAnnouncement = summarizing ? 'Summarizing on-device…' : answering ? 'Answering…' : ''
+  const statusAnnouncement = summarizing
+    ? 'Summarizing on-device…'
+    : queued
+      ? 'Summary queued'
+      : answering
+        ? 'Answering…'
+        : ''
 
   return (
     <div style={width !== undefined ? { ...panelStyle, width } : panelStyle}>
@@ -436,6 +471,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
       </span>
       <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
         {!overviewMode && summarizing && <SummarizingBanner modelName={modelName} />}
+        {!overviewMode && queued && <QueuedBanner />}
         {!overviewMode && status === 'error' && <ErrorCard error={error} onRegenerate={onRegenerate} />}
 
         {!overviewMode && summary ? (
@@ -443,6 +479,22 @@ export const AiNotesPanel = memo(function AiNotesPanel({
             <Section label="Summary">
               <p className="leaf-body">{summary.summary}</p>
             </Section>
+            {/* Issue #14's topic breakdown, between the overview and the
+                decisions — only ever populated under the Detailed summary
+                style, so for everyone else this section simply isn't
+                there. */}
+            {summary.topics.length > 0 && (
+              <Section label="Topics">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  {summary.topics.map((topic, i) => (
+                    <div key={`${topic.title}-${i}`}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{topic.title}</div>
+                      {topic.summary && <p className="leaf-body">{topic.summary}</p>}
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
             {summary.decisions.length > 0 && (
               <Section label="Decisions">
                 <ul className="sec-list">
@@ -459,8 +511,8 @@ export const AiNotesPanel = memo(function AiNotesPanel({
                     <label
                       key={i}
                       className="todo-row"
-                      aria-disabled={summarizing}
-                      style={{ cursor: summarizing ? 'default' : 'pointer', opacity: summarizing ? 0.5 : 1 }}
+                      aria-disabled={pending}
+                      style={{ cursor: pending ? 'default' : 'pointer', opacity: pending ? 0.5 : 1 }}
                     >
                       <input
                         type="checkbox"
@@ -475,8 +527,8 @@ export const AiNotesPanel = memo(function AiNotesPanel({
                         // `toggle_action_item` also rejects server-side
                         // while `LlmBusy` is claimed as the authoritative
                         // check.
-                        disabled={summarizing}
-                        aria-disabled={summarizing}
+                        disabled={pending}
+                        aria-disabled={pending}
                         onChange={e => onToggleAction(i, e.target.checked)}
                       />
                       <span style={item.done ? { textDecoration: 'line-through', color: 'var(--ink-faint)' } : undefined}>
@@ -496,7 +548,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
               </button>
               <button
                 onClick={onRegenerate}
-                disabled={summarizing}
+                disabled={pending}
                 className="btn-outline"
                 style={{ ...smallBtnStyle, justifyContent: 'center' }}
               >

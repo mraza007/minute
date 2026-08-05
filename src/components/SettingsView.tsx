@@ -623,7 +623,8 @@ export function SettingsView({
             />
           </div>
           <div style={noteTextStyle}>
-            Short keeps it to the essentials; Detailed covers every topic, decision, and follow-up.
+            Short keeps it to the essentials. Detailed adds a section-by-section breakdown of every
+            topic discussed, alongside the usual decisions and follow-ups.
           </div>
           <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             <div style={pickerLabelStyle}>Context window</div>

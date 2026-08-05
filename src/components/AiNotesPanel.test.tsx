@@ -5,6 +5,7 @@ import { AiNotesPanel, type AiNotesPanelProps } from './AiNotesPanel'
 function summaryFixture(overrides: Partial<SummaryDoc> = {}): SummaryDoc {
   return {
     summary: 'Acme is ready to expand the pilot from 20 to 200 seats in Q3.',
+    topics: [],
     decisions: ['Pilot expands to 200 seats in Q3 if security review passes.', "Exports will match Acme's Monday digest template."],
     actionItems: [
       { text: 'Send security documentation to Tom before procurement kickoff', done: true },
@@ -59,6 +60,38 @@ describe('AiNotesPanel', () => {
     it('omits the DECISIONS card when decisions is empty', () => {
       render(<AiNotesPanel {...baseProps({ summary: summaryFixture({ decisions: [] }) })} />)
       expect(screen.queryByText('DECISIONS')).not.toBeInTheDocument()
+    })
+
+    // Issue #14: the Detailed style's per-topic breakdown.
+    it('renders each topic with its title and body', () => {
+      const summary = summaryFixture({
+        topics: [
+          { title: 'Pricing', summary: 'Locked at $29. Annual discount deferred.' },
+          { title: 'Rollout', summary: 'EU first, then US.' },
+        ],
+      })
+      render(<AiNotesPanel {...baseProps({ summary })} />)
+      expect(screen.getByText('Pricing')).toBeInTheDocument()
+      expect(screen.getByText('Locked at $29. Annual discount deferred.')).toBeInTheDocument()
+      expect(screen.getByText('Rollout')).toBeInTheDocument()
+      expect(screen.getByText('EU first, then US.')).toBeInTheDocument()
+    })
+
+    // Short and Standard summaries never carry topics — they must not get
+    // an empty section heading for it.
+    it('omits the TOPICS section entirely when there are no topics', () => {
+      render(<AiNotesPanel {...baseProps({ summary: summaryFixture({ topics: [] }) })} />)
+      expect(screen.queryByText('TOPICS')).not.toBeInTheDocument()
+    })
+
+    // A title-only topic is what a model that ignored the "summary" half
+    // produces (see `summary_topic_from_value`) — render the heading, skip
+    // the empty paragraph.
+    it('renders a title-only topic without an empty body', () => {
+      const summary = summaryFixture({ topics: [{ title: 'Pricing', summary: '' }] })
+      const { container } = render(<AiNotesPanel {...baseProps({ summary })} />)
+      expect(screen.getByText('Pricing')).toBeInTheDocument()
+      expect(container.querySelectorAll('.leaf-body:empty')).toHaveLength(0)
     })
 
     it('renders action items with correct checked state, wired to onToggleAction', () => {
@@ -135,6 +168,33 @@ describe('AiNotesPanel', () => {
     it('hides the banner when status is not running', () => {
       render(<AiNotesPanel {...baseProps({ status: 'idle' })} />)
       expect(screen.queryByText(/Summarizing on-device/)).not.toBeInTheDocument()
+    })
+  })
+
+  // Issue #11: a note waiting behind another generation.
+  describe('queued banner', () => {
+    it('says the note is queued and will start on its own', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'queued' })} />)
+      expect(screen.getByText(/Queued — starts when the current one finishes/)).toBeInTheDocument()
+    })
+
+    it('does not claim to be summarizing while merely queued', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'queued' })} />)
+      expect(screen.queryByText(/Summarizing on-device/)).not.toBeInTheDocument()
+    })
+
+    // Re-clicking Regenerate on a queued note would ask for work that is
+    // already scheduled.
+    it('disables Regenerate while queued', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'queued' })} />)
+      expect(screen.getByRole('button', { name: 'Regenerate' })).toBeDisabled()
+    })
+
+    it('disables the action item checkboxes while queued', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'queued' })} />)
+      for (const checkbox of screen.getAllByRole('checkbox')) {
+        expect(checkbox).toBeDisabled()
+      }
     })
   })
 

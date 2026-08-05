@@ -1529,6 +1529,18 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   color: var(--ink-faint);
   font: 13px/1.5 var(--serif);
 }
+/* Issue #14's per-topic breakdown. The title carries the sans/uppercase-ish
+   weight the section labels use so a run of topics reads as a list of
+   headings, while each body reuses `.overview-summary` verbatim — a topic
+   summary is the same kind of prose as the overview, just narrower in
+   scope. */
+.overview-topic { margin-top: 14px; }
+.overview-topic:first-of-type { margin-top: 4px; }
+.overview-topic-title {
+  color: var(--ink-body);
+  font: 600 12.5px/1.4 var(--sans);
+}
+.overview-topic .overview-summary { margin-top: 4px; font-size: 14.5px; }
 .overview-checklist {
   margin: 8px 0 0;
   padding: 0;

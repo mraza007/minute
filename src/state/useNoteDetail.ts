@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onAskAnswer, onAskStatus, onDiarStatus, onSummaryStatus } from '../ipc/events'
 import type { NoteMeta, NoteWithTranscript, StoredSegment, SummaryDoc } from '../ipc/types'
+import { hasSummaryContent } from './adapters'
 import { useTauriEvent } from './useTauriEvent'
 
 function messageOf(err: unknown): string {
@@ -16,7 +17,7 @@ function messageOf(err: unknown): string {
  * background summarization for a non-selected note is still known to have
  * finished if the user switches to it later).
  */
-export type SummaryEventState = 'running' | 'done' | 'error'
+export type SummaryEventState = 'queued' | 'running' | 'done' | 'error'
 
 /**
  * The AI notes panel's (and NoteView's status pill's) simplified view of a
@@ -27,7 +28,7 @@ export type SummaryEventState = 'running' | 'done' | 'error'
  * collapses `summaryStatus[id]` (a `SummaryEventState | undefined`) down to
  * this before handing it to `NoteView`/`AiNotesPanel`.
  */
-export type SummaryStatus = 'idle' | 'running' | 'error'
+export type SummaryStatus = 'idle' | 'queued' | 'running' | 'error'
 
 /**
  * Ask-your-notes' collapsed per-note status — same `'idle'`-covers-"never
@@ -190,7 +191,15 @@ export function useNoteDetail(params: {
       setTranscriptLoading(true)
       ipc
         .getNote(id)
-        .then(data => {
+        .then(raw => {
+          // Collapse a present-but-empty stored SummaryDoc to `null` — the
+          // shape every consumer already treats as "not summarized yet"
+          // (see `hasSummaryContent`, and issue #13). Normalized here, at
+          // the single point every note load funnels through, rather than
+          // at each render gate: it goes into the cache too, so the cached
+          // branch above needs no guard of its own, and no future reader of
+          // `selectedSummary` has to remember the distinction.
+          const data = hasSummaryContent(raw.summary) ? raw : { ...raw, summary: null }
           cacheSet(id, data)
           if (transcriptRequestId.current !== requestId) return
           setSelectedMeta(data.meta)

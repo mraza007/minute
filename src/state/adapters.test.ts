@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { ModelStatus, NoteMeta, Recommendation, StoredSegment, TranscriptSegmentEvent } from '../ipc/types'
+import type { ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
 import {
   findActiveSegmentIndex,
   formatBytes,
   formatMmSs,
   groupLiveSegments,
+  hasSummaryContent,
   modelDisplayName,
   modelStatusToSttInfo,
   noteMetaToListItem,
@@ -541,5 +542,38 @@ describe('splitAnswerCitations', () => {
 
   it('an empty answer returns a single empty plain part', () => {
     expect(splitAnswerCitations('')).toEqual([{ text: '' }])
+  })
+})
+
+describe('hasSummaryContent', () => {
+  function summary(overrides: Partial<SummaryDoc> = {}): SummaryDoc {
+    return { summary: '', topics: [], decisions: [], actionItems: [], ...overrides }
+  }
+
+  it('treats a summary with prose as real content', () => {
+    expect(hasSummaryContent(summary({ summary: 'We shipped it.' }))).toBe(true)
+  })
+
+  it('treats decisions alone as real content', () => {
+    expect(hasSummaryContent(summary({ decisions: ['Ship on Friday'] }))).toBe(true)
+  })
+
+  it('treats action items alone as real content', () => {
+    expect(hasSummaryContent(summary({ actionItems: [{ text: 'Write the FAQ', done: false }] }))).toBe(true)
+  })
+
+  // Issue #13: notes summarized before the backend guard landed are already
+  // on disk as status `ready` with a fully-empty SummaryDoc. Reporting that
+  // as "no content" is what re-opens the Generate/Retry path for them.
+  it('treats a fully empty summary as no content', () => {
+    expect(hasSummaryContent(summary())).toBe(false)
+  })
+
+  it('treats a whitespace-only summary as no content', () => {
+    expect(hasSummaryContent(summary({ summary: '   \n  ' }))).toBe(false)
+  })
+
+  it('treats a missing summary as no content', () => {
+    expect(hasSummaryContent(null)).toBe(false)
   })
 })

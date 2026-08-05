@@ -243,6 +243,18 @@ function NoteOverview({
             <div className="sec-head"><span className="mlab">Summary</span></div>
             <p className="overview-summary">{summary.summary}</p>
           </section>
+          {/* Issue #14: only present for notes summarized under Detailed. */}
+          {summary.topics.length > 0 && (
+            <section>
+              <div className="sec-head"><span className="mlab">Topics · {summary.topics.length}</span></div>
+              {summary.topics.map((topic, index) => (
+                <div key={`${topic.title}-${index}`} className="overview-topic">
+                  <div className="overview-topic-title">{topic.title}</div>
+                  {topic.summary && <p className="overview-summary">{topic.summary}</p>}
+                </div>
+              ))}
+            </section>
+          )}
           <section>
             <div className="sec-head"><span className="mlab">Decisions · {summary.decisions.length}</span></div>
             {summary.decisions.length > 0 ? (
@@ -273,15 +285,26 @@ function NoteOverview({
         </div>
       ) : summaryStatus !== 'error' ? (
         <section className="overview-empty-summary">
-          <div className="mlab">{summaryStatus === 'running' ? 'Summary in progress' : 'Summary not generated'}</div>
+          <div className="mlab">
+            {summaryStatus === 'running'
+              ? 'Summary in progress'
+              : summaryStatus === 'queued'
+                ? 'Summary queued'
+                : 'Summary not generated'}
+          </div>
           <p>
             {summaryStatus === 'running'
               ? 'The transcript stays available while Minute prepares the overview.'
-              : llmInstalled
-                ? 'Generate a local summary to surface decisions and action items.'
-                : 'Install a summary model in Settings to generate decisions and action items.'}
+              : summaryStatus === 'queued'
+                ? 'Another summary is running. This one starts on its own when that finishes.'
+                : llmInstalled
+                  ? 'Generate a local summary to surface decisions and action items.'
+                  : 'Install a summary model in Settings to generate decisions and action items.'}
           </p>
-          {llmInstalled && summaryStatus !== 'running' && (
+          {/* No Generate button while running *or* queued (issue #11) —
+              the work is already scheduled, and offering the button again
+              is how the same note gets summarized twice. */}
+          {llmInstalled && summaryStatus !== 'running' && summaryStatus !== 'queued' && (
             <button type="button" className="btn-solid" onClick={onGenerate}>Generate summary</button>
           )}
         </section>

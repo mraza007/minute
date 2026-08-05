@@ -30,6 +30,8 @@ function noteWithTranscriptFixture(overrides: Partial<NoteWithTranscript> = {}):
 interface SetupOpts {
   askNoteReject?: string
   onCmd?: (cmd: string, args: unknown) => void
+  /** Overrides what `get_note` resolves with, for tests that care about the note's own content. */
+  note?: NoteWithTranscript
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -38,7 +40,7 @@ function setupIPC(opts: SetupOpts = {}) {
       opts.onCmd?.(cmd, args)
       switch (cmd) {
         case 'get_note':
-          return noteWithTranscriptFixture()
+          return opts.note ?? noteWithTranscriptFixture()
         case 'ask_note':
           if (opts.askNoteReject) throw opts.askNoteReject
           return null
@@ -73,6 +75,50 @@ function withoutIds(entries: AskHistoryEntry[]) {
 }
 
 describe('useNoteDetail', () => {
+  describe('loading a note whose stored summary is empty (issue #13)', () => {
+    it('surfaces a fully-empty stored SummaryDoc as no summary at all', async () => {
+      // The exact on-disk state issue #13 reported: status `ready` (the
+      // summarize worker persisted an empty extraction and finalized the
+      // note) with a SummaryDoc that has nothing in it. Collapsing it to
+      // `null` here is what puts the Overview tab back on its "Summary not
+      // generated" branch, which is the only one carrying a Generate button.
+      setupIPC({
+        note: noteWithTranscriptFixture({
+          meta: { ...noteWithTranscriptFixture().meta, status: 'ready' },
+          summary: { summary: '', topics: [], decisions: [], actionItems: [] },
+        }),
+      })
+      const { result } = setup()
+
+      await waitFor(() => expect(result.current.transcriptLoading).toBe(false))
+      expect(result.current.selectedSummary).toBeNull()
+    })
+
+    it('keeps a summary that has only action items', async () => {
+      setupIPC({
+        note: noteWithTranscriptFixture({
+          summary: { summary: '', topics: [], decisions: [], actionItems: [{ text: 'Write the FAQ', done: false }] },
+        }),
+      })
+      const { result } = setup()
+
+      await waitFor(() => expect(result.current.selectedSummary).not.toBeNull())
+      expect(result.current.selectedSummary?.actionItems).toHaveLength(1)
+    })
+
+    it('keeps a normal summary untouched', async () => {
+      setupIPC({
+        note: noteWithTranscriptFixture({
+          summary: { summary: 'We shipped it.', topics: [], decisions: ['Ship Friday'], actionItems: [] },
+        }),
+      })
+      const { result } = setup()
+
+      await waitFor(() => expect(result.current.selectedSummary).not.toBeNull())
+      expect(result.current.selectedSummary?.summary).toBe('We shipped it.')
+    })
+  })
+
   describe('askQuestion', () => {
     it('invokes ask_note with the trimmed id/question', async () => {
       const calls: Array<{ cmd: string; args: unknown }> = []

@@ -505,6 +505,7 @@ describe('ipc/commands', () => {
   it('toggleActionItem invokes toggle_action_item with { id, index, done } and passes through the updated SummaryDoc', async () => {
     const updated: SummaryDoc = {
       summary: 'Discussed Q3 roadmap.',
+      topics: [],
       decisions: ['Ship by Friday'],
       actionItems: [{ text: 'Write release notes', done: true }],
     }

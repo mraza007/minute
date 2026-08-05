@@ -21,6 +21,7 @@ function noteFixture(overrides: Partial<NoteMeta> = {}): NoteMeta {
 function summaryFixture(overrides: Partial<SummaryDoc> = {}): SummaryDoc {
   return {
     summary: 'Discussed the Q3 roadmap.',
+    topics: [],
     decisions: ['Ship the beta by Friday'],
     actionItems: [{ text: 'Write release notes', done: false }],
     ...overrides,
@@ -197,6 +198,77 @@ describe('NoteView', () => {
     expect(screen.getByRole('button', { name: 'Open transcript' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry summary' }))
     expect(onRegenerateSummary).toHaveBeenCalledWith(meta.id)
+  })
+
+  // Issue #14: the Detailed style's per-topic breakdown, in the overview.
+  it('renders the topic breakdown in the overview when the summary has one', () => {
+    const meta = noteFixture({ status: 'ready' })
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          selectedSummary: summaryFixture({
+            topics: [
+              { title: 'Pricing', summary: 'Locked at $29.' },
+              { title: 'Rollout', summary: 'EU first, then US.' },
+            ],
+          }),
+        })}
+      />,
+    )
+    expect(screen.getByText('Topics · 2')).toBeInTheDocument()
+    expect(screen.getByText('Locked at $29.')).toBeInTheDocument()
+    expect(screen.getByText('EU first, then US.')).toBeInTheDocument()
+  })
+
+  it('omits the overview topics section for a summary without topics', () => {
+    const meta = noteFixture({ status: 'ready' })
+    render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, noteTab: 'overview', selectedSummary: summaryFixture({ topics: [] }) })}
+      />,
+    )
+    expect(screen.queryByText(/^Topics ·/)).not.toBeInTheDocument()
+  })
+
+  // Issue #11: a note waiting behind another generation must say so, and
+  // must not offer a Generate button for work that is already scheduled.
+  it('shows the overview as queued without offering to generate it again', () => {
+    const meta = noteFixture()
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          noteTab: 'overview',
+          llmInstalled: true,
+          selectedSummary: null,
+          summaryStatus: 'queued',
+        })}
+      />,
+    )
+    // Twice, correctly: the visible overview label, and AiNotesPanel's
+    // persistent role="status" announcer picking up the same state.
+    expect(screen.getAllByText('Summary queued')).toHaveLength(2)
+    expect(
+      screen.getAllByRole('status').some(node => node.textContent === 'Summary queued'),
+    ).toBe(true)
+    expect(screen.getByText(/starts on its own when that finishes/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
+    // Still not an error — no retry affordance either.
+    expect(screen.queryByRole('button', { name: 'Retry summary' })).not.toBeInTheDocument()
+  })
+
+  it('offers Generate summary for an idle un-summarized note', () => {
+    const meta = noteFixture()
+    render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, noteTab: 'overview', selectedSummary: null, summaryStatus: 'idle', llmInstalled: true })}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Generate summary' })).toBeInTheDocument()
   })
 
   it('filters transcript turns, submits a speaker rename, and returns focus to the filter', async () => {

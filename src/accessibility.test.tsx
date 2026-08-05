@@ -70,6 +70,7 @@ const noteDetail: NoteWithTranscript = {
   },
   summary: {
     summary: 'The team approved the pricing change.',
+    topics: [],
     decisions: ['Ship the new pricing on Friday.'],
     actionItems: [{ text: 'Write the release note.', done: false }],
   },

@@ -195,8 +195,22 @@ export interface ActionItem {
 }
 
 /** `llm::SummaryDoc` — `#[serde(rename_all = "camelCase")]`. */
+/** `llm.rs::SummaryTopic` — one section of a Detailed summary's breakdown (issue #14). */
+export interface SummaryTopic {
+  title: string
+  /** What was said about this topic. May be empty when a model returned a title-only entry. */
+  summary: string
+}
+
 export interface SummaryDoc {
   summary: string
+  /**
+   * Per-topic breakdown, empty unless the note was summarized under the
+   * Detailed style (issue #14). Always present in JSON from `get_note`
+   * (Rust's `#[serde(default)]` fills it in for summaries written before
+   * the field existed), so no optionality to handle here.
+   */
+  topics: SummaryTopic[]
   decisions: string[]
   actionItems: ActionItem[]
 }
@@ -371,10 +385,17 @@ export interface SttStatusEvent {
   error: string | null
 }
 
-/** `llm.rs::SummaryStatusPayload` — event `summary-status`. */
+/**
+ * `llm.rs::SummaryStatusPayload` — event `summary-status`.
+ *
+ * `'queued'` (issue #11) means the note is waiting behind another
+ * generation and will start on its own — never a terminal state, always
+ * followed by `'running'` when its turn comes. Emitted by whoever enqueued
+ * rather than by a worker, since no worker exists for that note yet.
+ */
 export interface SummaryStatusEvent {
   noteId: string
-  state: 'running' | 'done' | 'error'
+  state: 'queued' | 'running' | 'done' | 'error'
   error: string | null
 }
 
