@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
-use crate::llm::{SummaryDoc, SummaryTopic};
+use crate::llm::SummaryDoc;
 
 /// Lifecycle status of a note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1824,6 +1824,11 @@ pub fn render_note_md(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the topic-breakdown rendering tests need this — `render_note_md`
+    // itself reaches `SummaryTopic`'s fields through `summary.topics`, which
+    // needs no import. Kept here rather than at module scope so a non-test
+    // build doesn't warn on it.
+    use crate::llm::SummaryTopic;
     use tempfile::tempdir;
     use time::macros::datetime;
 
