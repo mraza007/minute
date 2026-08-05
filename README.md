@@ -5,15 +5,15 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.6.0-c8412a)
+![version](https://img.shields.io/badge/version-1.7.0-c8412a)
 
 <a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute - Meeting notes that never leave your Mac | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a>
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute 1.6.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.6.0/Minute-1.6.0-arm64.zip)**
+**[⬇ Download Minute 1.7.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.7.0/Minute-1.7.0-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.6.0/Minute-1.6.0-x86_64.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.7.0/Minute-1.7.0-x86_64.zip).
 
 </div>
 
@@ -73,10 +73,11 @@ sides of the call — your microphone and what your Mac is playing — so the
 other participants land in the transcript too, not just you. It needs
 macOS 13 or later and Screen Recording permission (the one system prompt
 this whole feature ever triggers); say no, or run an older macOS, and
-recording still works exactly as before, mic-only. One caveat worth
-knowing: if you're on speakers rather than headphones, your own voice can
-get picked up twice — once by the mic, once by the system-audio stream
-playing it back out — there's no echo cancellation between the two yet.
+recording still works exactly as before, mic-only. And speakers are fine:
+when system audio is part of the mix, the microphone runs through macOS's
+own voice processing — the same echo canceller FaceTime uses — so what
+your Mac plays doesn't land in the recording a second time as speaker
+bleed through the mic.
 
 Forget to hit stop and Minute notices. After 10 minutes with nothing
 audible on either source it warns with a 10-minute countdown, then stops
@@ -148,7 +149,10 @@ someone said the thing you're looking for.
 For larger libraries, notes can be pinned, filtered by recording status,
 source, or date, and sorted by newest, oldest, duration, or title. Multi-select
 supports bulk export and recoverable deletion, while per-note storage details
-make audio retention visible instead of mysterious.
+make audio retention visible instead of mysterious. Recordings don't have to
+stay heavyweight either: an optional storage setting converts audio older
+than 7, 14, or 30 days from WAV to compact AAC — still playable, still
+seekable from the transcript, at a fraction of the disk space.
 
 ![Minute — the ⌘K search palette showing title and transcript hits](screenshots/search.png)
 
