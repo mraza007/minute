@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
-use crate::llm::SummaryDoc;
+use crate::llm::{SummaryDoc, SummaryTopic};
 
 /// Lifecycle status of a note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +233,22 @@ const SUMMARY_TMP_FILE: &str = "summary.json.tmp";
 const NOTE_MD_FILE: &str = "note.md";
 const NOTE_MD_TMP_FILE: &str = "note.md.tmp";
 const RECOVERY_DIR: &str = ".minute-trash";
+
+/// The title every note is created with, before the user (or
+/// `llm::rename_target` — issue #12) gives it a real one.
+///
+/// Lives here rather than at its `audio::start_recording` call site because
+/// two unrelated modules now have to agree on the exact string: that call
+/// site writes it, and `llm::rename_target` tests for it to decide whether a
+/// note is still unnamed. Two independent literals that must stay
+/// byte-identical is precisely the shape that drifts.
+///
+/// `Sidebar.tsx` compares against its own copy of this string (to render a
+/// note glyph instead of a column of identical "NR" monograms). That one is
+/// deliberately left independent — a TS/Rust constant pair can't be shared
+/// without generating one from the other, which is far more machinery than a
+/// default title is worth.
+pub const DEFAULT_NOTE_TITLE: &str = "New recording";
 const EXPORTS_DIR: &str = "exports";
 const DIAGNOSTICS_DIR: &str = "diagnostics";
 
@@ -1742,6 +1758,28 @@ pub fn render_note_md(
     if let Some(summary) = summary {
         out.push_str(&format!("\n\n## Summary\n\n{}", summary.summary));
 
+        // Issue #14's topic breakdown, between the overview and the
+        // decisions — the same reading order the panel and the overview tab
+        // use. Each topic is a `###` subsection so the breakdown nests
+        // under `## Topics` rather than competing with it; a topic that
+        // came back title-only (see `llm::summary_topic_from_value`) renders
+        // as a bare heading rather than a heading followed by a blank line.
+        if !summary.topics.is_empty() {
+            let topics = summary
+                .topics
+                .iter()
+                .map(|topic| {
+                    if topic.summary.trim().is_empty() {
+                        format!("### {}", topic.title)
+                    } else {
+                        format!("### {}\n\n{}", topic.title, topic.summary)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            out.push_str(&format!("\n\n## Topics\n\n{topics}"));
+        }
+
         if !summary.decisions.is_empty() {
             let decisions = summary
                 .decisions
@@ -3156,6 +3194,7 @@ mod tests {
     fn sample_summary() -> SummaryDoc {
         SummaryDoc {
             summary: "Discussed Q3 roadmap.".to_string(),
+            topics: Vec::new(),
             decisions: vec!["Ship by Friday".to_string()],
             action_items: vec![ActionItem {
                 text: "Write release notes".to_string(),
@@ -3198,6 +3237,35 @@ mod tests {
         let meta = store.create_note("Standup", "whisper-small", now).unwrap();
 
         assert_eq!(store.read_summary(&meta.id).unwrap(), None);
+    }
+
+    /// Issue #14 added `topics` to `SummaryDoc`. Every `summary.json`
+    /// already on disk predates it, and `SummaryDoc` has no struct-level
+    /// serde default — without `#[serde(default)]` on the field, this read
+    /// fails and every previously-summarized note silently loses its
+    /// summary (`read_summary` logs and returns `None` on a parse error).
+    #[test]
+    fn read_summary_without_topics_still_parses_as_an_empty_topic_list() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        // Byte-for-byte the shape Minute wrote before this change.
+        fs::write(
+            store.summary_path(&meta.id),
+            r#"{"summary":"We shipped it.","decisions":["Ship Friday"],"actionItems":[{"text":"Write notes","done":false}]}"#,
+        )
+        .unwrap();
+
+        let summary = store
+            .read_summary(&meta.id)
+            .unwrap()
+            .expect("a pre-topics summary.json must still load");
+        assert_eq!(summary.summary, "We shipped it.");
+        assert_eq!(summary.decisions, vec!["Ship Friday"]);
+        assert_eq!(summary.action_items.len(), 1);
+        assert!(summary.topics.is_empty());
     }
 
     #[test]
@@ -3454,6 +3522,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             summary: "Reviewed the roadmap and aligned on priorities.".to_string(),
+            topics: Vec::new(),
             decisions: vec![
                 "Ship the beta by Friday".to_string(),
                 "Skip the redesign this quarter".to_string(),
@@ -3498,11 +3567,85 @@ mod tests {
         );
     }
 
+    /// Issue #14: the topic breakdown renders between the overview and the
+    /// decisions — the same reading order the AI notes panel and the
+    /// overview tab use. A title-only topic (see
+    /// `llm::summary_topic_from_value`) is a bare heading, not a heading
+    /// followed by a blank line.
+    #[test]
+    fn render_note_md_renders_the_topic_breakdown_between_summary_and_decisions() {
+        let meta = md_meta(|_| {});
+        let summary = SummaryDoc {
+            summary: "Reviewed the roadmap.".to_string(),
+            topics: vec![
+                SummaryTopic {
+                    title: "Pricing".to_string(),
+                    summary: "Locked at $29. The annual discount was deferred.".to_string(),
+                },
+                SummaryTopic {
+                    title: "Rollout".to_string(),
+                    summary: String::new(),
+                },
+            ],
+            decisions: vec!["Ship the beta by Friday".to_string()],
+            action_items: Vec::new(),
+        };
+
+        let markdown = render_note_md(&meta, Some(&summary), &Transcript::default());
+
+        assert_eq!(
+            markdown,
+            "# Client call — Acme\n\
+             \n\
+             **Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 4\n\
+             \n\
+             ## Summary\n\
+             \n\
+             Reviewed the roadmap.\n\
+             \n\
+             ## Topics\n\
+             \n\
+             ### Pricing\n\
+             \n\
+             Locked at $29. The annual discount was deferred.\n\
+             \n\
+             ### Rollout\n\
+             \n\
+             ## Decisions\n\
+             \n\
+             - Ship the beta by Friday\n\
+             \n\
+             ## Transcript\n\
+             \n\
+             _No speech detected._",
+        );
+    }
+
+    /// A note summarized under Short or Standard has no topics, and must
+    /// render exactly as it did before issue #14 — no empty `## Topics`
+    /// heading.
+    #[test]
+    fn render_note_md_omits_the_topics_section_entirely_when_there_are_none() {
+        let meta = md_meta(|_| {});
+        let summary = SummaryDoc {
+            summary: "Reviewed the roadmap.".to_string(),
+            topics: Vec::new(),
+            decisions: Vec::new(),
+            action_items: Vec::new(),
+        };
+
+        let markdown = render_note_md(&meta, Some(&summary), &Transcript::default());
+
+        assert!(!markdown.contains("## Topics"));
+        assert!(!markdown.contains("###"));
+    }
+
     #[test]
     fn render_note_md_omits_empty_decisions_and_action_items_sections() {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             summary: "Quick sync, nothing decided.".to_string(),
+            topics: Vec::new(),
             decisions: vec![],
             action_items: vec![],
         };
@@ -3533,6 +3676,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             summary: "x".to_string(),
+            topics: Vec::new(),
             decisions: vec![],
             action_items: vec![ActionItem {
                 text: "Follow up".to_string(),

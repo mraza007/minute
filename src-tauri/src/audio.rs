@@ -29,7 +29,7 @@ use crate::diar;
 use crate::error::{MinuteError, Result};
 use crate::llm::{self, LlmBusy, SharedLlmEngine};
 use crate::settings::{self, SharedSettings};
-use crate::store::{lock_store, NoteMeta, SharedStore};
+use crate::store::{lock_store, NoteMeta, SharedStore, DEFAULT_NOTE_TITLE};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
 use crate::syscap::{self, SysAudioAvailability, SysCapture};
 
@@ -1763,7 +1763,7 @@ pub async fn start_recording(
     );
 
     let meta = lock_store(&store)
-        .create_note_now("New recording", &model_id)
+        .create_note_now(DEFAULT_NOTE_TITLE, &model_id)
         .map_err(|e| e.to_string())?;
     let note_dir = lock_store(&store).note_dir(&meta.id);
 
@@ -2078,6 +2078,7 @@ pub fn stop_recording(
     settings: State<SharedSettings>,
     engine: State<SharedLlmEngine>,
     llm_busy: State<LlmBusy>,
+    summarize_queue: State<llm::SummarizeQueue>,
     diar_busy: State<diar::DiarBusy>,
 ) -> std::result::Result<NoteMeta, String> {
     let active = lock_recorder_state(&recorder)
@@ -2205,6 +2206,7 @@ pub fn stop_recording(
         settings.inner(),
         engine.inner(),
         llm_busy.inner(),
+        summarize_queue.inner(),
         diar_busy.inner(),
         &note_id,
     );
@@ -2215,6 +2217,7 @@ pub fn stop_recording(
             settings.inner(),
             engine.inner(),
             llm_busy.inner(),
+            summarize_queue.inner(),
             &note_id,
         );
     }
@@ -2235,6 +2238,7 @@ fn maybe_spawn_auto_diarize(
     settings: &SharedSettings,
     engine: &SharedLlmEngine,
     llm_busy: &llm::LlmBusy,
+    summarize_queue: &llm::SummarizeQueue,
     diar_busy: &diar::DiarBusy,
     note_id: &str,
 ) -> bool {
@@ -2254,9 +2258,18 @@ fn maybe_spawn_auto_diarize(
         let settings = settings.clone();
         let engine = engine.clone();
         let llm_busy = llm_busy.clone();
+        let summarize_queue = summarize_queue.clone();
         let note_id = note_id.to_string();
         Box::new(move || {
-            auto_trigger_summarize(&app, &store, &settings, &engine, &llm_busy, &note_id);
+            auto_trigger_summarize(
+                &app,
+                &store,
+                &settings,
+                &engine,
+                &llm_busy,
+                &summarize_queue,
+                &note_id,
+            );
         })
     };
 
@@ -2293,46 +2306,30 @@ fn maybe_spawn_auto_diarize(
 /// `transcribed -> summarizing… -> ready`; no LLM installed just means it
 /// never leaves `transcribed`).
 ///
-/// The one case this *does* eventually surface an error event for is the
-/// engine being busy (e.g. a manual Regenerate on some other note, or an
-/// in-flight ask-your-notes question, still running when this recording
-/// finished) — rare in isolation, but "finish a recording while asking a
-/// question about a different one" is an entirely routine sequence for
-/// this app's target user (back-to-back meetings), so this is handled with
-/// a bounded background retry rather than an immediate error — see the
-/// busy-handling paragraph below.
+/// A busy engine (a manual Regenerate on another note, or an in-flight
+/// ask-your-notes question, still running when this recording finished) is
+/// not an error either: the note joins the summarize queue and starts when
+/// its turn comes (issue #11). "Finish a recording while asking a question
+/// about a different one" is a routine sequence for back-to-back meetings,
+/// so it should cost the user nothing.
 ///
-/// **Busy handling — deferred retry, not an immediate error (and never the
-/// raw internal `LlmBusy` rejection token):** the very first spawn attempt
-/// happens synchronously, right here, before this function returns — a
-/// single `compare_exchange` inside [`llm::try_spawn_summarize`], not
-/// remotely slow — so the overwhelmingly common case (nothing else
-/// generating) never touches a background thread at all. Only if *that*
-/// first attempt finds [`llm::LlmBusy`] already claimed does this hand off
-/// to a detached thread running [`llm::retry_spawn_while_busy`]: it
-/// re-attempts the spawn every [`llm::AUTO_SUMMARIZE_POLL_INTERVAL`] until
-/// either it succeeds (another generation finished, freeing the busy slot)
-/// or [`llm::AUTO_SUMMARIZE_RETRY_DEADLINE`] passes, at which point *that*
-/// gives up and this emits a `summary-status` error — with
-/// [`llm::AUTO_SUMMARIZE_GIVE_UP_MESSAGE`], an honest, actionable sentence,
-/// never `try_spawn_summarize`'s bare `"summarization already running"`
-/// token (see that constant's docs for why a raw internal token is the
-/// wrong thing to show here). Either way, `stop_recording` itself — which
-/// calls this synchronously — never blocks: the synchronous part here is
-/// only ever one atomic compare-exchange plus, on the busy path, spawning
-/// (not running) a thread.
+/// This used to be a hand-rolled queue of one: a detached thread polling
+/// [`llm::LlmBusy`] every 300ms for up to ten minutes, then giving up with
+/// an error telling the user to press Regenerate themselves. The shared
+/// queue replaces all of it — no polling thread, no deadline, and arrival
+/// order is actually preserved across several notes instead of decided by
+/// whichever poller happened to win the compare-exchange.
 ///
-/// This deferred-retry treatment is deliberately **auto-trigger-only** —
-/// `summarize_note`/`ask_note` (a manual Regenerate, or an ask) still
-/// reject a busy call immediately, since a user who just clicked something
-/// is watching for the result right then, unlike this background trigger
-/// nothing is waiting on.
+/// `stop_recording`, which calls this synchronously, still never blocks:
+/// the whole body is a catalog lookup plus either one atomic
+/// compare-exchange (engine free — spawn now) or a push onto a `VecDeque`.
 fn auto_trigger_summarize(
     app: &AppHandle,
     store: &SharedStore,
     settings: &SharedSettings,
     engine: &SharedLlmEngine,
     busy: &LlmBusy,
+    queue: &llm::SummarizeQueue,
     note_id: &str,
 ) {
     let models_root = match app.path().app_data_dir() {
@@ -2368,73 +2365,32 @@ fn auto_trigger_summarize(
     };
 
     let model_path = catalog::installed_path(&entry, &models_root);
-    let store = store.clone();
-    let engine = engine.clone();
-    let busy = busy.clone();
-    let model_id = entry.id;
     let note_id = note_id.to_string();
-    let app = app.clone();
 
-    // Build one spawn attempt as a reusable closure — used for both the
-    // synchronous first try below and, on the busy path, every retry
-    // `retry_spawn_while_busy` makes on the detached thread. A fresh
-    // `emit` closure per attempt (rather than trying to share/clone one)
-    // since `try_spawn_summarize` takes ownership of it, moving it into
-    // the worker's context only on a *successful* claim — cheap either
-    // way, `llm::tauri_emit` just wraps a cloned `AppHandle`.
-    let attempt_spawn = {
-        let store = store.clone();
-        let engine = engine.clone();
-        let busy = busy.clone();
-        let model_id = model_id.clone();
-        let model_path = model_path.clone();
-        let note_id = note_id.clone();
-        let app = app.clone();
-        move || {
-            let emit = Box::new(llm::tauri_emit(app.clone()));
-            llm::try_spawn_summarize(llm::SummarizeWorkerCtx {
-                note_id: note_id.clone(),
-                store: store.clone(),
-                engine: engine.clone(),
-                busy: busy.clone(),
-                model_id: model_id.clone(),
-                model_path: model_path.clone(),
-                preferred_context,
-                summary_style,
-                summary_instructions: summary_instructions.clone(),
-                emit,
-            })
-        }
-    };
+    let disposition = llm::spawn_or_enqueue_summarize(
+        queue,
+        llm::SummarizeWorkerCtx {
+            note_id: note_id.clone(),
+            store: store.clone(),
+            engine: engine.clone(),
+            busy: busy.clone(),
+            model_id: entry.id,
+            model_path,
+            preferred_context,
+            summary_style,
+            summary_instructions,
+            queue: queue.clone(),
+            emit: Box::new(llm::tauri_emit(app.clone())),
+        },
+    );
 
-    // The synchronous first attempt — `stop_recording`'s call into this
-    // function still returns fast either way: this is a single atomic
-    // `compare_exchange` (see `try_spawn_summarize`'s docs), and the busy
-    // path below only *spawns* a thread rather than running the retry loop
-    // here. `attempt_spawn` is `Clone` (every value it captures — `Arc`s,
-    // `String`s, a `PathBuf`, an `AppHandle` — is cheap to clone), so a
-    // clone runs this first try, leaving the original free to move into
-    // the retry thread below untouched if it's needed.
-    let first_attempt = attempt_spawn.clone();
-    if first_attempt().is_ok() {
-        return;
+    if matches!(
+        disposition,
+        llm::SummarizeDisposition::Queued | llm::SummarizeDisposition::AlreadyQueued
+    ) {
+        log::info!("auto-summarize: engine busy for note {note_id} — queued");
+        llm::emit_summary_status_queued(app, &note_id);
     }
-
-    log::info!("auto-summarize: busy for note {note_id} — retrying in the background");
-    std::thread::spawn(move || {
-        let start = Instant::now();
-        let result = llm::retry_spawn_while_busy(
-            attempt_spawn,
-            std::thread::sleep,
-            move || start.elapsed(),
-            llm::AUTO_SUMMARIZE_POLL_INTERVAL,
-            llm::AUTO_SUMMARIZE_RETRY_DEADLINE,
-        );
-        if let Err(msg) = result {
-            log::warn!("auto-summarize: gave up for note {note_id} after busy retries: {msg}");
-            llm::emit_summary_status_error(&app, &note_id, &msg);
-        }
-    });
 }
 
 #[cfg(test)]

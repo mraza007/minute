@@ -595,6 +595,7 @@ pub(crate) fn stop_active_recording(app: &AppHandle) -> Result<NoteMeta, String>
     let settings = app.state::<SharedSettings>();
     let engine = app.state::<SharedLlmEngine>();
     let llm_busy = app.state::<LlmBusy>();
+    let summarize_queue = app.state::<llm::SummarizeQueue>();
     let diar_busy = app.state::<diar::DiarBusy>();
     audio::stop_recording(
         app.clone(),
@@ -603,6 +604,7 @@ pub(crate) fn stop_active_recording(app: &AppHandle) -> Result<NoteMeta, String>
         settings,
         engine,
         llm_busy,
+        summarize_queue,
         diar_busy,
     )
 }
@@ -797,6 +799,14 @@ pub fn run() {
             // long-running generation.
             let llm_busy: LlmBusy = llm::open_busy_flag();
             app.manage(llm_busy.clone());
+
+            // Notes waiting their turn behind whatever is generating right
+            // now (issue #11). Not a second gate — `llm_busy` still decides
+            // who runs; this only decides who runs *next*, and is drained by
+            // every summarize and ask worker on its way out. See
+            // `llm::SummarizeQueue`.
+            let summarize_queue: llm::SummarizeQueue = llm::open_summarize_queue();
+            app.manage(summarize_queue);
 
             // One-diarization-at-a-time gate — same single-atomic shape as
             // `llm_busy` just above, but its own flag: a diarization pass and
