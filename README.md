@@ -5,13 +5,15 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.5.0-c8412a)
+![version](https://img.shields.io/badge/version-1.6.0-c8412a)
+
+<a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute - Meeting notes that never leave your Mac | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a>
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute 1.5.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-arm64.zip)**
+**[⬇ Download Minute 1.6.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.6.0/Minute-1.6.0-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.5.0/Minute-1.5.0-x86_64.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.6.0/Minute-1.6.0-x86_64.zip).
 
 </div>
 
@@ -118,7 +120,14 @@ Summaries are yours to shape: pick a length (short / standard / detailed),
 add standing custom instructions ("write it in German", "focus on
 engineering decisions"), and let the context window size itself to this
 Mac's memory — or pin it yourself. All of it in Settings, all applied to
-the next summary you generate.
+the next summary you generate. **Detailed** adds a section-by-section
+breakdown of every topic discussed, on top of the usual decisions and
+follow-ups.
+
+A note you never named takes its title from the meeting itself once the
+summary lands — no more libraries of "New recording". And asking for a
+second summary while one is already running queues it instead of turning
+you away; it starts on its own when the engine frees up.
 
 ## Ask your notes, with receipts
 
@@ -162,8 +171,9 @@ same calm, analog feel as the light one.
 ## Models sized to your Mac
 
 Whisper (small / medium / large-v3-turbo) for transcription and a choice of
-local LLMs (Qwen3.5-4B, Qwen3.5-9B, Gemma 4 E4B) for summarization — pick
-what fits your hardware and disk budget, or let Minute suggest a pair based
+local LLMs (Qwen3.5-4B, Qwen3.5-9B, Gemma 4 E4B, and LFM2-2.6B-Transcript —
+a 1.6 GB model fine-tuned specifically for meeting notes) for summarization
+— pick what fits your hardware and disk budget, or let Minute suggest a pair based
 on the detected architecture, memory, and CPU cores. Every choice is labeled
 **Recommended**, **Good fit**, **Near memory limit**, **Below minimum**, or
 **Not supported** without pretending to have benchmarked hardware it has not.
