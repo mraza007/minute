@@ -91,7 +91,20 @@ artifact_name="$(basename "$artifact")"
 # what latest.json carries and the installed app verifies against its
 # baked-in public key.
 updater_artifact="$artifact_dir/Minute-$version-$expected_arch.app.tar.gz"
-tar -czf "$updater_artifact" -C "$artifact_dir" "Minute.app"
+# COPYFILE_DISABLE + --no-mac-metadata (issue #17): without them macOS tar
+# stores xattrs of the stapled app as AppleDouble `._Minute.app` entries,
+# and the installed app's updater dies with "failed to unpack `._Minute.app`".
+COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$updater_artifact" -C "$artifact_dir" "Minute.app"
+# Guard with a raw listing: bsdtar -t silently hides AppleDouble entries,
+# so it cannot be used to detect them.
+if python3 -c '
+import sys, tarfile
+bad = [n for n in tarfile.open(sys.argv[1]).getnames() if n.rpartition("/")[2].startswith("._")]
+sys.exit(1 if bad else 0)
+' "$updater_artifact"; then :; else
+  echo "release build: updater archive contains AppleDouble ._* entries; the updater cannot unpack them (issue #17)" >&2
+  exit 1
+fi
 # The key comes from the TAURI_SIGNING_PRIVATE_KEY env var exported above —
 # passing -f here as well makes the CLI error out on conflicting options.
 npm run tauri signer sign -- --password "" "$updater_artifact" >/dev/null
