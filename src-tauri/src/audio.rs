@@ -32,6 +32,7 @@ use crate::settings::{self, SharedSettings};
 use crate::store::{lock_store, NoteMeta, SharedStore, DEFAULT_NOTE_TITLE};
 use crate::stt::{self, SttEvent, SttStatusPayload, SttStatusState, WorkerCtx};
 use crate::syscap::{self, SysAudioAvailability, SysCapture};
+use crate::vpio;
 
 /// Size (in samples, at [`TARGET_SAMPLE_RATE`]) of each block the writer
 /// thread batches downmixed/resampled audio into before forwarding it to
@@ -1294,7 +1295,7 @@ pub struct Recorder;
 /// WAV-writer thread (both kept alive for as long as this handle lives),
 /// and exposes pause/resume/stop.
 pub struct RecorderHandle {
-    stream: cpal::Stream,
+    stream: MicStream,
     shared: Arc<SharedState>,
     wav_path: PathBuf,
     writer_thread: std::thread::JoinHandle<Result<u64>>,
@@ -1316,6 +1317,22 @@ pub struct RecorderHandle {
     /// state, and so `stop()` can still report it after `sys_capture` is
     /// consumed by that same call.
     system_audio_active: bool,
+}
+
+/// The live microphone capture backing a recording — either the ordinary
+/// cpal input stream (the only variant that existed before issue #15), or
+/// the echo-cancelled VoiceProcessingIO capture used when system audio is
+/// part of the mix (see `vpio.rs`'s module docs for the why, and
+/// `Recorder::start` for exactly when each variant is chosen). Both
+/// variants stop capturing on drop, and dropping either also drops its
+/// callback closure's `writer_tx` clone — the writer-thread-shutdown
+/// contract `RecorderHandle::stop`'s docs describe holds for both.
+enum MicStream {
+    Cpal(cpal::Stream),
+    // The field is owned purely for RAII — nothing ever reads it; holding
+    // it keeps capture alive, dropping it stops capture — hence the
+    // (accurate) dead_code allowance.
+    Vpio(#[allow(dead_code)] vpio::VoiceProcessedMic),
 }
 
 impl Recorder {
@@ -1434,43 +1451,108 @@ impl Recorder {
             })
         };
 
-        let resampler = LinearResampler::new(from_hz, TARGET_SAMPLE_RATE);
-
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(
-                &device,
-                &config,
-                channels,
-                shared.clone(),
-                writer_tx,
-                resampler,
-            )?,
-            cpal::SampleFormat::I16 => build_stream::<i16>(
-                &device,
-                &config,
-                channels,
-                shared.clone(),
-                writer_tx,
-                resampler,
-            )?,
-            cpal::SampleFormat::U16 => build_stream::<u16>(
-                &device,
-                &config,
-                channels,
-                shared.clone(),
-                writer_tx,
-                resampler,
-            )?,
-            other => {
-                return Err(MinuteError::Other(format!(
-                    "unsupported input sample format: {other:?}"
-                )))
+        // Echo cancellation (issue #15): when system audio is actually in
+        // the mix, anything the Mac plays over its *speakers* (a meeting's
+        // remote side, most importantly) would otherwise land in the
+        // recording twice — once cleanly via `SysCapture`, once as
+        // acoustic bleed into the mic — which is the "constant echo / two
+        // overlapping tracks" bug report. So this path first tries to
+        // capture the mic through macOS's VoiceProcessingIO unit, whose
+        // driver-level AEC subtracts the speaker signal from the mic
+        // signal (see `vpio.rs`'s module docs). Failure is not fatal —
+        // exactly like a failed `SysCapture::start`, it logs and degrades
+        // to the ordinary cpal stream (echo and all) rather than killing
+        // the recording. Mic-only recordings never take this path: with no
+        // clean system copy in the mix there's nothing for mic bleed to
+        // double, and plain capture stays byte-for-byte what it always was.
+        let vpio_stream = if system_audio_active {
+            let vpio_shared = shared.clone();
+            let vpio_writer_tx = writer_tx.clone();
+            // The chunk handler mirrors `build_stream`'s cpal callback
+            // step-for-step (pause gate, level metering, forward), minus
+            // downmix/resample: VPIO is asked for 16 kHz mono f32
+            // directly (`VPIO_SAMPLE_RATE_HZ` == `TARGET_SAMPLE_RATE`),
+            // so chunks are already in the writer thread's format.
+            match vpio::VoiceProcessedMic::start(Some(&microphone_name), move |chunk| {
+                if vpio_shared.paused.load(Ordering::Relaxed) {
+                    return;
+                }
+                let (rms, peak) = input_levels::<f32>(chunk, 1);
+                vpio_shared
+                    .input_rms_bits
+                    .store(rms.to_bits(), Ordering::Relaxed);
+                store_max_f32(&vpio_shared.input_peak_bits, peak);
+                vpio_shared.input_sequence.fetch_add(1, Ordering::Relaxed);
+                if chunk.is_empty() {
+                    return;
+                }
+                let _ = vpio_writer_tx.send(Arc::new(chunk.to_vec()));
+            }) {
+                Ok(mic) => {
+                    log::info!(
+                        "mic capture running through VoiceProcessingIO (echo cancellation \
+                         active) for this system-audio recording"
+                    );
+                    Some(mic)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "voice-processed mic capture unavailable ({e}) — falling back to \
+                         standard capture; speaker audio may echo in this recording"
+                    );
+                    None
+                }
             }
+        } else {
+            None
         };
 
-        stream
-            .play()
-            .map_err(|e| MinuteError::Other(format!("failed to start input stream: {e}")))?;
+        let stream = if let Some(mic) = vpio_stream {
+            // The un-cloned `writer_tx` must not outlive this function —
+            // the writer thread only exits once every sender is gone (see
+            // `RecorderHandle::stop`'s docs), and on this path the only
+            // sender that should remain is the VPIO callback's clone.
+            drop(writer_tx);
+            MicStream::Vpio(mic)
+        } else {
+            let resampler = LinearResampler::new(from_hz, TARGET_SAMPLE_RATE);
+            let stream = match sample_format {
+                cpal::SampleFormat::F32 => build_stream::<f32>(
+                    &device,
+                    &config,
+                    channels,
+                    shared.clone(),
+                    writer_tx,
+                    resampler,
+                )?,
+                cpal::SampleFormat::I16 => build_stream::<i16>(
+                    &device,
+                    &config,
+                    channels,
+                    shared.clone(),
+                    writer_tx,
+                    resampler,
+                )?,
+                cpal::SampleFormat::U16 => build_stream::<u16>(
+                    &device,
+                    &config,
+                    channels,
+                    shared.clone(),
+                    writer_tx,
+                    resampler,
+                )?,
+                other => {
+                    return Err(MinuteError::Other(format!(
+                        "unsupported input sample format: {other:?}"
+                    )))
+                }
+            };
+
+            stream
+                .play()
+                .map_err(|e| MinuteError::Other(format!("failed to start input stream: {e}")))?;
+            MicStream::Cpal(stream)
+        };
 
         Ok(RecorderHandle {
             stream,

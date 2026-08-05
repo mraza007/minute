@@ -82,6 +82,17 @@ objc2-av-foundation = { version = "=0.3.2", default-features = false, features =
 ] }
 objc2-core-audio = "=0.3.2"
 
+# Echo cancellation (issue #15, vpio.rs): mic capture through the
+# VoiceProcessingIO audio unit when system audio is in the mix. cpal's
+# CoreAudio backend can't ask for that unit type, so vpio.rs drops one
+# level down to `coreaudio-rs` — the crate cpal itself is built on, pinned
+# at the exact version already resolved transitively (matching Cargo.lock,
+# same "pin what's already there" rationale as the objc2-* pins above).
+# `objc2-audio-toolbox` is coreaudio-rs's own binding layer (also already
+# in the tree), needed directly for the AudioUnit property constants.
+coreaudio-rs = "=0.14.2"
+objc2-audio-toolbox = "=0.3.2"
+
 # Stage 5 Task 2: the meeting-detected pill's non-activating NSPanel — see
 # popup.rs's module docs for the tauri-apps/tauri #11488/#5566 rationale.
 # Not published to crates.io — confirmed directly against the crates.io API

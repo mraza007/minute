@@ -10,6 +10,7 @@ mod settings;
 mod store;
 mod stt;
 mod syscap;
+mod vpio;
 
 use catalog::{Hardware, InstallState, ModelStatus, Recommendation};
 use download::DownloadRegistry;
