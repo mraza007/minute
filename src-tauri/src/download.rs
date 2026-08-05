@@ -964,4 +964,60 @@ mod tests {
         let state = catalog::install_state(&entry, &models_root);
         assert_eq!(state, catalog::InstallState::Installed);
     }
+
+    /// The same real-download proof for LFM2-2.6B-Transcript (~1.6 GB), the
+    /// counterpart to `real_download_of_qwen3_5_4b_...` above. Worth having
+    /// its own rather than trusting the catalog pin by inspection:
+    /// `execute_download` verifies the downloaded bytes against the entry's
+    /// `sha256`, so a green run here is what proves the pinned checksum and
+    /// `sizeBytes` actually match what Liquid's Hugging Face repo serves —
+    /// and it's the prerequisite for
+    /// `llm::tests::real_lfm2_transcript_summarizes_transcript`. Skips the
+    /// network entirely when already installed at a matching size. Run
+    /// manually:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml -- --ignored \
+    ///     real_download_of_lfm2_transcript
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_download_of_lfm2_transcript_verifies_checksum_and_marks_installed() {
+        let catalog = catalog::load_catalog().unwrap();
+        let entry = catalog
+            .iter()
+            .find(|e| e.id == "lfm2-2.6b-transcript")
+            .expect("catalog must contain lfm2-2.6b-transcript")
+            .clone();
+
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let models_root = PathBuf::from(home).join("Library/Application Support/dev.minute.app");
+
+        if catalog::install_state(&entry, &models_root) == catalog::InstallState::Installed {
+            eprintln!(
+                "lfm2-2.6b-transcript already installed at the expected size — skipping download"
+            );
+            return;
+        }
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let start = Instant::now();
+        let result = runtime.block_on(execute_download(
+            &entry,
+            &models_root,
+            &cancel_flag,
+            |downloaded, total| {
+                eprintln!("progress: {downloaded}/{total}");
+            },
+        ));
+        let elapsed = start.elapsed();
+
+        result.expect("real download should succeed");
+        eprintln!("lfm2-2.6b-transcript download took {elapsed:?}");
+
+        let state = catalog::install_state(&entry, &models_root);
+        assert_eq!(state, catalog::InstallState::Installed);
+    }
 }

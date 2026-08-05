@@ -199,13 +199,13 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn catalog_parses_with_eight_entries() {
+    fn catalog_parses_with_nine_entries() {
         let catalog = load_catalog().expect("catalog.json should parse");
-        assert_eq!(catalog.len(), 8);
+        assert_eq!(catalog.len(), 9);
     }
 
     #[test]
-    fn catalog_has_three_stt_three_llm_and_two_diarization_entries() {
+    fn catalog_has_three_stt_four_llm_and_two_diarization_entries() {
         let catalog = load_catalog().unwrap();
         let stt = catalog.iter().filter(|e| e.kind == ModelKind::Stt).count();
         let llm = catalog.iter().filter(|e| e.kind == ModelKind::Llm).count();
@@ -214,7 +214,7 @@ mod tests {
             .filter(|e| e.kind == ModelKind::Diarization)
             .count();
         assert_eq!(stt, 3);
-        assert_eq!(llm, 3);
+        assert_eq!(llm, 4);
         assert_eq!(diar, 2);
     }
 

@@ -44,6 +44,17 @@
     "requiresAppleSilicon": false
   },
   {
+    "id": "lfm2-2.6b-transcript",
+    "kind": "llm",
+    "displayName": "LFM2-2.6B-Transcript",
+    "desc": "1.6 GB · Q4_K_M · tuned for meeting notes",
+    "url": "https://huggingface.co/LiquidAI/LFM2-2.6B-Transcript-GGUF/resolve/main/LFM2-2.6B-Transcript-Q4_K_M.gguf",
+    "sha256": "74832bbf09a5321bfd119e13c6c1fd6361517d3f085545cf00b79c7dc8cceac6",
+    "sizeBytes": 1563669248,
+    "minRamGb": 8,
+    "requiresAppleSilicon": false
+  },
+  {
     "id": "gemma-4-e4b",
     "kind": "llm",
     "displayName": "Gemma 4 E4B",
