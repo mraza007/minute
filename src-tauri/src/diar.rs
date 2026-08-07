@@ -512,6 +512,10 @@ pub struct DiarWorkerCtx {
     /// `Some(n)` = the user told us the speaker count (re-run path);
     /// `None` = automatic.
     pub fixed_speakers: Option<u32>,
+    /// Settings' `speakerProfiles` toggle, read at spawn time (issue
+    /// #22): when `true`, the pass matches each settled voice against
+    /// saved profiles and writes name suggestions onto the note.
+    pub suggest_profiles: bool,
     pub emit: Box<dyn Fn(DiarEvent) + Send + 'static>,
     /// Runs after the pass settles, success *or* error — the auto path
     /// hangs "now trigger the summary" here so a diarization failure still
@@ -634,9 +638,64 @@ fn run_diarize(ctx: &DiarWorkerCtx) -> Result<u32> {
             .map(|(speaker, emb)| (format!("Speaker {}", speaker + 1), emb))
             .collect();
         lock_store(&ctx.store).write_speaker_embeddings(&ctx.note_id, &embeddings)?;
+
+        // Issue #22: match each settled voice against the saved profiles
+        // and write the suggestions onto the note — the frontend renders
+        // them as "Looks like Sarah?" chips next to the labels. Failures
+        // here are logged, never propagated: the labels above are already
+        // good, and a missed suggestion costs a convenience, not data.
+        if ctx.suggest_profiles {
+            if let Err(e) = suggest_speaker_names(&ctx.store, &ctx.note_id, &embeddings) {
+                log::warn!(
+                    "voice-profile matching failed for note {}: {e}",
+                    ctx.note_id
+                );
+            }
+        }
     }
     lock_store(&ctx.store).update_segment_speakers(&ctx.note_id, &labels)?;
     Ok(speakers)
+}
+
+/// Matches a pass's settled voices against the saved profiles and replaces
+/// the note's suggestion map (issue #22).
+///
+/// Each label takes its best profile match above
+/// `profiles::SUGGEST_THRESHOLD`; when two labels claim the *same* name
+/// (one real person split across clusters, or two similar voices), only
+/// the more similar label keeps it — one person cannot be two speakers in
+/// one meeting, and suggesting it would make the feature feel broken. The
+/// map is written even when empty: this pass owns the note's suggestions,
+/// and an empty result must clear a previous pass's leftovers.
+fn suggest_speaker_names(
+    store: &SharedStore,
+    note_id: &str,
+    embeddings: &BTreeMap<String, Vec<f32>>,
+) -> crate::error::Result<()> {
+    let guard = lock_store(store);
+    let saved = crate::profiles::load(&guard.voice_profiles_path());
+    let mut best_label_for_name: BTreeMap<String, (String, f32)> = BTreeMap::new();
+    if !saved.is_empty() {
+        for (label, embedding) in embeddings {
+            if let Some((profile, similarity)) = crate::profiles::best_match(&saved, embedding) {
+                let entry = best_label_for_name
+                    .entry(profile.name.clone())
+                    .or_insert_with(|| (label.clone(), similarity));
+                if similarity > entry.1 {
+                    *entry = (label.clone(), similarity);
+                }
+            }
+        }
+    }
+    let suggestions: std::collections::HashMap<String, crate::store::SpeakerSuggestion> =
+        best_label_for_name
+            .into_iter()
+            .map(|(name, (label, similarity))| {
+                (label, crate::store::SpeakerSuggestion { name, similarity })
+            })
+            .collect();
+    guard.set_speaker_suggestions(note_id, &suggestions)?;
+    Ok(())
 }
 
 /// Manual/re-run command: detect (or re-detect) speakers for one note, with
@@ -646,6 +705,7 @@ fn run_diarize(ctx: &DiarWorkerCtx) -> Result<u32> {
 pub fn diarize_note(
     app: AppHandle,
     store: State<SharedStore>,
+    settings: State<crate::settings::SharedSettings>,
     busy: State<DiarBusy>,
     note_id: String,
     num_speakers: Option<u32>,
@@ -666,6 +726,7 @@ pub fn diarize_note(
         );
     };
 
+    let suggest_profiles = crate::settings::lock_settings(&settings).speaker_profiles;
     try_spawn_diarize(DiarWorkerCtx {
         note_id,
         store: store.inner().clone(),
@@ -673,10 +734,25 @@ pub fn diarize_note(
         segmentation_model,
         embedding_model,
         fixed_speakers: num_speakers,
+        suggest_profiles,
         emit: Box::new(tauri_emit(app.clone())),
         on_done: None,
     })
     .map_err(|_| "Speaker detection is already running — try again in a moment.".to_string())
+}
+
+/// Dismisses one voice-profile name suggestion (issue #22) — the user
+/// looked at "Looks like Sarah?" and said no. Returns the updated meta so
+/// the frontend can swap it into its notes list without a refetch.
+#[tauri::command]
+pub fn dismiss_speaker_suggestion(
+    store: State<SharedStore>,
+    note_id: String,
+    label: String,
+) -> std::result::Result<crate::store::NoteMeta, String> {
+    lock_store(&store)
+        .clear_speaker_suggestion(&note_id, &label)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -772,6 +848,84 @@ mod tests {
         let merged = &centroids[&relabel[&6]];
         assert!(cosine(merged, &embs[&6]) > 0.99);
         assert!(cosine(merged, &embs[&1]) < 0.1);
+    }
+
+    // --- suggest_speaker_names (issue #22) ------------------------------------
+
+    fn store_with_note() -> (crate::store::SharedStore, String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let note_id = lock_store(&store)
+            .create_note_now("Standup", "whisper-small")
+            .unwrap()
+            .id;
+        (store, note_id, dir)
+    }
+
+    fn save_profiles(store: &crate::store::SharedStore, named: &[(&str, &[f32])]) {
+        let path = lock_store(store).voice_profiles_path();
+        let mut list = Vec::new();
+        for (name, embedding) in named {
+            crate::profiles::upsert(
+                &mut list,
+                name,
+                embedding,
+                time::macros::datetime!(2026-08-07 12:00:00 UTC),
+            );
+        }
+        crate::profiles::save(&path, &list).unwrap();
+    }
+
+    #[test]
+    fn suggest_speaker_names_writes_matches_and_skips_strangers() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.1, 0.0]))]);
+
+        let embeddings = BTreeMap::from([
+            ("Speaker 1".to_string(), unit(&[1.0, 0.0, 0.0])),
+            ("Speaker 2".to_string(), unit(&[0.0, 0.0, 1.0])),
+        ]);
+        suggest_speaker_names(&store, &note_id, &embeddings).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert_eq!(meta.speaker_suggestions.len(), 1);
+        let suggestion = &meta.speaker_suggestions["Speaker 1"];
+        assert_eq!(suggestion.name, "Sarah");
+        assert!(suggestion.similarity > 0.9);
+    }
+
+    #[test]
+    fn suggest_speaker_names_gives_a_name_to_only_its_most_similar_voice() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.0, 0.0]))]);
+
+        // Both labels clear the threshold for Sarah; only the closer one
+        // may keep the suggestion — one person is not two speakers.
+        let embeddings = BTreeMap::from([
+            ("Speaker 1".to_string(), unit(&[1.0, 0.3, 0.0])),
+            ("Speaker 2".to_string(), unit(&[1.0, 0.05, 0.0])),
+        ]);
+        suggest_speaker_names(&store, &note_id, &embeddings).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert_eq!(meta.speaker_suggestions.len(), 1);
+        assert_eq!(meta.speaker_suggestions["Speaker 2"].name, "Sarah");
+    }
+
+    #[test]
+    fn suggest_speaker_names_with_no_matches_clears_previous_suggestions() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.0, 0.0]))]);
+        let close = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.1, 0.0]))]);
+        suggest_speaker_names(&store, &note_id, &close).unwrap();
+
+        // A re-run whose voices match nothing must clear the stale map —
+        // the labels it suggested for may not even exist any more.
+        let strangers = BTreeMap::from([("Speaker 1".to_string(), unit(&[0.0, 0.0, 1.0]))]);
+        suggest_speaker_names(&store, &note_id, &strangers).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert!(meta.speaker_suggestions.is_empty());
     }
 
     // --- renumber_by_first_appearance ---------------------------------------

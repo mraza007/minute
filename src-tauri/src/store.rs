@@ -88,6 +88,25 @@ pub struct NoteMeta {
     /// unrelated recordings.
     #[serde(default)]
     pub speaker_aliases: HashMap<String, String>,
+    /// Issue #22: unconfirmed name suggestions from voice-profile
+    /// matching, keyed by the transcript's current "Speaker N" label.
+    /// Written whole by each diarization pass (see `diar::run_diarize`),
+    /// removed per label when the user confirms (which is just a rename)
+    /// or dismisses. Skipped when empty so pre-#22 `meta.json` files
+    /// round-trip byte-identical.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub speaker_suggestions: HashMap<String, SpeakerSuggestion>,
+}
+
+/// One voice-profile match (issue #22): "this diarized voice sounds like
+/// `name`". `similarity` is the cosine score that cleared
+/// `profiles::SUGGEST_THRESHOLD` — surfaced to the UI so a borderline
+/// match can be presented more tentatively than a near-certain one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerSuggestion {
+    pub name: String,
+    pub similarity: f32,
 }
 
 /// Default for [`NoteMeta::sources`] — see that field's own docs for why
@@ -638,6 +657,7 @@ impl Store {
             pinned: false,
             markers: Vec::new(),
             speaker_aliases: HashMap::new(),
+            speaker_suggestions: HashMap::new(),
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -1099,6 +1119,32 @@ impl Store {
         Ok(meta)
     }
 
+    /// Replaces a note's whole suggestion map (issue #22) — each
+    /// diarization pass owns the map outright, so stale suggestions from
+    /// an earlier pass (whose labels it may have renumbered) never
+    /// survive. An empty map clears it.
+    pub fn set_speaker_suggestions(
+        &self,
+        id: &str,
+        suggestions: &HashMap<String, SpeakerSuggestion>,
+    ) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        meta.speaker_suggestions = suggestions.clone();
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Drops one suggestion by label (issue #22) — the dismiss path.
+    /// Dropping an absent label is a no-op: the state the user asked for
+    /// ("stop suggesting this") already holds.
+    pub fn clear_speaker_suggestion(&self, id: &str, label: &str) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        if meta.speaker_suggestions.remove(label).is_some() {
+            self.write_meta(&meta)?;
+        }
+        Ok(meta)
+    }
+
     /// Rewrites every matching transcript speaker label and refreshes note.md.
     pub fn rename_speaker(&self, id: &str, from: &str, to: &str) -> Result<Transcript> {
         let to = to.trim();
@@ -1131,6 +1177,10 @@ impl Store {
         let mut meta = self.persist_speaker_edit(id, &transcript)?;
         meta.speaker_aliases
             .insert(from.to_string(), to.to_string());
+        // Issue #22: a rename settles this label's identity — whether it
+        // confirmed the suggestion or overrode it with a different name,
+        // the suggestion is answered either way.
+        meta.speaker_suggestions.remove(from);
         self.write_meta(&meta)?;
         Ok(transcript)
     }
@@ -3285,6 +3335,7 @@ mod tests {
             pinned: false,
             markers: Vec::new(),
             speaker_aliases: HashMap::new(),
+            speaker_suggestions: HashMap::new(),
         }
     }
 
@@ -4347,6 +4398,7 @@ mod tests {
             pinned: false,
             markers: Vec::new(),
             speaker_aliases: HashMap::new(),
+            speaker_suggestions: HashMap::new(),
         };
         overrides(&mut meta);
         meta

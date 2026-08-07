@@ -716,6 +716,7 @@ pub fn run() {
             llm::summarize_note,
             llm::ask_note,
             diar::diarize_note,
+            diar::dismiss_speaker_suggestion,
             delete_note,
             restore_note,
             delete_notes,
