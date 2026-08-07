@@ -5,15 +5,15 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.7.2-c8412a)
+![version](https://img.shields.io/badge/version-1.8.0-c8412a)
 
 <a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute - Meeting notes that never leave your Mac | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a>
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute 1.7.2 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.7.2/Minute-1.7.2-arm64.zip)**
+**[⬇ Download Minute 1.8.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.8.0/Minute-1.8.0-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.7.2/Minute-1.7.2-x86_64.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.8.0/Minute-1.8.0-x86_64.zip).
 
 </div>
 
@@ -108,6 +108,14 @@ audio. Automatic speaker counting is strongest on clear call audio; when
 it gets the count wrong, re-run it with the exact number of speakers and
 it's very accurate. Names you've confirmed stick: a speaker you renamed
 keeps that name across re-runs.
+
+Minute can also remember the people you meet with. Turn on **Remember
+named speakers** (Settings → Speakers) and renaming a speaker saves that
+voice locally; the next recording that contains a matching voice gets a
+suggestion — "Speaker 2 sounds like Sarah" — you confirm with one click
+or dismiss. Confirmations sharpen the profile over time. Voice profiles
+are opt-in, stored in your library folder, listed in Settings with a
+delete button each, and — like everything else — never leave your Mac.
 
 ## A summary you can act on
 
@@ -290,9 +298,6 @@ Honestly, in rough priority order:
 
 - **Real-device release matrix** — removable-microphone disconnect/reconnect,
   physical sleep/wake, constrained-volume failure, and overnight finalization.
-- **Speakers across notes** — "Speaker 1" is scoped to one note today;
-  the voice embeddings speaker detection already computes could recognize
-  that the same person appeared in last week's meeting too.
 - **Cross-note ask** — ask-your-notes currently answers from one note's
   transcript at a time; asking across your whole library is the natural
   next step.
