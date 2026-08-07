@@ -161,6 +161,41 @@ describe('Sidebar', () => {
     expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
   })
 
+  // Issue #18: the "Summarized" / "Needs summary" filters follow real
+  // summary presence (`hasSummary`), not `status` — the two disagree on
+  // notes from older builds and on notes whose summarization never
+  // finished.
+  it('filters "Summarized" by summary presence even when status disagrees', () => {
+    const notes = demoNotes.map((note, index) => ({
+      ...note,
+      // Board prep sync (index 0): status says ready, but no summary
+      // exists. 1:1 — Sarah (index 1): status says transcribed, but a
+      // summary exists.
+      status: index === 0 ? 'ready' as const : 'transcribed' as const,
+      hasSummary: index !== 0,
+    }))
+    render(<Sidebar {...base} notes={notes} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
+      target: { value: 'ready' },
+    })
+    expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
+    expect(screen.queryByText('Board prep sync')).not.toBeInTheDocument()
+  })
+
+  it('filters "Needs summary" by missing summary, excluding recording notes', () => {
+    const notes = demoNotes.map((note, index) => ({
+      ...note,
+      status: index === 0 ? 'ready' as const : 'recording' as const,
+      hasSummary: false,
+    }))
+    render(<Sidebar {...base} notes={notes} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
+      target: { value: 'transcribed' },
+    })
+    expect(screen.getByText('Board prep sync')).toBeInTheDocument()
+    expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
+  })
+
   it('pins a note and collapses the library into its compact mode', () => {
     const onTogglePinned = vi.fn()
     render(<Sidebar {...base} onTogglePinned={onTogglePinned} />)

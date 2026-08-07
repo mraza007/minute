@@ -41,6 +41,16 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/**
+ * Merges a single-note command payload into the notes list. Only
+ * `list_notes` computes `hasSummary` (issue #18) — single-note commands
+ * (pin, rename, markers, speaker merges) omit it, so the previous value
+ * carries over instead of collapsing to `undefined`.
+ */
+function mergeNoteUpdate(current: NoteMeta, updated: NoteMeta): NoteMeta {
+  return { ...updated, hasSummary: updated.hasSummary ?? current.hasSummary }
+}
+
 const LAST_ERROR_TIMEOUT_MS = 5000
 
 /** Debounce window (ms) between a keystroke in the sidebar search input and the `search_notes` call it triggers — same value the ⌘K palette (`SearchPalette`) debounces its own input at. */
@@ -433,7 +443,7 @@ export function useAppState() {
       ipc
         .setNotePinned(id, pinned)
         .then(updated => {
-          setNotes(current => current.map(note => note.id === id ? updated : note))
+          setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
           invalidateNoteCache(id)
         })
         .catch(reportError)
@@ -445,7 +455,7 @@ export function useAppState() {
     async (id: string, seconds: number, label: string) => {
       try {
         const updated = await ipc.addNoteMarker(id, seconds, label)
-        setNotes(current => current.map(note => note.id === id ? updated : note))
+        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
         invalidateNoteCache(id)
         if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
       } catch (error) {
@@ -460,7 +470,7 @@ export function useAppState() {
     async (id: string, index: number, label: string) => {
       try {
         const updated = await ipc.updateNoteMarker(id, index, label)
-        setNotes(current => current.map(note => note.id === id ? updated : note))
+        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
         invalidateNoteCache(id)
         if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
       } catch (error) {
@@ -475,7 +485,7 @@ export function useAppState() {
     async (id: string, index: number) => {
       try {
         const updated = await ipc.deleteNoteMarker(id, index)
-        setNotes(current => current.map(note => note.id === id ? updated : note))
+        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
         invalidateNoteCache(id)
         if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
       } catch (error) {
@@ -503,7 +513,7 @@ export function useAppState() {
     async (id: string, from: string, into: string): Promise<SpeakerMergeUndo> => {
       try {
         const result = await ipc.mergeSpeakers(id, from, into)
-        setNotes(current => current.map(note => note.id === id ? result.meta : note))
+        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
         invalidateNoteCache(id)
         if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
         return result.undo
@@ -519,7 +529,7 @@ export function useAppState() {
     async (id: string, undo: SpeakerMergeUndo) => {
       try {
         const result = await ipc.undoSpeakerMerge(id, undo)
-        setNotes(current => current.map(note => note.id === id ? result.meta : note))
+        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
         invalidateNoteCache(id)
         if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
       } catch (error) {
@@ -657,7 +667,7 @@ export function useAppState() {
     if (!selectedNoteId) return
     try {
       const updated = await ipc.deleteNoteAudio(selectedNoteId)
-      setNotes(current => current.map(note => note.id === updated.id ? updated : note))
+      setNotes(current => current.map(note => note.id === updated.id ? mergeNoteUpdate(note, updated) : note))
       invalidateNoteCache(selectedNoteId)
       await loadNoteTranscript(selectedNoteId, { force: true })
       setSelectedNoteStorage(await ipc.noteStorageStats(selectedNoteId))

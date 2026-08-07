@@ -126,8 +126,13 @@ export const Sidebar = memo(function Sidebar({
       if (matchedNoteIds !== null && !matchedNoteIds.has(note.id)) return false
       if (statusFilter === 'pinned' && !note.pinned) return false
       if (statusFilter === 'recording' && note.status !== 'recording') return false
-      if (statusFilter === 'ready' && note.status !== 'ready') return false
-      if (statusFilter === 'transcribed' && note.status !== 'transcribed') return false
+      // "Summarized" / "Needs summary" test real summary presence, not
+      // `note.status` (issue #18) — status and summary can disagree on
+      // notes from older builds and on notes whose summarization never
+      // completed. A still-recording note needs a transcript first, not a
+      // summary, so it is neither.
+      if (statusFilter === 'ready' && !note.hasSummary) return false
+      if (statusFilter === 'transcribed' && (note.hasSummary || note.status === 'recording')) return false
       if (sourceFilter === 'system' && !note.sources?.includes('system')) return false
       if (sourceFilter === 'mic' && note.sources?.includes('system')) return false
       if (dateFilter !== 'all') {

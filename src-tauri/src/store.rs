@@ -321,6 +321,20 @@ pub struct Store {
     root: PathBuf,
 }
 
+/// One row of the note list the frontend renders (issue #18): the persisted
+/// [`NoteMeta`] plus `has_summary`, computed at list time from whether
+/// `summary.json` exists on disk. Serialize-only — nothing reads this back;
+/// `meta.json` stays the single persisted format. `#[serde(flatten)]` keeps
+/// the wire shape a strict superset of the old `NoteMeta` payload, so the
+/// frontend's existing `NoteMeta` consumers keep working unchanged.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteListEntry {
+    #[serde(flatten)]
+    pub meta: NoteMeta,
+    pub has_summary: bool,
+}
+
 /// Shared handle to a [`Store`] — an `Arc<Mutex<Store>>`. Tauri commands
 /// and the (future) recorder/transcription worker threads all hold clones
 /// of the same `SharedStore` rather than each owning their own `Store`, so
@@ -777,6 +791,26 @@ impl Store {
 
         metas.sort_by(|a, b| Self::created_at_cmp(&b.created_at, &a.created_at));
         Ok(metas)
+    }
+
+    /// [`Self::list_notes`] plus a `has_summary` flag per note (issue #18).
+    ///
+    /// The flag reports whether `summary.json` exists on disk — deliberately
+    /// *not* derived from `meta.status`. Status and summary presence can
+    /// disagree: notes from builds that predate summarization are `ready`
+    /// with no summary, and a summarization that never completed (issue
+    /// #21) leaves `transcribed` notes that the UI has already shown a
+    /// summary for. The sidebar's "Summarized" / "Needs summary" filters
+    /// need the truth on disk, not the pipeline's bookkeeping.
+    pub fn list_notes_with_summary(&self) -> Result<Vec<NoteListEntry>> {
+        Ok(self
+            .list_notes()?
+            .into_iter()
+            .map(|meta| {
+                let has_summary = self.summary_path(&meta.id).exists();
+                NoteListEntry { meta, has_summary }
+            })
+            .collect())
     }
 
     /// Compares two `createdAt` RFC3339 strings chronologically (parses
@@ -3710,6 +3744,55 @@ mod tests {
         assert!(store.note_dir(&recording.id).join(AUDIO_FILE).exists());
         let (meta, _) = store.get_note(&recording.id).unwrap();
         assert!(!meta.audio_compressed);
+    }
+
+    /// Issue #18: the flag must follow `summary.json` on disk, not
+    /// `meta.status` — the two can disagree (pre-summarization notes are
+    /// `ready` with no summary; issue #21 victims are `transcribed` with
+    /// a summary already shown).
+    #[test]
+    fn list_notes_with_summary_follows_the_summary_file_not_the_status() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let summarized = store
+            .create_note("Summarized", "whisper-small", now)
+            .unwrap();
+        store.finalize_note(&summarized.id, 60.0, 1).unwrap();
+        store
+            .write_summary_and_finalize(
+                &summarized.id,
+                &crate::llm::SummaryDoc {
+                    summary: "They decided things.".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // The legacy mismatch: status `ready`, but no summary was ever
+        // written.
+        let legacy = store
+            .create_note("Legacy ready", "whisper-small", now)
+            .unwrap();
+        store.finalize_note(&legacy.id, 60.0, 1).unwrap();
+        let mut legacy_meta = store.read_meta(&legacy.id).unwrap();
+        legacy_meta.status = NoteStatus::Ready;
+        store.write_meta(&legacy_meta).unwrap();
+
+        let entries = store.list_notes_with_summary().unwrap();
+        let has_summary = |id: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.meta.id == id)
+                .unwrap()
+                .has_summary
+        };
+        assert!(has_summary(&summarized.id));
+        assert!(
+            !has_summary(&legacy.id),
+            "a ready note with no summary.json must not report has_summary"
+        );
     }
 
     #[test]

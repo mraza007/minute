@@ -100,8 +100,10 @@ struct NoteWithTranscript {
 }
 
 #[tauri::command]
-fn list_notes(state: State<SharedStore>) -> Result<Vec<NoteMeta>, String> {
-    lock_store(&state).list_notes().map_err(|e| e.to_string())
+fn list_notes(state: State<SharedStore>) -> Result<Vec<store::NoteListEntry>, String> {
+    lock_store(&state)
+        .list_notes_with_summary()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

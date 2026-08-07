@@ -95,6 +95,12 @@ export interface NoteMeta {
   markers?: NoteMarker[]
   /** User-confirmed raw-label aliases, scoped to this one recording. */
   speakerAliases?: Record<string, string>
+  /**
+   * Whether `summary.json` exists on disk (issue #18). Only `list_notes`
+   * computes it — commands that return a single updated `NoteMeta` omit
+   * it, so merges into the notes list must keep the previous value.
+   */
+  hasSummary?: boolean
 }
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */

@@ -23,6 +23,8 @@ export interface NoteListItem {
   sources?: string[]
   createdAt?: string
   pinned?: boolean
+  /** Whether the note has a summary on disk — drives the "Summarized" / "Needs summary" filters (issue #18). */
+  hasSummary?: boolean
 }
 
 export interface ActionItem {

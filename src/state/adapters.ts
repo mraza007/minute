@@ -58,6 +58,7 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
     sources: meta.sources,
     createdAt: meta.createdAt,
     pinned: meta.pinned ?? false,
+    hasSummary: meta.hasSummary ?? false,
   }
 }
 
