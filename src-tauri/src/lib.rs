@@ -803,7 +803,11 @@ pub fn run() {
                         }
                     }
                     if let Some(days) = compress_after_days.filter(|&days| days > 0) {
-                        match lock_store(&sweep_store).run_compression_sweep(now, days) {
+                        // A free function over the shared handle, not a
+                        // method call under `lock_store` — it manages its
+                        // own lock scope so the store isn't held for the
+                        // whole sweep (issue #21; see its docs).
+                        match store::run_compression_sweep(&sweep_store, now, days) {
                             Ok(count) => log::info!(
                                 "compression sweep: compressed audio.wav for {count} note(s)"
                             ),

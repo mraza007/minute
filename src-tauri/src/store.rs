@@ -1372,125 +1372,168 @@ impl Store {
         Ok(swept)
     }
 
-    /// Runs the compression sweep (issue #16): for every note
-    /// [`compress_candidates`] selects against `now`/`days`, encodes
-    /// `audio.wav` to `audio.m4a` via `afconvert` and, once the output is
-    /// verified non-empty, removes the WAV and persists `audioCompressed:
-    /// true` via the normal atomic [`Store::write_meta`] path. Returns the
-    /// number of notes actually compressed.
-    ///
-    /// Whether to call this at all — and what `days` is — is entirely the
-    /// caller's decision (`Settings::compressAudioAfterDays` — see
-    /// `lib.rs`'s `setup`); this method has no opinion on the setting.
-    /// Thin wrapper around [`Self::run_compression_sweep_with_encoder`]
-    /// that supplies the real `afconvert` shell-out — see that method for
-    /// the actual sweep/bookkeeping logic and why the encoder is injected.
-    pub fn run_compression_sweep(&self, now: OffsetDateTime, days: u32) -> Result<usize> {
-        self.run_compression_sweep_with_encoder(now, days, encode_with_afconvert)
-    }
+}
 
-    /// The compression sweep's actual logic, with the encoder step taken as
-    /// a closure rather than calling `afconvert` directly — same seam shape
-    /// as `llm::generate_fitting_transcript`'s injected `generate` closure.
-    /// This machine's CI (or the developer's) can't rely on `afconvert`
-    /// being present, deterministic, or fast, so the unit tests exercise
-    /// this method with a fake encoder (see `tests::run_compression_sweep_*`)
-    /// while `run_compression_sweep` above is what production actually
-    /// calls, with [`encode_with_afconvert`] wired in.
-    ///
-    /// Deliberately tolerant per-note, mirroring [`Self::run_audio_sweep`]:
-    /// a failed encode, an empty/missing output, a failed rename, or a
-    /// `meta.json` that can't be re-persisted is `log::warn!`'d and the
-    /// sweep moves on to the next note rather than aborting. On any of
-    /// those failures the original `audio.wav` is left untouched — a note's
-    /// only copy of its audio is never removed unless the compressed
-    /// replacement is confirmed good on disk first — and a stray tmp file
-    /// from the failed attempt is cleaned up.
-    fn run_compression_sweep_with_encoder(
-        &self,
-        now: OffsetDateTime,
-        days: u32,
-        encode: impl Fn(&Path, &Path) -> bool,
-    ) -> Result<usize> {
-        let notes = self.list_notes()?;
-        let candidates = compress_candidates(&notes, now, days);
-        let mut compressed = 0;
-        for mut meta in notes {
-            if !candidates.contains(&meta.id) {
-                continue;
-            }
-            let note_dir = self.note_dir(&meta.id);
-            let wav_path = note_dir.join(AUDIO_FILE);
-            let tmp_path = note_dir.join(AUDIO_M4A_TMP_FILE);
-            let final_path = note_dir.join(AUDIO_M4A_FILE);
+/// Runs the compression sweep (issue #16): for every note
+/// [`compress_candidates`] selects against `now`/`days`, encodes
+/// `audio.wav` to `audio.m4a` via `afconvert` and, once the output is
+/// verified non-empty, removes the WAV and persists `audioCompressed:
+/// true` via the normal atomic [`Store::write_meta`] path. Returns the
+/// number of notes actually compressed.
+///
+/// Whether to call this at all — and what `days` is — is entirely the
+/// caller's decision (`Settings::compressAudioAfterDays` — see `lib.rs`'s
+/// `setup`); this function has no opinion on the setting.
+///
+/// A free function over [`SharedStore`] rather than a method on [`Store`]
+/// — deliberately, so it can *drop* the store lock while `afconvert` runs
+/// (issue #21). As a method it could only be called with the caller
+/// holding the mutex for the entire sweep, which for a library with
+/// gigabytes of eligible audio meant every store operation in the app —
+/// including the summarize worker's opening `get_note` — blocked behind
+/// minutes of encoding (or forever, if `afconvert` ever hung on one
+/// file). The lock is now held only for the metadata snapshots/writes
+/// around each encode, never during one.
+///
+/// Thin wrapper around [`run_compression_sweep_with_encoder`] that
+/// supplies the real `afconvert` shell-out — see that function for the
+/// actual sweep/bookkeeping logic and why the encoder is injected.
+pub fn run_compression_sweep(store: &SharedStore, now: OffsetDateTime, days: u32) -> Result<usize> {
+    run_compression_sweep_with_encoder(store, now, days, encode_with_afconvert)
+}
 
-            // `compress_candidates` is meta-only (see its docs) and doesn't
-            // check the filesystem, so a note whose WAV has somehow gone
-            // missing without `audioDeleted` being set (a manual deletion
-            // outside the app, say) still reaches here — skip it rather
-            // than handing a nonexistent path to the encoder.
-            if !wav_path.exists() {
-                log::warn!(
-                    "compression sweep: audio.wav missing for note {} — skipping",
-                    meta.id
-                );
-                continue;
-            }
+/// The compression sweep's actual logic, with the encoder step taken as
+/// a closure rather than calling `afconvert` directly — same seam shape
+/// as `llm::generate_fitting_transcript`'s injected `generate` closure.
+/// This machine's CI (or the developer's) can't rely on `afconvert`
+/// being present, deterministic, or fast, so the unit tests exercise
+/// this function with a fake encoder (see `tests::run_compression_sweep_*`)
+/// while `run_compression_sweep` above is what production actually
+/// calls, with [`encode_with_afconvert`] wired in.
+///
+/// Deliberately tolerant per-note, mirroring [`Store::run_audio_sweep`]:
+/// a failed encode, an empty/missing output, a failed rename, or a
+/// `meta.json` that can't be re-persisted is `log::warn!`'d and the
+/// sweep moves on to the next note rather than aborting. On any of
+/// those failures the original `audio.wav` is left untouched — a note's
+/// only copy of its audio is never removed unless the compressed
+/// replacement is confirmed good on disk first — and a stray tmp file
+/// from the failed attempt is cleaned up.
+///
+/// Locking discipline (issue #21 — see [`run_compression_sweep`]'s docs):
+/// the store mutex is taken briefly for the initial `list_notes` snapshot
+/// and again per note to persist the flag, and is *never* held across
+/// `encode` or the filesystem shuffle around it. Consequences the
+/// per-note tolerance already covers: a note deleted mid-encode makes the
+/// rename/re-read fail (warn, skip), and the flag write re-reads
+/// `meta.json` rather than persisting the stale snapshot — a rename that
+/// landed while the encoder ran must not be clobbered.
+fn run_compression_sweep_with_encoder(
+    store: &SharedStore,
+    now: OffsetDateTime,
+    days: u32,
+    encode: impl Fn(&Path, &Path) -> bool,
+) -> Result<usize> {
+    let (notes, note_dirs): (Vec<NoteMeta>, Vec<PathBuf>) = {
+        let guard = lock_store(store);
+        let notes = guard.list_notes()?;
+        let dirs = notes.iter().map(|meta| guard.note_dir(&meta.id)).collect();
+        (notes, dirs)
+    };
+    let candidates = compress_candidates(&notes, now, days);
+    let mut compressed = 0;
+    for (meta, note_dir) in notes.iter().zip(note_dirs) {
+        if !candidates.contains(&meta.id) {
+            continue;
+        }
+        let wav_path = note_dir.join(AUDIO_FILE);
+        let tmp_path = note_dir.join(AUDIO_M4A_TMP_FILE);
+        let final_path = note_dir.join(AUDIO_M4A_FILE);
 
-            // Clean up a stray tmp file left by a previous crashed attempt —
-            // `afconvert` refuses to write over an existing file.
+        // `compress_candidates` is meta-only (see its docs) and doesn't
+        // check the filesystem, so a note whose WAV has somehow gone
+        // missing without `audioDeleted` being set (a manual deletion
+        // outside the app, say) still reaches here — skip it rather
+        // than handing a nonexistent path to the encoder.
+        if !wav_path.exists() {
+            log::warn!(
+                "compression sweep: audio.wav missing for note {} — skipping",
+                meta.id
+            );
+            continue;
+        }
+
+        // Clean up a stray tmp file left by a previous crashed attempt —
+        // `afconvert` refuses to write over an existing file.
+        let _ = fs::remove_file(&tmp_path);
+
+        if !encode(&wav_path, &tmp_path) {
+            log::warn!(
+                "compression sweep: afconvert failed for note {} — leaving audio.wav untouched",
+                meta.id
+            );
             let _ = fs::remove_file(&tmp_path);
+            continue;
+        }
 
-            if !encode(&wav_path, &tmp_path) {
-                log::warn!(
-                    "compression sweep: afconvert failed for note {} — leaving audio.wav untouched",
-                    meta.id
-                );
-                let _ = fs::remove_file(&tmp_path);
-                continue;
-            }
+        let output_is_non_empty = fs::metadata(&tmp_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        if !output_is_non_empty {
+            log::warn!(
+                "compression sweep: afconvert produced an empty or missing audio.m4a for note {} — leaving audio.wav untouched",
+                meta.id
+            );
+            let _ = fs::remove_file(&tmp_path);
+            continue;
+        }
 
-            let output_is_non_empty = fs::metadata(&tmp_path)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false);
-            if !output_is_non_empty {
-                log::warn!(
-                    "compression sweep: afconvert produced an empty or missing audio.m4a for note {} — leaving audio.wav untouched",
-                    meta.id
-                );
-                let _ = fs::remove_file(&tmp_path);
-                continue;
-            }
+        if let Err(e) = fs::rename(&tmp_path, &final_path) {
+            log::warn!(
+                "compression sweep: failed to finalize audio.m4a for note {}: {e} — leaving audio.wav untouched",
+                meta.id
+            );
+            let _ = fs::remove_file(&tmp_path);
+            continue;
+        }
 
-            if let Err(e) = fs::rename(&tmp_path, &final_path) {
-                log::warn!(
-                    "compression sweep: failed to finalize audio.m4a for note {}: {e} — leaving audio.wav untouched",
-                    meta.id
-                );
-                let _ = fs::remove_file(&tmp_path);
-                continue;
-            }
+        if let Err(e) = fs::remove_file(&wav_path) {
+            log::warn!(
+                "compression sweep: audio.m4a written but failed to remove audio.wav for note {}: {e}",
+                meta.id
+            );
+            continue;
+        }
 
-            if let Err(e) = fs::remove_file(&wav_path) {
-                log::warn!(
-                    "compression sweep: audio.m4a written but failed to remove audio.wav for note {}: {e}",
-                    meta.id
-                );
-                continue;
-            }
-
-            meta.audio_compressed = true;
-            if let Err(e) = self.write_meta(&meta) {
+        {
+            let guard = lock_store(store);
+            // Re-read rather than persisting the pre-encode snapshot: a
+            // rename (or any other meta write) that landed while the
+            // encoder ran must survive. A note deleted mid-encode fails
+            // the read — warn and move on, same as every other per-note
+            // failure.
+            let mut fresh = match guard.read_meta(&meta.id) {
+                Ok(fresh) => fresh,
+                Err(e) => {
+                    log::warn!(
+                        "compression sweep: audio.m4a written but meta.json unreadable for note {}: {e}",
+                        meta.id
+                    );
+                    continue;
+                }
+            };
+            fresh.audio_compressed = true;
+            if let Err(e) = guard.write_meta(&fresh) {
                 log::warn!(
                     "compression sweep: failed to persist audioCompressed for note {}: {e}",
                     meta.id
                 );
                 continue;
             }
-            compressed += 1;
         }
-        Ok(compressed)
+        compressed += 1;
     }
+    Ok(compressed)
 }
 
 /// The real `afconvert` shell-out [`Store::run_compression_sweep`] wires
@@ -3486,6 +3529,54 @@ mod tests {
         }
     }
 
+    /// A [`SharedStore`] over the same root the test's plain [`Store`]
+    /// uses — `Store` is just the root path, so both views see the same
+    /// notes. The sweep takes the shared handle (it manages its own lock
+    /// scope — see `run_compression_sweep`'s docs) while the test keeps
+    /// its direct `Store` for setup and assertions.
+    fn shared_store_at(root: &Path) -> SharedStore {
+        Arc::new(Mutex::new(store_at(root)))
+    }
+
+    /// Issue #21: the sweep must not hold the store mutex while the
+    /// encoder runs — a slow (or hung) `afconvert` used to block every
+    /// store operation in the app, including the summarize worker's
+    /// opening `get_note`. The encoder here *is* another store user:
+    /// if the mutex is free mid-encode it locks instantly; if the old
+    /// behavior regresses, `try_lock` fails and so does the test.
+    #[test]
+    fn run_compression_sweep_releases_the_store_lock_while_the_encoder_runs() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+
+        let old = store
+            .create_note("Old note", "whisper-small", now - Duration::days(20))
+            .unwrap();
+        store.finalize_note(&old.id, 60.0, 1).unwrap();
+        fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
+
+        let shared = shared_store_at(dir.path());
+        let shared_for_encoder = shared.clone();
+        let compressed = run_compression_sweep_with_encoder(
+            &shared,
+            now,
+            7,
+            move |wav_path: &Path, out_path: &Path| {
+                assert!(
+                    shared_for_encoder.try_lock().is_ok(),
+                    "the store mutex must be free while the encoder runs"
+                );
+                fake_encoder(b"aac payload")(wav_path, out_path)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(compressed, 1);
+        let (meta, _) = store.get_note(&old.id).unwrap();
+        assert!(meta.audio_compressed);
+    }
+
     #[test]
     fn run_compression_sweep_encodes_old_audio_removes_wav_and_sets_the_flag() {
         let dir = tempdir().unwrap();
@@ -3508,8 +3599,7 @@ mod tests {
         )
         .unwrap();
 
-        let compressed = store
-            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b"aac payload"))
+        let compressed = run_compression_sweep_with_encoder(&shared_store_at(dir.path()), now, 7, fake_encoder(b"aac payload"))
             .unwrap();
 
         assert_eq!(compressed, 1);
@@ -3538,8 +3628,7 @@ mod tests {
         fs::write(store.note_dir(&old.id).join(AUDIO_FILE), b"old wav bytes").unwrap();
 
         let failing_encoder = |_wav: &Path, _out: &Path| false;
-        let compressed = store
-            .run_compression_sweep_with_encoder(now, 7, failing_encoder)
+        let compressed = run_compression_sweep_with_encoder(&shared_store_at(dir.path()), now, 7, failing_encoder)
             .unwrap();
 
         assert_eq!(compressed, 0);
@@ -3564,8 +3653,7 @@ mod tests {
         // Encoder "succeeds" but writes an empty file — must be treated the
         // same as a failed encode: the WAV is the only real audio, so it's
         // never removed on the strength of a suspicious empty output.
-        let compressed = store
-            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b""))
+        let compressed = run_compression_sweep_with_encoder(&shared_store_at(dir.path()), now, 7, fake_encoder(b""))
             .unwrap();
 
         assert_eq!(compressed, 0);
@@ -3592,8 +3680,7 @@ mod tests {
         store.finalize_note(&old.id, 60.0, 1).unwrap();
         // Deliberately no audio.wav written.
 
-        let compressed = store
-            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b"aac payload"))
+        let compressed = run_compression_sweep_with_encoder(&shared_store_at(dir.path()), now, 7, fake_encoder(b"aac payload"))
             .unwrap();
 
         assert_eq!(compressed, 0);
@@ -3616,8 +3703,7 @@ mod tests {
         )
         .unwrap();
 
-        let compressed = store
-            .run_compression_sweep_with_encoder(now, 7, fake_encoder(b"aac payload"))
+        let compressed = run_compression_sweep_with_encoder(&shared_store_at(dir.path()), now, 7, fake_encoder(b"aac payload"))
             .unwrap();
 
         assert_eq!(compressed, 0);
