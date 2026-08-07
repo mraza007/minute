@@ -136,6 +136,15 @@ pub struct Settings {
     /// off, same opt-in convention as `meetingDetection`/`detectSpeakers`.
     #[serde(default)]
     pub compress_audio_after_days: Option<u32>,
+    /// Issue #22: remember named speakers' voices. When on, renaming a
+    /// "Speaker N" label saves that voice's embedding as a profile under
+    /// the new name (`profiles.rs`), and later diarization passes suggest
+    /// names for voices that match a saved profile. Opt-in
+    /// (`#[serde(default)]` = `false`), same convention as
+    /// `detectSpeakers` — this one stores voice fingerprints on disk, so
+    /// the user must ask for it.
+    #[serde(default)]
+    pub speaker_profiles: bool,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -162,6 +171,7 @@ impl Default for Settings {
             detect_speakers: false,
             auto_stop_recording: true,
             compress_audio_after_days: None,
+            speaker_profiles: false,
         }
     }
 }
@@ -201,6 +211,7 @@ pub struct SettingsPatch {
     /// "leave unchanged" from "explicitly clear" without a double-`Option`).
     /// Any other `Some(n)` sets the day count to `n`.
     pub compress_audio_after_days: Option<u32>,
+    pub speaker_profiles: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -242,6 +253,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.compress_audio_after_days {
         settings.compress_audio_after_days = if v == 0 { None } else { Some(v) };
+    }
+    if let Some(v) = patch.speaker_profiles {
+        settings.speaker_profiles = v;
     }
 }
 
@@ -380,6 +394,7 @@ mod tests {
             detect_speakers: false,
             auto_stop_recording: true,
             compress_audio_after_days: None,
+            speaker_profiles: false,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -426,6 +441,7 @@ mod tests {
                 detect_speakers: false,
                 auto_stop_recording: true,
                 compress_audio_after_days: None,
+            speaker_profiles: false,
             }
         );
     }
@@ -467,6 +483,7 @@ mod tests {
                 detect_speakers: false,
                 auto_stop_recording: true,
                 compress_audio_after_days: None,
+            speaker_profiles: false,
             }
         );
     }
@@ -509,6 +526,7 @@ mod tests {
                 detect_speakers: false,
                 auto_stop_recording: true,
                 compress_audio_after_days: None,
+            speaker_profiles: false,
             }
         );
     }
@@ -547,6 +565,7 @@ mod tests {
             detect_speakers: false,
             auto_stop_recording: true,
             compress_audio_after_days: None,
+            speaker_profiles: false,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -595,6 +614,7 @@ mod tests {
             detect_speakers: Some(true),
             auto_stop_recording: Some(false),
             compress_audio_after_days: Some(14),
+            speaker_profiles: Some(true),
         };
 
         apply_patch(&mut settings, patch);
@@ -609,6 +629,7 @@ mod tests {
         assert!(settings.detect_speakers);
         assert!(!settings.auto_stop_recording);
         assert_eq!(settings.compress_audio_after_days, Some(14));
+        assert!(settings.speaker_profiles);
     }
 
     #[test]
@@ -794,6 +815,7 @@ mod tests {
             detect_speakers: false,
             auto_stop_recording: true,
             compress_audio_after_days: None,
+            speaker_profiles: false,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -825,6 +847,7 @@ mod tests {
             detect_speakers: false,
             auto_stop_recording: true,
             compress_audio_after_days: None,
+            speaker_profiles: false,
         };
         let mut settings = original.clone();
 

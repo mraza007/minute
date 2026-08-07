@@ -165,7 +165,7 @@ pub fn resolve_models(models_root: &Path) -> Option<(PathBuf, PathBuf)> {
 // pure post-processing (unit-tested without models)
 // ---------------------------------------------------------------------------
 
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();

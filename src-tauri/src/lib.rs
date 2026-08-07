@@ -6,6 +6,7 @@ mod download;
 mod error;
 mod llm;
 mod popup;
+mod profiles;
 mod settings;
 mod store;
 mod stt;
@@ -189,13 +190,62 @@ fn delete_note_marker(
 #[tauri::command]
 fn rename_speaker(
     state: State<SharedStore>,
+    settings: State<SharedSettings>,
     id: String,
     from: String,
     to: String,
 ) -> Result<Transcript, String> {
-    lock_store(&state)
+    let transcript = lock_store(&state)
         .rename_speaker(&id, &from, &to)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Issue #22: a rename is the moment a voice gets a name — save (or
+    // refine) the profile, when the user has opted in and this note's
+    // diarization pass stored a centroid for that voice. Failures here
+    // are logged, never surfaced: the rename itself already succeeded,
+    // and a missed profile refinement costs one suggestion, not data.
+    if settings::lock_settings(&settings).speaker_profiles {
+        let store = lock_store(&state);
+        match store.embedding_for_speaker(&id, to.trim()) {
+            Ok(Some(embedding)) => {
+                let path = store.voice_profiles_path();
+                let mut list = profiles::load(&path);
+                profiles::upsert(
+                    &mut list,
+                    to.trim(),
+                    &embedding,
+                    time::OffsetDateTime::now_utc(),
+                );
+                if let Err(e) = profiles::save(&path, &list) {
+                    log::warn!("voice profile save failed for {to:?}: {e}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => log::warn!("voice profile lookup failed for note {id}: {e}"),
+        }
+    }
+    Ok(transcript)
+}
+
+/// Lists saved voice profiles (issue #22) — Settings renders these with
+/// per-profile delete.
+#[tauri::command]
+fn list_voice_profiles(state: State<SharedStore>) -> Result<Vec<profiles::VoiceProfile>, String> {
+    Ok(profiles::load(&lock_store(&state).voice_profiles_path()))
+}
+
+/// Deletes one saved voice profile by name (issue #22). Deleting a name
+/// that doesn't exist is a no-op, not an error — the outcome the user
+/// asked for ("this voice is not remembered") already holds.
+#[tauri::command]
+fn delete_voice_profile(state: State<SharedStore>, name: String) -> Result<(), String> {
+    let store = lock_store(&state);
+    let path = store.voice_profiles_path();
+    let mut list = profiles::load(&path);
+    if profiles::remove(&mut list, &name) {
+        profiles::save(&path, &list).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -658,6 +708,8 @@ pub fn run() {
             update_note_marker,
             delete_note_marker,
             rename_speaker,
+            list_voice_profiles,
+            delete_voice_profile,
             merge_speakers,
             undo_speaker_merge,
             toggle_action_item,

@@ -516,6 +516,48 @@ impl Store {
         self.note_dir(id).join(SPEAKERS_FILE)
     }
 
+    /// Where the voice-profile list lives (issue #22): at the library
+    /// root, next to `notes/` — it moves with the library and dies with
+    /// it.
+    pub fn voice_profiles_path(&self) -> PathBuf {
+        self.root.join(crate::profiles::PROFILES_FILE)
+    }
+
+    /// The stored voice embedding for the speaker currently displayed as
+    /// `label` in this note (issue #22).
+    ///
+    /// `speakers.json` is keyed by the original "Speaker N" labels the
+    /// diarization pass wrote, but the transcript may since have renamed
+    /// them — possibly more than once ("Speaker 2" → "Sarah" → "Sara"),
+    /// each rename appending one link to `meta.speaker_aliases`. So each
+    /// original key's alias chain is followed to its current display name
+    /// and compared against `label`. `Ok(None)` when the note has no
+    /// embeddings or no chain ends at `label`.
+    pub fn embedding_for_speaker(&self, id: &str, label: &str) -> Result<Option<Vec<f32>>> {
+        let Some(embeddings) = self.read_speaker_embeddings(id)? else {
+            return Ok(None);
+        };
+        if let Some(embedding) = embeddings.get(label) {
+            return Ok(Some(embedding.clone()));
+        }
+        let meta = self.read_meta(id)?;
+        for (original, embedding) in &embeddings {
+            let mut current = original.as_str();
+            // Bounded walk: a pathological alias file must not loop
+            // forever, and no real chain is longer than its rename count.
+            for _ in 0..meta.speaker_aliases.len() {
+                match meta.speaker_aliases.get(current) {
+                    Some(next) => current = next,
+                    None => break,
+                }
+            }
+            if current == label {
+                return Ok(Some(embedding.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     fn note_md_path(&self, id: &str) -> PathBuf {
         self.note_dir(id).join(NOTE_MD_FILE)
     }
@@ -3864,6 +3906,48 @@ mod tests {
             store.read_speaker_embeddings(&meta.id).unwrap(),
             Some(embeddings)
         );
+    }
+
+    /// Issue #22: `speakers.json` keys stay at the original "Speaker N"
+    /// labels while the transcript renames march on — the lookup must
+    /// follow the alias chain to the current display name.
+    #[test]
+    fn embedding_for_speaker_follows_the_alias_chain_to_the_current_name() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        store.finalize_note(&meta.id, 60.0, 1).unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![StoredSegment {
+                        speaker: "Speaker 2".to_string(),
+                        start: 0.0,
+                        end: 1.0,
+                        text: "hello".to_string(),
+                    }],
+                },
+            )
+            .unwrap();
+        let embeddings = BTreeMap::from([("Speaker 2".to_string(), vec![0.5_f32, 0.5])]);
+        store.write_speaker_embeddings(&meta.id, &embeddings).unwrap();
+
+        // Direct hit on the original label.
+        assert_eq!(
+            store.embedding_for_speaker(&meta.id, "Speaker 2").unwrap(),
+            Some(vec![0.5, 0.5])
+        );
+
+        // Two renames deep: Speaker 2 → Sarah → Sara.
+        store.rename_speaker(&meta.id, "Speaker 2", "Sarah").unwrap();
+        store.rename_speaker(&meta.id, "Sarah", "Sara").unwrap();
+        assert_eq!(
+            store.embedding_for_speaker(&meta.id, "Sara").unwrap(),
+            Some(vec![0.5, 0.5])
+        );
+        assert_eq!(store.embedding_for_speaker(&meta.id, "Nobody").unwrap(), None);
     }
 
     #[test]
