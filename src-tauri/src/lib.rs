@@ -694,13 +694,26 @@ pub fn run() {
             syscap::request_sys_audio_permission
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Registered in release builds too, with a file target (issue
+            // #21): the plugin used to be debug-only, which meant a shipped
+            // build discarded every `log::warn!` in the app — a user
+            // reporting "summary stuck for hours" had literally no log file
+            // to attach, because none was ever written. `LogDir` lands in
+            // `~/Library/Logs/<bundle identifier>/minute.log`; rotation
+            // keeps a few 5 MB files so it can't grow unbounded.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .targets([
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some("minute".to_string()),
+                        }),
+                    ])
+                    .max_file_size(5_000_000)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                    .build(),
+            )?;
 
             let app_data_dir = app
                 .path()
