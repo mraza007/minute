@@ -456,4 +456,39 @@ describe('AiNotesPanel', () => {
       expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
     })
   })
+
+  // Issue #19: overview mode routes summary content to the main leaf, but
+  // the action row here is the one place to re-run summarization from the
+  // Overview tab — it must offer Regenerate, not only Copy/Export.
+  describe('overview mode actions', () => {
+    it('shows Regenerate next to Copy/Export and forwards the click', () => {
+      const onRegenerate = vi.fn()
+      render(<AiNotesPanel {...baseProps({ overviewMode: true, onRegenerate })} />)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }))
+      expect(onRegenerate).toHaveBeenCalledTimes(1)
+    })
+
+    it('disables Regenerate while a summary is running', () => {
+      render(<AiNotesPanel {...baseProps({ overviewMode: true, status: 'running' })} />)
+      expect(screen.getByRole('button', { name: 'Regenerate' })).toBeDisabled()
+    })
+
+    it('disables Regenerate while a summary is queued', () => {
+      render(<AiNotesPanel {...baseProps({ overviewMode: true, status: 'queued' })} />)
+      expect(screen.getByRole('button', { name: 'Regenerate' })).toBeDisabled()
+    })
+
+    // A failed summarization is visible in overview mode through
+    // NoteView's own error-with-retry block (covered in NoteView.test),
+    // so this panel keeps its error card out of overview mode.
+    it('does not add a second error surface in overview mode', () => {
+      render(
+        <AiNotesPanel
+          {...baseProps({ overviewMode: true, status: 'error', error: 'summarization crashed: boom' })}
+        />,
+      )
+      expect(screen.queryByText('summarization crashed: boom')).not.toBeInTheDocument()
+    })
+  })
 })

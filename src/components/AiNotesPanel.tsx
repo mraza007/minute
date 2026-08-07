@@ -472,6 +472,9 @@ export const AiNotesPanel = memo(function AiNotesPanel({
       <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
         {!overviewMode && summarizing && <SummarizingBanner modelName={modelName} />}
         {!overviewMode && queued && <QueuedBanner />}
+        {/* Overview mode leaves the error surface to NoteView's own
+            error-with-retry block — showing this card there too renders
+            the same message twice. */}
         {!overviewMode && status === 'error' && <ErrorCard error={error} onRegenerate={onRegenerate} />}
 
         {!overviewMode && summary ? (
@@ -563,6 +566,13 @@ export const AiNotesPanel = memo(function AiNotesPanel({
           <div className="overview-export-actions">
             <button onClick={onCopy} className="btn-outline">Copy summary</button>
             <button onClick={onExport} className="btn-outline">Export .md</button>
+            {/* Issue #19: the Overview tab's one entry point to re-run
+                summarization. Disabled while one runs or waits (issue
+                #11) — offering it again is how a note gets summarized
+                twice in a row. */}
+            <button onClick={onRegenerate} disabled={pending} className="btn-outline">
+              Regenerate
+            </button>
           </div>
         ) : null}
 
