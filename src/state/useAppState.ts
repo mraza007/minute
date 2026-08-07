@@ -17,6 +17,7 @@ import type {
   StorageStats,
   SummaryStyle,
   SysAudioAvailability,
+  VoiceProfile,
   TranscriptSegmentEvent,
 } from '../ipc/types'
 import type { NoteTab, SttStatus, View } from '../types'
@@ -179,6 +180,7 @@ export function useAppState() {
   // `null` = no countdown pending, a number = seconds until the backend
   // stops the recording on its own.
   const [tAutoStopRecording, setTAutoStopRecording] = useState(true)
+  const [tSpeakerProfiles, setTSpeakerProfiles] = useState(false)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
 
   // Auto-update (issue #4). `tAutoUpdateCheck` starts `null` (= "settings
@@ -273,6 +275,31 @@ export function useAppState() {
   const refreshNotes = useCallback(() => {
     ipc.listNotes().then(setNotes).catch(reportError)
   }, [reportError])
+
+  /**
+   * Saved voice profiles (issue #22), for Settings' management list.
+   * Loaded lazily by `refreshVoiceProfiles` (startup, plus after any
+   * rename or delete that can change the list) — a listing failure is
+   * only ever a missing convenience, so it logs rather than surfacing.
+   */
+  const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>([])
+  const refreshVoiceProfiles = useCallback(() => {
+    ipc
+      .listVoiceProfiles()
+      .then(setVoiceProfiles)
+      .catch(err => console.warn('voice profile listing failed:', err))
+  }, [])
+
+  const deleteVoiceProfile = useCallback(
+    (name: string) => {
+      ipc
+        .deleteVoiceProfile(name)
+        .then(() => refreshVoiceProfiles())
+        .catch(reportError)
+    },
+    [refreshVoiceProfiles, reportError],
+  )
+
   const noteDetail = useNoteDetail({ selectedNoteId, reportError, refreshNotes })
   const { loadNoteTranscript, invalidateNoteCache, pruneNoteDetail } = noteDetail
 
@@ -503,10 +530,31 @@ export function useAppState() {
         .then(() => {
           invalidateNoteCache(id)
           loadNoteTranscript(id, { force: true })
+          // Issue #22: the rename may have saved/refined a voice profile
+          // and answered a suggestion — refresh both views of that state.
+          refreshNotes()
+          refreshVoiceProfiles()
         })
         .catch(reportError)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [invalidateNoteCache, loadNoteTranscript, reportError],
+  )
+
+  /**
+   * Dismisses one "Looks like …?" name suggestion (issue #22). The backend
+   * returns the updated meta; a full list refresh keeps `hasSummary` and
+   * ordering authoritative, same as the rename path above.
+   */
+  const dismissSpeakerSuggestion = useCallback(
+    (id: string, label: string) => {
+      ipc
+        .dismissSpeakerSuggestion(id, label)
+        .then(() => refreshNotes())
+        .catch(reportError)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [reportError],
   )
 
   const mergeSpeakers = useCallback(
@@ -736,6 +784,7 @@ export function useAppState() {
           setTAutoUpdateCheck(loadedSettings.autoUpdateCheck ?? true)
           setTDetectSpeakers(loadedSettings.detectSpeakers ?? false)
           setTAutoStopRecording(loadedSettings.autoStopRecording ?? true)
+          setTSpeakerProfiles(loadedSettings.speakerProfiles ?? false)
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1287,6 +1336,26 @@ export function useAppState() {
   }, [reportError])
 
   /**
+   * Settings screen's "Remember named speakers" toggle (issue #22) — same
+   * optimistic-flip-then-persist shape as the toggles above. Turning it
+   * off keeps existing profiles on disk (the per-profile delete buttons
+   * own removal); it only stops new saves and new suggestions.
+   */
+  const toggleSpeakerProfiles = useCallback(() => {
+    setTSpeakerProfiles(previous => {
+      const flipped = !previous
+      ipc.setSettings({ speakerProfiles: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  // Issue #22: load the saved profiles once at startup so Settings has
+  // them ready; rename/delete refresh the list as they go.
+  useEffect(() => {
+    refreshVoiceProfiles()
+  }, [refreshVoiceProfiles])
+
+  /**
    * Settings screen's "Summary style" picker — same optimistic-set-then-
    * persist shape as the toggles above. Takes effect on the next
    * summarization (manual or auto); already-generated summaries are
@@ -1635,6 +1704,12 @@ export function useAppState() {
     updateNoteMarker,
     deleteNoteMarker,
     renameSpeaker,
+    dismissSpeakerSuggestion,
+    voiceProfiles,
+    refreshVoiceProfiles,
+    deleteVoiceProfile,
+    tSpeakerProfiles,
+    toggleSpeakerProfiles,
     mergeSpeakers,
     undoSpeakerMerge,
     deleteNote,

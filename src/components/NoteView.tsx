@@ -89,6 +89,8 @@ export interface NoteViewProps {
   onUpdateMarker: (id: string, index: number, label: string) => Promise<void>
   onDeleteMarker: (id: string, index: number) => Promise<void>
   onRenameSpeaker: (id: string, from: string, to: string) => void
+  /** Drops one "sounds like" suggestion without renaming (issue #22). */
+  onDismissSpeakerSuggestion: (id: string, label: string) => void
   onMergeSpeakers: (id: string, from: string, into: string) => Promise<SpeakerMergeUndo>
   onUndoSpeakerMerge: (id: string, undo: SpeakerMergeUndo) => Promise<void>
   onDeleteAudio: () => Promise<void>
@@ -778,6 +780,7 @@ export function NoteView({
   onUpdateMarker,
   onDeleteMarker,
   onRenameSpeaker,
+  onDismissSpeakerSuggestion,
   onMergeSpeakers,
   onUndoSpeakerMerge,
   diarStatus,
@@ -1318,6 +1321,33 @@ export function NoteView({
                     </form>
                   )}
                 </div>
+                {Object.keys(meta.speakerSuggestions ?? {}).length > 0 && (
+                  <div className="speaker-suggestions" role="group" aria-label="Speaker name suggestions">
+                    {Object.entries(meta.speakerSuggestions ?? {}).map(([label, suggestion]) => (
+                      <span key={label} className="speaker-suggestion">
+                        <span>
+                          <strong>{label}</strong> sounds like <strong>{suggestion.name}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          className="btn-outline"
+                          aria-label={`Rename ${label} to ${suggestion.name}`}
+                          onClick={() => onRenameSpeaker(meta.id, label, suggestion.name)}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-quiet"
+                          aria-label={`Dismiss suggestion for ${label}`}
+                          onClick={() => onDismissSpeakerSuggestion(meta.id, label)}
+                        >
+                          Dismiss
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {speakerMergeOpen && speakerFilter !== 'all' && (
                   <form
                     className="speaker-merge-form"

@@ -69,6 +69,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     onUpdateMarker: vi.fn().mockResolvedValue(undefined),
     onDeleteMarker: vi.fn().mockResolvedValue(undefined),
     onRenameSpeaker: vi.fn(),
+    onDismissSpeakerSuggestion: vi.fn(),
     onMergeSpeakers: vi.fn().mockResolvedValue({
       from: 'Speaker 1',
       into: 'Speaker 2',
@@ -269,6 +270,39 @@ describe('NoteView', () => {
       />,
     )
     expect(screen.getByRole('button', { name: 'Generate summary' })).toBeInTheDocument()
+  })
+
+  // Issue #22: a diarization pass that recognized a saved voice writes a
+  // suggestion onto the note — the transcript tools offer it as a
+  // one-click rename or an explicit dismiss.
+  it('offers voice-profile name suggestions with rename and dismiss', () => {
+    const onRenameSpeaker = vi.fn()
+    const onDismissSpeakerSuggestion = vi.fn()
+    const meta = {
+      ...noteFixture(),
+      speakerSuggestions: { 'Speaker 2': { name: 'Sarah', similarity: 0.82 } },
+    }
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 1', start: 0, end: 3, text: 'First voice.' },
+      { speaker: 'Speaker 2', start: 4, end: 7, text: 'Second voice.' },
+    ]
+    render(
+      <NoteView
+        {...makeProps({
+          meta,
+          selectedMeta: meta,
+          selectedTranscript: segments,
+          onRenameSpeaker,
+          onDismissSpeakerSuggestion,
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('group', { name: 'Speaker name suggestions' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Speaker 2 to Sarah' }))
+    expect(onRenameSpeaker).toHaveBeenCalledWith(meta.id, 'Speaker 2', 'Sarah')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss suggestion for Speaker 2' }))
+    expect(onDismissSpeakerSuggestion).toHaveBeenCalledWith(meta.id, 'Speaker 2')
   })
 
   it('filters transcript turns, submits a speaker rename, and returns focus to the filter', async () => {

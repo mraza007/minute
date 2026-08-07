@@ -40,6 +40,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     detectSpeakers: false,
     autoStopRecording: true,
     compressAudioAfterDays: null,
+    speakerProfiles: false,
     libraryRoot: null,
     ...overrides,
   }

@@ -96,6 +96,10 @@ const base = {
   toggleDetectSpeakers: vi.fn(),
   autoStopRecording: true,
   toggleAutoStopRecording: vi.fn(),
+  speakerProfiles: false,
+  toggleSpeakerProfiles: vi.fn(),
+  voiceProfiles: [],
+  onDeleteVoiceProfile: vi.fn(),
   onExportDiagnostics: vi.fn().mockResolvedValue(undefined),
   summaryStyle: 'standard' as const,
   setSummaryStyle: vi.fn(),
@@ -115,6 +119,40 @@ const base = {
 
 describe('SettingsView', () => {
   afterEach(() => vi.useRealTimers())
+
+  // Issue #22: the voice-profile section — opt-in toggle, saved-profile
+  // list, per-profile delete.
+  it('lists saved voice profiles with delete when remembering speakers is on', () => {
+    const onDeleteVoiceProfile = vi.fn()
+    render(
+      <SettingsView
+        {...base}
+        detectSpeakers
+        speakerProfiles
+        voiceProfiles={[
+          {
+            name: 'Sarah',
+            embedding: [0.1, 0.2],
+            samples: 3,
+            createdAt: '2026-08-01T00:00:00Z',
+            updatedAt: '2026-08-05T00:00:00Z',
+          },
+        ]}
+        onDeleteVoiceProfile={onDeleteVoiceProfile}
+      />,
+    )
+
+    const list = screen.getByRole('list', { name: 'Saved voice profiles' })
+    expect(within(list).getByText('Sarah')).toBeInTheDocument()
+    expect(within(list).getByText('heard 3 times')).toBeInTheDocument()
+    fireEvent.click(within(list).getByRole('button', { name: 'Delete' }))
+    expect(onDeleteVoiceProfile).toHaveBeenCalledWith('Sarah')
+  })
+
+  it('hides the voice-profile section while speaker detection is off', () => {
+    render(<SettingsView {...base} detectSpeakers={false} />)
+    expect(screen.queryByText('Remember named speakers')).not.toBeInTheDocument()
+  })
 
   it('explains this Mac and marks the backend-recommended model', () => {
     render(<SettingsView {...base} />)

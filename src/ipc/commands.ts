@@ -26,6 +26,7 @@ import type {
   StorageStats,
   SummaryDoc,
   SysAudioStatus,
+  VoiceProfile,
 } from './types'
 
 /**
@@ -88,6 +89,18 @@ export const deleteNoteMarker = (id: string, index: number): Promise<NoteMeta> =
 
 export const renameSpeaker = (id: string, from: string, to: string): Promise<Transcript> =>
   invokeCmd('rename_speaker', { id, from, to })
+
+/** Drops one voice-profile name suggestion without renaming (issue #22). */
+export const dismissSpeakerSuggestion = (noteId: string, label: string): Promise<NoteMeta> =>
+  invokeCmd('dismiss_speaker_suggestion', { noteId, label })
+
+/** Saved voice profiles, for Settings' management list (issue #22). */
+export const listVoiceProfiles = (): Promise<VoiceProfile[]> =>
+  invokeCmd('list_voice_profiles')
+
+/** Deletes one saved voice profile by name (issue #22). */
+export const deleteVoiceProfile = (name: string): Promise<void> =>
+  invokeCmd('delete_voice_profile', { name })
 
 export const mergeSpeakers = (id: string, from: string, into: string): Promise<SpeakerMergeResult> =>
   invokeCmd('merge_speakers', { id, from, into })

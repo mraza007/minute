@@ -1726,6 +1726,26 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   color: var(--ink);
   font: 12px var(--sans);
 }
+.speaker-suggestions {
+  padding: 7px 34px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  background: var(--selected-tint);
+  color: var(--ink-muted);
+  font: 11.5px var(--sans);
+}
+.speaker-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.speaker-suggestion strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .speaker-merge-form,
 .speaker-merge-notice {
   min-height: 42px;

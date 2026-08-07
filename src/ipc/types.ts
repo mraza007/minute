@@ -95,6 +95,8 @@ export interface NoteMeta {
   markers?: NoteMarker[]
   /** User-confirmed raw-label aliases, scoped to this one recording. */
   speakerAliases?: Record<string, string>
+  /** Unconfirmed voice-profile name suggestions, keyed by current speaker label (issue #22). */
+  speakerSuggestions?: Record<string, SpeakerSuggestion>
   /**
    * Whether `summary.json` exists on disk (issue #18). Only `list_notes`
    * computes it — commands that return a single updated `NoteMeta` omit
@@ -271,6 +273,23 @@ export interface NoteStorageStats {
 /** `settings::SummaryStyle`, serialized lowercase — how long/detailed generated summaries should be. */
 export type SummaryStyle = 'short' | 'standard' | 'detailed'
 
+/** `store::SpeakerSuggestion` (issue #22) — one "this voice sounds like `name`" match. */
+export interface SpeakerSuggestion {
+  name: string
+  /** Cosine similarity that cleared the suggestion threshold. */
+  similarity: number
+}
+
+/** `profiles::VoiceProfile` (issue #22) — one named voice, listed in Settings. */
+export interface VoiceProfile {
+  name: string
+  embedding: number[]
+  /** How many confirmed centroids the embedding averages. */
+  samples: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Settings {
   sttModel: string | null
   llmModel: string | null
@@ -292,6 +311,8 @@ export interface Settings {
   autoStopRecording: boolean
   /** Issue #16: after this many days, compress a note's `audio.wav` to lossy `.m4a` (AAC) and remove the WAV. `null` = off (default). */
   compressAudioAfterDays: number | null
+  /** Issue #22: remember named speakers' voices and suggest names on later recordings (opt-in). */
+  speakerProfiles: boolean
 }
 
 /**
@@ -316,6 +337,7 @@ export interface SettingsPatch {
   autoStopRecording?: boolean
   /** `0` means "back to off" (clears the override) — see `settings::SettingsPatch::compress_audio_after_days`'s docs. */
   compressAudioAfterDays?: number
+  speakerProfiles?: boolean
 }
 
 // --- events ----------------------------------------------------------------

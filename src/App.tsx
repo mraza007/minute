@@ -247,6 +247,7 @@ export default function App() {
               onUpdateMarker={s.updateNoteMarker}
               onDeleteMarker={s.deleteNoteMarker}
               onRenameSpeaker={s.renameSpeaker}
+              onDismissSpeakerSuggestion={s.dismissSpeakerSuggestion}
               onMergeSpeakers={s.mergeSpeakers}
               onUndoSpeakerMerge={s.undoSpeakerMerge}
               onDeleteAudio={s.deleteSelectedNoteAudio}
@@ -311,6 +312,10 @@ export default function App() {
               toggleCaptureSystemAudio={s.toggleCaptureSystemAudio}
               detectSpeakers={s.tDetectSpeakers}
               toggleDetectSpeakers={s.toggleDetectSpeakers}
+              speakerProfiles={s.tSpeakerProfiles}
+              toggleSpeakerProfiles={s.toggleSpeakerProfiles}
+              voiceProfiles={s.voiceProfiles}
+              onDeleteVoiceProfile={s.deleteVoiceProfile}
               autoStopRecording={s.tAutoStopRecording}
               toggleAutoStopRecording={s.toggleAutoStopRecording}
               sysAudioAvailability={s.sysAudioAvailability}

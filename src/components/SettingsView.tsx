@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
-import type { Hardware, ModelStatus, Recommendation, StorageStats, SummaryStyle, SysAudioAvailability } from '../ipc/types'
+import type { Hardware, ModelStatus, Recommendation, StorageStats, SummaryStyle, SysAudioAvailability, VoiceProfile } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
 import { assessModelSuitability } from '../state/modelSuitability'
@@ -50,6 +50,12 @@ export interface SettingsViewProps {
   /** Auto-stop (issue #9): stop & transcribe after prolonged silence (on by default). */
   autoStopRecording: boolean
   toggleAutoStopRecording: () => void
+  /** Issue #22: remember named speakers' voices and suggest names on later recordings (opt-in). */
+  speakerProfiles: boolean
+  toggleSpeakerProfiles: () => void
+  /** Saved voice profiles, shown (with delete) while the toggle above is on. */
+  voiceProfiles: VoiceProfile[]
+  onDeleteVoiceProfile: (name: string) => void
   onExportDiagnostics: () => Promise<void>
   /** Settings' summary style — adjusts prompt guidance and response length backend-side. */
   summaryStyle: SummaryStyle
@@ -493,6 +499,10 @@ export function SettingsView({
   toggleDetectSpeakers,
   autoStopRecording,
   toggleAutoStopRecording,
+  speakerProfiles,
+  toggleSpeakerProfiles,
+  voiceProfiles,
+  onDeleteVoiceProfile,
   onExportDiagnostics,
   summaryStyle,
   setSummaryStyle,
@@ -780,6 +790,48 @@ export function SettingsView({
           )}
           {detectSpeakers && diarModelsInstalled && (
             <div style={fineTextStyle}>Speaker models installed. New recordings are labeled automatically.</div>
+          )}
+          {detectSpeakers && (
+            <div style={{ marginTop: 14 }}>
+              <Toggle
+                on={speakerProfiles}
+                onToggle={toggleSpeakerProfiles}
+                label="Remember named speakers"
+              />
+              <div style={noteTextStyle}>
+                When you rename a speaker, Minute saves that voice locally and suggests the name the next time it
+                hears them. Voice profiles never leave this Mac, live in your library folder, and can be deleted
+                below at any time.
+              </div>
+              {speakerProfiles && voiceProfiles.length > 0 && (
+                <ul aria-label="Saved voice profiles" style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, maxWidth: 520 }}>
+                  {voiceProfiles.map(profile => (
+                    <li
+                      key={profile.name}
+                      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--hairline)' }}
+                    >
+                      <span style={{ flex: 1 }}>{profile.name}</span>
+                      <span style={fineTextStyle}>
+                        {profile.samples === 1 ? 'heard once' : `heard ${profile.samples} times`}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-light"
+                        style={{ ...secondaryBtnStyle, flex: 'none' }}
+                        onClick={() => onDeleteVoiceProfile(profile.name)}
+                      >
+                        Delete
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {speakerProfiles && voiceProfiles.length === 0 && (
+                <div style={fineTextStyle}>
+                  No voices saved yet. Rename a speaker in any transcript to save the first one.
+                </div>
+              )}
+            </div>
           )}
         </Section>
         </Group>
