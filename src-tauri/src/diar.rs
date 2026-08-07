@@ -1033,6 +1033,63 @@ mod tests {
         assert_eq!(outcome.centroids.len(), 2);
     }
 
+    /// Real-model cross-recording check for issue #22, mirroring the
+    /// env-var pattern of `real_diarization_finds_two_speakers_...`: take
+    /// two recordings that share their dominant speaker
+    /// (`MINUTE_DIAR_WAV_A`/`_B`), build a voice profile from A's most-
+    /// heard voice, and require B's most-heard voice to match it above
+    /// [`crate::profiles::SUGGEST_THRESHOLD`]. Prints the similarity so a
+    /// borderline pass is visible, not silent.
+    ///
+    /// Feed it recordings whose dominant speaker talks for at least
+    /// [`MAX_EMBED_SECS`] — the embedder needs that much for a stable
+    /// voiceprint. Measured on 2026-08-07 with two ~5-second clips of the
+    /// same voice, days apart: similarity 0.509, under the threshold —
+    /// noisy short-clip embeddings, not a matcher bug. Meeting-length
+    /// same-voice clusters measure ≥ 0.60 (see the module docs' tuning
+    /// numbers).
+    #[test]
+    #[ignore = "needs real diarization models + two same-speaker wavs via MINUTE_DIAR_* env vars"]
+    fn real_voice_profile_matches_across_recordings() {
+        let seg = std::env::var("MINUTE_DIAR_SEG").expect("MINUTE_DIAR_SEG");
+        let emb = std::env::var("MINUTE_DIAR_EMB").expect("MINUTE_DIAR_EMB");
+        let wav_a = std::env::var("MINUTE_DIAR_WAV_A").expect("MINUTE_DIAR_WAV_A");
+        let wav_b = std::env::var("MINUTE_DIAR_WAV_B").expect("MINUTE_DIAR_WAV_B");
+
+        let dominant_centroid = |wav: &str| {
+            let samples = read_note_samples(Path::new(wav)).expect("wav should read");
+            let outcome = diarize_samples(Path::new(&seg), Path::new(&emb), &samples, None)
+                .expect("diarization should run");
+            let mut speech: BTreeMap<usize, f32> = BTreeMap::new();
+            for span in &outcome.spans {
+                *speech.entry(span.speaker).or_default() += span.end - span.start;
+            }
+            let (&dominant, secs) = speech
+                .iter()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .expect("at least one speaker");
+            println!("{wav}: {} speaker(s), dominant #{dominant} with {secs:.1}s", speech.len());
+            outcome.centroids[&dominant].clone()
+        };
+
+        let mut saved = Vec::new();
+        crate::profiles::upsert(
+            &mut saved,
+            "Primary",
+            &dominant_centroid(&wav_a),
+            time::macros::datetime!(2026-08-07 12:00:00 UTC),
+        );
+
+        let fresh = dominant_centroid(&wav_b);
+        let similarity = cosine(&saved[0].embedding, &fresh);
+        println!("cross-recording similarity: {similarity:.3} (threshold {})", crate::profiles::SUGGEST_THRESHOLD);
+        let matched = crate::profiles::best_match(&saved, &fresh);
+        assert!(
+            matched.is_some(),
+            "the same dominant voice must match its profile across recordings (similarity {similarity:.3})"
+        );
+    }
+
     #[test]
     fn vote_labels_sums_overlap_across_split_spans() {
         // Speaker 0 overlaps the segment twice (2.0 s total), speaker 1
