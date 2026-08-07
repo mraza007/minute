@@ -2109,6 +2109,12 @@ impl AskWorker {
 /// [`run_summarize_worker`]) releases [`LlmBusy`] on every exit path,
 /// including a panic unwinding through the thread.
 fn run_ask_worker(ctx: AskWorkerCtx) {
+    run_ask_worker_with(ctx, run_ask)
+}
+
+/// [`run_ask_worker`] with the pipeline injected — see
+/// [`run_summarize_worker_with`] for why (testable panic containment).
+fn run_ask_worker_with(ctx: AskWorkerCtx, pipeline: impl FnOnce(&AskWorkerCtx) -> Result<String>) {
     // See `run_summarize_worker` for why these are cloned here and why the
     // body is an inner scope: an ask holds the same app-wide `LlmBusy`, so
     // it owes the summarize queue a drain on its way out (issue #11).
@@ -2129,7 +2135,16 @@ fn run_ask_worker(ctx: AskWorkerCtx) {
             error: None,
         }));
 
-        match run_ask(&ctx) {
+        // Issue #21: same panic containment as `run_summarize_worker_with`
+        // — see the comment there. An escaped panic here would leave the
+        // ask spinner stuck forever and the summarize queue undrained.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pipeline(&ctx)))
+            .unwrap_or_else(|panic| {
+                Err(MinuteError::Other(format!(
+                    "ask crashed: {}",
+                    panic_message(panic.as_ref())
+                )))
+            }) {
             Err(e) => {
                 log::warn!(
                     "ask failed for note {} question {:?}: {e}",
@@ -2371,6 +2386,21 @@ impl SummarizeWorker {
     }
 }
 
+/// Renders the payload a worker's `catch_unwind` caught into the human
+/// string that goes into the terminal error event (issue #21). `panic!`
+/// with a literal carries a `&str`, `panic!` with a format string carries a
+/// `String`; anything else (a custom `panic_any` payload) gets the honest
+/// fallback rather than pretending to know.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        s
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s
+    } else {
+        "unknown panic"
+    }
+}
+
 /// Clears the [`LlmBusy`] flag when dropped — created at the very top
 /// of [`run_summarize_worker`] so the flag is released no matter how the
 /// worker exits (the ordinary success/error paths, or even a panic
@@ -2396,6 +2426,17 @@ impl Drop for BusyGuard {
 /// `run_summarize`'s success path (via `store::Store::write_summary_and_finalize`)
 /// flips it to `ready`.
 fn run_summarize_worker(ctx: SummarizeWorkerCtx) {
+    run_summarize_worker_with(ctx, run_summarize)
+}
+
+/// [`run_summarize_worker`] with the pipeline injected — same seam shape as
+/// `store::Store::run_compression_sweep_with_encoder`, and for the same
+/// reason: the tests need to stand in for the step that can't run in CI (a
+/// real model), here specifically to make it *panic* on demand.
+fn run_summarize_worker_with(
+    ctx: SummarizeWorkerCtx,
+    pipeline: impl FnOnce(&SummarizeWorkerCtx) -> Result<()>,
+) {
     // Cloned up front so the drain below still has them after `ctx` is
     // consumed by the inner block.
     let queue = ctx.queue.clone();
@@ -2417,7 +2458,21 @@ fn run_summarize_worker(ctx: SummarizeWorkerCtx) {
             error: None,
         }));
 
-        match run_summarize(&ctx) {
+        // Issue #21: a panic (realistically: inside llama.cpp's FFI) must
+        // not escape this scope. Left to unwind, the thread dies without a
+        // terminal event — the note's spinner shows "generating" forever —
+        // and without the drain below, stranding every queued note behind
+        // the crash. `AssertUnwindSafe` is justified: everything the
+        // closure shares outlives the panic behind poison-recovering
+        // mutexes (`lock_store`/`lock_llm_engine`/`lock_summarize_queue`)
+        // or an atomic (`LlmBusy`).
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pipeline(&ctx)))
+            .unwrap_or_else(|panic| {
+                Err(MinuteError::Other(format!(
+                    "summarization crashed: {}",
+                    panic_message(panic.as_ref())
+                )))
+            }) {
             Err(e) => {
                 log::warn!("summarization failed for note {}: {e}", ctx.note_id);
                 (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
@@ -4392,6 +4447,91 @@ mod tests {
         assert!(
             lock_summarize_queue(&queue).is_empty(),
             "the drained note must not still be queued"
+        );
+    }
+
+    // --- worker panic containment (issue #21) -----------------------------------
+    //
+    // A panic anywhere in the pipeline (llama.cpp FFI is the realistic
+    // source) used to kill the worker thread mid-unwind: `BusyGuard`
+    // released the engine, but no terminal `summary-status` event was ever
+    // emitted — the note's spinner showed "generating" forever — and the
+    // queue never drained, stranding every note waiting behind the crash.
+
+    #[test]
+    fn a_panicking_summarize_worker_still_emits_error_and_clears_busy() {
+        let (ctx, events, _dir) = worker_test_ctx();
+        let busy = ctx.busy.clone();
+        busy.store(true, Ordering::SeqCst);
+
+        run_summarize_worker_with(ctx, |_| panic!("llama.cpp blew up"));
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            SummaryEvent::SummaryStatus(payload) => {
+                assert_eq!(payload.state, SummaryStatusState::Error);
+                assert!(
+                    payload
+                        .error
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("llama.cpp blew up"),
+                    "the panic message must reach the frontend: {:?}",
+                    payload.error
+                );
+            }
+        }
+        assert!(
+            !busy.load(Ordering::SeqCst),
+            "busy must be released after a panic"
+        );
+    }
+
+    #[test]
+    fn a_panicking_summarize_worker_still_starts_the_next_queued_note() {
+        let (first_ctx, _events, dir) = worker_test_ctx();
+        let busy = first_ctx.busy.clone();
+        let queue = first_ctx.queue.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        let queued_id = queued.note_id.clone();
+        lock_summarize_queue(&queue).push_back(queued);
+
+        busy.store(true, Ordering::SeqCst);
+        run_summarize_worker_with(first_ctx, |_| panic!("boom"));
+
+        let started = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a panicking worker must still drain the queue");
+        assert_eq!(started, queued_id);
+    }
+
+    #[test]
+    fn a_panicking_ask_worker_still_emits_error_and_clears_busy() {
+        let (ctx, events, _dir) = ask_worker_test_ctx("What did they discuss?");
+        let busy = ctx.busy.clone();
+        busy.store(true, Ordering::SeqCst);
+
+        run_ask_worker_with(ctx, |_| panic!("llama.cpp blew up"));
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            AskEvent::AskStatus(payload) => {
+                assert_eq!(payload.state, AskStatusState::Error);
+                assert!(payload
+                    .error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("llama.cpp blew up"));
+            }
+            other => panic!("expected an error status event, got {other:?}"),
+        }
+        assert!(
+            !busy.load(Ordering::SeqCst),
+            "busy must be released after a panic"
         );
     }
 
