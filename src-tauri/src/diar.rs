@@ -177,10 +177,14 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// relabel map. Merging folds the absorbed cluster's embedding into the
 /// survivor's centroid (duration-weighted mean), so later comparisons see
 /// the combined voiceprint.
+/// Returns the raw-cluster-id → surviving-cluster-id relabel map, plus the
+/// surviving clusters' merged centroids (issue #22: these are what a voice
+/// profile is made of — discarding them here would force a re-embedding
+/// pass the moment the user names a speaker).
 fn merge_clusters(
     mut durs: BTreeMap<i32, f32>,
     mut embs: BTreeMap<i32, Vec<f32>>,
-) -> BTreeMap<i32, i32> {
+) -> (BTreeMap<i32, i32>, BTreeMap<i32, Vec<f32>>) {
     let mut ids: Vec<i32> = durs.keys().copied().collect();
     let mut relabel: BTreeMap<i32, i32> = ids.iter().map(|&i| (i, i)).collect();
 
@@ -250,18 +254,21 @@ fn merge_clusters(
         absorb(target, small, &mut ids, &mut durs, &mut embs, &mut relabel);
     }
 
-    relabel
+    (relabel, embs)
 }
 
 /// Renumbers raw (non-contiguous) cluster ids to 0-based speaker indices in
 /// order of first appearance — clustering hands back ids like `11` and in
 /// no particular order, but "Speaker 1" should always be whoever talked
 /// first.
-fn renumber_by_first_appearance(spans: &[(f32, f32, i32)]) -> Vec<DiarSpan> {
+/// Also returns the cluster-id → speaker-index map it assigned, so callers
+/// can carry per-cluster data (the voice centroids — issue #22) over to the
+/// final speaker numbering.
+fn renumber_by_first_appearance(spans: &[(f32, f32, i32)]) -> (Vec<DiarSpan>, BTreeMap<i32, usize>) {
     let mut order: BTreeMap<i32, usize> = BTreeMap::new();
     let mut sorted = spans.to_vec();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
-    sorted
+    let renumbered = sorted
         .iter()
         .map(|&(start, end, cluster)| {
             let next = order.len();
@@ -272,7 +279,8 @@ fn renumber_by_first_appearance(spans: &[(f32, f32, i32)]) -> Vec<DiarSpan> {
                 speaker,
             }
         })
-        .collect()
+        .collect();
+    (renumbered, order)
 }
 
 /// Votes diarized spans onto the transcript: each segment takes the speaker
@@ -345,12 +353,23 @@ fn num_threads() -> i32 {
 /// in favor of exactly-n clustering — the "I know how many people were in
 /// this meeting" re-run path, which the spike measured as essentially
 /// perfect when the count is right.
+/// What one diarization pass settles on: the labeled spans, plus (issue
+/// #22) each final speaker's voice-embedding centroid. `centroids` is
+/// empty on the fixed-speaker re-run path — that path never extracts
+/// embeddings, and a profile made without them would be a guess.
+pub struct DiarOutcome {
+    pub spans: Vec<DiarSpan>,
+    /// Final speaker index (same 0-based space as [`DiarSpan::speaker`])
+    /// → merged voice embedding for that speaker.
+    pub centroids: BTreeMap<usize, Vec<f32>>,
+}
+
 pub fn diarize_samples(
     segmentation_model: &Path,
     embedding_model: &Path,
     samples: &[f32],
     fixed_speakers: Option<u32>,
-) -> Result<Vec<DiarSpan>> {
+) -> Result<DiarOutcome> {
     let threads = num_threads();
     let config = OfflineSpeakerDiarizationConfig {
         segmentation: OfflineSpeakerSegmentationModelConfig {
@@ -435,13 +454,27 @@ pub fn diarize_samples(
             embs.insert(cluster, emb);
         }
 
-        let relabel = merge_clusters(durs, embs);
+        let (relabel, merged_embs) = merge_clusters(durs, embs);
         for span in raw.iter_mut() {
             span.2 = relabel[&span.2];
         }
+        let (spans, speaker_of_cluster) = renumber_by_first_appearance(&raw);
+        let centroids = merged_embs
+            .into_iter()
+            .filter_map(|(cluster, emb)| {
+                speaker_of_cluster
+                    .get(&cluster)
+                    .map(|&speaker| (speaker, emb))
+            })
+            .collect();
+        return Ok(DiarOutcome { spans, centroids });
     }
 
-    Ok(renumber_by_first_appearance(&raw))
+    let (spans, _) = renumber_by_first_appearance(&raw);
+    Ok(DiarOutcome {
+        spans,
+        centroids: BTreeMap::new(),
+    })
 }
 
 /// Reads a note's `audio.wav` (16 kHz mono 16-bit PCM — the only format
@@ -569,24 +602,39 @@ fn run_diarize(ctx: &DiarWorkerCtx) -> Result<u32> {
     }
 
     let samples = read_note_samples(&wav_path)?;
-    let spans = diarize_samples(
+    let outcome = diarize_samples(
         &ctx.segmentation_model,
         &ctx.embedding_model,
         &samples,
         ctx.fixed_speakers,
     )?;
-    let labels = vote_labels(&segments, &spans);
+    let labels = vote_labels(&segments, &outcome.spans);
     if labels.is_empty() {
         return Err(MinuteError::Other(
             "no speech was detected in this note's audio".to_string(),
         ));
     }
 
-    let speakers = spans
+    let speakers = outcome
+        .spans
         .iter()
         .map(|s| s.speaker)
         .collect::<std::collections::HashSet<_>>()
         .len() as u32;
+    // Issue #22: keyed by the same "Speaker N" labels the transcript now
+    // carries, so a later rename can find the voice it names. Written
+    // before the labels so a note never has labels whose voices are
+    // missing; the empty fixed-speaker map skips the write and *keeps*
+    // any embeddings from the original automatic pass — a re-run with a
+    // hand-picked count changes the labeling, not the voices.
+    if !outcome.centroids.is_empty() {
+        let embeddings: BTreeMap<String, Vec<f32>> = outcome
+            .centroids
+            .into_iter()
+            .map(|(speaker, emb)| (format!("Speaker {}", speaker + 1), emb))
+            .collect();
+        lock_store(&ctx.store).write_speaker_embeddings(&ctx.note_id, &embeddings)?;
+    }
     lock_store(&ctx.store).update_segment_speakers(&ctx.note_id, &labels)?;
     Ok(speakers)
 }
@@ -661,7 +709,7 @@ mod tests {
             (1, unit(&[0.0, 0.0, 1.0])),
             (6, unit(&[1.0, 0.0, 0.0])),
         ]);
-        let relabel = merge_clusters(durs, embs);
+        let (relabel, _) = merge_clusters(durs, embs);
         assert_eq!(relabel[&6], relabel[&0]);
         assert_ne!(relabel[&1], relabel[&0]);
     }
@@ -677,7 +725,7 @@ mod tests {
             (1, unit(&[0.0, 1.0, 0.0])),
             (3, unit(&[1.0, 0.0, 3.0])),
         ]);
-        let relabel = merge_clusters(durs, embs);
+        let (relabel, _) = merge_clusters(durs, embs);
         assert_eq!(relabel[&3], relabel[&0]);
         assert_eq!(relabel[&1], 1);
     }
@@ -688,7 +736,7 @@ mod tests {
         // the slack call's two real speakers) must survive separately.
         let durs = BTreeMap::from([(0, 50.0), (1, 52.0)]);
         let embs = BTreeMap::from([(0, unit(&[1.0, 0.0])), (1, unit(&[0.4, 0.9165]))]);
-        let relabel = merge_clusters(durs, embs);
+        let (relabel, _) = merge_clusters(durs, embs);
         assert_ne!(relabel[&0], relabel[&1]);
     }
 
@@ -696,8 +744,34 @@ mod tests {
     fn merge_clusters_collapses_everything_to_one_when_all_micro() {
         let durs = BTreeMap::from([(0, 0.4), (1, 0.5)]);
         let embs = BTreeMap::from([(0, unit(&[1.0, 0.0])), (1, unit(&[0.0, 1.0]))]);
-        let relabel = merge_clusters(durs, embs);
+        let (relabel, _) = merge_clusters(durs, embs);
         assert_eq!(relabel[&0], relabel[&1]);
+    }
+
+    /// Issue #22: the centroid map must hold exactly the surviving
+    /// clusters, with absorbed voices folded in (duration-weighted) —
+    /// that merged vector is what becomes a voice profile.
+    #[test]
+    fn merge_clusters_returns_merged_centroids_for_survivors_only() {
+        let durs = BTreeMap::from([(0, 50.0), (1, 52.0), (6, 6.0)]);
+        let embs = BTreeMap::from([
+            (0, unit(&[1.0, 0.1, 0.0])),
+            (1, unit(&[0.0, 0.0, 1.0])),
+            (6, unit(&[1.0, 0.0, 0.0])),
+        ]);
+        let (relabel, centroids) = merge_clusters(durs, embs.clone());
+
+        let survivors: std::collections::HashSet<i32> = relabel.values().copied().collect();
+        assert_eq!(
+            centroids.keys().copied().collect::<std::collections::HashSet<i32>>(),
+            survivors
+        );
+        // Cluster 6 was absorbed into 0 — the survivor's centroid moved,
+        // so it can't still equal either input exactly, but it must stay
+        // far more similar to the absorbed voice than to the distinct one.
+        let merged = &centroids[&relabel[&6]];
+        assert!(cosine(merged, &embs[&6]) > 0.99);
+        assert!(cosine(merged, &embs[&1]) < 0.1);
     }
 
     // --- renumber_by_first_appearance ---------------------------------------
@@ -705,7 +779,7 @@ mod tests {
     #[test]
     fn renumber_orders_speakers_by_first_appearance_and_sorts_spans() {
         let spans = vec![(10.0, 12.0, 3), (0.0, 5.0, 11), (6.0, 9.0, 3)];
-        let renumbered = renumber_by_first_appearance(&spans);
+        let (renumbered, _) = renumber_by_first_appearance(&spans);
         assert_eq!(
             renumbered,
             vec![
@@ -791,14 +865,18 @@ mod tests {
         let wav = std::env::var("MINUTE_DIAR_WAV").expect("MINUTE_DIAR_WAV");
 
         let samples = read_note_samples(Path::new(&wav)).expect("wav should read");
-        let spans = diarize_samples(Path::new(&seg), Path::new(&emb), &samples, None)
+        let outcome = diarize_samples(Path::new(&seg), Path::new(&emb), &samples, None)
             .expect("diarization should run");
+        let spans = &outcome.spans;
 
         assert!(!spans.is_empty());
         let speakers: std::collections::HashSet<usize> = spans.iter().map(|s| s.speaker).collect();
         assert_eq!(speakers.len(), 2, "ground truth: exactly 2 speakers");
         // First appearance renumbering: the first span is always Speaker 1.
         assert_eq!(spans[0].speaker, 0);
+        // Issue #22: the automatic path must hand back one voice centroid
+        // per settled speaker — these are what voice profiles are made of.
+        assert_eq!(outcome.centroids.len(), 2);
     }
 
     #[test]

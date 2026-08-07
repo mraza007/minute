@@ -1,6 +1,6 @@
 //! Folder-per-note persistence: note metadata, transcripts, and library scanning.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -258,6 +258,13 @@ const AUDIO_M4A_FILE: &str = "audio.m4a";
 const AUDIO_M4A_TMP_FILE: &str = "audio.m4a.tmp";
 const SUMMARY_FILE: &str = "summary.json";
 const SUMMARY_TMP_FILE: &str = "summary.json.tmp";
+
+/// Issue #22: per-note voice embeddings, one centroid per final "Speaker N"
+/// label, written by the diarization pass. A speaker rename reads this to
+/// turn "Speaker 2 is Sarah" into a voice profile without re-running the
+/// embedding model.
+const SPEAKERS_FILE: &str = "speakers.json";
+const SPEAKERS_TMP_FILE: &str = "speakers.json.tmp";
 const NOTE_MD_FILE: &str = "note.md";
 const NOTE_MD_TMP_FILE: &str = "note.md.tmp";
 const RECOVERY_DIR: &str = ".minute-trash";
@@ -505,6 +512,10 @@ impl Store {
         self.note_dir(id).join(SUMMARY_TMP_FILE)
     }
 
+    fn speaker_embeddings_path(&self, id: &str) -> PathBuf {
+        self.note_dir(id).join(SPEAKERS_FILE)
+    }
+
     fn note_md_path(&self, id: &str) -> PathBuf {
         self.note_dir(id).join(NOTE_MD_FILE)
     }
@@ -670,6 +681,44 @@ impl Store {
 
     /// Atomically writes a note's summary (write to `.tmp`, then rename over
     /// the final path — same pattern as [`Store::write_transcript`]).
+    /// Writes a note's per-speaker voice embeddings (issue #22) — one
+    /// centroid per "Speaker N" label, atomically via the same
+    /// tmp-then-rename shape as [`Self::write_summary`]. Overwrites any
+    /// previous pass's file whole: a re-diarization renumbers speakers,
+    /// so stale entries under old labels must not survive it.
+    pub fn write_speaker_embeddings(
+        &self,
+        id: &str,
+        embeddings: &BTreeMap<String, Vec<f32>>,
+    ) -> Result<()> {
+        let json = serde_json::to_string(embeddings)
+            .map_err(|e| MinuteError::Other(format!("failed to serialize speakers.json: {e}")))?;
+        let tmp_path = self.note_dir(id).join(SPEAKERS_TMP_FILE);
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, self.speaker_embeddings_path(id))?;
+        Ok(())
+    }
+
+    /// Reads a note's per-speaker voice embeddings. `Ok(None)` when no
+    /// `speakers.json` exists (a note diarized before issue #22, or never
+    /// diarized) — not an error. A corrupt file degrades to `Ok(None)`
+    /// (logged), mirroring [`Self::read_summary`]: losing a voice profile
+    /// source must never break the note it sits next to.
+    pub fn read_speaker_embeddings(&self, id: &str) -> Result<Option<BTreeMap<String, Vec<f32>>>> {
+        let path = self.speaker_embeddings_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = fs::read_to_string(&path)?;
+        match serde_json::from_str(&raw) {
+            Ok(embeddings) => Ok(Some(embeddings)),
+            Err(e) => {
+                log::warn!("note {id}: unreadable speakers.json ({e}) — treating as absent");
+                Ok(None)
+            }
+        }
+    }
+
     pub fn write_summary(&self, id: &str, summary: &SummaryDoc) -> Result<()> {
         let json = serde_json::to_string_pretty(summary)
             .map_err(|e| MinuteError::Other(format!("failed to serialize summary.json: {e}")))?;
@@ -3793,6 +3842,39 @@ mod tests {
             !has_summary(&legacy.id),
             "a ready note with no summary.json must not report has_summary"
         );
+    }
+
+    // --- speaker embeddings (issue #22) ---------------------------------------
+
+    #[test]
+    fn speaker_embeddings_roundtrip_and_absence_reads_as_none() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        assert_eq!(store.read_speaker_embeddings(&meta.id).unwrap(), None);
+
+        let embeddings = BTreeMap::from([
+            ("Speaker 1".to_string(), vec![0.1_f32, 0.2, 0.3]),
+            ("Speaker 2".to_string(), vec![0.9_f32, 0.8, 0.7]),
+        ]);
+        store.write_speaker_embeddings(&meta.id, &embeddings).unwrap();
+        assert_eq!(
+            store.read_speaker_embeddings(&meta.id).unwrap(),
+            Some(embeddings)
+        );
+    }
+
+    #[test]
+    fn corrupt_speaker_embeddings_read_as_none_not_an_error() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+
+        fs::write(store.note_dir(&meta.id).join("speakers.json"), "not json").unwrap();
+        assert_eq!(store.read_speaker_embeddings(&meta.id).unwrap(), None);
     }
 
     #[test]
