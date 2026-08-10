@@ -98,6 +98,15 @@ export function useAppState() {
   const [preflightMicrophonePermission, setPreflightMicrophonePermission] =
     useState<MicrophonePermission>('unknown')
   const [requestingMicrophonePermission, setRequestingMicrophonePermission] = useState(false)
+  /** Whether one device enumeration has succeeded. A cold refresh (false)
+   * shows the sheet's blocking loading state; a warm one refreshes behind
+   * the stale device list — see refreshPreflightMicrophones. */
+  const preflightMicrophonesLoadedRef = useRef(false)
+  /** Monotonic id of the newest refreshPreflightMicrophones call. Warm
+   * refreshes run behind an interactive sheet, so overlapping calls are
+   * routine (reopen while one is in flight); only the newest call may write
+   * its result, or a slow stale response would overwrite fresher state. */
+  const preflightRefreshSeqRef = useRef(0)
   const [recordingStarting, setRecordingStarting] = useState(false)
   // Stage 5 Task 5: the *active* recording's real system-audio state, from
   // `recording-state`'s `systemAudioActive` field — distinct from
@@ -906,12 +915,23 @@ export function useAppState() {
 
   /** Refreshes selectable inputs without opening a stream. The previous
    * selection survives when it is still connected; otherwise we fall back
-   * to the current macOS default, then the first enumerated input. */
+   * to the current macOS default, then the first enumerated input.
+   *
+   * Only a cold refresh — no successful enumeration to show yet — flips the
+   * sheet into its loading state. Later opens keep the previous device list
+   * (and an enabled Start button) on screen while the re-check runs in the
+   * background; before this, every reopen disabled Start for the length of
+   * a device-enumeration IPC round trip and silently ate clicks (issue #23). */
   const refreshPreflightMicrophones = useCallback(() => {
-    setPreflightMicrophoneLoading(true)
+    const seq = ++preflightRefreshSeqRef.current
+    const superseded = () => seq !== preflightRefreshSeqRef.current
+    const cold = !preflightMicrophonesLoadedRef.current
+    if (cold) setPreflightMicrophoneLoading(true)
     return ipc
       .audioInputStatus()
       .then(status => {
+        if (superseded()) return
+        preflightMicrophonesLoadedRef.current = true
         const devices = status?.devices ?? []
         setPreflightMicrophonePermission(status?.permission ?? 'unknown')
         setPreflightMicrophoneDevices(devices)
@@ -922,11 +942,17 @@ export function useAppState() {
         )
       })
       .catch(error => {
+        if (superseded()) return
+        // The stale list is gone too, so the next refresh is cold again.
+        preflightMicrophonesLoadedRef.current = false
         setPreflightMicrophonePermission('unknown')
         setPreflightMicrophoneDevices([])
         reportError(error)
       })
-      .finally(() => setPreflightMicrophoneLoading(false))
+      .finally(() => {
+        // A superseded cold call leaves the loading state to the newer call.
+        if (cold && !superseded()) setPreflightMicrophoneLoading(false)
+      })
   }, [reportError])
 
   /** Requests access only after the user explicitly chooses the preflight

@@ -195,11 +195,18 @@ export function RecordingPreflight({
                   {requestingMicrophonePermission ? 'Waiting for macOS…' : 'Allow microphone…'}
                 </button>
               )}
-              {microphoneReady && (
-                <InputLevelMeter
-                  deviceId={selectedMicrophoneId}
-                  active={!starting}
-                />
+              {microphoneAuthorized && (
+                // The slot keeps the meter's height reserved while devices
+                // re-check, so the Start button below does not move in the
+                // same instant it becomes clickable (issue #23).
+                <div className="input-level-slot">
+                  {microphoneReady && (
+                    <InputLevelMeter
+                      deviceId={selectedMicrophoneId}
+                      active={!starting}
+                    />
+                  )}
+                </div>
               )}
             </div>
             <div className="preflight-state" data-tone={microphoneReady ? 'positive' : microphoneLoading ? 'neutral' : 'danger'}>

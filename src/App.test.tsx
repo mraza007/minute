@@ -82,6 +82,8 @@ interface SetupOpts {
   getNote?: (id: string) => NoteWithTranscript
   /** Overrides `list_notes`'s response, evaluated fresh on every call (so it can reflect state mutated after the initial render, e.g. a note flipping to `ready`) — defaults to the static `notes` fixture. */
   listNotes?: () => NoteMeta[]
+  /** Overrides `audio_input_status`'s response, evaluated fresh on every call (so a test can make a later re-check hang or change its answer) — defaults to one authorized built-in microphone. */
+  audioInputStatus?: () => unknown
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -103,6 +105,7 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'storage_stats':
           return storage
         case 'audio_input_status':
+          if (opts.audioInputStatus) return opts.audioInputStatus()
           return {
             devices: [{ id: 'built-in', name: 'MacBook Pro Microphone', isDefault: true }],
             defaultDeviceId: 'built-in',
@@ -208,6 +211,66 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
     await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
     expect(screen.getByText('REC 00:00')).toBeInTheDocument()
+  })
+
+  it('keeps Start clickable with the previous devices while a reopened preflight re-checks', async () => {
+    let holdRefresh = false
+    setupIPC({
+      audioInputStatus: () =>
+        holdRefresh
+          ? new Promise(() => {})
+          : {
+              devices: [{ id: 'built-in', name: 'MacBook Pro Microphone', isDefault: true }],
+              defaultDeviceId: 'built-in',
+              permission: 'authorized',
+            },
+    })
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Ready to record' })).not.toBeInTheDocument())
+
+    // The re-check on this reopen never resolves — the sheet must still be
+    // immediately usable with the devices it already knows.
+    holdRefresh = true
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Microphone' })).toHaveValue('built-in')
+    expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled()
+    expect(screen.queryByText('Checking microphones…')).not.toBeInTheDocument()
+  })
+
+  it('applies only the newest device re-check when overlapping refreshes resolve out of order', async () => {
+    const pending: Array<(status: unknown) => void> = []
+    const status = (id: string) => ({
+      devices: [{ id, name: id === 'usb' ? 'USB Interface' : 'MacBook Pro Microphone', isDefault: true }],
+      defaultDeviceId: id,
+      permission: 'authorized',
+    })
+    setupIPC({ audioInputStatus: () => new Promise(resolve => { pending.push(resolve) }) })
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
+
+    // Cold open: resolve the first enumeration to establish a warm state.
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => expect(pending).toHaveLength(1))
+    await act(async () => pending[0](status('built-in')))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Microphone' })).toHaveValue('built-in'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    // Two warm reopens leave two re-checks in flight. The newer one resolves
+    // first with the current truth; the older, stale one resolves after and
+    // must not clobber it.
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    await waitFor(() => expect(pending).toHaveLength(3))
+    await act(async () => pending[2](status('usb')))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Microphone' })).toHaveValue('usb'))
+    await act(async () => pending[1](status('built-in')))
+    expect(screen.getByRole('combobox', { name: 'Microphone' })).toHaveValue('usb')
   })
 
   it('keeps global search shortcuts from opening a second dialog behind the preflight', async () => {

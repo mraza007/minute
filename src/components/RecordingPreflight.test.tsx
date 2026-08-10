@@ -62,6 +62,21 @@ describe('RecordingPreflight', () => {
     expect(onStart).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the meter space reserved while devices re-check so Start does not move', () => {
+    const { container, rerender } = render(<RecordingPreflight {...base} />)
+    const readySlot = container.querySelector('.input-level-slot')
+    expect(readySlot).not.toBeNull()
+    expect(readySlot!.querySelector('[role="meter"]')).not.toBeNull()
+
+    rerender(<RecordingPreflight {...base} microphoneLoading={true} />)
+    const loadingSlot = container.querySelector('.input-level-slot')
+    expect(loadingSlot).not.toBeNull()
+    expect(loadingSlot!.querySelector('[role="meter"]')).toBeNull()
+
+    rerender(<RecordingPreflight {...base} microphonePermission="notDetermined" />)
+    expect(container.querySelector('.input-level-slot')).toBeNull()
+  })
+
   it('asks for microphone access explicitly before enabling recording', () => {
     const onRequestMicrophonePermission = vi.fn()
     render(

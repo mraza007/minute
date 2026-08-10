@@ -1189,6 +1189,12 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   line-height: 1.45;
   color: var(--ink-muted);
 }
+/* Matches the meter's full height (10px top margin + 5px track + 5px gap +
+   one 10.5px/1.35 copy line) so the preflight footer sits still whether the
+   meter is mounted or the devices are still re-checking. */
+.input-level-slot {
+  min-height: 35px;
+}
 .input-level {
   width: min(300px, 100%);
   margin-top: 10px;
