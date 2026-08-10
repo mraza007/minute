@@ -135,9 +135,10 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
         // allowlisted app name — see detect.rs's `find_allowlisted`) both
         // overflowed the old 380px pill mid-word. Confirmed against a real
         // `popup.html` render at the window's exact logical size before
-        // widening. Keep in lockstep with `PANEL_WIDTH` in
-        // src-tauri/src/popup.rs — that's the actual native window size
-        // this pill is created into.
+        // widening. The native window (`PANEL_WIDTH`/`PANEL_HEIGHT` in
+        // src-tauri/src/popup.rs) is this width/height PLUS the 8px margin
+        // below on every side — panelGeometry.test.ts fails the suite when
+        // the two sides drift.
         width: 470,
         height: 72,
         boxSizing: 'border-box',

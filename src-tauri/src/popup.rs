@@ -75,19 +75,23 @@ use crate::detect::{self, PromptOutcome, SharedDetectorHandle};
 /// listen target (`app.emit_to(PANEL_LABEL, ...)` in `deliver_prompt`).
 pub const PANEL_LABEL: &str = "meeting-popup";
 
-/// Logical pixel size of the pill window — height matches the plan's
-/// "~380×72"; width was widened from the plan's original 380 to 470 after
-/// confirming the subtitle's ellipsis (see `src/popup/Pill.tsx`) genuinely
-/// clipped real copy ("Another app is using the microphone", "Microsoft
-/// Teams is using the microphone") at 380. Keep this in lockstep with
-/// `Pill.tsx`'s own `width` — that inline style is sized for exactly this
-/// window, not a general-purpose layout.
-const PANEL_WIDTH: f64 = 470.0;
-const PANEL_HEIGHT: f64 = 72.0;
+/// Logical pixel size of the pill window. The window holds the pill's full
+/// CSS footprint: `Pill.tsx` draws a 470×72 pill inside an 8px `margin` on
+/// every side (breathing room for its border and shadow), so the panel is
+/// 470+16 × 72+16. The original 470×72 window ignored that margin and cut
+/// the pill's right and bottom edges flat — border, shadow, and the whole
+/// countdown bar (issue #23's "clickable area is off"). Keep these in
+/// lockstep with `Pill.tsx`'s `width`/`height`/`margin`;
+/// `src/popup/panelGeometry.test.ts` fails the frontend suite when the two
+/// sides drift. (The pill width itself was widened from the plan's original
+/// 380 to 470 so the longest real subtitle copy no longer ellipsizes.)
+const PANEL_WIDTH: f64 = 486.0;
+const PANEL_HEIGHT: f64 = 88.0;
 
 /// Logical-pixel gap between the top of the target display's work area
-/// (i.e. below the menu bar, not the raw screen edge) and the pill's own
-/// top edge.
+/// (i.e. below the menu bar, not the raw screen edge) and the panel's top
+/// edge. The visible pill sits another 8px lower — its own CSS margin,
+/// inside the window.
 const TOP_MARGIN: f64 = 16.0;
 
 #[derive(Clone, serde::Serialize)]
@@ -387,6 +391,17 @@ mod macos {
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .resizable(false)
+                // The panel is always non-key when it appears (`panel.show()`
+                // is `orderFrontRegardless`; nothing ever focuses it), and
+                // wry's WKWebView subclass answers AppKit's
+                // `acceptsFirstMouse:` with this attribute — default `false`.
+                // Without it, macOS spends the user's first click making the
+                // panel key and never delivers it to the DOM, so
+                // [Start recording] needs a second click every single time
+                // (issue #23). `true` delivers that first click while the
+                // panel still never activates Minute or steals keyboard
+                // focus from the meeting app.
+                .accept_first_mouse(true)
                 .visible(false)
                 .on_page_load(|webview, payload| {
                     if payload.event() == tauri::webview::PageLoadEvent::Finished {
