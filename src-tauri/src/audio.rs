@@ -1020,12 +1020,22 @@ fn append_and_forward(
 const AUTO_STOP_SILENCE_PEAK_FLOOR: f32 = 0.02;
 
 /// Continuous silence before the auto-stop countdown arms — issue #9.
-const AUTO_STOP_ARM_SECS: u64 = 10 * 60;
+/// Originally 10 minutes, tuned for the accidental-overnight-recording
+/// case; issue #28 showed people expect the stop within a few minutes of
+/// a meeting actually ending, and 10 silent minutes with zero feedback
+/// reads as "the feature doesn't work". 3 minutes keeps the arm point
+/// past ordinary mid-meeting lulls (any peak above
+/// [`AUTO_STOP_SILENCE_PEAK_FLOOR`] resets the run) while surfacing the
+/// countdown banner inside the window someone waits after a meeting.
+const AUTO_STOP_ARM_SECS: u64 = 3 * 60;
 
 /// Countdown, once armed, before the recording is actually stopped —
 /// surfaced tick-by-tick to the frontend so "Keep recording" has a real
-/// window even when someone is only half-watching.
-const AUTO_STOP_COUNTDOWN_SECS: u64 = 10 * 60;
+/// window even when someone is only half-watching. Shortened alongside
+/// [`AUTO_STOP_ARM_SECS`] (issue #28): a 2-minute banner is still ample
+/// time to click once, and 5 minutes total from last audio to stop is
+/// what "stop when my meeting ends" feels like.
+const AUTO_STOP_COUNTDOWN_SECS: u64 = 2 * 60;
 
 /// Extends or resets the consecutive-silence run for one appended block —
 /// see [`SharedState::silent_run_samples`]. Free function on the shared

@@ -753,8 +753,8 @@ export function SettingsView({
             label="Stop automatically when the meeting seems over"
           />
           <div style={noteTextStyle}>
-            If nothing has been audible for 10 minutes — no mic, no system audio — Minute shows a warning with a
-            10-minute countdown, then stops and transcribes on its own. Any sound, or one click, keeps it going. Saves
+            If nothing has been audible for 3 minutes — no mic, no system audio — Minute shows a warning with a
+            2-minute countdown, then stops and transcribes on its own. Any sound, or one click, keeps it going. Saves
             a forgotten recording from running overnight.
           </div>
         </Section>

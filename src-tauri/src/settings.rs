@@ -115,14 +115,15 @@ pub struct Settings {
     /// trigger re-checks install state every time).
     #[serde(default)]
     pub detect_speakers: bool,
-    /// Issue #9: when both audio sources stay effectively silent for 10
-    /// minutes mid-recording, warn with a 10-minute countdown and then
-    /// stop & transcribe (see `audio`'s `auto_stop_tick`). On by default —
-    /// like `autoUpdateCheck`, a deliberate exception to the opt-in
+    /// Issue #9: when both audio sources stay effectively silent for 3
+    /// minutes mid-recording, warn with a 2-minute countdown and then
+    /// stop & transcribe (see `audio`'s `auto_stop_tick`; retuned from
+    /// 10+10 minutes for issue #28). On by default — like
+    /// `autoUpdateCheck`, a deliberate exception to the opt-in
     /// convention: the failure it prevents (an accidental overnight
     /// recording — hours of dead air, a huge transcription job, wasted
     /// disk) is far worse than its false-positive mode (a banner with a
-    /// "Keep recording" button and a 10-minute grace window). `#[serde
+    /// "Keep recording" button and a 2-minute grace window). `#[serde
     /// (default = "default_true")]` so older `settings.json` files load
     /// as enabled.
     #[serde(default = "default_true")]
