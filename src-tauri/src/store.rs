@@ -1175,6 +1175,21 @@ impl Store {
             return Err(MinuteError::Other(format!("speaker not found: {from}")));
         }
         let mut meta = self.persist_speaker_edit(id, &transcript)?;
+        // Issue #39: compact alias chains through the name that just
+        // vanished. Two stale shapes used to survive here: (a) renaming
+        // A -> B -> A left `A -> B` behind, silently resurrecting "B" on
+        // the next diarization pass; (b) chained renames (Speaker 2 ->
+        // Sarah -> Sara) left `Speaker 2 -> Sarah`, and
+        // `update_segment_speakers`' single-hop lookup restored the
+        // *intermediate* name on a re-run. Redirecting every entry that
+        // points at `from` to point at `to` fixes both; an entry that
+        // becomes `X -> X` is the revert case and simply disappears.
+        for target in meta.speaker_aliases.values_mut() {
+            if target == from {
+                *target = to.to_string();
+            }
+        }
+        meta.speaker_aliases.retain(|raw, target| raw != target);
         meta.speaker_aliases
             .insert(from.to_string(), to.to_string());
         // Issue #22: a rename settles this label's identity — whether it
@@ -2767,6 +2782,89 @@ mod tests {
         let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
         assert!(markdown.contains("**Sam**"));
         assert!(markdown.contains("**Speaker 2**"));
+    }
+
+    /// Issue #39: renaming a speaker back must not leave a stale alias
+    /// that resurrects the abandoned name on the next diarization pass.
+    #[test]
+    fn reverting_a_rename_does_not_resurrect_the_old_name_on_rerun() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![StoredSegment {
+                        speaker: "Speaker 1".into(),
+                        start: 0.0,
+                        end: 5.0,
+                        text: "First.".into(),
+                    }],
+                },
+            )
+            .unwrap();
+
+        store.rename_speaker(&meta.id, "Speaker 1", "Sam").unwrap();
+        store.rename_speaker(&meta.id, "Sam", "Speaker 1").unwrap();
+
+        store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into()])
+            .unwrap();
+        let (_, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(
+            transcript.segments[0].speaker, "Speaker 1",
+            "the reverted rename must stay reverted after a re-run"
+        );
+    }
+
+    /// Issue #39's sibling: chained renames (Speaker 1 -> Sarah -> Sara)
+    /// must re-apply the FINAL name on a re-run — the single-hop alias
+    /// lookup used to restore the intermediate one.
+    #[test]
+    fn chained_renames_reapply_the_final_name_on_rerun() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![StoredSegment {
+                        speaker: "Speaker 1".into(),
+                        start: 0.0,
+                        end: 5.0,
+                        text: "First.".into(),
+                    }],
+                },
+            )
+            .unwrap();
+
+        store
+            .rename_speaker(&meta.id, "Speaker 1", "Sarah")
+            .unwrap();
+        store.rename_speaker(&meta.id, "Sarah", "Sara").unwrap();
+
+        store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into()])
+            .unwrap();
+        let (_, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(
+            transcript.segments[0].speaker, "Sara",
+            "a re-run must land on the final rename, not the intermediate one"
+        );
     }
 
     #[test]
