@@ -98,6 +98,8 @@ const base = {
   toggleAutoStopRecording: vi.fn(),
   speakerProfiles: false,
   toggleSpeakerProfiles: vi.fn(),
+  autoApplySpeakerNames: true,
+  toggleAutoApplySpeakerNames: vi.fn(),
   voiceProfiles: [],
   onDeleteVoiceProfile: vi.fn(),
   onExportDiagnostics: vi.fn().mockResolvedValue(undefined),

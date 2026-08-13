@@ -318,6 +318,26 @@ describe('NoteView', () => {
     expect(onDismissSpeakerSuggestion).toHaveBeenCalledWith(meta.id, 'Speaker 2')
   })
 
+  // Issue #32: a confident match the pass applied on its own shows as a
+  // notice with an Undo — the undo is a plain rename back to the raw label.
+  it('shows auto-applied speaker names with a working Undo', () => {
+    const onRenameSpeaker = vi.fn()
+    const meta = {
+      ...noteFixture(),
+      speakerAutoApplied: { 'Speaker 1': { name: 'Sarah', similarity: 0.91 } },
+    }
+    const segments: StoredSegment[] = [{ speaker: 'Sarah', start: 0, end: 3, text: 'First voice.' }]
+    render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, selectedTranscript: segments, onRenameSpeaker })}
+      />,
+    )
+
+    expect(screen.getByRole('group', { name: 'Automatically applied speaker names' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Undo renaming Speaker 1 to Sarah' }))
+    expect(onRenameSpeaker).toHaveBeenCalledWith(meta.id, 'Sarah', 'Speaker 1')
+  })
+
   it('filters transcript turns, submits a speaker rename, and returns focus to the filter', async () => {
     const onRenameSpeaker = vi.fn()
     const meta = noteFixture()

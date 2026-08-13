@@ -97,6 +97,8 @@ export interface NoteMeta {
   speakerAliases?: Record<string, string>
   /** Unconfirmed voice-profile name suggestions, keyed by current speaker label (issue #22). */
   speakerSuggestions?: Record<string, SpeakerSuggestion>
+  /** Issue #32: names the diarization pass applied on its own (confident voice-profile matches), keyed by the raw label they replaced — rendered as an "auto-renamed — Undo" notice. */
+  speakerAutoApplied?: Record<string, SpeakerSuggestion>
   /**
    * Whether `summary.json` exists on disk (issue #18). Only `list_notes`
    * computes it — commands that return a single updated `NoteMeta` omit
@@ -313,6 +315,8 @@ export interface Settings {
   compressAudioAfterDays: number | null
   /** Issue #22: remember named speakers' voices and suggest names on later recordings (opt-in). */
   speakerProfiles: boolean
+  /** Issue #32: write confident voice-profile matches into the transcript (and summary) automatically. Only acts while `speakerProfiles` is on; every application shows an Undo. */
+  autoApplySpeakerNames: boolean
 }
 
 /**
@@ -338,6 +342,7 @@ export interface SettingsPatch {
   /** `0` means "back to off" (clears the override) — see `settings::SettingsPatch::compress_audio_after_days`'s docs. */
   compressAudioAfterDays?: number
   speakerProfiles?: boolean
+  autoApplySpeakerNames?: boolean
 }
 
 // --- events ----------------------------------------------------------------

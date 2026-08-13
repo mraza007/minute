@@ -317,6 +317,7 @@ export const SETTINGS: Settings = {
   autoStopRecording: true,
   compressAudioAfterDays: null,
   speakerProfiles: false,
+  autoApplySpeakerNames: true,
 }
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 

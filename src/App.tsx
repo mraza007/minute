@@ -320,6 +320,8 @@ export default function App() {
               toggleDetectSpeakers={s.toggleDetectSpeakers}
               speakerProfiles={s.tSpeakerProfiles}
               toggleSpeakerProfiles={s.toggleSpeakerProfiles}
+              autoApplySpeakerNames={s.tAutoApplySpeakerNames}
+              toggleAutoApplySpeakerNames={s.toggleAutoApplySpeakerNames}
               voiceProfiles={s.voiceProfiles}
               onDeleteVoiceProfile={s.deleteVoiceProfile}
               autoStopRecording={s.tAutoStopRecording}

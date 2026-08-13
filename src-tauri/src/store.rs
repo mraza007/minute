@@ -96,6 +96,13 @@ pub struct NoteMeta {
     /// round-trip byte-identical.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub speaker_suggestions: HashMap<String, SpeakerSuggestion>,
+    /// Issue #32: names the diarization pass applied to the transcript on
+    /// its own (match cleared `profiles::AUTO_APPLY_THRESHOLD`), keyed by
+    /// the raw label they replaced. Rendered as an "auto-renamed — Undo"
+    /// notice; any rename of the applied name (Undo included) removes the
+    /// entry. Written whole by each pass, like `speaker_suggestions`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub speaker_auto_applied: HashMap<String, SpeakerSuggestion>,
 }
 
 /// One voice-profile match (issue #22): "this diarized voice sounds like
@@ -658,6 +665,7 @@ impl Store {
             markers: Vec::new(),
             speaker_aliases: HashMap::new(),
             speaker_suggestions: HashMap::new(),
+            speaker_auto_applied: HashMap::new(),
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -1119,16 +1127,29 @@ impl Store {
         Ok(meta)
     }
 
-    /// Replaces a note's whole suggestion map (issue #22) — each
-    /// diarization pass owns the map outright, so stale suggestions from
-    /// an earlier pass (whose labels it may have renumbered) never
-    /// survive. An empty map clears it.
-    pub fn set_speaker_suggestions(
+    /// Issue #32: one diarization pass's whole outcome for speaker names —
+    /// auto-applied aliases *merged* into `speaker_aliases` (so earlier
+    /// user renames survive), and the `speaker_auto_applied`/
+    /// `speaker_suggestions` maps replaced outright (each pass owns those
+    /// two maps, so stale entries from an earlier pass — whose labels it
+    /// may have renumbered — never survive; empty maps clear them). This
+    /// subsumed the old issue-#22 `set_speaker_suggestions`. One meta
+    /// write. Called by `diar::run_diarize` *before* its
+    /// `update_segment_speakers` call, which is what makes the applied
+    /// names land in the transcript — and therefore in the summary that
+    /// `on_done` triggers.
+    pub fn apply_speaker_names(
         &self,
         id: &str,
+        aliases: &HashMap<String, String>,
+        applied: &HashMap<String, SpeakerSuggestion>,
         suggestions: &HashMap<String, SpeakerSuggestion>,
     ) -> Result<NoteMeta> {
         let mut meta = self.read_meta(id)?;
+        for (label, name) in aliases {
+            meta.speaker_aliases.insert(label.clone(), name.clone());
+        }
+        meta.speaker_auto_applied = applied.clone();
         meta.speaker_suggestions = suggestions.clone();
         self.write_meta(&meta)?;
         Ok(meta)
@@ -1196,6 +1217,11 @@ impl Store {
         // confirmed the suggestion or overrode it with a different name,
         // the suggestion is answered either way.
         meta.speaker_suggestions.remove(from);
+        // Issue #32: renaming an auto-applied name (Undo back to the raw
+        // label, or correcting it to someone else) answers that notice the
+        // same way.
+        meta.speaker_auto_applied
+            .retain(|_, applied| applied.name != from);
         self.write_meta(&meta)?;
         Ok(transcript)
     }
@@ -3434,6 +3460,7 @@ mod tests {
             markers: Vec::new(),
             speaker_aliases: HashMap::new(),
             speaker_suggestions: HashMap::new(),
+            speaker_auto_applied: HashMap::new(),
         }
     }
 
@@ -4497,6 +4524,7 @@ mod tests {
             markers: Vec::new(),
             speaker_aliases: HashMap::new(),
             speaker_suggestions: HashMap::new(),
+            speaker_auto_applied: HashMap::new(),
         };
         overrides(&mut meta);
         meta

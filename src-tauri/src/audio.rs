@@ -2591,9 +2591,13 @@ fn maybe_spawn_auto_diarize(
     diar_busy: &diar::DiarBusy,
     note_id: &str,
 ) -> bool {
-    let (detect_speakers, suggest_profiles) = {
+    let (detect_speakers, suggest_profiles, auto_apply_names) = {
         let guard = settings::lock_settings(settings);
-        (guard.detect_speakers, guard.speaker_profiles)
+        (
+            guard.detect_speakers,
+            guard.speaker_profiles,
+            guard.auto_apply_speaker_names,
+        )
     };
     if !detect_speakers {
         return false;
@@ -2634,6 +2638,7 @@ fn maybe_spawn_auto_diarize(
         embedding_model,
         fixed_speakers: None,
         suggest_profiles,
+        auto_apply_names,
         emit: Box::new(diar::tauri_emit(app.clone())),
         on_done: Some(on_done),
     });

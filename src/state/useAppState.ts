@@ -194,6 +194,7 @@ export function useAppState() {
   // stops the recording on its own.
   const [tAutoStopRecording, setTAutoStopRecording] = useState(true)
   const [tSpeakerProfiles, setTSpeakerProfiles] = useState(false)
+  const [tAutoApplySpeakerNames, setTAutoApplySpeakerNames] = useState(true)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
 
   // Auto-update (issue #4). `tAutoUpdateCheck` starts `null` (= "settings
@@ -800,6 +801,7 @@ export function useAppState() {
           setTDetectSpeakers(loadedSettings.detectSpeakers ?? false)
           setTAutoStopRecording(loadedSettings.autoStopRecording ?? true)
           setTSpeakerProfiles(loadedSettings.speakerProfiles ?? false)
+          setTAutoApplySpeakerNames(loadedSettings.autoApplySpeakerNames ?? true)
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1463,6 +1465,20 @@ export function useAppState() {
     })
   }, [reportError])
 
+  /**
+   * Settings screen's "Insert matched names automatically" toggle (issue
+   * #32) — same optimistic-flip-then-persist shape. Off means confident
+   * matches fall back to suggestion chips; nothing touches the transcript
+   * on its own.
+   */
+  const toggleAutoApplySpeakerNames = useCallback(() => {
+    setTAutoApplySpeakerNames(previous => {
+      const flipped = !previous
+      ipc.setSettings({ autoApplySpeakerNames: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
   // Issue #22: load the saved profiles once at startup so Settings has
   // them ready; rename/delete refresh the list as they go.
   useEffect(() => {
@@ -1826,6 +1842,8 @@ export function useAppState() {
     deleteVoiceProfile,
     tSpeakerProfiles,
     toggleSpeakerProfiles,
+    tAutoApplySpeakerNames,
+    toggleAutoApplySpeakerNames,
     mergeSpeakers,
     undoSpeakerMerge,
     deleteNote,

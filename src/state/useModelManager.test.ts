@@ -24,6 +24,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     autoStopRecording: true,
     compressAudioAfterDays: null,
     speakerProfiles: false,
+    autoApplySpeakerNames: true,
     libraryRoot: null,
     ...overrides,
   }

@@ -33,6 +33,15 @@ const PROFILES_TMP_FILE: &str = "voice-profiles.json.tmp";
 /// auto-apply) absorbs the cost of a borderline false positive.
 pub const SUGGEST_THRESHOLD: f32 = 0.55;
 
+/// Minimum cosine similarity for a match to be *applied* to the transcript
+/// without asking (issue #32), not just suggested. Deliberately above the
+/// measured 0.60 same-voice-split floor: a wrong auto-applied name flows
+/// straight into the summary, so it needs more margin than a dismissible
+/// chip. Matches in the 0.55..0.70 band still surface as suggestions.
+/// Like [`SUGGEST_THRESHOLD`], this wants a real-recording tuning pass —
+/// 0.70 is the reasoned starting point, not a measured one.
+pub const AUTO_APPLY_THRESHOLD: f32 = 0.70;
+
 /// One named voice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

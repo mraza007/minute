@@ -516,6 +516,12 @@ pub struct DiarWorkerCtx {
     /// #22): when `true`, the pass matches each settled voice against
     /// saved profiles and writes name suggestions onto the note.
     pub suggest_profiles: bool,
+    /// Settings' `autoApplySpeakerNames` toggle, read at spawn time
+    /// (issue #32): when `true` (and `suggest_profiles` is on), matches
+    /// clearing `profiles::AUTO_APPLY_THRESHOLD` are written into the
+    /// transcript directly instead of waiting as suggestions — before
+    /// `on_done`, so the auto-summary sees real names.
+    pub auto_apply_names: bool,
     pub emit: Box<dyn Fn(DiarEvent) + Send + 'static>,
     /// Runs after the pass settles, success *or* error — the auto path
     /// hangs "now trigger the summary" here so a diarization failure still
@@ -641,11 +647,20 @@ fn run_diarize(ctx: &DiarWorkerCtx) -> Result<u32> {
 
         // Issue #22: match each settled voice against the saved profiles
         // and write the suggestions onto the note — the frontend renders
-        // them as "Looks like Sarah?" chips next to the labels. Failures
-        // here are logged, never propagated: the labels above are already
+        // them as "Looks like Sarah?" chips next to the labels. Issue #32:
+        // with auto-apply on, confident matches skip the chip and go into
+        // `meta.speaker_aliases` instead, which the `update_segment_speakers`
+        // call just below reads — that is what puts real names in the
+        // transcript before `on_done` triggers the summary. Failures here
+        // are logged, never propagated: the labels above are already
         // good, and a missed suggestion costs a convenience, not data.
         if ctx.suggest_profiles {
-            if let Err(e) = suggest_speaker_names(&ctx.store, &ctx.note_id, &embeddings) {
+            if let Err(e) = apply_and_suggest_speaker_names(
+                &ctx.store,
+                &ctx.note_id,
+                &embeddings,
+                ctx.auto_apply_names,
+            ) {
                 log::warn!(
                     "voice-profile matching failed for note {}: {e}",
                     ctx.note_id
@@ -667,10 +682,11 @@ fn run_diarize(ctx: &DiarWorkerCtx) -> Result<u32> {
 /// one meeting, and suggesting it would make the feature feel broken. The
 /// map is written even when empty: this pass owns the note's suggestions,
 /// and an empty result must clear a previous pass's leftovers.
-fn suggest_speaker_names(
+fn apply_and_suggest_speaker_names(
     store: &SharedStore,
     note_id: &str,
     embeddings: &BTreeMap<String, Vec<f32>>,
+    auto_apply: bool,
 ) -> crate::error::Result<()> {
     let guard = lock_store(store);
     let saved = crate::profiles::load(&guard.voice_profiles_path());
@@ -687,14 +703,30 @@ fn suggest_speaker_names(
             }
         }
     }
-    let suggestions: std::collections::HashMap<String, crate::store::SpeakerSuggestion> =
-        best_label_for_name
-            .into_iter()
-            .map(|(name, (label, similarity))| {
-                (label, crate::store::SpeakerSuggestion { name, similarity })
-            })
-            .collect();
-    guard.set_speaker_suggestions(note_id, &suggestions)?;
+    // Issue #32: confident matches become aliases (applied to the
+    // transcript by the caller's update_segment_speakers), the rest stay
+    // suggestions. A later pass re-matches from scratch — an Undo only
+    // holds until new voice evidence says otherwise.
+    let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut applied: std::collections::HashMap<String, crate::store::SpeakerSuggestion> =
+        std::collections::HashMap::new();
+    let mut suggestions: std::collections::HashMap<String, crate::store::SpeakerSuggestion> =
+        std::collections::HashMap::new();
+    for (name, (label, similarity)) in best_label_for_name {
+        if auto_apply && similarity >= crate::profiles::AUTO_APPLY_THRESHOLD {
+            aliases.insert(label.clone(), name.clone());
+            applied.insert(
+                label,
+                crate::store::SpeakerSuggestion { name, similarity },
+            );
+        } else {
+            suggestions.insert(
+                label,
+                crate::store::SpeakerSuggestion { name, similarity },
+            );
+        }
+    }
+    guard.apply_speaker_names(note_id, &aliases, &applied, &suggestions)?;
     Ok(())
 }
 
@@ -726,7 +758,10 @@ pub fn diarize_note(
         );
     };
 
-    let suggest_profiles = crate::settings::lock_settings(&settings).speaker_profiles;
+    let (suggest_profiles, auto_apply_names) = {
+        let guard = crate::settings::lock_settings(&settings);
+        (guard.speaker_profiles, guard.auto_apply_speaker_names)
+    };
     try_spawn_diarize(DiarWorkerCtx {
         note_id,
         store: store.inner().clone(),
@@ -735,6 +770,7 @@ pub fn diarize_note(
         embedding_model,
         fixed_speakers: num_speakers,
         suggest_profiles,
+        auto_apply_names,
         emit: Box::new(tauri_emit(app.clone())),
         on_done: None,
     })
@@ -885,7 +921,7 @@ mod tests {
             ("Speaker 1".to_string(), unit(&[1.0, 0.0, 0.0])),
             ("Speaker 2".to_string(), unit(&[0.0, 0.0, 1.0])),
         ]);
-        suggest_speaker_names(&store, &note_id, &embeddings).unwrap();
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, false).unwrap();
 
         let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
         assert_eq!(meta.speaker_suggestions.len(), 1);
@@ -905,7 +941,7 @@ mod tests {
             ("Speaker 1".to_string(), unit(&[1.0, 0.3, 0.0])),
             ("Speaker 2".to_string(), unit(&[1.0, 0.05, 0.0])),
         ]);
-        suggest_speaker_names(&store, &note_id, &embeddings).unwrap();
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, false).unwrap();
 
         let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
         assert_eq!(meta.speaker_suggestions.len(), 1);
@@ -917,15 +953,94 @@ mod tests {
         let (store, note_id, _dir) = store_with_note();
         save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.0, 0.0]))]);
         let close = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.1, 0.0]))]);
-        suggest_speaker_names(&store, &note_id, &close).unwrap();
+        apply_and_suggest_speaker_names(&store, &note_id, &close, false).unwrap();
 
         // A re-run whose voices match nothing must clear the stale map —
         // the labels it suggested for may not even exist any more.
         let strangers = BTreeMap::from([("Speaker 1".to_string(), unit(&[0.0, 0.0, 1.0]))]);
-        suggest_speaker_names(&store, &note_id, &strangers).unwrap();
+        apply_and_suggest_speaker_names(&store, &note_id, &strangers, false).unwrap();
 
         let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
         assert!(meta.speaker_suggestions.is_empty());
+    }
+
+    /// Issue #32: a confident match becomes an alias + an auto-applied
+    /// notice; a borderline one stays a suggestion chip.
+    #[test]
+    fn auto_apply_splits_confident_matches_from_borderline_ones() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(
+            &store,
+            &[
+                ("Sarah", &unit(&[1.0, 0.0, 0.0])),
+                ("Tom", &unit(&[0.0, 1.0, 0.0])),
+            ],
+        );
+
+        let embeddings = BTreeMap::from([
+            // ~0.999 to Sarah — clears AUTO_APPLY_THRESHOLD.
+            ("Speaker 1".to_string(), unit(&[1.0, 0.05, 0.0])),
+            // ~0.62 to Tom — clears SUGGEST_THRESHOLD only.
+            ("Speaker 2".to_string(), unit(&[0.3, 0.62, 0.72])),
+        ]);
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, true).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert_eq!(meta.speaker_aliases["Speaker 1"], "Sarah");
+        assert_eq!(meta.speaker_auto_applied["Speaker 1"].name, "Sarah");
+        assert!(!meta.speaker_aliases.contains_key("Speaker 2"));
+        assert_eq!(meta.speaker_suggestions["Speaker 2"].name, "Tom");
+    }
+
+    /// Issue #32: with the toggle off, even a near-perfect match stays a
+    /// suggestion — nothing touches the transcript on its own.
+    #[test]
+    fn auto_apply_off_keeps_even_confident_matches_as_suggestions() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.0, 0.0]))]);
+        let embeddings = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.05, 0.0]))]);
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, false).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert!(meta.speaker_aliases.is_empty());
+        assert!(meta.speaker_auto_applied.is_empty());
+        assert_eq!(meta.speaker_suggestions["Speaker 1"].name, "Sarah");
+    }
+
+    /// Issue #32's correction path: renaming the auto-applied name (Undo
+    /// back to the raw label included) clears the notice.
+    #[test]
+    fn renaming_an_auto_applied_name_clears_the_notice() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.0, 0.0]))]);
+        lock_store(&store)
+            .write_transcript(
+                &note_id,
+                &crate::store::Transcript {
+                    segments: vec![crate::store::StoredSegment {
+                        speaker: "Speaker 1".to_string(),
+                        start: 0.0,
+                        end: 5.0,
+                        text: "Hello.".to_string(),
+                    }],
+                },
+            )
+            .unwrap();
+        let embeddings = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.05, 0.0]))]);
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, true).unwrap();
+        lock_store(&store)
+            .update_segment_speakers(&note_id, &["Speaker 1".to_string()])
+            .unwrap();
+
+        let (_, transcript) = lock_store(&store).get_note(&note_id).unwrap();
+        assert_eq!(transcript.segments[0].speaker, "Sarah");
+
+        lock_store(&store)
+            .rename_speaker(&note_id, "Sarah", "Speaker 1")
+            .unwrap();
+        let (meta, transcript) = lock_store(&store).get_note(&note_id).unwrap();
+        assert_eq!(transcript.segments[0].speaker, "Speaker 1");
+        assert!(meta.speaker_auto_applied.is_empty());
     }
 
     // --- renumber_by_first_appearance ---------------------------------------

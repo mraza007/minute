@@ -1394,6 +1394,29 @@ export function NoteView({
                     ))}
                   </div>
                 )}
+                {/* Issue #32: names the diarization pass wrote in on its
+                    own — a notice with an Undo, not a request. Undo is an
+                    ordinary rename back to the raw label, which also
+                    clears this entry server-side. */}
+                {Object.keys(meta.speakerAutoApplied ?? {}).length > 0 && (
+                  <div className="speaker-suggestions" role="group" aria-label="Automatically applied speaker names">
+                    {Object.entries(meta.speakerAutoApplied ?? {}).map(([label, applied]) => (
+                      <span key={label} className="speaker-suggestion">
+                        <span>
+                          <strong>{label}</strong> auto-renamed to <strong>{applied.name}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          className="btn-quiet"
+                          aria-label={`Undo renaming ${label} to ${applied.name}`}
+                          onClick={() => onRenameSpeaker(meta.id, applied.name, label)}
+                        >
+                          Undo
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {speakerMergeOpen && speakerFilter !== 'all' && (
                   <form
                     className="speaker-merge-form"

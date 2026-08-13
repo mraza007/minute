@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS: Settings = {
   autoStopRecording: true,
   compressAudioAfterDays: null,
   speakerProfiles: false,
+  autoApplySpeakerNames: true,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

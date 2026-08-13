@@ -149,6 +149,15 @@ pub struct Settings {
     /// the user must ask for it.
     #[serde(default)]
     pub speaker_profiles: bool,
+    /// Issue #32: apply confident voice-profile matches straight into the
+    /// transcript (and so into the summary) instead of only suggesting.
+    /// Default-on as a deliberate exception to the opt-in convention: it
+    /// only ever acts when `speakerProfiles` (opt-in) is already on, it is
+    /// the natural point of saving profiles at all, and every application
+    /// shows an Undo. `default_true` so existing settings.json files load
+    /// as enabled.
+    #[serde(default = "default_true")]
+    pub auto_apply_speaker_names: bool,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -176,6 +185,7 @@ impl Default for Settings {
             auto_stop_recording: true,
             compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
         }
     }
 }
@@ -216,6 +226,7 @@ pub struct SettingsPatch {
     /// Any other `Some(n)` sets the day count to `n`.
     pub compress_audio_after_days: Option<u32>,
     pub speaker_profiles: Option<bool>,
+    pub auto_apply_speaker_names: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -260,6 +271,9 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.speaker_profiles {
         settings.speaker_profiles = v;
+    }
+    if let Some(v) = patch.auto_apply_speaker_names {
+        settings.auto_apply_speaker_names = v;
     }
 }
 
@@ -399,6 +413,7 @@ mod tests {
             auto_stop_recording: true,
             compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -446,6 +461,7 @@ mod tests {
                 auto_stop_recording: true,
                 compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
             }
         );
     }
@@ -488,6 +504,7 @@ mod tests {
                 auto_stop_recording: true,
                 compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
             }
         );
     }
@@ -531,6 +548,7 @@ mod tests {
                 auto_stop_recording: true,
                 compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
             }
         );
     }
@@ -570,6 +588,7 @@ mod tests {
             auto_stop_recording: true,
             compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -619,6 +638,7 @@ mod tests {
             auto_stop_recording: Some(false),
             compress_audio_after_days: Some(14),
             speaker_profiles: Some(true),
+            auto_apply_speaker_names: Some(false),
         };
 
         apply_patch(&mut settings, patch);
@@ -820,6 +840,7 @@ mod tests {
             auto_stop_recording: true,
             compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -852,6 +873,7 @@ mod tests {
             auto_stop_recording: true,
             compress_audio_after_days: None,
             speaker_profiles: false,
+            auto_apply_speaker_names: true,
         };
         let mut settings = original.clone();
 

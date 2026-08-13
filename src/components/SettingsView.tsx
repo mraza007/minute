@@ -53,6 +53,9 @@ export interface SettingsViewProps {
   /** Issue #22: remember named speakers' voices and suggest names on later recordings (opt-in). */
   speakerProfiles: boolean
   toggleSpeakerProfiles: () => void
+  /** Issue #32: write confident voice-profile matches into the transcript automatically. */
+  autoApplySpeakerNames: boolean
+  toggleAutoApplySpeakerNames: () => void
   /** Saved voice profiles, shown (with delete) while the toggle above is on. */
   voiceProfiles: VoiceProfile[]
   onDeleteVoiceProfile: (name: string) => void
@@ -501,6 +504,8 @@ export function SettingsView({
   toggleAutoStopRecording,
   speakerProfiles,
   toggleSpeakerProfiles,
+  autoApplySpeakerNames,
+  toggleAutoApplySpeakerNames,
   voiceProfiles,
   onDeleteVoiceProfile,
   onExportDiagnostics,
@@ -804,6 +809,19 @@ export function SettingsView({
                 hears them. Voice profiles never leave this Mac, live in your library folder, and can be deleted
                 below at any time.
               </div>
+              {speakerProfiles && (
+                <div style={{ marginTop: 14 }}>
+                  <Toggle
+                    on={autoApplySpeakerNames}
+                    onToggle={toggleAutoApplySpeakerNames}
+                    label="Insert matched names automatically"
+                  />
+                  <div style={noteTextStyle}>
+                    When a voice clearly matches a saved profile, Minute writes the name into the transcript before
+                    the summary runs — with an Undo on the note. Turn this off to get suggestions only.
+                  </div>
+                </div>
+              )}
               {speakerProfiles && voiceProfiles.length > 0 && (
                 <ul aria-label="Saved voice profiles" style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, maxWidth: 520 }}>
                   {voiceProfiles.map(profile => (

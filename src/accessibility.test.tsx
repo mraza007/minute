@@ -30,6 +30,7 @@ const settings: Settings = {
   autoStopRecording: true,
   compressAudioAfterDays: null,
   speakerProfiles: false,
+  autoApplySpeakerNames: true,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {
