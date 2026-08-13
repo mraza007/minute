@@ -871,6 +871,13 @@ struct SharedState {
     /// can ever arrive, so the ticker falls back to the sound-level
     /// path alone rather than auto-stopping an audible meeting.
     stt_worker_failed: AtomicBool,
+    /// Whether an STT worker was spawned for this recording at all — the
+    /// other half of the words-signal validity check (with
+    /// [`Self::stt_worker_failed`]): a WAV-only recording (model not
+    /// installed) has no transcript either, and both the arm decision
+    /// AND the displayed quiet run must ignore the free-running words
+    /// counter then.
+    stt_worker_spawned: AtomicBool,
     /// Level pushed by the meeting detector thread (issue #40): a meeting
     /// app that was running during this recording has been gone for the
     /// debounce window. Arms the auto-stop countdown after a short quiet
@@ -1552,6 +1559,7 @@ impl Recorder {
             closing_phrase: AtomicBool::new(false),
             words_silent_run_samples: AtomicU64::new(0),
             stt_worker_failed: AtomicBool::new(false),
+            stt_worker_spawned: AtomicBool::new(false),
             meeting_app_closed: AtomicBool::new(false),
         });
         lock(&shared.tracker).start(Instant::now());
@@ -1924,11 +1932,20 @@ fn emit_recording_state(
 
 /// The display value for [`RecordingStateEvent::quiet_secs`]: whichever
 /// silence run is further along — matching how [`auto_stop_tick`] arms on
-/// either. Display-only; the arming logic reads the raw counters itself.
+/// either, INCLUDING its words-signal validity gate: with no live STT
+/// worker (never spawned, or fatally dead) the words counter free-runs
+/// regardless of room noise, and showing it would tell an actively loud
+/// meeting it has been "quiet" for minutes. Display-only; the arming
+/// logic reads the raw counters itself.
 fn quiet_secs_of(shared: &SharedState) -> u64 {
     let sound = shared.silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
-    let words =
-        shared.words_silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
+    let words_live = shared.stt_worker_spawned.load(Ordering::Relaxed)
+        && !shared.stt_worker_failed.load(Ordering::Relaxed);
+    let words = if words_live {
+        shared.words_silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64
+    } else {
+        0
+    };
     sound.max(words)
 }
 
@@ -2094,14 +2111,17 @@ pub async fn start_recording(
         sample_rx,
         &handle.shared,
     );
+    // Words-signal validity, shared with the display path (see
+    // `quiet_secs_of`): a WAV-only recording must not count "no words"
+    // as quiet.
+    handle
+        .shared
+        .stt_worker_spawned
+        .store(stt_worker.is_some(), Ordering::Relaxed);
 
     let tick_app = app.clone();
     let tick_note_id = note_id.clone();
     let tick_shared = handle.shared.clone();
-    // Issue #38: whether a live transcript is even possible this session —
-    // fixed at spawn time; the per-tick `stt_worker_failed` check covers
-    // the worker dying after a failed model load.
-    let stt_worker_spawned = stt_worker.is_some();
     let tick_microphone_name = microphone_name.clone();
     let tick_settings = settings.inner().clone();
     let tick_handle = tokio::spawn(async move {
@@ -2137,7 +2157,8 @@ pub async fn start_recording(
             let closing_tail = tick_shared.closing_phrase.load(Ordering::Relaxed);
             // Issue #38: the words signal only counts while a transcript
             // can actually arrive — worker spawned and not fatally dead.
-            let words_silent_secs = (stt_worker_spawned
+            // Same gate `quiet_secs_of` applies to the displayed value.
+            let words_silent_secs = (tick_shared.stt_worker_spawned.load(Ordering::Relaxed)
                 && !tick_shared.stt_worker_failed.load(Ordering::Relaxed))
             .then(|| {
                 tick_shared.words_silent_run_samples.load(Ordering::Relaxed)
@@ -2357,9 +2378,10 @@ pub fn resume_recording(
     active.handle.resume();
     // Issue #36: a farewell heard before the pause is stale by resume —
     // the user resuming is itself proof the meeting continues, and the
-    // frozen silence counter would otherwise pair a pre-pause "goodbye"
-    // with post-resume silence into a too-early auto-stop arm. The
-    // words-silence run (issue #38) is stale for the same reason.
+    // frozen silence counters would otherwise pair pre-pause quiet with
+    // post-resume quiet into a too-early arm (and an instantly-wrong
+    // "Quiet for M:SS" line — issue #42). All three reset: resuming
+    // starts a fresh quiet run.
     active
         .handle
         .shared
@@ -2369,6 +2391,11 @@ pub fn resume_recording(
         .handle
         .shared
         .words_silent_run_samples
+        .store(0, Ordering::Relaxed);
+    active
+        .handle
+        .shared
+        .silent_run_samples
         .store(0, Ordering::Relaxed);
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
@@ -3257,6 +3284,32 @@ mod tests {
         );
     }
 
+    /// Issue #42 review fix: the displayed quiet run must ignore the
+    /// free-running words counter when no transcript can arrive — a
+    /// WAV-only or dead-worker recording would otherwise show "Quiet for
+    /// M:SS" forever in a loud room.
+    #[test]
+    fn quiet_secs_ignores_the_words_counter_without_a_live_stt_worker() {
+        let shared = test_shared_state();
+        shared
+            .words_silent_run_samples
+            .store(120 * TARGET_SAMPLE_RATE as u64, Ordering::Relaxed);
+        shared
+            .silent_run_samples
+            .store(5 * TARGET_SAMPLE_RATE as u64, Ordering::Relaxed);
+
+        // No worker spawned: only the sound run counts.
+        assert_eq!(quiet_secs_of(&shared), 5);
+
+        // Worker live: the further-along words run counts.
+        shared.stt_worker_spawned.store(true, Ordering::Relaxed);
+        assert_eq!(quiet_secs_of(&shared), 120);
+
+        // Worker died: back to the sound run alone.
+        shared.stt_worker_failed.store(true, Ordering::Relaxed);
+        assert_eq!(quiet_secs_of(&shared), 5);
+    }
+
     /// Issue #42: chime/keystroke hallucinations are short — they must not
     /// count as real speech for the words-silence reset, while any real
     /// sentence (including spaceless CJK) must.
@@ -3541,6 +3594,7 @@ mod tests {
             closing_phrase: AtomicBool::new(false),
             words_silent_run_samples: AtomicU64::new(0),
             stt_worker_failed: AtomicBool::new(false),
+            stt_worker_spawned: AtomicBool::new(false),
             meeting_app_closed: AtomicBool::new(false),
         })
     }

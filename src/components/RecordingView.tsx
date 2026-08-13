@@ -830,12 +830,22 @@ export const RecordingView = memo(function RecordingView({
             )}
             {/* Issue #42: the arm window used to be invisible — a user
                 sitting in silence saw nothing until the countdown banner
-                appeared, and reasonably concluded auto-stop was broken. */}
-            {autoStopSeconds === null && !paused && quietSecs >= 30 && (
-              <div className="recording-detail-note" role="status" style={{ padding: '4px 0' }}>
-                Quiet for {formatMmSs(quietSecs)} — Minute offers to stop after 2 quiet minutes.
-              </div>
-            )}
+                appeared, and reasonably concluded auto-stop was broken.
+                Always mounted with only the text toggling — the same
+                screen-reader rationale as TranscribingIndicator above: a
+                role="status" node that mounts with its text already
+                inside is commonly missed. */}
+            <div
+              className="recording-detail-note"
+              role="status"
+              style={{
+                padding: autoStopSeconds === null && !paused && quietSecs >= 30 ? '4px 0' : 0,
+              }}
+            >
+              {autoStopSeconds === null && !paused && quietSecs >= 30
+                ? `Quiet for ${formatMmSs(quietSecs)} — Minute offers to stop after 2 quiet minutes.`
+                : ''}
+            </div>
             {processingFailure?.stage === 'saving' && (
               <div className="recording-recovery" role="status">
                 <span>

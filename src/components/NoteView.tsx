@@ -273,6 +273,15 @@ function NoteOverview({
           <section>
             <div className="sec-head"><span className="mlab">Summary</span></div>
             <p className="overview-summary">{summary.summary}</p>
+            {/* Issue #41: the Overview tab is the first screen after a
+                recording — a truncated summary must say so HERE, not only
+                in the side panel. */}
+            {summary.truncated && (
+              <p className="overview-empty">
+                This meeting was too long for the summary model's memory, so this summary covers only part of it. A
+                larger context window in Settings → Summary gives full coverage.
+              </p>
+            )}
           </section>
           {/* Issue #14: only present for notes summarized under Detailed. */}
           {summary.topics.length > 0 && (
