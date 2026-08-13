@@ -1127,14 +1127,24 @@ impl Store {
         Ok(meta)
     }
 
-    /// Issue #32: one diarization pass's whole outcome for speaker names —
-    /// auto-applied aliases *merged* into `speaker_aliases` (so earlier
-    /// user renames survive), and the `speaker_auto_applied`/
-    /// `speaker_suggestions` maps replaced outright (each pass owns those
-    /// two maps, so stale entries from an earlier pass — whose labels it
-    /// may have renumbered — never survive; empty maps clear them). This
-    /// subsumed the old issue-#22 `set_speaker_suggestions`. One meta
-    /// write. Called by `diar::run_diarize` *before* its
+    /// Issue #32: one diarization pass's whole outcome for speaker names.
+    /// The `speaker_auto_applied`/`speaker_suggestions` maps are replaced
+    /// outright (each pass owns them, so stale entries from an earlier
+    /// pass — whose labels it may have renumbered — never survive; empty
+    /// maps clear them; this subsumed the old issue-#22
+    /// `set_speaker_suggestions`). Candidate aliases pass two guards
+    /// before landing:
+    ///
+    /// - A label the *user* renamed (including correcting an earlier
+    ///   auto-apply — that rename cleared its notice) is skipped: the
+    ///   correction must survive every later re-run, not revert to the
+    ///   profile name.
+    /// - A name already displayed by a different label is demoted to a
+    ///   suggestion: applying it blind would silently collapse two people
+    ///   into one, which the manual rename path refuses ("use merge
+    ///   speakers instead") — the automatic path must not bypass that.
+    ///
+    /// One meta write. Called by `diar::run_diarize` *before* its
     /// `update_segment_speakers` call, which is what makes the applied
     /// names land in the transcript — and therefore in the summary that
     /// `on_done` triggers.
@@ -1146,11 +1156,34 @@ impl Store {
         suggestions: &HashMap<String, SpeakerSuggestion>,
     ) -> Result<NoteMeta> {
         let mut meta = self.read_meta(id)?;
+        let mut suggestions = suggestions.clone();
+        let mut kept_applied: HashMap<String, SpeakerSuggestion> = HashMap::new();
         for (label, name) in aliases {
+            let user_owned = meta
+                .speaker_aliases
+                .get(label)
+                .is_some_and(|current| current != name)
+                && !meta.speaker_auto_applied.contains_key(label);
+            if user_owned {
+                continue;
+            }
+            let taken_elsewhere = meta
+                .speaker_aliases
+                .iter()
+                .any(|(other, target)| other != label && target == name);
+            if taken_elsewhere {
+                if let Some(suggestion) = applied.get(label) {
+                    suggestions.insert(label.clone(), suggestion.clone());
+                }
+                continue;
+            }
             meta.speaker_aliases.insert(label.clone(), name.clone());
+            if let Some(suggestion) = applied.get(label) {
+                kept_applied.insert(label.clone(), suggestion.clone());
+            }
         }
-        meta.speaker_auto_applied = applied.clone();
-        meta.speaker_suggestions = suggestions.clone();
+        meta.speaker_auto_applied = kept_applied;
+        meta.speaker_suggestions = suggestions;
         self.write_meta(&meta)?;
         Ok(meta)
     }
@@ -1267,6 +1300,12 @@ impl Store {
         let mut meta = self.persist_speaker_edit(id, &transcript)?;
         meta.speaker_aliases
             .insert(from.to_string(), into.to_string());
+        // Issue #32: merging away an auto-applied name answers its notice
+        // — without this, the "auto-renamed — Undo" chip would linger and
+        // its Undo (a rename from a name that no longer exists) would
+        // always fail.
+        meta.speaker_auto_applied
+            .retain(|_, applied| applied.name != from);
         self.write_meta(&meta)?;
         let checksum = speaker_merge_undo_checksum(id, from, into, &segment_indices, &transcript)?;
         Ok(SpeakerMergeResult {
@@ -2808,6 +2847,176 @@ mod tests {
         let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
         assert!(markdown.contains("**Sam**"));
         assert!(markdown.contains("**Speaker 2**"));
+    }
+
+    /// Issue #32: a user's correction of an auto-applied name must survive
+    /// a re-run — the pass matching the same profile again must not revert
+    /// "Sara" back to "Sarah".
+    #[test]
+    fn a_user_correction_outranks_a_rerun_auto_apply() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![StoredSegment {
+                        speaker: "Speaker 1".into(),
+                        start: 0.0,
+                        end: 5.0,
+                        text: "First.".into(),
+                    }],
+                },
+            )
+            .unwrap();
+
+        let candidate = HashMap::from([("Speaker 1".to_string(), "Sarah".to_string())]);
+        let applied = HashMap::from([(
+            "Speaker 1".to_string(),
+            SpeakerSuggestion {
+                name: "Sarah".to_string(),
+                similarity: 0.9,
+            },
+        )]);
+        store
+            .apply_speaker_names(&meta.id, &candidate, &applied, &HashMap::new())
+            .unwrap();
+        store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into()])
+            .unwrap();
+
+        // The user corrects the auto-applied name.
+        store.rename_speaker(&meta.id, "Sarah", "Sara").unwrap();
+
+        // A re-run matches the same profile again — the correction stays.
+        let updated = store
+            .apply_speaker_names(&meta.id, &candidate, &applied, &HashMap::new())
+            .unwrap();
+        assert_eq!(updated.speaker_aliases["Speaker 1"], "Sara");
+        assert!(updated.speaker_auto_applied.is_empty());
+        store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into()])
+            .unwrap();
+        let (_, transcript) = store.get_note(&meta.id).unwrap();
+        assert_eq!(transcript.segments[0].speaker, "Sara");
+    }
+
+    /// Issue #32: a name already displayed by another label is never
+    /// auto-applied — that would silently merge two people. It demotes to
+    /// a suggestion instead.
+    #[test]
+    fn auto_apply_never_collapses_two_speakers_under_one_name() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 0.0,
+                            end: 5.0,
+                            text: "First.".into(),
+                        },
+                        StoredSegment {
+                            speaker: "Speaker 2".into(),
+                            start: 6.0,
+                            end: 10.0,
+                            text: "Second.".into(),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        // "Sarah" already belongs to Speaker 2 (user rename).
+        store
+            .rename_speaker(&meta.id, "Speaker 2", "Sarah")
+            .unwrap();
+
+        let candidate = HashMap::from([("Speaker 1".to_string(), "Sarah".to_string())]);
+        let applied = HashMap::from([(
+            "Speaker 1".to_string(),
+            SpeakerSuggestion {
+                name: "Sarah".to_string(),
+                similarity: 0.85,
+            },
+        )]);
+        let updated = store
+            .apply_speaker_names(&meta.id, &candidate, &applied, &HashMap::new())
+            .unwrap();
+
+        assert!(!updated.speaker_aliases.contains_key("Speaker 1"));
+        assert!(updated.speaker_auto_applied.is_empty());
+        assert_eq!(updated.speaker_suggestions["Speaker 1"].name, "Sarah");
+    }
+
+    /// Issue #32: merging away an auto-applied name clears its notice —
+    /// a lingering Undo would rename from a name that no longer exists.
+    #[test]
+    fn merging_away_an_auto_applied_name_clears_its_notice() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let meta = store
+            .create_note(
+                "Standup",
+                "whisper-small",
+                datetime!(2026-07-30 09:00:00 UTC),
+            )
+            .unwrap();
+        store
+            .write_transcript(
+                &meta.id,
+                &Transcript {
+                    segments: vec![
+                        StoredSegment {
+                            speaker: "Speaker 1".into(),
+                            start: 0.0,
+                            end: 5.0,
+                            text: "First.".into(),
+                        },
+                        StoredSegment {
+                            speaker: "Priya".into(),
+                            start: 6.0,
+                            end: 10.0,
+                            text: "Second.".into(),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+
+        let candidate = HashMap::from([("Speaker 1".to_string(), "Sarah".to_string())]);
+        let applied = HashMap::from([(
+            "Speaker 1".to_string(),
+            SpeakerSuggestion {
+                name: "Sarah".to_string(),
+                similarity: 0.9,
+            },
+        )]);
+        store
+            .apply_speaker_names(&meta.id, &candidate, &applied, &HashMap::new())
+            .unwrap();
+        store
+            .update_segment_speakers(&meta.id, &["Speaker 1".into(), "Priya".into()])
+            .unwrap();
+
+        let result = store.merge_speakers(&meta.id, "Sarah", "Priya").unwrap();
+        assert!(result.meta.speaker_auto_applied.is_empty());
     }
 
     /// Issue #39: renaming a speaker back must not leave a stale alias
