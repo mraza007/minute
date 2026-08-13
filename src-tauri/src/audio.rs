@@ -2251,6 +2251,12 @@ pub fn stop_recording(
         }
     }
 
+    // Capture is factually over at this point (stream dropped, writer
+    // joined) no matter how the store writes below go — so the badge
+    // comes off *before* the fallible `finalize_note`, or a full-disk
+    // error would leave "REC" showing with nothing recording.
+    set_dock_recording_indicator(&app, false);
+
     let meta = lock_store(&store)
         .finalize_note(&note_id, duration_sec, 1)
         .map_err(|e| e.to_string())?;
@@ -2308,7 +2314,6 @@ pub fn stop_recording(
         &microphone_name,
         final_input,
     );
-    set_dock_recording_indicator(&app, false);
 
     // Diarization runs *before* the auto-summary when it's enabled and its
     // models are downloaded, so the summary prompt sees real "Speaker 1..N"
