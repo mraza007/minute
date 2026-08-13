@@ -871,6 +871,11 @@ struct SharedState {
     /// can ever arrive, so the ticker falls back to the sound-level
     /// path alone rather than auto-stopping an audible meeting.
     stt_worker_failed: AtomicBool,
+    /// Level pushed by the meeting detector thread (issue #40): a meeting
+    /// app that was running during this recording has been gone for the
+    /// debounce window. Arms the auto-stop countdown after a short quiet
+    /// gap — see [`auto_stop_tick`]. Cleared if the app comes back.
+    meeting_app_closed: AtomicBool,
 }
 
 fn store_max_f32(target: &AtomicU32, value: f32) {
@@ -1076,6 +1081,13 @@ const FAREWELL_ARM_SECS: u64 = 60;
 /// seconds of being spoken.
 const FAREWELL_FRESH_SECS: u64 = 10;
 
+/// Quiet gap required alongside the meeting-app-closed level (issue #40)
+/// before the countdown arms. Not zero on purpose: someone who closes the
+/// meeting app and keeps dictating notes into Minute is still using the
+/// recording — their speech keeps resetting the words-silence run, which
+/// keeps this gate shut and the banner away.
+const MEETING_END_QUIET_SECS: u64 = 10;
+
 /// Closing phrases that mark a meeting's end when the transcript's last
 /// segment ends with one (issue #36) — matched by [`is_closing_phrase`]
 /// after lowercasing and trailing-punctuation strip. End-of-segment only:
@@ -1157,19 +1169,24 @@ fn auto_stop_tick(
     silent_secs: u64,
     words_silent_secs: Option<u64>,
     closing_tail: bool,
+    meeting_app_closed: bool,
     countdown: &mut Option<u64>,
 ) -> AutoStopTick {
-    // Three ways to arm: the plain sound-level threshold; the shorter
-    // farewell threshold when the transcript's last segment ended with a
-    // closing phrase (issue #36); and — when a live transcript exists at
-    // all (`words_silent_secs` is `Some`) — the same thresholds measured
-    // in "time since anything was transcribed" (issue #38), which ambient
-    // noise cannot reset. `None` = no working STT worker; sound level is
-    // then the only honest signal.
-    let arms = |secs: u64| {
-        secs >= AUTO_STOP_ARM_SECS || (closing_tail && secs >= FAREWELL_ARM_SECS)
+    // Ways to arm, all sharing one quiet measure — `quiet_for(t)` is true
+    // when EITHER silence run has reached `t`: the sound-level run, or
+    // (when a live transcript exists at all — `words_silent_secs` is
+    // `Some`) the time since anything was transcribed (issue #38), which
+    // ambient noise cannot reset:
+    // - the plain threshold (issues #9/#28);
+    // - the shorter farewell threshold when the transcript's last segment
+    //   ended with a closing phrase (issue #36);
+    // - a short gap once the meeting app itself has quit (issue #40).
+    let quiet_for = |threshold: u64| {
+        silent_secs >= threshold || words_silent_secs.is_some_and(|words| words >= threshold)
     };
-    let armed = arms(silent_secs) || words_silent_secs.is_some_and(arms);
+    let armed = quiet_for(AUTO_STOP_ARM_SECS)
+        || (closing_tail && quiet_for(FAREWELL_ARM_SECS))
+        || (meeting_app_closed && quiet_for(MEETING_END_QUIET_SECS));
     if !enabled || dismissed || paused || !armed {
         let was_pending = countdown.take().is_some();
         return AutoStopTick::Idle { was_pending };
@@ -1519,6 +1536,7 @@ impl Recorder {
             closing_phrase: AtomicBool::new(false),
             words_silent_run_samples: AtomicU64::new(0),
             stt_worker_failed: AtomicBool::new(false),
+            meeting_app_closed: AtomicBool::new(false),
         });
         lock(&shared.tracker).start(Instant::now());
 
@@ -1815,6 +1833,20 @@ pub fn is_recording_active(state: &SharedRecorderState) -> bool {
     lock_recorder_state(state).active.is_some()
 }
 
+/// The meeting detector thread's push of the meeting-ended level (issue
+/// #40) into the active recording's shared state, where the auto-stop
+/// ticker reads it. A no-op between recordings — the level belongs to a
+/// specific recording session, and a fresh one starts with it cleared.
+pub(crate) fn set_meeting_app_closed(state: &SharedRecorderState, closed: bool) {
+    if let Some(active) = &lock_recorder_state(state).active {
+        active
+            .handle
+            .shared
+            .meeting_app_closed
+            .store(closed, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecordingStateEvent {
@@ -2076,6 +2108,7 @@ pub async fn start_recording(
                 tick_shared.words_silent_run_samples.load(Ordering::Relaxed)
                     / TARGET_SAMPLE_RATE as u64
             });
+            let meeting_app_closed = tick_shared.meeting_app_closed.load(Ordering::Relaxed);
             match auto_stop_tick(
                 enabled,
                 dismissed,
@@ -2083,6 +2116,7 @@ pub async fn start_recording(
                 silent_secs,
                 words_silent_secs,
                 closing_tail,
+                meeting_app_closed,
                 &mut auto_stop_countdown,
             ) {
                 AutoStopTick::Idle { was_pending } => {
@@ -2959,7 +2993,7 @@ mod tests {
     #[test]
     fn auto_stop_tick_stays_idle_below_the_arm_threshold() {
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, None, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, None, false, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
         assert_eq!(countdown, None);
     }
@@ -2967,7 +3001,7 @@ mod tests {
     #[test]
     fn auto_stop_tick_counts_down_then_fires() {
         let mut countdown = None;
-        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, &mut countdown);
+        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, false, &mut countdown);
         assert_eq!(
             first,
             AutoStopTick::Pending {
@@ -2976,26 +3010,26 @@ mod tests {
         );
         // Drain the countdown.
         for _ in 0..AUTO_STOP_COUNTDOWN_SECS - 1 {
-            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, None, false, &mut countdown) {
+            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, None, false, false, &mut countdown) {
                 AutoStopTick::Pending { .. } => {}
                 other => panic!("expected Pending mid-countdown, got {other:?}"),
             }
         }
-        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, None, false, &mut countdown);
+        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, None, false, false, &mut countdown);
         assert_eq!(last, AutoStopTick::Fire);
     }
 
     #[test]
     fn auto_stop_tick_cancels_when_audio_returns_mid_countdown() {
         let mut countdown = None;
-        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, &mut countdown);
+        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, false, &mut countdown);
         assert!(countdown.is_some());
         // Audio came back: the silence run reset well below the arm bar.
-        let tick = auto_stop_tick(true, false, false, 3, None, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, 3, None, false, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
         assert_eq!(countdown, None);
         // A later fresh silence stretch re-arms with a full countdown.
-        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, &mut countdown);
+        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, false, &mut countdown);
         assert_eq!(
             re_armed,
             AutoStopTick::Pending {
@@ -3019,6 +3053,7 @@ mod tests {
                 AUTO_STOP_ARM_SECS * 2,
                 None,
                 false,
+                false,
                 &mut countdown,
             );
             assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
@@ -3032,12 +3067,12 @@ mod tests {
     fn closing_tail_arms_the_countdown_at_the_farewell_threshold() {
         let mut countdown = None;
         // Below even the farewell threshold: idle regardless of the tail.
-        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS - 1, None, true, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS - 1, None, true, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
 
         // At the farewell threshold with a closing tail: armed, full
         // countdown — far earlier than AUTO_STOP_ARM_SECS.
-        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS, None, true, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS, None, true, false, &mut countdown);
         assert_eq!(
             tick,
             AutoStopTick::Pending {
@@ -3049,7 +3084,7 @@ mod tests {
     #[test]
     fn no_closing_tail_still_waits_for_the_plain_silence_threshold() {
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, None, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, None, false, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
     }
 
@@ -3067,6 +3102,7 @@ mod tests {
             3,
             Some(AUTO_STOP_ARM_SECS),
             false,
+            false,
             &mut countdown,
         );
         assert_eq!(
@@ -3080,7 +3116,7 @@ mod tests {
     #[test]
     fn a_recent_transcribed_word_keeps_the_words_signal_idle() {
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, 3, Some(30), false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, 3, Some(30), false, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
     }
 
@@ -3090,7 +3126,66 @@ mod tests {
         // sound-level path may arm (`None`), or a broken model file would
         // stop an audible meeting.
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, 3, None, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, 3, None, false, false, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+    }
+
+    // --- meeting-app-closed arming (issue #40) --------------------------------
+
+    #[test]
+    fn meeting_app_closed_arms_after_a_short_quiet_gap() {
+        let mut countdown = None;
+        // App gone, but someone is still talking (words reset 3s ago):
+        // stay idle — closing the meeting app while dictating notes into
+        // Minute must not raise the banner.
+        let tick = auto_stop_tick(true, false, false, 2, Some(3), false, true, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+
+        // App gone and quiet for the short gap: armed, normal countdown.
+        let tick = auto_stop_tick(
+            true,
+            false,
+            false,
+            2,
+            Some(MEETING_END_QUIET_SECS),
+            false,
+            true,
+            &mut countdown,
+        );
+        assert_eq!(
+            tick,
+            AutoStopTick::Pending {
+                seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
+            }
+        );
+
+        // The app relaunching drops the level and cancels the countdown.
+        let tick = auto_stop_tick(
+            true,
+            false,
+            false,
+            2,
+            Some(MEETING_END_QUIET_SECS),
+            false,
+            false,
+            &mut countdown,
+        );
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
+    }
+
+    #[test]
+    fn a_quiet_gap_alone_without_the_app_closing_does_not_arm_early() {
+        let mut countdown = None;
+        let tick = auto_stop_tick(
+            true,
+            false,
+            false,
+            MEETING_END_QUIET_SECS,
+            Some(MEETING_END_QUIET_SECS),
+            false,
+            false,
+            &mut countdown,
+        );
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
     }
 
@@ -3104,6 +3199,7 @@ mod tests {
             3,
             Some(FAREWELL_ARM_SECS),
             true,
+            false,
             &mut countdown,
         );
         assert_eq!(
@@ -3383,6 +3479,7 @@ mod tests {
             closing_phrase: AtomicBool::new(false),
             words_silent_run_samples: AtomicU64::new(0),
             stt_worker_failed: AtomicBool::new(false),
+            meeting_app_closed: AtomicBool::new(false),
         })
     }
 

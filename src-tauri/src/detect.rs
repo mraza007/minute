@@ -1882,6 +1882,147 @@ fn emit_meeting_detected(app: &AppHandle, app_name: &str) {
 /// A real mic transition or a reported outcome interrupts the wait
 /// immediately regardless of this cadence — only the periodic app-presence
 /// re-check actually needs the timeout to fire.
+/// How long a previously-seen meeting app must stay continuously absent
+/// before the "meeting ended" signal fires (issue #40) — 3 poll cycles at
+/// [`POLL_INTERVAL`], so one slow poll or an app relaunch can't flap it.
+const APP_QUIT_DEBOUNCE: Duration = Duration::from_secs(6);
+
+/// One per-poll decision of the meeting-ended debounce (issue #40): `true`
+/// once a meeting app that was seen during THIS Minute recording has been
+/// continuously absent for [`APP_QUIT_DEBOUNCE`]. Deliberately a free
+/// function with caller-owned state, not part of [`DetectorCore`]'s
+/// start-prompt state machine — it answers a different question (end, not
+/// start) and resets on different edges (recording stops, app returns).
+/// Pure — unit-tested without a thread.
+fn meeting_app_closed_tick(
+    minute_recording: bool,
+    app_present_now: bool,
+    app_ever_seen: &mut bool,
+    closed_since: &mut Option<Instant>,
+    now: Instant,
+) -> bool {
+    if !minute_recording {
+        *app_ever_seen = false;
+        *closed_since = None;
+        return false;
+    }
+    if app_present_now {
+        *app_ever_seen = true;
+        *closed_since = None;
+        return false;
+    }
+    if !*app_ever_seen {
+        return false;
+    }
+    let since = *closed_since.get_or_insert(now);
+    now.duration_since(since) >= APP_QUIT_DEBOUNCE
+}
+
+#[cfg(test)]
+mod app_quit_tests {
+    use super::*;
+
+    fn tick(
+        recording: bool,
+        present: bool,
+        seen: &mut bool,
+        since: &mut Option<Instant>,
+        at: Instant,
+    ) -> bool {
+        meeting_app_closed_tick(recording, present, seen, since, at)
+    }
+
+    #[test]
+    fn fires_only_after_the_debounce_window_of_continuous_absence() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        assert!(!tick(true, true, &mut seen, &mut since, base));
+        assert!(!tick(true, false, &mut seen, &mut since, base));
+        assert!(!tick(
+            true,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE - Duration::from_secs(1)
+        ));
+        assert!(tick(
+            true,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE
+        ));
+    }
+
+    #[test]
+    fn an_app_reappearing_resets_the_absence_run() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        tick(true, true, &mut seen, &mut since, base);
+        tick(true, false, &mut seen, &mut since, base);
+        // Relaunch clears the run; the next absence starts from zero.
+        assert!(!tick(
+            true,
+            true,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE
+        ));
+        assert!(!tick(
+            true,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE * 2
+        ));
+        assert!(tick(
+            true,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE * 3
+        ));
+    }
+
+    #[test]
+    fn an_app_never_seen_during_this_recording_cannot_fire() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        assert!(!tick(true, false, &mut seen, &mut since, base));
+        assert!(!tick(
+            true,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE * 10
+        ));
+    }
+
+    #[test]
+    fn recording_stopping_resets_everything() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        tick(true, true, &mut seen, &mut since, base);
+        tick(true, false, &mut seen, &mut since, base);
+        // Recording ends mid-absence: full reset, so the NEXT recording
+        // does not inherit a half-expired debounce from this one.
+        assert!(!tick(
+            false,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE
+        ));
+        assert!(!tick(
+            true,
+            false,
+            &mut seen,
+            &mut since,
+            base + APP_QUIT_DEBOUNCE * 2
+        ));
+    }
+}
+
 fn run_detector_thread(
     app: AppHandle,
     _settings: SharedSettings,
@@ -1914,6 +2055,9 @@ fn run_detector_thread(
 
     let mut core = DetectorCore::new(true);
     let mut mic_active = false;
+    // Issue #40's meeting-ended debounce state — see meeting_app_closed_tick.
+    let mut meeting_app_ever_seen = false;
+    let mut meeting_app_closed_since: Option<Instant> = None;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -1948,6 +2092,21 @@ fn run_detector_thread(
             Err(RecvTimeoutError::Timeout) => {
                 if mic_active {
                     let app_present = macos::meeting_app_present();
+                    // Issue #40: a meeting app seen during this recording
+                    // that has now been gone for the debounce window means
+                    // the meeting ended — push the level into the active
+                    // recording's shared state, where the auto-stop ticker
+                    // reads it. Poll-and-push every tick, same shape as
+                    // the SetMinuteRecording read above; a relaunch or the
+                    // recording ending pushes `false` right back.
+                    let closed = meeting_app_closed_tick(
+                        recording,
+                        app_present.is_some(),
+                        &mut meeting_app_ever_seen,
+                        &mut meeting_app_closed_since,
+                        Instant::now(),
+                    );
+                    crate::audio::set_meeting_app_closed(&recorder, closed);
                     core.process(
                         DetectorEvent::Tick {
                             meeting_app_present: app_present,
