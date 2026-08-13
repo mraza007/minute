@@ -32,6 +32,9 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
   const meta = 'meta' in overrides ? overrides.meta : noteFixture()
   return {
     meta: meta ?? null,
+    // Mirrors the real wiring: App passes `s.notes.length > 0`, and a test
+    // that renders a note self-evidently has one in the library.
+    hasNotes: meta != null,
     selectedMeta: meta ?? null,
     selectedTranscript: [],
     selectedSummary: null,
@@ -91,6 +94,15 @@ describe('NoteView', () => {
   it('shows an empty-library message when there is no selected note', () => {
     render(<NoteView {...makeProps({ meta: null, selectedMeta: null })} />)
     expect(screen.getByRole('heading', { level: 1, name: /no notes yet/i })).toBeInTheDocument()
+  })
+
+  // Issue #24: "All notes" deselects — with notes in the library, the
+  // no-selection state is a pick-a-note prompt, not "no notes yet".
+  it('shows the pick-a-note state when deselected but the library has notes', () => {
+    render(<NoteView {...makeProps({ meta: null, selectedMeta: null, hasNotes: true })} />)
+    expect(screen.getByRole('heading', { level: 1, name: 'All notes' })).toBeInTheDocument()
+    expect(screen.getByText(/pick a note from the library list/i)).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: /no notes yet/i })).not.toBeInTheDocument()
   })
 
   it('renders the selected note title from real note metadata', () => {

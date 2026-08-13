@@ -76,7 +76,11 @@ export function useAppState() {
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null)
   const [lastError, setLastErrorState] = useState<string | null>(null)
 
-  const [sel, setSel] = useState(0)
+  // The selected note's index in `notes`, or `null` after an explicit
+  // deselect — the sidebar's "All notes" (issue #24), which used to only
+  // switch views and so appeared to do nothing. `null` renders the notes
+  // view's pick-a-note state instead of falling back to the newest note.
+  const [sel, setSel] = useState<number | null>(0)
   const [noteTab, setNoteTab] = useState<NoteTab>('transcript')
 
   // Recording slice — entirely backend-event-driven (no local interval
@@ -254,7 +258,7 @@ export function useAppState() {
 
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
 
-  const selectedNoteId = notes[sel]?.id ?? null
+  const selectedNoteId = sel === null ? null : (notes[sel]?.id ?? null)
 
   useEffect(() => {
     let cancelled = false
@@ -622,7 +626,9 @@ export function useAppState() {
         })
         .then(freshNotes => {
           setNotes(freshNotes)
-          setSel(prevSel => Math.min(prevSel, Math.max(freshNotes.length - 1, 0)))
+          // A deselected library (issue #24) stays deselected — clamping is
+          // only for keeping an actual selection on "the next note".
+          setSel(prevSel => (prevSel === null ? null : Math.min(prevSel, Math.max(freshNotes.length - 1, 0))))
         })
         .catch(reportError)
     },
@@ -641,7 +647,7 @@ export function useAppState() {
         }
         const freshNotes = await ipc.listNotes()
         setNotes(freshNotes)
-        setSel(previous => Math.min(previous, Math.max(freshNotes.length - 1, 0)))
+        setSel(previous => (previous === null ? null : Math.min(previous, Math.max(freshNotes.length - 1, 0))))
       } catch (error) {
         reportError(error)
         throw error
@@ -1273,7 +1279,13 @@ export function useAppState() {
   // `onGoSettings`/`onReturnToRecording`; a fresh arrow here every render
   // would defeat those memos exactly like an unstable `startRec`/
   // `togglePause`/`stopRec` would defeat RecordingView's.
-  const goNotes = useCallback(() => setView('notes'), [])
+  // "All notes" also *deselects* (issue #24): before, it only switched
+  // views, so from the notes view it visibly did nothing — the detail pane
+  // just kept showing whatever note was already open.
+  const goNotes = useCallback(() => {
+    setView('notes')
+    setSel(null)
+  }, [])
   const goSettings = useCallback(() => setView('settings'), [])
   // The REC pill's "return to recording" action — navigating to Settings or
   // the notes list mid-recording is legitimate (goNotes/goSettings above

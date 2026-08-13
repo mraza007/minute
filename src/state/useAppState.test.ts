@@ -396,6 +396,21 @@ describe('useAppState', () => {
     expect(result.current.view).toBe('notes')
   })
 
+  // Issue #24: "All notes" used to only switch views, which from the notes
+  // view visibly did nothing — the last-open note just stayed on screen.
+  it('goNotes deselects the current note', async () => {
+    const notes = [noteFixture({ id: 'note-0' }), noteFixture({ id: 'note-1' })]
+    setupIPC({ notes })
+    const result = await loaded()
+    act(() => result.current.selectNoteById('note-1'))
+    expect(result.current.selectedNoteId).toBe('note-1')
+    act(() => result.current.goNotes())
+    expect(result.current.sel).toBeNull()
+    expect(result.current.selectedNoteId).toBeNull()
+    act(() => result.current.selectNoteById('note-0'))
+    expect(result.current.selectedNoteId).toBe('note-0')
+  })
+
   it('selectNoteById updates sel/selectedNoteId to the matching note', async () => {
     const notes = [
       noteFixture({ id: 'note-0' }),
@@ -2127,14 +2142,16 @@ describe('useAppState', () => {
         expect(result.current.pendingSeek).toBeNull()
       })
 
-      it('navigating to Settings and back to Notes on the same note does not resurrect the seek', async () => {
+      it('navigating to Settings and back into the same note does not resurrect the seek', async () => {
         const notes = [noteFixture({ id: 'note-a' })]
         setupIPC({ notes })
         const result = await loaded()
 
         act(() => result.current.requestSeek('note-a', 15))
         act(() => result.current.goSettings())
-        act(() => result.current.goNotes())
+        // Back into the note itself — `goNotes` now deselects (issue #24),
+        // so the way back onto note-a is selecting it again.
+        act(() => result.current.selectNoteById('note-a'))
 
         expect(result.current.selectedNoteId).toBe('note-a')
         expect(result.current.pendingSeek).toBeNull()

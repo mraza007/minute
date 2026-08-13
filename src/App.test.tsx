@@ -314,9 +314,12 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
 
+    // "All notes" leaves Settings *and* deselects (issue #24) — the main
+    // pane shows the pick-a-note state, not the last-open note.
     fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
     expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Client call — Acme' })).not.toBeInTheDocument()
   })
 
   it('starts a recording from the Settings view and navigates to RecordingView', async () => {
@@ -453,9 +456,10 @@ describe('App', () => {
     })
 
     // Also navigate through Notes mid-recording — allowed, and still
-    // doesn't lose the recording.
+    // doesn't lose the recording. "All notes" lands on the deselected
+    // pick-a-note state (issue #24), REC pill intact.
     fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
-    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
 
     // Clicking the REC pill returns to the live recording view with every

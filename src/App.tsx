@@ -113,7 +113,9 @@ export default function App() {
   // back to notes[0]" rule NoteView used to apply internally before its
   // narrow-props refactor (Stage 3 Task 5); computed once here since
   // several of the props below (summaryStatus/summaryError) key off its id.
-  const selectedNoteMeta = s.notes[s.sel] ?? s.notes[0] ?? null
+  // `sel === null` is an *explicit* deselect ("All notes", issue #24) — no
+  // newest-note fallback there, that's the pick-a-note state.
+  const selectedNoteMeta = s.sel === null ? null : (s.notes[s.sel] ?? s.notes[0] ?? null)
 
   // NoteView/AiNotesPanel distinguish 'idle' | 'queued' | 'running' |
   // 'error' — `summaryStatus`'s `'done'` (and "no event seen this session")
@@ -210,6 +212,7 @@ export default function App() {
           {s.view === 'notes' && (
             <NoteView
               meta={selectedNoteMeta}
+              hasNotes={s.notes.length > 0}
               selectedMeta={s.selectedMeta}
               selectedTranscript={s.selectedTranscript}
               selectedSummary={s.selectedSummary}

@@ -76,6 +76,8 @@ export interface NoteViewProps {
   askStatus: AskStatus
   /** Whether any LLM generation (a summarize or an ask, for any note) is in flight app-wide — see `useNoteDetail`'s `llmBusy` docs. */
   llmBusy: boolean
+  /** Whether the library has any notes at all — with `meta` null, `true` renders the pick-a-note state ("All notes", issue #24) rather than the no-notes-yet one. */
+  hasNotes: boolean
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
   onReveal: (id: string) => void
@@ -108,6 +110,28 @@ const DELETE_CONFIRM_TIMEOUT_MS = 4000
 // literal on every render would defeat `displaySegments`'s useMemo below
 // (and its own exhaustive-deps lint) despite being value-equal every time.
 const EMPTY_SEGMENTS: StoredSegment[] = []
+
+/**
+ * The notes view with notes in the library but none selected — the state
+ * behind the sidebar's "All notes" (issue #24). Distinct from
+ * `EmptyNotesArea` below: that one's "no notes yet" copy is wrong the
+ * moment the library has notes to pick from.
+ */
+function PickNoteArea({ onStartRecording }: { onStartRecording: () => void }) {
+  return (
+    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
+      <div style={{ textAlign: 'center', maxWidth: 360 }}>
+        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 400, letterSpacing: '-.01em' }}>All notes</h1>
+        <div style={{ marginTop: 8, fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
+          Pick a note from the library list to open it.
+        </div>
+        <button type="button" className="btn-solid" style={{ marginTop: 18 }} onClick={onStartRecording}>
+          New recording
+        </button>
+      </div>
+    </main>
+  )
+}
 
 function EmptyNotesArea({ onStartRecording }: { onStartRecording: () => void }) {
   return (
@@ -777,6 +801,7 @@ export function NoteView({
   askHistory,
   askStatus,
   llmBusy,
+  hasNotes,
   onRename,
   onDelete,
   onReveal,
@@ -1084,7 +1109,13 @@ export function NoteView({
   }, [])
 
   if (!meta) {
-    return <EmptyNotesArea onStartRecording={onStartRecording} />
+    // `hasNotes` picks which empty state this is: an explicitly deselected
+    // library ("All notes", issue #24) vs. a library with nothing in it.
+    return hasNotes ? (
+      <PickNoteArea onStartRecording={onStartRecording} />
+    ) : (
+      <EmptyNotesArea onStartRecording={onStartRecording} />
+    )
   }
 
   const metaLine = noteMetaToListItem(meta, new Date()).meta
