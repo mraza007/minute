@@ -1755,6 +1755,29 @@ fn emit_recording_state(
     }
 }
 
+/// Best-effort macOS Dock badge ("REC") while a recording is active, so a
+/// forgotten recording stays visible even when the window is hidden behind
+/// the next meeting's apps. Deliberately not folded into
+/// [`emit_recording_state`]: the 1s ticker re-emits an unchanged state every
+/// second, and the badge only needs to change at start/stop. Badge state
+/// dies with the process, and the window-close path routes through
+/// `stop_recording` too, so there is no stale-badge cleanup to do.
+fn set_dock_recording_indicator(app: &AppHandle, active: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(main) = app.get_webview_window("main") else {
+            log::warn!("failed to update dock badge: no main window");
+            return;
+        };
+        let label = if active { Some("REC".to_string()) } else { None };
+        if let Err(e) = main.set_badge_label(label) {
+            log::warn!("failed to update dock badge: {e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, active);
+}
+
 /// Starts a new recording: creates a note via the store (title "New
 /// recording", using the caller-supplied `model_id` — the frontend passes
 /// the user's currently selected STT model — falling back to the persisted
@@ -1982,6 +2005,7 @@ pub async fn start_recording(
         &microphone_name,
         initial_input,
     );
+    set_dock_recording_indicator(&app, true);
     Ok(note_id)
 }
 
@@ -2274,6 +2298,7 @@ pub fn stop_recording(
         &microphone_name,
         final_input,
     );
+    set_dock_recording_indicator(&app, false);
 
     // Diarization runs *before* the auto-summary when it's enabled and its
     // models are downloaded, so the summary prompt sees real "Speaker 1..N"
