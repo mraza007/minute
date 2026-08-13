@@ -2067,6 +2067,19 @@ fn run_detector_thread(
         let recording = crate::audio::is_recording_active(&recorder);
         core.process(DetectorEvent::SetMinuteRecording(recording), Instant::now());
 
+        // Issue #40: the meeting-ended debounce belongs to one recording.
+        // Reset it here, on every loop iteration without a recording — NOT
+        // only inside the pure function's own !recording branch: that
+        // branch is unreachable when `MicStopped` (which fires the moment
+        // a recording ends and releases the mic) keeps the loop out of the
+        // mic_active timeout arm, and a stale `closed_since` from
+        // recording A would then arm recording B's countdown on its very
+        // first tick.
+        if !recording {
+            meeting_app_ever_seen = false;
+            meeting_app_closed_since = None;
+        }
+
         // Same every-iteration polling shape as the recording-state check
         // just above — see `DetectorEvent::SetSttModelInstalled`'s docs for
         // why this needs to be re-checked continuously rather than only at

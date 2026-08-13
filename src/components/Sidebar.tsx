@@ -223,6 +223,10 @@ export const Sidebar = memo(function Sidebar({
           aria-label={collapsed ? 'Expand library sidebar' : 'Collapse library sidebar'}
           title={collapsed ? 'Expand library sidebar' : 'Collapse library sidebar'}
           onClick={() => {
+            // Last click wins, deliberately — including a click made while
+            // a narrow window force-collapses the sidebar. "Peeking" and
+            // "changing my mind" are indistinguishable here, and one more
+            // click always restores the other preference.
             const next = !collapsed
             window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
             setCollapsed(next)
