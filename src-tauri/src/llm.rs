@@ -1353,11 +1353,25 @@ impl LlmEngineState {
             .loaded
             .as_ref()
             .ok_or_else(|| MinuteError::Other("no LLM model loaded".to_string()))?;
-        // A cancel aimed at a generation that already ended must not kill
-        // this one — clearing here bounds a stale `cancel_summarize` click
-        // to the gap before this line, not the whole next generation.
-        self.cancel.store(false, Ordering::SeqCst);
+        // Deliberately no `cancel` clear here: this runs once per
+        // *attempt* (generate_fitting_transcript retries call it again),
+        // and a clear per attempt would discard a cancel that arrived
+        // between retries. The once-per-request clear lives in
+        // [`reset_cancel`], called by `run_summarize`/`run_ask` before
+        // `ensure_loaded` — so a cancel that lands during a slow model
+        // load survives to the first gate check.
         generate_with_loaded(loaded, prompt, &params, &self.cancel)
+    }
+
+    /// Clears a stale cancel at the start of a generation *request* —
+    /// called by `run_summarize`/`run_ask` right after they take the
+    /// engine mutex, before `ensure_loaded`. A cancel aimed at a
+    /// generation that already ended must not kill the next one; a cancel
+    /// that arrives any time after this (model load, prompt decode,
+    /// token loop) belongs to this request and is honored at the next
+    /// [`generation_gate`] check.
+    pub fn reset_cancel(&self) {
+        self.cancel.store(false, Ordering::SeqCst);
     }
 
     /// Records that the currently loaded model was just used — resets the
@@ -1806,6 +1820,22 @@ fn generate_with_loaded(
             .add(*token, i as i32, &[0], i == last_index)
             .map_err(|e| MinuteError::Other(format!("failed to add prompt token to batch: {e}")))?;
     }
+    // Issue #30: the generation used to be unbounded in wall-clock time —
+    // one that degraded to seconds-per-token (GPU contention with a live
+    // recording's Whisper context is the known trigger, see `audio.rs`'s
+    // start_recording docs) held `LlmBusy` for hours, and everything
+    // queued behind it sat stranded until an app restart. The deadline
+    // starts here so it covers the prompt decode too, and the gate runs
+    // once per generated token below. A single FFI call that never
+    // returns is still out of reach of cooperative checks like these, but
+    // every observed wedge has been slow progress, not a frozen call.
+    let deadline = Instant::now() + Duration::from_secs(GENERATION_TIMEOUT_SECS);
+
+    // A cancel that arrived during `ensure_loaded` (multi-GB model loads
+    // take seconds) must not pay for the full prompt decode first — this
+    // is the last interruptible point before that single, potentially
+    // minutes-long FFI call.
+    generation_gate(cancel, deadline, Instant::now())?;
     ctx.decode(&mut batch)
         .map_err(|e| MinuteError::Other(format!("prompt decode failed: {e}")))?;
 
@@ -1819,17 +1849,6 @@ fn generate_with_loaded(
     let mut output_bytes: Vec<u8> = Vec::new();
     let mut n_cur = batch.n_tokens();
     let mut generated = 0usize;
-
-    // Issue #30: the loop below used to be unbounded in wall-clock time —
-    // a generation that degraded to seconds-per-token (GPU contention with
-    // a live recording's Whisper context is the known trigger, see
-    // `audio.rs`'s start_recording docs) held `LlmBusy` for hours, and
-    // everything queued behind it sat stranded until an app restart. The
-    // deadline and the cancel flag are both checked once per token; a
-    // single `ctx.decode` call that never returns is still out of reach of
-    // cooperative checks like these, but every observed wedge has been
-    // slow-token progress, not a frozen FFI call.
-    let deadline = Instant::now() + Duration::from_secs(GENERATION_TIMEOUT_SECS);
 
     loop {
         generation_gate(cancel, deadline, Instant::now())?;
@@ -2283,6 +2302,7 @@ fn run_ask(ctx: &AskWorkerCtx) -> Result<String> {
 
     let raw_output = {
         let mut engine = lock_llm_engine(&ctx.engine);
+        engine.reset_cancel();
         engine.ensure_loaded(&ctx.model_id, &ctx.model_path, ctx.preferred_context)?;
         let available_tokens = (engine.loaded_context_tokens().unwrap_or(LLM_CONTEXT_TOKENS)
             as usize)
@@ -2610,6 +2630,7 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
 
     let raw_output = {
         let mut engine = lock_llm_engine(&ctx.engine);
+        engine.reset_cancel();
         engine.ensure_loaded(&ctx.model_id, &ctx.model_path, ctx.preferred_context)?;
         let params = generation_params_for(ctx.summary_style);
         let available_tokens = (engine.loaded_context_tokens().unwrap_or(LLM_CONTEXT_TOKENS)
