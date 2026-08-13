@@ -3,6 +3,7 @@ import type { LiveTranscriptGroup } from '../state/adapters'
 import { RecordingView } from './RecordingView'
 
 const base = {
+  quietSecs: 0,
   liveSegments: [] as LiveTranscriptGroup[],
   paused: false,
   togglePause: vi.fn(),
@@ -82,6 +83,25 @@ describe('RecordingView', () => {
       expect(screen.getByText('Microphone + system audio · macOS default input')).toBeInTheDocument()
       expect(screen.getByText('Apps and call audio')).toBeInTheDocument()
       expect(screen.queryByText(/Turn on system audio in Settings/)).not.toBeInTheDocument()
+    })
+  })
+
+  // Issue #42: the auto-stop arm window is visible instead of a silent
+  // 2-minute mystery.
+  describe('pre-arm quiet feedback', () => {
+    it('shows the quiet run once it passes 30 seconds', () => {
+      render(<RecordingView {...base} quietSecs={84} />)
+      expect(screen.getByText(/Quiet for 0?1:24/)).toBeInTheDocument()
+    })
+
+    it('stays hidden below 30 seconds', () => {
+      render(<RecordingView {...base} quietSecs={20} />)
+      expect(screen.queryByText(/Quiet for/)).not.toBeInTheDocument()
+    })
+
+    it('yields to the countdown banner once armed', () => {
+      render(<RecordingView {...base} quietSecs={130} autoStopSeconds={110} />)
+      expect(screen.queryByText(/Quiet for/)).not.toBeInTheDocument()
     })
   })
 

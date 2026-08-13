@@ -196,6 +196,8 @@ export function useAppState() {
   const [tSpeakerProfiles, setTSpeakerProfiles] = useState(false)
   const [tAutoApplySpeakerNames, setTAutoApplySpeakerNames] = useState(true)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
+  /** Issue #42: seconds of the current quiet run, from `recording-state` — the pre-arm "Quiet for M:SS" feedback. */
+  const [quietSecs, setQuietSecs] = useState(0)
 
   // Auto-update (issue #4). `tAutoUpdateCheck` starts `null` (= "settings
   // not loaded yet") so the periodic-check effect below never fires a
@@ -855,6 +857,7 @@ export function useAppState() {
       setPaused(payload.state === 'paused')
       setSystemAudioActive(payload.systemAudioActive)
       setMicrophoneName(payload.microphoneName || 'Default microphone')
+      setQuietSecs(payload.quietSecs ?? 0)
       const nextHealth = nextCaptureHealth(captureHealthTracker.current, payload)
       captureHealthTracker.current = nextHealth.tracker
       setCaptureHealth(nextHealth.health)
@@ -1014,6 +1017,7 @@ export function useAppState() {
         setActiveNoteId(noteId)
         setLiveSegmentsRaw([])
         setRecElapsed(0)
+        setQuietSecs(0)
         setPaused(false)
         setSttStatus('idle')
         setSttError(null)
@@ -1301,6 +1305,7 @@ export function useAppState() {
             setActiveNoteId(noteId)
             setLiveSegmentsRaw([])
             setRecElapsed(0)
+            setQuietSecs(0)
             setPaused(false)
             setSttStatus('idle')
             setSttError(null)
@@ -1768,6 +1773,7 @@ export function useAppState() {
     tAutoStopRecording,
     toggleAutoStopRecording,
     autoStopSeconds,
+    quietSecs,
     keepRecording,
     restartWithSystemAudio,
     appVersion,

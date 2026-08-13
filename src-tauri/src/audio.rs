@@ -1053,12 +1053,12 @@ const AUTO_STOP_SILENCE_PEAK_FLOOR: f32 = 0.02;
 /// Continuous silence before the auto-stop countdown arms — issue #9.
 /// Originally 10 minutes, tuned for the accidental-overnight-recording
 /// case; issue #28 showed people expect the stop within a few minutes of
-/// a meeting actually ending, and 10 silent minutes with zero feedback
-/// reads as "the feature doesn't work". 3 minutes keeps the arm point
-/// past ordinary mid-meeting lulls (any peak above
-/// [`AUTO_STOP_SILENCE_PEAK_FLOOR`] resets the run) while surfacing the
-/// countdown banner inside the window someone waits after a meeting.
-const AUTO_STOP_ARM_SECS: u64 = 3 * 60;
+/// a meeting actually ending, and issue #42's reporter twice waited ~2
+/// minutes and concluded it was broken. 2 minutes still clears ordinary
+/// mid-meeting lulls (any peak above [`AUTO_STOP_SILENCE_PEAK_FLOOR`]
+/// resets the sound run; any substantial segment resets the words run),
+/// and the 2-minute countdown on top keeps a real cancel window.
+const AUTO_STOP_ARM_SECS: u64 = 2 * 60;
 
 /// Countdown, once armed, before the recording is actually stopped —
 /// surfaced tick-by-tick to the frontend so "Keep recording" has a real
@@ -1116,6 +1116,22 @@ const CLOSING_PHRASES: &[&str] = &[
     "catch you later",
     "cheers",
 ];
+
+/// Minimum alphanumeric characters before a transcript segment counts as
+/// real speech for the words-silence signal (issue #42). Whisper turns
+/// notification chimes and keystrokes into short nonsense fragments, and
+/// each one was resetting the "nothing has been said" counter — so
+/// auto-stop never fired in a normal room, again. A character count
+/// rather than a word count so short real CJK utterances (no spaces)
+/// still clear it. Deliberately NOT applied to the farewell signal —
+/// a real "Bye." is 3 characters.
+const WORDS_RESET_MIN_ALNUM: usize = 10;
+
+/// Whether `text` has enough alphanumeric content to count as real speech
+/// for the words-silence reset — see [`WORDS_RESET_MIN_ALNUM`]. Pure.
+fn is_substantial_speech(text: &str) -> bool {
+    text.chars().filter(|c| c.is_alphanumeric()).count() >= WORDS_RESET_MIN_ALNUM
+}
 
 /// Whether `text` ends with one of [`CLOSING_PHRASES`], ignoring case and
 /// trailing punctuation/whitespace. Pure — unit-tested directly.
@@ -1871,6 +1887,12 @@ struct RecordingStateEvent {
     /// delivering data even when cpal has not produced an explicit error.
     input_sequence: u64,
     input_error: Option<String>,
+    /// Issue #42: seconds of the current quiet run (the further along of
+    /// the sound-level and no-transcribed-words counters) — lets the
+    /// recording view show "Quiet for M:SS" BEFORE the auto-stop
+    /// countdown arms, so a user waiting out the arm window can see the
+    /// feature counting instead of concluding it's broken.
+    quiet_secs: u64,
 }
 
 fn emit_recording_state(
@@ -1881,6 +1903,7 @@ fn emit_recording_state(
     system_audio_active: bool,
     microphone_name: &str,
     input: RecordingInputSnapshot,
+    quiet_secs: u64,
 ) {
     let event = RecordingStateEvent {
         note_id: note_id.to_string(),
@@ -1892,10 +1915,21 @@ fn emit_recording_state(
         input_peak: input.peak,
         input_sequence: input.sequence,
         input_error: input.error,
+        quiet_secs,
     };
     if let Err(e) = app.emit("recording-state", event) {
         log::warn!("failed to emit recording-state for {note_id}: {e}");
     }
+}
+
+/// The display value for [`RecordingStateEvent::quiet_secs`]: whichever
+/// silence run is further along — matching how [`auto_stop_tick`] arms on
+/// either. Display-only; the arming logic reads the raw counters itself.
+fn quiet_secs_of(shared: &SharedState) -> u64 {
+    let sound = shared.silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
+    let words =
+        shared.words_silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
+    sound.max(words)
 }
 
 /// Best-effort macOS Dock badge ("REC") while a recording is active, so a
@@ -2093,6 +2127,7 @@ pub async fn start_recording(
                 system_audio_active,
                 &tick_microphone_name,
                 recording_input_snapshot(&tick_shared),
+                quiet_secs_of(&tick_shared),
             );
 
             let enabled = settings::lock_settings(&tick_settings).auto_stop_recording;
@@ -2178,6 +2213,7 @@ pub async fn start_recording(
         system_audio_active,
         &microphone_name,
         initial_input,
+        0,
     );
     set_dock_recording_indicator(&app, true);
     Ok(note_id)
@@ -2248,10 +2284,15 @@ fn spawn_stt_worker_if_model_installed(
                     .closing_phrase
                     .store(fresh && is_closing_phrase(text), Ordering::Relaxed);
                 // Issue #38: a real transcribed segment is the only thing
-                // that resets the words-silence run.
-                shared
-                    .words_silent_run_samples
-                    .store(0, Ordering::Relaxed);
+                // that resets the words-silence run — and issue #42: a
+                // two-word chime hallucination is not a real segment.
+                // Short REAL replies still keep the recording alive via
+                // the sound-level counter their audio resets.
+                if is_substantial_speech(text) {
+                    shared
+                        .words_silent_run_samples
+                        .store(0, Ordering::Relaxed);
+                }
             }
         })),
         on_fatal_error: Some(Box::new({
@@ -2287,6 +2328,7 @@ pub fn pause_recording(
     let system_audio_active = active.system_audio_active;
     let microphone_name = active.microphone_name.clone();
     let input = recording_input_snapshot(&active.handle.shared);
+    let quiet_secs = quiet_secs_of(&active.handle.shared);
     drop(guard);
     emit_recording_state(
         &app,
@@ -2296,6 +2338,7 @@ pub fn pause_recording(
         system_audio_active,
         &microphone_name,
         input,
+        quiet_secs,
     );
     Ok(())
 }
@@ -2332,6 +2375,7 @@ pub fn resume_recording(
     let system_audio_active = active.system_audio_active;
     let microphone_name = active.microphone_name.clone();
     let input = recording_input_snapshot(&active.handle.shared);
+    let quiet_secs = quiet_secs_of(&active.handle.shared);
     drop(guard);
     emit_recording_state(
         &app,
@@ -2341,6 +2385,7 @@ pub fn resume_recording(
         system_audio_active,
         &microphone_name,
         input,
+        quiet_secs,
     );
     Ok(())
 }
@@ -2534,6 +2579,7 @@ pub fn stop_recording(
         system_audio_active,
         &microphone_name,
         final_input,
+        0,
     );
 
     // Issue #35: with the transcript complete and the note finalized,
@@ -2926,12 +2972,14 @@ mod tests {
             input_peak: 0.7,
             input_sequence: 88,
             input_error: None,
+            quiet_secs: 42,
         })
         .unwrap();
         assert!((value["inputRms"].as_f64().unwrap() - 0.08).abs() < 1e-6);
         assert!((value["inputPeak"].as_f64().unwrap() - 0.7).abs() < 1e-6);
         assert_eq!(value["inputSequence"], 88);
         assert!(value["inputError"].is_null());
+        assert_eq!(value["quietSecs"], 42);
     }
 
     // --- downmix_to_mono -----------------------------------------------
@@ -3207,6 +3255,21 @@ mod tests {
                 seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
             }
         );
+    }
+
+    /// Issue #42: chime/keystroke hallucinations are short — they must not
+    /// count as real speech for the words-silence reset, while any real
+    /// sentence (including spaceless CJK) must.
+    #[test]
+    fn substantial_speech_filters_short_hallucinations_in_any_script() {
+        assert!(!is_substantial_speech("Bye."));
+        assert!(!is_substantial_speech("Thanks."));
+        assert!(!is_substantial_speech("Ok"));
+        assert!(!is_substantial_speech("♪ ding ♪"));
+        assert!(!is_substantial_speech(""));
+
+        assert!(is_substantial_speech("Let's move on to the budget."));
+        assert!(is_substantial_speech("それでは次の議題に移りましょう"));
     }
 
     #[test]

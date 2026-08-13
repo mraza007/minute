@@ -285,6 +285,7 @@ export default function App() {
               onDismissProcessingFailure={s.dismissProcessingFailure}
               autoStopSeconds={s.autoStopSeconds}
               onKeepRecording={s.keepRecording}
+              quietSecs={s.quietSecs}
               canRestartWithSystemAudio={s.sysAudioAvailability === 'ready'}
               onRestartWithSystemAudio={s.restartWithSystemAudio}
             />

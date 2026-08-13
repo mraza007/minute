@@ -73,6 +73,7 @@ describe('ipc/events', () => {
       inputPeak: 0.4,
       inputSequence: 40,
       inputError: null,
+      quietSecs: 0,
     }
     await emit('recording-state', payload)
 
@@ -183,6 +184,7 @@ describe('ipc/events', () => {
       inputPeak: 0.4,
       inputSequence: 90,
       inputError: null,
+      quietSecs: 0,
     })
 
     expect(cb).not.toHaveBeenCalled()

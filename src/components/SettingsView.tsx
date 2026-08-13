@@ -758,7 +758,7 @@ export function SettingsView({
             label="Stop automatically when the meeting seems over"
           />
           <div style={noteTextStyle}>
-            If nothing transcribable has been said for 3 minutes, Minute shows a warning with a 2-minute countdown,
+            If nothing transcribable has been said for 2 minutes, Minute shows a warning with a 2-minute countdown,
             then stops and transcribes on its own. When the meeting ends with a goodbye, the warning appears after 1
             minute instead. New speech, or one click, keeps it going. Saves a forgotten recording from running
             overnight.

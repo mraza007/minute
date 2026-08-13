@@ -29,6 +29,7 @@ describe('logical three-hour recording soak', () => {
         inputPeak: 0.42,
         inputSequence: index + 1,
         inputError: null,
+        quietSecs: 0,
       }).tracker
     }
 
@@ -51,6 +52,7 @@ describe('logical three-hour recording soak', () => {
       inputPeak: 0.3,
       inputSequence,
       inputError: null,
+      quietSecs: 0,
     })
 
     tracker = nextCaptureHealth(tracker, event(10, 100)).tracker

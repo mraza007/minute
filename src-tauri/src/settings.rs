@@ -116,7 +116,7 @@ pub struct Settings {
     #[serde(default)]
     pub detect_speakers: bool,
     /// Issue #9: when both audio sources stay effectively silent — or
-    /// nothing transcribable has been said (issue #38) — for 3 minutes
+    /// nothing transcribable has been said (issue #38) — for 2 minutes
     /// mid-recording, warn with a 2-minute countdown and then
     /// stop & transcribe (see `audio`'s `auto_stop_tick`; retuned from
     /// 10+10 minutes for issue #28, and armed after just 1 minute

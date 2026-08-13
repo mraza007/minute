@@ -663,6 +663,7 @@ describe('useAppState', () => {
         inputPeak: 0.4,
         inputSequence: 1,
         inputError: null,
+        quietSecs: 0,
         ...overrides,
       }
     }

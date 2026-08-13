@@ -66,6 +66,8 @@ interface RecordingViewProps {
   autoStopSeconds: number | null
   /** "Keep recording" on the auto-stop banner — suppresses auto-stop for the rest of this recording. */
   onKeepRecording: () => void
+  /** Issue #42: seconds of the current quiet run — shows "Quiet for M:SS" before the countdown arms. */
+  quietSecs: number
   /** Whether system audio capture is even possible on this machine (macOS 13+, Screen Recording granted) — gates the restart offer below. */
   canRestartWithSystemAudio: boolean
   /**
@@ -671,6 +673,7 @@ export const RecordingView = memo(function RecordingView({
   onDismissProcessingFailure,
   autoStopSeconds,
   onKeepRecording,
+  quietSecs,
   canRestartWithSystemAudio,
   onRestartWithSystemAudio,
 }: RecordingViewProps) {
@@ -823,6 +826,14 @@ export const RecordingView = memo(function RecordingView({
                 <button type="button" className="btn-quiet" onClick={stopRec}>
                   Stop now
                 </button>
+              </div>
+            )}
+            {/* Issue #42: the arm window used to be invisible — a user
+                sitting in silence saw nothing until the countdown banner
+                appeared, and reasonably concluded auto-stop was broken. */}
+            {autoStopSeconds === null && !paused && quietSecs >= 30 && (
+              <div className="recording-detail-note" role="status" style={{ padding: '4px 0' }}>
+                Quiet for {formatMmSs(quietSecs)} — Minute offers to stop after 2 quiet minutes.
               </div>
             )}
             {processingFailure?.stage === 'saving' && (
