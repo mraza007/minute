@@ -118,7 +118,9 @@ pub struct Settings {
     /// Issue #9: when both audio sources stay effectively silent for 3
     /// minutes mid-recording, warn with a 2-minute countdown and then
     /// stop & transcribe (see `audio`'s `auto_stop_tick`; retuned from
-    /// 10+10 minutes for issue #28). On by default — like
+    /// 10+10 minutes for issue #28, and armed after just 1 silent minute
+    /// when the transcript ends with a closing phrase — issue #36). On by
+    /// default — like
     /// `autoUpdateCheck`, a deliberate exception to the opt-in
     /// convention: the failure it prevents (an accidental overnight
     /// recording — hours of dead air, a huge transcription job, wasted

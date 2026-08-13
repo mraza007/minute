@@ -368,6 +368,11 @@ pub struct WorkerCtx {
     pub note_id: String,
     pub store: SharedStore,
     pub emit: Box<dyn Fn(SttEvent) + Send + 'static>,
+    /// Called with every persisted (non-dead-air) segment's text, in
+    /// order — the auto-stop farewell trigger's feed (issue #36; see
+    /// `audio::spawn_stt_worker_if_model_installed` for the one real
+    /// hook). `None` where nothing listens, e.g. most tests.
+    pub on_segment: Option<Box<dyn Fn(&str) + Send + 'static>>,
 }
 
 /// Spawned thread that owns a `WhisperContext`/`WhisperState`, consumes
@@ -455,6 +460,10 @@ fn handle_window_segments(
                 seg.text
             );
             continue;
+        }
+
+        if let Some(on_segment) = &ctx.on_segment {
+            on_segment(&seg.text);
         }
 
         let stored = StoredSegment {
@@ -792,6 +801,7 @@ mod tests {
             note_id: note_id.clone(),
             store,
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+            on_segment: None,
         };
         (ctx, note_id, events, dir)
     }

@@ -851,6 +851,13 @@ struct SharedState {
     /// Set by the `dismiss_auto_stop` command ("Keep recording") —
     /// suppresses auto-stop for the remainder of this recording.
     auto_stop_disabled: AtomicBool,
+    /// Whether the most recent *persisted* transcript segment ended with a
+    /// closing phrase ("goodbye", "thanks everyone", …) — issue #36's
+    /// fast-path signal for auto-stop. Written by the STT worker's
+    /// `on_segment` hook (any later speech overwrites it), read by the
+    /// per-second ticker. See [`is_closing_phrase`] for the matching rules
+    /// and the hallucination guard in `spawn_stt_worker_if_model_installed`.
+    closing_phrase: AtomicBool,
 }
 
 fn store_max_f32(target: &AtomicU32, value: f32) {
@@ -1037,6 +1044,65 @@ const AUTO_STOP_ARM_SECS: u64 = 3 * 60;
 /// what "stop when my meeting ends" feels like.
 const AUTO_STOP_COUNTDOWN_SECS: u64 = 2 * 60;
 
+/// Issue #36's fast path: when the transcript's last persisted segment
+/// ended with a closing phrase, the countdown arms after this much
+/// silence instead of [`AUTO_STOP_ARM_SECS`] — "goodbye" plus a minute of
+/// nothing is a meeting that ended, not a lull.
+const FAREWELL_ARM_SECS: u64 = 60;
+
+/// A closing-phrase segment only counts if it was transcribed while the
+/// silence run was still shorter than this — Whisper famously hallucinates
+/// "Thank you." over dead air, and those segments arrive *deep into* a
+/// silence run, whereas a real farewell is transcribed within a few
+/// seconds of being spoken.
+const FAREWELL_FRESH_SECS: u64 = 10;
+
+/// Closing phrases that mark a meeting's end when the transcript's last
+/// segment ends with one (issue #36) — matched by [`is_closing_phrase`]
+/// after lowercasing and trailing-punctuation strip. End-of-segment only:
+/// "thank you means a lot" mid-sentence must not count.
+const CLOSING_PHRASES: &[&str] = &[
+    "thank you",
+    "thank you all",
+    "thanks",
+    "thanks everyone",
+    "thanks all",
+    "bye",
+    "bye bye",
+    "goodbye",
+    "see you",
+    "see ya",
+    "see you later",
+    "see you next week",
+    "see you tomorrow",
+    "talk soon",
+    "talk to you later",
+    "talk to you soon",
+    "take care",
+    "have a good one",
+    "have a good day",
+    "have a great day",
+    "catch you later",
+    "cheers",
+];
+
+/// Whether `text` ends with one of [`CLOSING_PHRASES`], ignoring case and
+/// trailing punctuation/whitespace. Pure — unit-tested directly.
+fn is_closing_phrase(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    let trimmed = lowered.trim_end_matches(|c: char| !c.is_alphanumeric());
+    CLOSING_PHRASES.iter().any(|phrase| {
+        trimmed.ends_with(phrase)
+            // Word boundary: "lullaby(e)" must not match "bye". A full
+            // match, or one preceded by a non-alphanumeric, is a real
+            // phrase ending.
+            && trimmed[..trimmed.len() - phrase.len()]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+    })
+}
+
 /// Extends or resets the consecutive-silence run for one appended block —
 /// see [`SharedState::silent_run_samples`]. Free function on the shared
 /// handle so the writer-thread tests can drive it directly.
@@ -1070,9 +1136,15 @@ fn auto_stop_tick(
     dismissed: bool,
     paused: bool,
     silent_secs: u64,
+    closing_tail: bool,
     countdown: &mut Option<u64>,
 ) -> AutoStopTick {
-    if !enabled || dismissed || paused || silent_secs < AUTO_STOP_ARM_SECS {
+    // Two ways to arm (issue #36): the plain silence threshold, or the
+    // shorter farewell threshold when the transcript's last segment ended
+    // with a closing phrase.
+    let armed = silent_secs >= AUTO_STOP_ARM_SECS
+        || (closing_tail && silent_secs >= FAREWELL_ARM_SECS);
+    if !enabled || dismissed || paused || !armed {
         let was_pending = countdown.take().is_some();
         return AutoStopTick::Idle { was_pending };
     }
@@ -1418,6 +1490,7 @@ impl Recorder {
             input_sequence: AtomicU64::new(0),
             silent_run_samples: AtomicU64::new(0),
             auto_stop_disabled: AtomicBool::new(false),
+            closing_phrase: AtomicBool::new(false),
         });
         lock(&shared.tracker).start(Instant::now());
 
@@ -1919,8 +1992,14 @@ pub async fn start_recording(
     let microphone_name = handle.microphone_name().to_string();
     let initial_input = recording_input_snapshot(&handle.shared);
 
-    let stt_worker =
-        spawn_stt_worker_if_model_installed(&app, &store, &note_id, &model_id, sample_rx);
+    let stt_worker = spawn_stt_worker_if_model_installed(
+        &app,
+        &store,
+        &note_id,
+        &model_id,
+        sample_rx,
+        &handle.shared,
+    );
 
     let tick_app = app.clone();
     let tick_note_id = note_id.clone();
@@ -1956,11 +2035,13 @@ pub async fn start_recording(
             let dismissed = tick_shared.auto_stop_disabled.load(Ordering::Relaxed);
             let silent_secs =
                 tick_shared.silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
+            let closing_tail = tick_shared.closing_phrase.load(Ordering::Relaxed);
             match auto_stop_tick(
                 enabled,
                 dismissed,
                 paused,
                 silent_secs,
+                closing_tail,
                 &mut auto_stop_countdown,
             ) {
                 AutoStopTick::Idle { was_pending } => {
@@ -2041,6 +2122,7 @@ fn spawn_stt_worker_if_model_installed(
     note_id: &str,
     model_id: &str,
     sample_rx: Receiver<Arc<Vec<f32>>>,
+    shared: &Arc<SharedState>,
 ) -> Option<std::thread::JoinHandle<()>> {
     let models_root = match app.path().app_data_dir() {
         Ok(dir) => dir,
@@ -2076,6 +2158,22 @@ fn spawn_stt_worker_if_model_installed(
         note_id: note_id.to_string(),
         store: store.inner().clone(),
         emit: Box::new(stt::tauri_emit(app.clone())),
+        // Issue #36: feed the auto-stop farewell signal. A segment that
+        // lands while the silence run is already deep is a dead-air
+        // hallucination (Whisper's "Thank you." over silence), so it
+        // *clears* the flag rather than setting it — only a phrase
+        // transcribed close behind live audio counts as a real goodbye.
+        on_segment: Some(Box::new({
+            let shared = shared.clone();
+            move |text: &str| {
+                let silent_secs = shared.silent_run_samples.load(Ordering::Relaxed)
+                    / TARGET_SAMPLE_RATE as u64;
+                let fresh = silent_secs < FAREWELL_FRESH_SECS;
+                shared
+                    .closing_phrase
+                    .store(fresh && is_closing_phrase(text), Ordering::Relaxed);
+            }
+        })),
     };
     Some(stt::SttWorker::spawn(model_path, sample_rx, worker_ctx))
 }
@@ -2130,6 +2228,15 @@ pub fn resume_recording(
         .as_ref()
         .ok_or_else(|| "no active recording".to_string())?;
     active.handle.resume();
+    // Issue #36: a farewell heard before the pause is stale by resume —
+    // the user resuming is itself proof the meeting continues, and the
+    // frozen silence counter would otherwise pair a pre-pause "goodbye"
+    // with post-resume silence into a too-early auto-stop arm.
+    active
+        .handle
+        .shared
+        .closing_phrase
+        .store(false, Ordering::Relaxed);
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
     let system_audio_active = active.system_audio_active;
@@ -2796,7 +2903,7 @@ mod tests {
     #[test]
     fn auto_stop_tick_stays_idle_below_the_arm_threshold() {
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
         assert_eq!(countdown, None);
     }
@@ -2804,7 +2911,7 @@ mod tests {
     #[test]
     fn auto_stop_tick_counts_down_then_fires() {
         let mut countdown = None;
-        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, &mut countdown);
+        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, false, &mut countdown);
         assert_eq!(
             first,
             AutoStopTick::Pending {
@@ -2813,26 +2920,26 @@ mod tests {
         );
         // Drain the countdown.
         for _ in 0..AUTO_STOP_COUNTDOWN_SECS - 1 {
-            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, &mut countdown) {
+            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, false, &mut countdown) {
                 AutoStopTick::Pending { .. } => {}
                 other => panic!("expected Pending mid-countdown, got {other:?}"),
             }
         }
-        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, &mut countdown);
+        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, false, &mut countdown);
         assert_eq!(last, AutoStopTick::Fire);
     }
 
     #[test]
     fn auto_stop_tick_cancels_when_audio_returns_mid_countdown() {
         let mut countdown = None;
-        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, &mut countdown);
+        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, false, &mut countdown);
         assert!(countdown.is_some());
         // Audio came back: the silence run reset well below the arm bar.
-        let tick = auto_stop_tick(true, false, false, 3, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, 3, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
         assert_eq!(countdown, None);
         // A later fresh silence stretch re-arms with a full countdown.
-        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, &mut countdown);
+        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, false, &mut countdown);
         assert_eq!(
             re_armed,
             AutoStopTick::Pending {
@@ -2854,11 +2961,55 @@ mod tests {
                 dismissed,
                 paused,
                 AUTO_STOP_ARM_SECS * 2,
+                false,
                 &mut countdown,
             );
             assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
             assert_eq!(countdown, None, "case ({enabled},{dismissed},{paused})");
         }
+    }
+
+    // --- farewell fast path (issue #36) --------------------------------------
+
+    #[test]
+    fn closing_tail_arms_the_countdown_at_the_farewell_threshold() {
+        let mut countdown = None;
+        // Below even the farewell threshold: idle regardless of the tail.
+        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS - 1, true, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+
+        // At the farewell threshold with a closing tail: armed, full
+        // countdown — far earlier than AUTO_STOP_ARM_SECS.
+        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS, true, &mut countdown);
+        assert_eq!(
+            tick,
+            AutoStopTick::Pending {
+                seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
+            }
+        );
+    }
+
+    #[test]
+    fn no_closing_tail_still_waits_for_the_plain_silence_threshold() {
+        let mut countdown = None;
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, false, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+    }
+
+    #[test]
+    fn is_closing_phrase_matches_real_farewells_at_the_end_only() {
+        assert!(is_closing_phrase("Thanks everyone!"));
+        assert!(is_closing_phrase("Alright, talk soon."));
+        assert!(is_closing_phrase("Thank you."));
+        assert!(is_closing_phrase("Okay bye"));
+        assert!(is_closing_phrase("See you next week!"));
+        assert!(is_closing_phrase("HAVE A GREAT DAY!!!"));
+
+        // Mid-sentence occurrences and lookalikes must not count.
+        assert!(!is_closing_phrase("thank you means a lot to the team"));
+        assert!(!is_closing_phrase("she sang a lullabye"));
+        assert!(!is_closing_phrase("let's review the budget"));
+        assert!(!is_closing_phrase(""));
     }
 
     // --- mix_into (Stage 5 Task 5) ------------------------------------------
@@ -3111,6 +3262,7 @@ mod tests {
             input_sequence: AtomicU64::new(0),
             silent_run_samples: AtomicU64::new(0),
             auto_stop_disabled: AtomicBool::new(false),
+            closing_phrase: AtomicBool::new(false),
         })
     }
 
@@ -3665,6 +3817,7 @@ mod tests {
             note_id: meta.id.clone(),
             store: store.clone(),
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+            on_segment: None,
         };
         let worker = stt::SttWorker::spawn(model_path, sample_rx, worker_ctx);
 
@@ -3803,6 +3956,7 @@ mod tests {
             note_id: meta.id.clone(),
             store: store.clone(),
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+            on_segment: None,
         };
         let worker = stt::SttWorker::spawn(model_path, sample_rx, worker_ctx);
 
