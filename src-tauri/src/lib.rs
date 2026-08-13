@@ -714,6 +714,7 @@ pub fn run() {
             undo_speaker_merge,
             toggle_action_item,
             llm::summarize_note,
+            llm::cancel_summarize,
             llm::ask_note,
             diar::diarize_note,
             diar::dismiss_speaker_suggestion,
@@ -891,6 +892,14 @@ pub fn run() {
             // `llm::SharedLlmEngine`.
             let llm_engine: SharedLlmEngine = llm::open_shared();
             app.manage(llm_engine.clone());
+
+            // Cooperative cancel for the in-flight generation (issue #30) —
+            // a clone of the engine's own flag, taken here while nothing can
+            // possibly be generating, so `cancel_summarize` never has to
+            // touch the engine mutex a running generation is holding.
+            let generation_cancel =
+                llm::GenerationCancel(llm::lock_llm_engine(&llm_engine).cancel_flag());
+            app.manage(generation_cancel);
 
             // Single-generation-at-a-time gate, app-wide (a summarize and an ask
             // share it — see `llm::LlmBusy`'s docs), deliberately a separate

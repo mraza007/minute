@@ -240,6 +240,7 @@ export default function App() {
               onCopyError={s.reportError}
               onToggleActionItem={s.toggleActionItem}
               onRegenerateSummary={s.regenerateSummary}
+              onCancelSummary={s.cancelSummary}
               onAsk={s.askQuestion}
               onGoSettings={s.goSettings}
               onSetPinned={s.setNotePinned}

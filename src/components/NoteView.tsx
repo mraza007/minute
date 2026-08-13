@@ -82,6 +82,8 @@ export interface NoteViewProps {
   onCopyError: (err: unknown) => void
   onToggleActionItem: (id: string, index: number, done: boolean) => void
   onRegenerateSummary: (id: string) => void
+  /** Cancels a queued or running summarization for this note (issue #30). */
+  onCancelSummary: (id: string) => void
   onAsk: (id: string, question: string) => void
   onGoSettings: () => void
   onSetPinned: (id: string, pinned: boolean) => void
@@ -133,6 +135,7 @@ function NoteOverview({
   summaryError,
   llmInstalled,
   onGenerate,
+  onCancel,
   onToggleAction,
   onOpenTranscript,
   onFocusAsk,
@@ -151,6 +154,8 @@ function NoteOverview({
   summaryError?: string
   llmInstalled: boolean
   onGenerate: () => void
+  /** Cancels this note's queued/running summarization (issue #30). */
+  onCancel: () => void
   onToggleAction: (index: number, done: boolean) => void
   onOpenTranscript: (seconds?: number) => void
   onFocusAsk: () => void
@@ -305,9 +310,14 @@ function NoteOverview({
           </p>
           {/* No Generate button while running *or* queued (issue #11) —
               the work is already scheduled, and offering the button again
-              is how the same note gets summarized twice. */}
+              is how the same note gets summarized twice. Cancel takes its
+              place (issue #30): the way out of a stuck or unwanted
+              generation used to be restarting the app. */}
           {llmInstalled && summaryStatus !== 'running' && summaryStatus !== 'queued' && (
             <button type="button" className="btn-solid" onClick={onGenerate}>Generate summary</button>
+          )}
+          {(summaryStatus === 'running' || summaryStatus === 'queued') && (
+            <button type="button" className="btn-outline" onClick={onCancel}>Cancel</button>
           )}
         </section>
       ) : null}
@@ -773,6 +783,7 @@ export function NoteView({
   onCopyError,
   onToggleActionItem,
   onRegenerateSummary,
+  onCancelSummary,
   onAsk,
   onGoSettings,
   onSetPinned,
@@ -1039,6 +1050,9 @@ export function NoteView({
   const handleRegenerate = useCallback(() => {
     if (noteId) onRegenerateSummary(noteId)
   }, [noteId, onRegenerateSummary])
+  const handleCancelSummary = useCallback(() => {
+    if (noteId) onCancelSummary(noteId)
+  }, [noteId, onCancelSummary])
   const handleAsk = useCallback(
     (question: string) => {
       if (noteId) onAsk(noteId, question)
@@ -1194,6 +1208,7 @@ export function NoteView({
               summaryError={summaryError}
               llmInstalled={llmInstalled}
               onGenerate={handleRegenerate}
+              onCancel={handleCancelSummary}
               onToggleAction={handleToggleAction}
               onOpenTranscript={handleOpenTranscript}
               onFocusAsk={handleFocusAsk}
@@ -1584,6 +1599,7 @@ export function NoteView({
         onSeekCitation={handleSeekFromTranscript}
         onToggleAction={handleToggleAction}
         onRegenerate={handleRegenerate}
+        onCancel={handleCancelSummary}
         onCopy={handleCopy}
         // Export .md reveals via the shared reveal command (audio.wav if
         // present, else the note directory containing note.md) rather than

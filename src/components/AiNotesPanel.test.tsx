@@ -28,6 +28,7 @@ function baseProps(overrides: Partial<AiNotesPanelProps> = {}): AiNotesPanelProp
     seekable: true,
     onToggleAction: vi.fn(),
     onRegenerate: vi.fn(),
+    onCancel: vi.fn(),
     onCopy: vi.fn(),
     onExport: vi.fn(),
     onGoSettings: vi.fn(),
@@ -169,6 +170,20 @@ describe('AiNotesPanel', () => {
       render(<AiNotesPanel {...baseProps({ status: 'idle' })} />)
       expect(screen.queryByText(/Summarizing on-device/)).not.toBeInTheDocument()
     })
+
+    // Issue #30: before Cancel existed, the only way out of a stuck
+    // generation was restarting the app.
+    it('offers Cancel while running, wired to onCancel', () => {
+      const onCancel = vi.fn()
+      render(<AiNotesPanel {...baseProps({ status: 'running', onCancel })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(onCancel).toHaveBeenCalledTimes(1)
+    })
+
+    it('offers no Cancel while idle', () => {
+      render(<AiNotesPanel {...baseProps({ status: 'idle' })} />)
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+    })
   })
 
   // Issue #11: a note waiting behind another generation.
@@ -195,6 +210,14 @@ describe('AiNotesPanel', () => {
       for (const checkbox of screen.getAllByRole('checkbox')) {
         expect(checkbox).toBeDisabled()
       }
+    })
+
+    // Issue #30: a queued note can be pulled back out of the queue.
+    it('offers Cancel while queued, wired to onCancel', () => {
+      const onCancel = vi.fn()
+      render(<AiNotesPanel {...baseProps({ status: 'queued', onCancel })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(onCancel).toHaveBeenCalledTimes(1)
     })
   })
 

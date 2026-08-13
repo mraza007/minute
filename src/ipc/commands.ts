@@ -213,6 +213,15 @@ export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
 export const summarizeNote = (id: string): Promise<void> => invokeCmd('summarize_note', { id })
 
 /**
+ * Cancels a note's pending summarization (issue #30): a queued note is
+ * removed from the queue, a running one is cooperatively cancelled at its
+ * next generated token. Either way the terminal state arrives as a
+ * `summary-status` error event ("summary cancelled"); a stale cancel (the
+ * note is neither queued nor running any more) resolves as a no-op.
+ */
+export const cancelSummarize = (id: string): Promise<void> => invokeCmd('cancel_summarize', { id })
+
+/**
  * Flips one action item's `done` state in a note's summary (read-modify-
  * write server-side — see `store::Store::toggle_action_item`, wired up
  * through the `toggle_action_item` command) and resolves with the note's

@@ -1640,6 +1640,7 @@ export function useAppState() {
     detectSpeakers: noteDetail.detectSpeakers,
     transcriptLoading: noteDetail.transcriptLoading,
     regenerateSummary: noteDetail.regenerateSummary,
+    cancelSummary: noteDetail.cancelSummary,
     toggleActionItem: noteDetail.toggleActionItem,
     askHistory: noteDetail.askHistory,
     askStatus: noteDetail.askStatus,

@@ -1013,6 +1013,15 @@ pub struct LlmEngineState {
     /// `run_ask` at the end of every generation — success *and* error paths
     /// alike (see that method's docs for why).
     last_used: Instant,
+    /// Cooperative cancel for the generation currently running against
+    /// this engine (issue #30). Deliberately an `Arc` the cancel command
+    /// reaches through [`GenerationCancel`] *without* locking the engine
+    /// mutex — the running generation is what holds that mutex, so a
+    /// cancel that needed the lock could never land. Cleared at the top
+    /// of every [`generate_with_params`] call, so a cancel aimed at a
+    /// generation that already finished cannot poison the next one;
+    /// checked once per generated token in [`generate_with_loaded`].
+    cancel: Arc<AtomicBool>,
 }
 
 /// Shared handle to an [`LlmEngineState`] — same `Arc<Mutex<_>>` shape as
@@ -1037,7 +1046,22 @@ pub(crate) fn open_shared() -> SharedLlmEngine {
     Arc::new(Mutex::new(LlmEngineState {
         loaded: None,
         last_used: Instant::now(),
+        cancel: Arc::new(AtomicBool::new(false)),
     }))
+}
+
+/// The cancel flag `cancel_summarize` sets, shared with the engine (see
+/// [`LlmEngineState::cancel`]) — a newtype so `app.manage` can hold it next
+/// to [`LlmBusy`], which is the same underlying `Arc<AtomicBool>` type.
+/// Cloned out of the engine once at setup (`lib.rs`), while nothing can be
+/// generating — every later read is lock-free.
+pub struct GenerationCancel(pub Arc<AtomicBool>);
+
+impl LlmEngineState {
+    /// Clone of the engine's cancel flag, for [`GenerationCancel`] at setup.
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
 }
 
 /// Single-generation-at-a-time gate, app-wide — deliberately *not* a field
@@ -1165,6 +1189,18 @@ pub fn drain_summarize_queue(queue: &SummarizeQueue, busy: &LlmBusy) {
     } else {
         lock_summarize_queue(queue).push_front(ctx);
     }
+}
+
+/// Removes `note_id`'s waiting entry from the queue, if it has one —
+/// `cancel_summarize`'s queued-note path. Returning the removed context
+/// (rather than a bool) is what lets the command emit the terminal
+/// `summary-status` event through the same `emit` closure the worker
+/// would have used, so a cancelled queued note resolves exactly like a
+/// failed one from the frontend's point of view.
+pub fn remove_queued_summarize(queue: &SummarizeQueue, note_id: &str) -> Option<SummarizeWorkerCtx> {
+    let mut pending = lock_summarize_queue(queue);
+    let index = pending.iter().position(|queued| queued.note_id == note_id)?;
+    pending.remove(index)
 }
 
 /// Floor context window (tokens) — what machines under 16 GB of RAM get,
@@ -1317,7 +1353,11 @@ impl LlmEngineState {
             .loaded
             .as_ref()
             .ok_or_else(|| MinuteError::Other("no LLM model loaded".to_string()))?;
-        generate_with_loaded(loaded, prompt, &params)
+        // A cancel aimed at a generation that already ended must not kill
+        // this one — clearing here bounds a stale `cancel_summarize` click
+        // to the gap before this line, not the whole next generation.
+        self.cancel.store(false, Ordering::SeqCst);
+        generate_with_loaded(loaded, prompt, &params, &self.cancel)
     }
 
     /// Records that the currently loaded model was just used — resets the
@@ -1652,10 +1692,38 @@ fn manual_chat_prompt(model_id: &str, content: &str) -> String {
 /// sampler chain and token budget. `params` supplies the two knobs that
 /// differ per call site (see [`GenerationParams`]) — everything else
 /// (penalties, top-p, the seeded `dist` draw) is fixed regardless of caller.
+/// Hard wall-clock ceiling on one generation's token loop (issue #30).
+/// Generous on purpose: a legitimate hour-plus meeting summarized on an
+/// old CPU-only machine can take several minutes, and a ceiling that
+/// fires on real work converts a slow success into a spurious failure.
+/// 20 minutes is far past any legitimate generation but still turns the
+/// reported "stuck for hours until I restarted the app" into one failed
+/// note with a working Regenerate button.
+const GENERATION_TIMEOUT_SECS: u64 = 20 * 60;
+
+/// The per-token bail-out check for [`generate_with_loaded`]'s loop —
+/// cancel beats deadline so a user click reports as "cancelled" even
+/// when both are true. Pure (caller passes `now`) so the tests can
+/// exercise both errors without waiting 20 minutes.
+fn generation_gate(cancel: &AtomicBool, deadline: Instant, now: Instant) -> Result<()> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(MinuteError::Other("generation cancelled".to_string()));
+    }
+    if now >= deadline {
+        return Err(MinuteError::Other(format!(
+            "generation timed out after {} minutes — the model may be \
+             overloaded; try Regenerate",
+            GENERATION_TIMEOUT_SECS / 60
+        )));
+    }
+    Ok(())
+}
+
 fn generate_with_loaded(
     loaded: &LoadedModel,
     prompt: &str,
     params: &GenerationParams,
+    cancel: &AtomicBool,
 ) -> Result<String> {
     // Qwen's `/no_think` suffix is only appended for Qwen ids — it's that
     // family's own convention; to any other model it's just a stray line
@@ -1752,7 +1820,19 @@ fn generate_with_loaded(
     let mut n_cur = batch.n_tokens();
     let mut generated = 0usize;
 
+    // Issue #30: the loop below used to be unbounded in wall-clock time —
+    // a generation that degraded to seconds-per-token (GPU contention with
+    // a live recording's Whisper context is the known trigger, see
+    // `audio.rs`'s start_recording docs) held `LlmBusy` for hours, and
+    // everything queued behind it sat stranded until an app restart. The
+    // deadline and the cancel flag are both checked once per token; a
+    // single `ctx.decode` call that never returns is still out of reach of
+    // cooperative checks like these, but every observed wedge has been
+    // slow-token progress, not a frozen FFI call.
+    let deadline = Instant::now() + Duration::from_secs(GENERATION_TIMEOUT_SECS);
+
     loop {
+        generation_gate(cancel, deadline, Instant::now())?;
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
         if loaded.model.is_eog_token(token) {
@@ -2672,6 +2752,41 @@ pub async fn summarize_note(
         SummarizeDisposition::Queued | SummarizeDisposition::AlreadyQueued
     ) {
         emit_summary_status_queued(&app, &id);
+    }
+    Ok(())
+}
+
+/// Cancels note `id`'s pending summarization (issue #30) — the Cancel
+/// button next to the running/queued banner.
+///
+/// - Waiting in the queue -> removed, and a terminal `summary-status`
+///   error ("summary cancelled") is emitted so the frontend's `queued`
+///   state resolves; the note itself stays `transcribed`, so Regenerate
+///   works as usual.
+/// - Otherwise, if a generation is in flight -> the engine's cooperative
+///   cancel flag is set; the running worker notices at its next token,
+///   errors out through its ordinary error path (event + queue drain),
+///   and `LlmBusy` releases. The flag is not note-addressed: if the
+///   frontend's view was stale and something *else* is generating, that
+///   generation is the one cancelled. The frontend only offers Cancel on
+///   the note whose own status is running/queued, so hitting that window
+///   takes a stale click racing a generation handoff — and the cost is
+///   one cancelled generation with a working Regenerate, not a wedge.
+/// - Nothing queued or running -> no-op `Ok` (a stale click).
+#[tauri::command]
+pub async fn cancel_summarize(
+    app: AppHandle,
+    queue: State<'_, SummarizeQueue>,
+    busy: State<'_, LlmBusy>,
+    cancel: State<'_, GenerationCancel>,
+    id: String,
+) -> std::result::Result<(), String> {
+    if let Some(removed) = remove_queued_summarize(&queue, &id) {
+        emit_summary_status_error(&app, &removed.note_id, "summary cancelled");
+        return Ok(());
+    }
+    if busy.load(Ordering::SeqCst) {
+        cancel.0.store(true, Ordering::SeqCst);
     }
     Ok(())
 }
@@ -3900,6 +4015,7 @@ mod tests {
     #[test]
     fn generate_with_nothing_loaded_errors() {
         let state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -4021,6 +4137,7 @@ mod tests {
     #[test]
     fn llm_engine_state_unload_if_idle_is_a_no_op_with_nothing_loaded() {
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now() - IDLE_UNLOAD_AFTER - Duration::from_secs(1),
         };
@@ -4196,6 +4313,71 @@ mod tests {
         assert!(
             !busy.load(Ordering::SeqCst),
             "an empty drain must not claim the engine"
+        );
+    }
+
+    // --- cancel_summarize building blocks (issue #30) ---------------------
+
+    #[test]
+    fn remove_queued_summarize_removes_only_the_matching_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        let busy = open_busy_flag();
+        let queue = open_summarize_queue();
+        busy.store(true, Ordering::SeqCst);
+
+        let ctx_for = |note_id: &str| SummarizeWorkerCtx {
+            note_id: note_id.to_string(),
+            store: store.clone(),
+            engine: engine.clone(),
+            busy: busy.clone(),
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            preferred_context: None,
+            summary_style: SummaryStyle::Standard,
+            summary_instructions: String::new(),
+            queue: queue.clone(),
+            emit: Box::new(|_| {}),
+        };
+        spawn_or_enqueue_summarize(&queue, ctx_for("note-a"));
+        spawn_or_enqueue_summarize(&queue, ctx_for("note-b"));
+
+        assert!(remove_queued_summarize(&queue, "not-queued").is_none());
+
+        let removed = remove_queued_summarize(&queue, "note-a").expect("note-a was queued");
+        assert_eq!(removed.note_id, "note-a");
+
+        let pending = lock_summarize_queue(&queue);
+        assert_eq!(pending.len(), 1, "only the matching note is removed");
+        assert_eq!(pending[0].note_id, "note-b");
+    }
+
+    #[test]
+    fn generation_gate_passes_before_the_deadline_when_not_cancelled() {
+        let cancel = AtomicBool::new(false);
+        let now = Instant::now();
+        assert!(generation_gate(&cancel, now + Duration::from_secs(1), now).is_ok());
+    }
+
+    #[test]
+    fn generation_gate_errors_once_the_deadline_passes() {
+        let cancel = AtomicBool::new(false);
+        let deadline = Instant::now();
+        let err = generation_gate(&cancel, deadline, deadline + Duration::from_secs(1))
+            .expect_err("past the deadline must error");
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn generation_gate_reports_a_cancel_even_when_the_deadline_also_passed() {
+        let cancel = AtomicBool::new(true);
+        let deadline = Instant::now();
+        let err = generation_gate(&cancel, deadline, deadline + Duration::from_secs(1))
+            .expect_err("cancelled must error");
+        assert!(
+            err.to_string().contains("cancelled"),
+            "a user click reports as cancelled, not as a timeout"
         );
     }
 
@@ -5015,6 +5197,7 @@ mod tests {
         );
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -5090,6 +5273,7 @@ mod tests {
             .collect();
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -5188,6 +5372,7 @@ mod tests {
         }));
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -5268,6 +5453,7 @@ mod tests {
         );
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -5323,6 +5509,7 @@ mod tests {
         );
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -5424,6 +5611,7 @@ mod tests {
         );
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };
@@ -5525,6 +5713,7 @@ mod tests {
             ran += 1;
 
             let mut state = LlmEngineState {
+                cancel: Arc::new(AtomicBool::new(false)),
                 loaded: None,
                 last_used: Instant::now(),
             };
@@ -5635,6 +5824,7 @@ mod tests {
         let prompt = build_ask_prompt("Aurora launch planning", &segments, question, usize::MAX);
 
         let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
             loaded: None,
             last_used: Instant::now(),
         };

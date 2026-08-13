@@ -353,6 +353,21 @@ export function useNoteDetail(params: {
   }, [])
 
   /**
+   * Cancel button next to the running/queued summary banner (issue #30):
+   * asks the backend to drop a queued note or cooperatively stop a running
+   * generation. The terminal state comes back as a `summary-status` error
+   * event ("summary cancelled") through the listener above — nothing to
+   * update optimistically here, and the same stable-identity story as
+   * `regenerateSummary`.
+   */
+  const cancelSummary = useCallback((id: string) => {
+    ipc.cancelSummarize(id).catch(err => {
+      setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
+      setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
+    })
+  }, [])
+
+  /**
    * AI notes panel checkbox click: flips one action item's `done` state.
    * Optimistic — updates the cached `SummaryDoc` (and, if `id` is the
    * selected note, `selectedSummary`) immediately, then confirms via
@@ -612,6 +627,7 @@ export function useNoteDetail(params: {
     summaryStatus,
     summaryError,
     regenerateSummary,
+    cancelSummary,
     diarStatus,
     diarError,
     detectSpeakers,

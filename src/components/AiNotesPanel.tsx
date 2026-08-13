@@ -30,6 +30,8 @@ export interface AiNotesPanelProps {
   llmBusy: boolean
   onToggleAction: (index: number, done: boolean) => void
   onRegenerate: () => void
+  /** Cancels this note's queued/running summarization (issue #30) — the Cancel button on the running/queued banners. */
+  onCancel: () => void
   onCopy: () => void
   onExport: () => void
   onGoSettings: () => void
@@ -96,7 +98,25 @@ function Spinner() {
   )
 }
 
-function SummarizingBanner({ modelName }: { modelName: string }) {
+/**
+ * The small Cancel affordance both progress banners share (issue #30) —
+ * before it existed, the only way out of a stuck generation was
+ * restarting the app.
+ */
+function CancelButton({ onCancel }: { onCancel: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onCancel}
+      className="btn-outline"
+      style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 11, flex: 'none' }}
+    >
+      Cancel
+    </button>
+  )
+}
+
+function SummarizingBanner({ modelName, onCancel }: { modelName: string; onCancel: () => void }) {
   return (
     <div
       style={{
@@ -113,6 +133,7 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
     >
       <Spinner />
       Summarizing on-device — {modelName}
+      <CancelButton onCancel={onCancel} />
     </div>
   )
 }
@@ -122,7 +143,7 @@ function SummarizingBanner({ modelName }: { modelName: string }) {
  * generating right now. No spinner — nothing is happening for *this* note
  * yet, and a spinner would claim otherwise.
  */
-function QueuedBanner() {
+function QueuedBanner({ onCancel }: { onCancel: () => void }) {
   return (
     <div
       style={{
@@ -138,6 +159,7 @@ function QueuedBanner() {
       }}
     >
       Queued — starts when the current one finishes
+      <CancelButton onCancel={onCancel} />
     </div>
   )
 }
@@ -421,6 +443,7 @@ export const AiNotesPanel = memo(function AiNotesPanel({
   seekable,
   onToggleAction,
   onRegenerate,
+  onCancel,
   onCopy,
   onExport,
   onGoSettings,
@@ -470,8 +493,8 @@ export const AiNotesPanel = memo(function AiNotesPanel({
         {statusAnnouncement}
       </span>
       <div style={{ flex: 1, overflow: 'auto', padding: '0 26px 24px' }}>
-        {!overviewMode && summarizing && <SummarizingBanner modelName={modelName} />}
-        {!overviewMode && queued && <QueuedBanner />}
+        {!overviewMode && summarizing && <SummarizingBanner modelName={modelName} onCancel={onCancel} />}
+        {!overviewMode && queued && <QueuedBanner onCancel={onCancel} />}
         {/* Overview mode leaves the error surface to NoteView's own
             error-with-retry block — showing this card there too renders
             the same message twice. */}

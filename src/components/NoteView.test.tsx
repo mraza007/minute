@@ -62,6 +62,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     onCopyError: vi.fn(),
     onToggleActionItem: vi.fn(),
     onRegenerateSummary: vi.fn(),
+    onCancelSummary: vi.fn(),
     onAsk: vi.fn(),
     onGoSettings: vi.fn(),
     onSetPinned: vi.fn(),
@@ -979,6 +980,20 @@ describe('NoteView', () => {
       )
       fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }))
       expect(onRegenerateSummary).toHaveBeenCalledWith(meta.id)
+    })
+
+    // Issue #30: the way out of a stuck or unwanted generation used to be
+    // restarting the app.
+    it('clicking Cancel while a summary is running calls onCancelSummary with the note id', () => {
+      const onCancelSummary = vi.fn()
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({ meta, selectedMeta: meta, selectedSummary: null, summaryStatus: 'running', onCancelSummary })}
+        />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(onCancelSummary).toHaveBeenCalledWith(meta.id)
     })
 
     it('clicking Export .md reveals the note (reuses onReveal, same as the Markdown tab)', () => {
