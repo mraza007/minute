@@ -25,6 +25,8 @@ const base = {
   onDismissProcessingFailure: vi.fn(),
   autoStopSeconds: null,
   onKeepRecording: vi.fn(),
+  canRestartWithSystemAudio: false,
+  onRestartWithSystemAudio: vi.fn(),
 }
 
 describe('RecordingView', () => {
@@ -80,6 +82,45 @@ describe('RecordingView', () => {
       expect(screen.getByText('Microphone + system audio · macOS default input')).toBeInTheDocument()
       expect(screen.getByText('Apps and call audio')).toBeInTheDocument()
       expect(screen.queryByText(/Turn on system audio in Settings/)).not.toBeInTheDocument()
+    })
+  })
+
+  // Issue #26: sources are fixed at start, so the mid-recording gesture is
+  // an explicit stop-and-restart behind a confirm step.
+  describe('restart with system audio', () => {
+    it('offers the restart when system audio is off but available, instead of the Settings hint', () => {
+      render(<RecordingView {...base} canRestartWithSystemAudio={true} />)
+      expect(screen.getByRole('button', { name: 'Restart with system audio' })).toBeInTheDocument()
+      expect(screen.queryByText(/Turn on system audio in Settings/)).not.toBeInTheDocument()
+    })
+
+    it('offers nothing when system audio is already part of the recording', () => {
+      render(<RecordingView {...base} systemAudioActive={true} canRestartWithSystemAudio={true} />)
+      expect(screen.queryByRole('button', { name: 'Restart with system audio' })).not.toBeInTheDocument()
+    })
+
+    it('requires a confirm step that names the two-notes consequence before restarting', () => {
+      const onRestartWithSystemAudio = vi.fn()
+      render(<RecordingView {...base} canRestartWithSystemAudio={true} onRestartWithSystemAudio={onRestartWithSystemAudio} />)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
+      expect(onRestartWithSystemAudio).not.toHaveBeenCalled()
+      expect(screen.getByText(/two notes/)).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save & restart' }))
+      expect(onRestartWithSystemAudio).toHaveBeenCalledTimes(1)
+    })
+
+    it('"Keep recording" backs out of the confirm step without restarting', () => {
+      const onRestartWithSystemAudio = vi.fn()
+      render(<RecordingView {...base} canRestartWithSystemAudio={true} onRestartWithSystemAudio={onRestartWithSystemAudio} />)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Keep recording' }))
+
+      expect(onRestartWithSystemAudio).not.toHaveBeenCalled()
+      expect(screen.queryByText(/two notes/)).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Restart with system audio' })).toBeInTheDocument()
     })
   })
 

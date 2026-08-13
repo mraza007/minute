@@ -1257,6 +1257,75 @@ export function useAppState() {
     ipc.dismissAutoStop().catch(reportError)
   }, [reportError])
 
+  /**
+   * Issue #26: audio sources are fixed once a recording starts (the writer
+   * thread, echo-cancelled mic backend, and system-audio session are all
+   * chosen inside `Recorder::start` — see src-tauri/src/audio.rs), so
+   * "turn on system audio now" is really stop-and-restart: finalize the
+   * current recording exactly like Stop & transcribe, then immediately
+   * start a fresh one with system audio forced on. The meeting ends up as
+   * two notes — RecordingView's confirm step says so before this runs.
+   *
+   * Failure shapes: a failed *stop* leaves the recording running and
+   * surfaces like any Stop failure; a failed *restart* after a successful
+   * stop lands on the notes view with the finalized note selected, exactly
+   * where a plain Stop would have gone.
+   */
+  const restartWithSystemAudio = useCallback(() => {
+    if (recordingStartInFlight.current) return
+    recordingStartInFlight.current = true
+    setProcessingFailure(null)
+    setAutoStopSeconds(null)
+    setStopping(true)
+    setProcessingStage('saving')
+    ipc
+      .stopRecording()
+      .then(stopped => {
+        invalidateNoteCache(stopped.id)
+        // finishStop's list/storage refresh, without its navigation away
+        // from the recording view.
+        Promise.all([ipc.listNotes(), ipc.storageStats()])
+          .then(([freshNotes, freshStorage]) => {
+            setNotes(freshNotes)
+            setStorage(freshStorage)
+          })
+          .catch(reportError)
+        return ipc
+          .startRecording(modelManager.sttModel, true, selectedPreflightMicrophoneId)
+          .then(noteId => {
+            setActiveNoteId(noteId)
+            setLiveSegmentsRaw([])
+            setRecElapsed(0)
+            setPaused(false)
+            setSttStatus('idle')
+            setSttError(null)
+            setSttStatusNoteId(null)
+            captureHealthTracker.current = INITIAL_CAPTURE_HEALTH_TRACKER
+            setCaptureHealth('checking')
+            setProcessingStage('idle')
+            // Reconciled by the first `recording-state` event — same safe
+            // starting point as `startRec`'s.
+            setSystemAudioActive(false)
+            setRecordingTitle('New recording')
+            setRecordingMarkers([])
+            setView('recording')
+          })
+          .catch(error => {
+            finishStop(stopped.id)
+            reportError(error)
+          })
+      })
+      .catch(error => {
+        setProcessingStage('idle')
+        setProcessingFailure({ stage: 'saving', message: messageOf(error) })
+        reportError(error)
+      })
+      .finally(() => {
+        recordingStartInFlight.current = false
+        setStopping(false)
+      })
+  }, [finishStop, invalidateNoteCache, modelManager.sttModel, reportError, selectedPreflightMicrophoneId])
+
   const retryProcessingFailure = useCallback(() => {
     if (processingFailure?.stage === 'saving') {
       stopRec()
@@ -1677,6 +1746,7 @@ export function useAppState() {
     toggleAutoStopRecording,
     autoStopSeconds,
     keepRecording,
+    restartWithSystemAudio,
     appVersion,
     tAutoUpdateCheck: tAutoUpdateCheck ?? true,
     toggleAutoUpdateCheck,

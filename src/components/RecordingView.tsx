@@ -66,6 +66,15 @@ interface RecordingViewProps {
   autoStopSeconds: number | null
   /** "Keep recording" on the auto-stop banner — suppresses auto-stop for the rest of this recording. */
   onKeepRecording: () => void
+  /** Whether system audio capture is even possible on this machine (macOS 13+, Screen Recording granted) — gates the restart offer below. */
+  canRestartWithSystemAudio: boolean
+  /**
+   * Issue #26: sources are fixed at start, so enabling system audio
+   * mid-recording means stop-and-restart — this finalizes the current
+   * recording as its own note and starts a new one with system audio on.
+   * Only called after the inline confirm step spells that out.
+   */
+  onRestartWithSystemAudio: () => void
 }
 
 // Persistent `role="status"` container — always mounted for the whole
@@ -662,6 +671,8 @@ export const RecordingView = memo(function RecordingView({
   onDismissProcessingFailure,
   autoStopSeconds,
   onKeepRecording,
+  canRestartWithSystemAudio,
+  onRestartWithSystemAudio,
 }: RecordingViewProps) {
   const captureSummary = systemAudioActive ? 'Microphone + system audio' : 'Microphone only'
   const transcriptState =
@@ -688,6 +699,8 @@ export const RecordingView = memo(function RecordingView({
   })
   const [markerOpen, setMarkerOpen] = useState(false)
   const [markerLabel, setMarkerLabel] = useState('')
+  /** Two-step confirm for "Restart with system audio" (issue #26) — the restart splits the meeting into two notes, so a single stray click must not trigger it. */
+  const [restartArmed, setRestartArmed] = useState(false)
   const [markerSaving, setMarkerSaving] = useState(false)
 
   async function saveMarker() {
@@ -958,10 +971,59 @@ export const RecordingView = memo(function RecordingView({
                 active={systemAudioActive && !paused && !processing}
               />
             </div>
-            {!systemAudioActive && (
+            {!systemAudioActive && !canRestartWithSystemAudio && (
               <p className="recording-detail-note">
                 Turn on system audio in Settings before your next recording to capture the other side of a call.
               </p>
+            )}
+            {/* Issue #26: sources are fixed once a recording starts, so the
+                honest mid-recording gesture is stop-and-restart — offered
+                only when system audio could actually be captured. */}
+            {!systemAudioActive && canRestartWithSystemAudio && !restartArmed && (
+              <>
+                <p className="recording-detail-note">
+                  Started without system audio by mistake? Restart to capture the other side of the call.
+                </p>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={processing}
+                  style={{ marginTop: 8, padding: '6px 12px', fontSize: 11.5 }}
+                  onClick={() => setRestartArmed(true)}
+                >
+                  Restart with system audio
+                </button>
+              </>
+            )}
+            {!systemAudioActive && canRestartWithSystemAudio && restartArmed && (
+              <div role="alertdialog" aria-label="Confirm restart with system audio">
+                <p className="recording-detail-note">
+                  This saves the recording so far as its own note, then starts a new one with system audio on. The
+                  meeting ends up as two notes.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="btn-solid"
+                    disabled={processing}
+                    style={{ padding: '6px 12px', fontSize: 11.5 }}
+                    onClick={() => {
+                      setRestartArmed(false)
+                      onRestartWithSystemAudio()
+                    }}
+                  >
+                    Save & restart
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    style={{ padding: '6px 12px', fontSize: 11.5 }}
+                    onClick={() => setRestartArmed(false)}
+                  >
+                    Keep recording
+                  </button>
+                </div>
+              </div>
             )}
           </section>
           <section style={{ marginBottom: 25 }}>

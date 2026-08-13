@@ -1076,6 +1076,34 @@ describe('useAppState', () => {
       expect(result.current.processingFailure).toBeNull()
     })
 
+    // Issue #26: sources are fixed at start, so enabling system audio
+    // mid-recording is a stop-then-start pair.
+    it('restartWithSystemAudio finalizes the current note, then starts a new recording with system audio on', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const newNote = noteFixture({ id: noteId, title: 'New recording' })
+      const result = await loadedAndRecording({
+        notes: [newNote],
+        stopRecording: { result: newNote },
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+
+      act(() => result.current.restartWithSystemAudio())
+      expect(result.current.stopping).toBe(true)
+
+      await waitFor(() => expect(result.current.stopping).toBe(false))
+      // Still on the recording view — the restart never lands on notes.
+      expect(result.current.view).toBe('recording')
+      expect(result.current.processingStage).toBe('idle')
+      expect(result.current.liveSegments).toEqual([])
+      expect(result.current.recElapsed).toBe(0)
+
+      expect(calls.some(c => c.cmd === 'stop_recording')).toBe(true)
+      const startCalls = calls.filter(c => c.cmd === 'start_recording')
+      // First from loadedAndRecording's own startRec, second from the restart.
+      expect(startCalls).toHaveLength(2)
+      expect((startCalls[1].args as { includeSystemAudio: boolean }).includeSystemAudio).toBe(true)
+    })
+
     it('stopRec exposes saving and finalizing phases before preparing the completed note', async () => {
       let releaseStop!: () => void
       const wait = new Promise<void>(resolve => {
