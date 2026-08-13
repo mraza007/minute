@@ -307,7 +307,7 @@ export interface Settings {
   autoUpdateCheck: boolean
   /** Run the local speaker-diarization pass after each recording (opt-in). */
   detectSpeakers: boolean
-  /** Auto-stop: after 3 silent minutes mid-recording (1 minute when the transcript ends with a closing phrase — issue #36), warn with a 2-minute countdown, then stop & transcribe (on by default). */
+  /** Auto-stop: after 3 minutes without sound OR without transcribed words (issue #38; 1 minute when the transcript ends with a closing phrase — issue #36), warn with a 2-minute countdown, then stop & transcribe (on by default). */
   autoStopRecording: boolean
   /** Issue #16: after this many days, compress a note's `audio.wav` to lossy `.m4a` (AAC) and remove the WAV. `null` = off (default). */
   compressAudioAfterDays: number | null

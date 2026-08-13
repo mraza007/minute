@@ -858,6 +858,19 @@ struct SharedState {
     /// per-second ticker. See [`is_closing_phrase`] for the matching rules
     /// and the hallucination guard in `spawn_stt_worker_if_model_installed`.
     closing_phrase: AtomicBool,
+    /// Samples appended since the last *persisted, non-dead-air*
+    /// transcript segment (issue #38) — auto-stop's second silence
+    /// signal. Unlike [`Self::silent_run_samples`], ambient noise does
+    /// not reset this; only the STT worker's `on_segment` hook does. So
+    /// a meeting that ends into a room full of fan hum and typing still
+    /// arms, because nothing transcribable is being said. Grows in
+    /// `append_and_forward` (frozen during pause, like its sibling).
+    words_silent_run_samples: AtomicU64,
+    /// Set once if the STT worker died fatally (model load failed) —
+    /// the words-based signal above is meaningless when no transcript
+    /// can ever arrive, so the ticker falls back to the sound-level
+    /// path alone rather than auto-stopping an audible meeting.
+    stt_worker_failed: AtomicBool,
 }
 
 fn store_max_f32(target: &AtomicU32, value: f32) {
@@ -1008,6 +1021,12 @@ fn append_and_forward(
     }
 
     update_silence_counter(shared, samples);
+    // Issue #38: the words-silence run grows with every appended block and
+    // only `on_segment` (a real transcribed segment) resets it — sample-
+    // based like `silent_run_samples`, so a paused recording freezes it.
+    shared
+        .words_silent_run_samples
+        .fetch_add(samples.len() as u64, Ordering::Relaxed);
 
     block_buf.extend_from_slice(samples);
     while block_buf.len() >= STT_BLOCK_SAMPLES {
@@ -1136,14 +1155,21 @@ fn auto_stop_tick(
     dismissed: bool,
     paused: bool,
     silent_secs: u64,
+    words_silent_secs: Option<u64>,
     closing_tail: bool,
     countdown: &mut Option<u64>,
 ) -> AutoStopTick {
-    // Two ways to arm (issue #36): the plain silence threshold, or the
-    // shorter farewell threshold when the transcript's last segment ended
-    // with a closing phrase.
-    let armed = silent_secs >= AUTO_STOP_ARM_SECS
-        || (closing_tail && silent_secs >= FAREWELL_ARM_SECS);
+    // Three ways to arm: the plain sound-level threshold; the shorter
+    // farewell threshold when the transcript's last segment ended with a
+    // closing phrase (issue #36); and — when a live transcript exists at
+    // all (`words_silent_secs` is `Some`) — the same thresholds measured
+    // in "time since anything was transcribed" (issue #38), which ambient
+    // noise cannot reset. `None` = no working STT worker; sound level is
+    // then the only honest signal.
+    let arms = |secs: u64| {
+        secs >= AUTO_STOP_ARM_SECS || (closing_tail && secs >= FAREWELL_ARM_SECS)
+    };
+    let armed = arms(silent_secs) || words_silent_secs.is_some_and(arms);
     if !enabled || dismissed || paused || !armed {
         let was_pending = countdown.take().is_some();
         return AutoStopTick::Idle { was_pending };
@@ -1491,6 +1517,8 @@ impl Recorder {
             silent_run_samples: AtomicU64::new(0),
             auto_stop_disabled: AtomicBool::new(false),
             closing_phrase: AtomicBool::new(false),
+            words_silent_run_samples: AtomicU64::new(0),
+            stt_worker_failed: AtomicBool::new(false),
         });
         lock(&shared.tracker).start(Instant::now());
 
@@ -2004,6 +2032,10 @@ pub async fn start_recording(
     let tick_app = app.clone();
     let tick_note_id = note_id.clone();
     let tick_shared = handle.shared.clone();
+    // Issue #38: whether a live transcript is even possible this session —
+    // fixed at spawn time; the per-tick `stt_worker_failed` check covers
+    // the worker dying after a failed model load.
+    let stt_worker_spawned = stt_worker.is_some();
     let tick_microphone_name = microphone_name.clone();
     let tick_settings = settings.inner().clone();
     let tick_handle = tokio::spawn(async move {
@@ -2036,11 +2068,20 @@ pub async fn start_recording(
             let silent_secs =
                 tick_shared.silent_run_samples.load(Ordering::Relaxed) / TARGET_SAMPLE_RATE as u64;
             let closing_tail = tick_shared.closing_phrase.load(Ordering::Relaxed);
+            // Issue #38: the words signal only counts while a transcript
+            // can actually arrive — worker spawned and not fatally dead.
+            let words_silent_secs = (stt_worker_spawned
+                && !tick_shared.stt_worker_failed.load(Ordering::Relaxed))
+            .then(|| {
+                tick_shared.words_silent_run_samples.load(Ordering::Relaxed)
+                    / TARGET_SAMPLE_RATE as u64
+            });
             match auto_stop_tick(
                 enabled,
                 dismissed,
                 paused,
                 silent_secs,
+                words_silent_secs,
                 closing_tail,
                 &mut auto_stop_countdown,
             ) {
@@ -2172,7 +2213,16 @@ fn spawn_stt_worker_if_model_installed(
                 shared
                     .closing_phrase
                     .store(fresh && is_closing_phrase(text), Ordering::Relaxed);
+                // Issue #38: a real transcribed segment is the only thing
+                // that resets the words-silence run.
+                shared
+                    .words_silent_run_samples
+                    .store(0, Ordering::Relaxed);
             }
+        })),
+        on_fatal_error: Some(Box::new({
+            let shared = shared.clone();
+            move || shared.stt_worker_failed.store(true, Ordering::Relaxed)
         })),
     };
     Some(stt::SttWorker::spawn(model_path, sample_rx, worker_ctx))
@@ -2231,12 +2281,18 @@ pub fn resume_recording(
     // Issue #36: a farewell heard before the pause is stale by resume —
     // the user resuming is itself proof the meeting continues, and the
     // frozen silence counter would otherwise pair a pre-pause "goodbye"
-    // with post-resume silence into a too-early auto-stop arm.
+    // with post-resume silence into a too-early auto-stop arm. The
+    // words-silence run (issue #38) is stale for the same reason.
     active
         .handle
         .shared
         .closing_phrase
         .store(false, Ordering::Relaxed);
+    active
+        .handle
+        .shared
+        .words_silent_run_samples
+        .store(0, Ordering::Relaxed);
     let note_id = active.note_id.clone();
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
     let system_audio_active = active.system_audio_active;
@@ -2903,7 +2959,7 @@ mod tests {
     #[test]
     fn auto_stop_tick_stays_idle_below_the_arm_threshold() {
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, None, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
         assert_eq!(countdown, None);
     }
@@ -2911,7 +2967,7 @@ mod tests {
     #[test]
     fn auto_stop_tick_counts_down_then_fires() {
         let mut countdown = None;
-        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, false, &mut countdown);
+        let first = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, &mut countdown);
         assert_eq!(
             first,
             AutoStopTick::Pending {
@@ -2920,26 +2976,26 @@ mod tests {
         );
         // Drain the countdown.
         for _ in 0..AUTO_STOP_COUNTDOWN_SECS - 1 {
-            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, false, &mut countdown) {
+            match auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 100, None, false, &mut countdown) {
                 AutoStopTick::Pending { .. } => {}
                 other => panic!("expected Pending mid-countdown, got {other:?}"),
             }
         }
-        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, false, &mut countdown);
+        let last = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS + 200, None, false, &mut countdown);
         assert_eq!(last, AutoStopTick::Fire);
     }
 
     #[test]
     fn auto_stop_tick_cancels_when_audio_returns_mid_countdown() {
         let mut countdown = None;
-        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, false, &mut countdown);
+        auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, &mut countdown);
         assert!(countdown.is_some());
         // Audio came back: the silence run reset well below the arm bar.
-        let tick = auto_stop_tick(true, false, false, 3, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, 3, None, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: true });
         assert_eq!(countdown, None);
         // A later fresh silence stretch re-arms with a full countdown.
-        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, false, &mut countdown);
+        let re_armed = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS, None, false, &mut countdown);
         assert_eq!(
             re_armed,
             AutoStopTick::Pending {
@@ -2961,6 +3017,7 @@ mod tests {
                 dismissed,
                 paused,
                 AUTO_STOP_ARM_SECS * 2,
+                None,
                 false,
                 &mut countdown,
             );
@@ -2975,12 +3032,12 @@ mod tests {
     fn closing_tail_arms_the_countdown_at_the_farewell_threshold() {
         let mut countdown = None;
         // Below even the farewell threshold: idle regardless of the tail.
-        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS - 1, true, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS - 1, None, true, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
 
         // At the farewell threshold with a closing tail: armed, full
         // countdown — far earlier than AUTO_STOP_ARM_SECS.
-        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS, true, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, FAREWELL_ARM_SECS, None, true, &mut countdown);
         assert_eq!(
             tick,
             AutoStopTick::Pending {
@@ -2992,8 +3049,69 @@ mod tests {
     #[test]
     fn no_closing_tail_still_waits_for_the_plain_silence_threshold() {
         let mut countdown = None;
-        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, false, &mut countdown);
+        let tick = auto_stop_tick(true, false, false, AUTO_STOP_ARM_SECS - 1, None, false, &mut countdown);
         assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+    }
+
+    // --- transcript-based silence (issue #38) --------------------------------
+
+    #[test]
+    fn no_transcribed_words_arms_even_while_ambient_noise_keeps_the_peak_run_short() {
+        let mut countdown = None;
+        // Sound-level run keeps resetting (noisy room: silent_secs stays
+        // tiny) but nothing has been transcribed for the full threshold.
+        let tick = auto_stop_tick(
+            true,
+            false,
+            false,
+            3,
+            Some(AUTO_STOP_ARM_SECS),
+            false,
+            &mut countdown,
+        );
+        assert_eq!(
+            tick,
+            AutoStopTick::Pending {
+                seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
+            }
+        );
+    }
+
+    #[test]
+    fn a_recent_transcribed_word_keeps_the_words_signal_idle() {
+        let mut countdown = None;
+        let tick = auto_stop_tick(true, false, false, 3, Some(30), false, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+    }
+
+    #[test]
+    fn without_a_live_transcript_the_words_signal_never_arms() {
+        // A dead STT worker means "no words" is meaningless — only the
+        // sound-level path may arm (`None`), or a broken model file would
+        // stop an audible meeting.
+        let mut countdown = None;
+        let tick = auto_stop_tick(true, false, false, 3, None, false, &mut countdown);
+        assert_eq!(tick, AutoStopTick::Idle { was_pending: false });
+    }
+
+    #[test]
+    fn farewell_threshold_applies_to_the_words_signal_too() {
+        let mut countdown = None;
+        let tick = auto_stop_tick(
+            true,
+            false,
+            false,
+            3,
+            Some(FAREWELL_ARM_SECS),
+            true,
+            &mut countdown,
+        );
+        assert_eq!(
+            tick,
+            AutoStopTick::Pending {
+                seconds_remaining: AUTO_STOP_COUNTDOWN_SECS
+            }
+        );
     }
 
     #[test]
@@ -3263,6 +3381,8 @@ mod tests {
             silent_run_samples: AtomicU64::new(0),
             auto_stop_disabled: AtomicBool::new(false),
             closing_phrase: AtomicBool::new(false),
+            words_silent_run_samples: AtomicU64::new(0),
+            stt_worker_failed: AtomicBool::new(false),
         })
     }
 
@@ -3818,6 +3938,7 @@ mod tests {
             store: store.clone(),
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
             on_segment: None,
+            on_fatal_error: None,
         };
         let worker = stt::SttWorker::spawn(model_path, sample_rx, worker_ctx);
 
@@ -3957,6 +4078,7 @@ mod tests {
             store: store.clone(),
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
             on_segment: None,
+            on_fatal_error: None,
         };
         let worker = stt::SttWorker::spawn(model_path, sample_rx, worker_ctx);
 

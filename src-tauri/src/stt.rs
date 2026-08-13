@@ -373,6 +373,12 @@ pub struct WorkerCtx {
     /// `audio::spawn_stt_worker_if_model_installed` for the one real
     /// hook). `None` where nothing listens, e.g. most tests.
     pub on_segment: Option<Box<dyn Fn(&str) + Send + 'static>>,
+    /// Called once if the worker dies fatally (model load or whisper
+    /// state creation failed) — issue #38's guard: auto-stop's
+    /// no-transcribed-words signal must fall back to the sound-level
+    /// path when no transcript can ever arrive, or a broken model file
+    /// would auto-stop a perfectly audible meeting. `None` in tests.
+    pub on_fatal_error: Option<Box<dyn Fn() + Send + 'static>>,
 }
 
 /// Spawned thread that owns a `WhisperContext`/`WhisperState`, consumes
@@ -518,6 +524,9 @@ fn run_worker(model_path: std::path::PathBuf, sample_rx: Receiver<Arc<Vec<f32>>>
                     state: SttStatusState::Error,
                     error: Some(e.to_string()),
                 }));
+                if let Some(on_fatal_error) = &ctx.on_fatal_error {
+                    on_fatal_error();
+                }
                 while sample_rx.recv().is_ok() {}
                 return;
             }
@@ -532,6 +541,9 @@ fn run_worker(model_path: std::path::PathBuf, sample_rx: Receiver<Arc<Vec<f32>>>
                 state: SttStatusState::Error,
                 error: Some(e.to_string()),
             }));
+            if let Some(on_fatal_error) = &ctx.on_fatal_error {
+                on_fatal_error();
+            }
             while sample_rx.recv().is_ok() {}
             return;
         }
@@ -802,6 +814,7 @@ mod tests {
             store,
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
             on_segment: None,
+            on_fatal_error: None,
         };
         (ctx, note_id, events, dir)
     }
