@@ -693,6 +693,24 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
+    // Issue #34: remember the main window's size/position/maximized state
+    // across launches (.window-state.json next to settings.json). The
+    // meeting popup is denylisted — popup.rs positions and sizes that
+    // panel itself on every show, and the plugin restoring stale geometry
+    // for it would fight that. Deliberately NOT StateFlags::all():
+    // FULLSCREEN/DECORATIONS/VISIBLE restore buys nothing for a
+    // single-window app with a custom title bar and risks a hidden or
+    // odd-decorated first paint.
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(
+                tauri_plugin_window_state::StateFlags::SIZE
+                    | tauri_plugin_window_state::StateFlags::POSITION
+                    | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+            )
+            .with_denylist(&["meeting-popup"])
+            .build(),
+    );
 
     let app = builder
         .invoke_handler(tauri::generate_handler![

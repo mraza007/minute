@@ -24,6 +24,10 @@ const base = {
 }
 
 describe('Sidebar', () => {
+  // The collapse toggle persists to localStorage (issue #34) — clear it so
+  // one test's toggle can't leak an initial collapsed state into the next.
+  beforeEach(() => window.localStorage.clear())
+
   it('renders all demo note titles', () => {
     render(<Sidebar {...base} />)
     for (const note of demoNotes) {
@@ -208,6 +212,29 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
+  })
+
+  // Issue #34: the manual collapse choice survives a restart.
+  describe('collapse persistence', () => {
+    it('stores the manual toggle in localStorage', () => {
+      render(<Sidebar {...base} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
+      expect(window.localStorage.getItem('minute.sidebarCollapsed')).toBe('true')
+      fireEvent.click(screen.getByRole('button', { name: 'Expand library sidebar' }))
+      expect(window.localStorage.getItem('minute.sidebarCollapsed')).toBe('false')
+    })
+
+    it('starts collapsed when the stored preference says so', () => {
+      window.localStorage.setItem('minute.sidebarCollapsed', 'true')
+      render(<Sidebar {...base} />)
+      expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'true')
+      expect(screen.getByRole('button', { name: 'Expand library sidebar' })).toBeInTheDocument()
+    })
+
+    it('starts expanded when nothing is stored', () => {
+      render(<Sidebar {...base} />)
+      expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'false')
+    })
   })
 
   describe('search input', () => {

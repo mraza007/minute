@@ -53,6 +53,17 @@ const navBase: CSSProperties = {
 
 const navCurrent: CSSProperties = { color: 'var(--ink)', fontWeight: 600 }
 
+// Issue #34: the collapse toggle is a plain UI preference, so it persists
+// in localStorage rather than settings.json — same treatment as NoteView's
+// aiPanelWidth. Only the *manual* toggle is ever stored; a narrow viewport
+// still force-collapses regardless (the content genuinely doesn't fit),
+// and widening back restores the stored choice.
+const SIDEBAR_COLLAPSED_KEY = 'minute.sidebarCollapsed'
+
+function storedSidebarCollapsed(): boolean {
+  return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+}
+
 const emptyStyle: CSSProperties = {
   padding: '24px 18px',
   fontFamily: 'var(--serif)',
@@ -87,9 +98,11 @@ export const Sidebar = memo(function Sidebar({
   onRenameNote,
   onRevealNote,
 }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(() =>
-    typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1280px)').matches : false,
-  )
+  const [collapsed, setCollapsed] = useState(() => {
+    const narrow =
+      typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1280px)').matches : false
+    return narrow || storedSidebarCollapsed()
+  })
   const [statusFilter, setStatusFilter] = useState('all')
   const [sourceFilter, setSourceFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
@@ -114,7 +127,9 @@ export const Sidebar = memo(function Sidebar({
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
     const query = window.matchMedia('(max-width: 1280px)')
-    const sync = () => setCollapsed(query.matches)
+    // Narrowing force-collapses; widening restores the stored manual
+    // preference instead of unconditionally expanding (issue #34).
+    const sync = () => setCollapsed(query.matches || storedSidebarCollapsed())
     query.addEventListener('change', sync)
     return () => query.removeEventListener('change', sync)
   }, [])
@@ -207,7 +222,11 @@ export const Sidebar = memo(function Sidebar({
           className="icon-btn sidebar-collapse"
           aria-label={collapsed ? 'Expand library sidebar' : 'Collapse library sidebar'}
           title={collapsed ? 'Expand library sidebar' : 'Collapse library sidebar'}
-          onClick={() => setCollapsed(value => !value)}
+          onClick={() => {
+            const next = !collapsed
+            window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
+            setCollapsed(next)
+          }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
             <rect x="3" y="4" width="18" height="16" rx="2" />

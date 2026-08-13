@@ -52,6 +52,8 @@ tokio = { version = "1", features = ["fs", "rt", "time"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+# Issue #34: persists the main window's geometry across launches.
+tauri-plugin-window-state = "2.4"
 # Speaker diarization (issue #6, diar.rs): the *official* k2-fsa Rust API
 # (the third-party `sherpa-rs` wrapper was archived 2026-06 in its favor).
 # Default features link the prebuilt static sherpa-onnx/onnxruntime libs —
