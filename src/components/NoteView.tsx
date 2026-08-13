@@ -327,7 +327,7 @@ function NoteOverview({
             {summaryStatus === 'running'
               ? 'The transcript stays available while Minute prepares the overview.'
               : summaryStatus === 'queued'
-                ? 'Another summary is running. This one starts on its own when that finishes.'
+                ? 'Minute is busy with a recording or another summary. This one starts on its own.'
                 : llmInstalled
                   ? 'Generate a local summary to surface decisions and action items.'
                   : 'Install a summary model in Settings to generate decisions and action items.'}

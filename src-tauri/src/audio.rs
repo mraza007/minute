@@ -1996,6 +1996,14 @@ pub async fn start_recording(
         }
     });
 
+    // Issue #35: raise the gate *before* the active-commit below — new
+    // summarizations now queue instead of loading the LLM next to this
+    // recording's Whisper context. `stop_recording` lowers it, and can
+    // only run once `active` is `Some`, so raise-then-commit means a
+    // stop that races this function's tail can never be overtaken by a
+    // late raise (lowered gates stay lowered). Nothing between here and
+    // the commit can fail, so an aborted start can't leave it stuck up.
+    app.state::<llm::RecordingGate>().0.store(true, Ordering::SeqCst);
     lock_recorder_state(&recorder).active = Some(ActiveRecording {
         note_id: note_id.clone(),
         handle,
@@ -2204,6 +2212,15 @@ pub fn stop_recording(
 
     active.tick_handle.abort();
 
+    // Issue #35: the recording is over for scheduling purposes the moment
+    // the active slot is gone — lower the gate up here, before any
+    // fallible store write, so an error return below can't leave it stuck
+    // up. The matching queue *drain* deliberately waits until after the
+    // STT tail flush and `finalize_note` further down (both paths): a
+    // deferred request for THIS note drained now would summarize a
+    // transcript still missing its last seconds.
+    app.state::<llm::RecordingGate>().0.store(false, Ordering::SeqCst);
+
     let mut capture_warning = active.handle.last_error();
     if let Some(err) = capture_warning.as_ref() {
         log::warn!(
@@ -2257,9 +2274,16 @@ pub fn stop_recording(
     // error would leave "REC" showing with nothing recording.
     set_dock_recording_indicator(&app, false);
 
-    let meta = lock_store(&store)
-        .finalize_note(&note_id, duration_sec, 1)
-        .map_err(|e| e.to_string())?;
+    let meta = match lock_store(&store).finalize_note(&note_id, duration_sec, 1) {
+        Ok(meta) => meta,
+        Err(e) => {
+            // Even a failed stop must drain (issue #35): the gate is down
+            // and nothing else is scheduled to unstick whatever deferred
+            // itself behind this recording.
+            llm::drain_summarize_queue(&summarize_queue, &llm_busy);
+            return Err(e.to_string());
+        }
+    };
 
     // `create_note`'s own `["mic"]` default is already correct for the
     // overwhelmingly common case — this second write only actually happens
@@ -2314,6 +2338,12 @@ pub fn stop_recording(
         &microphone_name,
         final_input,
     );
+
+    // Issue #35: with the transcript complete and the note finalized,
+    // start whatever deferred itself behind this recording — first, so
+    // requests that arrived mid-recording keep their place in line ahead
+    // of this note's own auto-summary below.
+    llm::drain_summarize_queue(&summarize_queue, &llm_busy);
 
     // Diarization runs *before* the auto-summary when it's enabled and its
     // models are downloaded, so the summary prompt sees real "Speaker 1..N"
@@ -2493,10 +2523,12 @@ fn auto_trigger_summarize(
 
     let model_path = catalog::installed_path(&entry, &models_root);
     let note_id = note_id.to_string();
+    let recording_gate = app.state::<llm::RecordingGate>().0.clone();
 
     let disposition = llm::spawn_or_enqueue_summarize(
         queue,
         llm::SummarizeWorkerCtx {
+            recording: recording_gate.clone(),
             note_id: note_id.clone(),
             store: store.clone(),
             engine: engine.clone(),
@@ -2509,6 +2541,10 @@ fn auto_trigger_summarize(
             queue: queue.clone(),
             emit: Box::new(llm::tauri_emit(app.clone())),
         },
+        // Issue #35: the diar-on-done path can fire minutes after this
+        // note's own recording ended, mid way through the NEXT meeting's
+        // recording — read the gate fresh, not at trigger-arm time.
+        recording_gate.load(Ordering::SeqCst),
     );
 
     if matches!(

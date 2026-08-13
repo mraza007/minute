@@ -1057,6 +1057,29 @@ pub(crate) fn open_shared() -> SharedLlmEngine {
 /// generating — every later read is lock-free.
 pub struct GenerationCancel(pub Arc<AtomicBool>);
 
+/// Whether a recording is live right now (issue #35) — set by
+/// `audio::start_recording`/`audio::stop_recording`, read wherever a new
+/// summarization could start. While it's `true`, new summarize requests
+/// join the queue instead of spawning: the live recording's Whisper
+/// context and a generation's LLM context would otherwise both sit on
+/// the GPU at once, which is the known trigger for the
+/// seconds-per-token stalls issue #30 bounded. A newtype (like
+/// [`GenerationCancel`]) so `app.manage` can hold a third bare
+/// `Arc<AtomicBool>` without colliding with [`LlmBusy`].
+///
+/// Deliberately not consulted by [`drain_summarize_queue`]: the drain
+/// runs when a generation just *finished*, and skipping it there would
+/// strand the queue with nothing scheduled to drain it later —
+/// `stop_recording`'s own drain call is the recording-aware entry point.
+/// Asks are also exempt: an ask during a recording is an explicit user
+/// action, and the generation timeout bounds it either way.
+pub struct RecordingGate(pub Arc<AtomicBool>);
+
+/// Creates a fresh, ready-to-`app.manage()` recording gate — not recording.
+pub(crate) fn open_recording_gate() -> RecordingGate {
+    RecordingGate(Arc::new(AtomicBool::new(false)))
+}
+
 impl LlmEngineState {
     /// Clone of the engine's cancel flag, for [`GenerationCancel`] at setup.
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
@@ -1153,11 +1176,17 @@ pub enum SummarizeDisposition {
 /// enqueue once and report [`SummarizeDisposition::AlreadyQueued`] twice —
 /// the caller re-emits `Queued` either way, so the UI stays correct without
 /// the note being summarized three times in a row.
+/// `defer` (issue #35): `true` while a recording is live — the request
+/// joins the queue even when the engine is free, so the LLM never loads
+/// onto the GPU next to the recording's Whisper context. Callers read it
+/// from [`RecordingGate`]; a plain `bool` here keeps this function pure
+/// and testable.
 pub fn spawn_or_enqueue_summarize(
     queue: &SummarizeQueue,
     ctx: SummarizeWorkerCtx,
+    defer: bool,
 ) -> SummarizeDisposition {
-    if try_claim_busy(&ctx.busy) {
+    if !defer && try_claim_busy(&ctx.busy) {
         SummarizeWorker::spawn(ctx);
         return SummarizeDisposition::Started;
     }
@@ -1184,6 +1213,16 @@ pub fn drain_summarize_queue(queue: &SummarizeQueue, busy: &LlmBusy) {
     let Some(ctx) = lock_summarize_queue(queue).pop_front() else {
         return;
     };
+    // Issue #35: a worker finishing mid-recording must not start the next
+    // queued note — that would reintroduce exactly the recording/LLM GPU
+    // contention the queue entry was deferred to avoid. Every entry's
+    // `recording` is a clone of the one app-wide [`RecordingGate`], so the
+    // front entry speaks for all of them; `stop_recording` re-drains once
+    // the gate is down.
+    if ctx.recording.load(Ordering::SeqCst) {
+        lock_summarize_queue(queue).push_front(ctx);
+        return;
+    }
     if try_claim_busy(busy) {
         SummarizeWorker::spawn(ctx);
     } else {
@@ -2459,6 +2498,12 @@ pub struct SummarizeWorkerCtx {
     /// on the context so a worker started from the queue can keep the chain
     /// going without any global lookup.
     pub queue: SummarizeQueue,
+    /// Clone of the app-wide [`RecordingGate`] flag (issue #35) — lets
+    /// [`drain_summarize_queue`] refuse to start this entry while a
+    /// recording is live, without threading the gate through every drain
+    /// call site. Tests that never drain mid-recording pass a fresh
+    /// `Arc::new(AtomicBool::new(false))`.
+    pub recording: Arc<AtomicBool>,
     pub emit: Box<dyn Fn(SummaryEvent) + Send + 'static>,
 }
 
@@ -2719,6 +2764,7 @@ pub async fn summarize_note(
     engine: State<'_, SharedLlmEngine>,
     busy: State<'_, LlmBusy>,
     queue: State<'_, SummarizeQueue>,
+    recording: State<'_, RecordingGate>,
     id: String,
 ) -> std::result::Result<(), String> {
     let models_root = app
@@ -2752,6 +2798,7 @@ pub async fn summarize_note(
     let disposition = spawn_or_enqueue_summarize(
         &queue,
         SummarizeWorkerCtx {
+            recording: recording.0.clone(),
             note_id: id.clone(),
             store: store.inner().clone(),
             engine: engine.inner().clone(),
@@ -2764,6 +2811,8 @@ pub async fn summarize_note(
             queue: queue.inner().clone(),
             emit,
         },
+        // Issue #35: a Regenerate during a live recording waits its turn.
+        recording.0.load(Ordering::SeqCst),
     );
 
     // `AlreadyQueued` re-emits too: the caller clicked Regenerate again, and
@@ -4224,6 +4273,7 @@ mod tests {
         let disposition = spawn_or_enqueue_summarize(
             &queue,
             SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
                 note_id: "some-note".to_string(),
                 store,
                 engine,
@@ -4236,6 +4286,7 @@ mod tests {
                 queue: queue.clone(),
                 emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
             },
+            false,
         );
 
         assert_eq!(disposition, SummarizeDisposition::Queued);
@@ -4257,6 +4308,7 @@ mod tests {
         busy.store(true, Ordering::SeqCst);
 
         let ctx_for = |note_id: &str| SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
             note_id: note_id.to_string(),
             store: store.clone(),
             engine: engine.clone(),
@@ -4271,15 +4323,15 @@ mod tests {
         };
 
         assert_eq!(
-            spawn_or_enqueue_summarize(&queue, ctx_for("note-a")),
+            spawn_or_enqueue_summarize(&queue, ctx_for("note-a"), false),
             SummarizeDisposition::Queued
         );
         assert_eq!(
-            spawn_or_enqueue_summarize(&queue, ctx_for("note-a")),
+            spawn_or_enqueue_summarize(&queue, ctx_for("note-a"), false),
             SummarizeDisposition::AlreadyQueued
         );
         assert_eq!(
-            spawn_or_enqueue_summarize(&queue, ctx_for("note-b")),
+            spawn_or_enqueue_summarize(&queue, ctx_for("note-b"), false),
             SummarizeDisposition::Queued
         );
 
@@ -4303,6 +4355,7 @@ mod tests {
         busy.store(true, Ordering::SeqCst);
 
         lock_summarize_queue(&queue).push_back(SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
             note_id: "waiting-note".to_string(),
             store,
             engine,
@@ -4337,6 +4390,93 @@ mod tests {
         );
     }
 
+    /// Issue #35's other half: a worker finishing mid-recording calls
+    /// `drain_summarize_queue` unconditionally, so the drain itself must
+    /// refuse to start a deferred entry while the gate is up — and must
+    /// put it back rather than drop it.
+    #[test]
+    fn drain_summarize_queue_waits_while_a_recording_is_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        let busy = open_busy_flag();
+        let queue = open_summarize_queue();
+        let gate = Arc::new(AtomicBool::new(true));
+
+        lock_summarize_queue(&queue).push_back(SummarizeWorkerCtx {
+            recording: gate.clone(),
+            note_id: "deferred-note".to_string(),
+            store,
+            engine,
+            busy: busy.clone(),
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            preferred_context: None,
+            summary_style: SummaryStyle::Standard,
+            summary_instructions: String::new(),
+            queue: queue.clone(),
+            emit: Box::new(|_| {}),
+        });
+
+        drain_summarize_queue(&queue, &busy);
+        {
+            let pending = lock_summarize_queue(&queue);
+            assert_eq!(pending.len(), 1, "the deferred note must be put back");
+            assert_eq!(pending[0].note_id, "deferred-note");
+        }
+        assert!(
+            !busy.load(Ordering::SeqCst),
+            "a refused drain must not claim the engine"
+        );
+
+        // Recording over: the same drain call now starts it.
+        gate.store(false, Ordering::SeqCst);
+        drain_summarize_queue(&queue, &busy);
+        assert!(lock_summarize_queue(&queue).is_empty());
+        assert!(busy.load(Ordering::SeqCst));
+    }
+
+    /// Issue #35: while a recording is live, a free engine must NOT be
+    /// claimed — the request waits in the queue for `stop_recording`'s
+    /// drain instead of loading the LLM next to the recording's Whisper
+    /// context.
+    #[test]
+    fn spawn_or_enqueue_summarize_defers_to_the_queue_while_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let engine = open_shared();
+        let busy = open_busy_flag();
+        let queue = open_summarize_queue();
+
+        let disposition = spawn_or_enqueue_summarize(
+            &queue,
+            SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
+                note_id: "mid-recording-note".to_string(),
+                store,
+                engine,
+                busy: busy.clone(),
+                model_id: "qwen3.5-4b".to_string(),
+                model_path: dir.path().join("does-not-exist.gguf"),
+                preferred_context: None,
+                summary_style: SummaryStyle::Standard,
+                summary_instructions: String::new(),
+                queue: queue.clone(),
+                emit: Box::new(|_| {}),
+            },
+            true,
+        );
+
+        assert_eq!(disposition, SummarizeDisposition::Queued);
+        assert!(
+            !busy.load(Ordering::SeqCst),
+            "deferring must not claim the engine"
+        );
+        let pending = lock_summarize_queue(&queue);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].note_id, "mid-recording-note");
+    }
+
     // --- cancel_summarize building blocks (issue #30) ---------------------
 
     #[test]
@@ -4349,6 +4489,7 @@ mod tests {
         busy.store(true, Ordering::SeqCst);
 
         let ctx_for = |note_id: &str| SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
             note_id: note_id.to_string(),
             store: store.clone(),
             engine: engine.clone(),
@@ -4361,8 +4502,8 @@ mod tests {
             queue: queue.clone(),
             emit: Box::new(|_| {}),
         };
-        spawn_or_enqueue_summarize(&queue, ctx_for("note-a"));
-        spawn_or_enqueue_summarize(&queue, ctx_for("note-b"));
+        spawn_or_enqueue_summarize(&queue, ctx_for("note-a"), false);
+        spawn_or_enqueue_summarize(&queue, ctx_for("note-b"), false);
 
         assert!(remove_queued_summarize(&queue, "not-queued").is_none());
 
@@ -4438,6 +4579,7 @@ mod tests {
         let result = spawn_or_enqueue_summarize(
             &queue,
             SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
                 note_id: "some-note".to_string(),
                 store,
                 engine,
@@ -4450,6 +4592,7 @@ mod tests {
                 queue: queue.clone(),
                 emit,
             },
+            false,
         );
 
         assert_eq!(result, SummarizeDisposition::Started);
@@ -4483,6 +4626,7 @@ mod tests {
         let result = spawn_or_enqueue_summarize(
             &queue,
             SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
                 note_id: "some-note".to_string(),
                 store,
                 engine: engine.clone(),
@@ -4495,6 +4639,7 @@ mod tests {
                 queue: queue.clone(),
                 emit: Box::new(|_event| {}),
             },
+            false,
         );
 
         assert_eq!(
@@ -4532,6 +4677,7 @@ mod tests {
         let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_emit = events.clone();
         let ctx = SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
             note_id,
             store,
             engine,
@@ -4603,6 +4749,7 @@ mod tests {
             .id;
         let signal_id = note_id.clone();
         SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
             note_id,
             store,
             engine: open_shared(),

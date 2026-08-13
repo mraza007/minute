@@ -269,7 +269,7 @@ describe('NoteView', () => {
     expect(
       screen.getAllByRole('status').some(node => node.textContent === 'Summary queued'),
     ).toBe(true)
-    expect(screen.getByText(/starts on its own when that finishes/)).toBeInTheDocument()
+    expect(screen.getByText(/Minute is busy with a recording or another summary/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
     // Still not an error — no retry affordance either.
     expect(screen.queryByRole('button', { name: 'Retry summary' })).not.toBeInTheDocument()

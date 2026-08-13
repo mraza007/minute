@@ -190,7 +190,7 @@ describe('AiNotesPanel', () => {
   describe('queued banner', () => {
     it('says the note is queued and will start on its own', () => {
       render(<AiNotesPanel {...baseProps({ status: 'queued' })} />)
-      expect(screen.getByText(/Queued — starts when the current one finishes/)).toBeInTheDocument()
+      expect(screen.getByText(/Queued — starts on its own when the engine is free/)).toBeInTheDocument()
     })
 
     it('does not claim to be summarizing while merely queued', () => {

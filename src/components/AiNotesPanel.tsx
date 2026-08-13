@@ -141,7 +141,10 @@ function SummarizingBanner({ modelName, onCancel }: { modelName: string; onCance
 /**
  * Issue #11: this note is in the summarize queue, waiting for whatever is
  * generating right now. No spinner — nothing is happening for *this* note
- * yet, and a spinner would claim otherwise.
+ * yet, and a spinner would claim otherwise. Since issue #35 the wait can
+ * also be for a live recording to finish (summaries defer rather than
+ * contend with it for the GPU), hence the deliberately unspecific
+ * "engine is free" copy.
  */
 function QueuedBanner({ onCancel }: { onCancel: () => void }) {
   return (
@@ -158,7 +161,7 @@ function QueuedBanner({ onCancel }: { onCancel: () => void }) {
         color: 'var(--ink-muted)',
       }}
     >
-      Queued — starts when the current one finishes
+      Queued — starts on its own when the engine is free
       <CancelButton onCancel={onCancel} />
     </div>
   )

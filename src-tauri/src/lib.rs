@@ -901,6 +901,12 @@ pub fn run() {
                 llm::GenerationCancel(llm::lock_llm_engine(&llm_engine).cancel_flag());
             app.manage(generation_cancel);
 
+            // Live-recording gate (issue #35) — while raised, new
+            // summarizations queue instead of contending with the
+            // recording's Whisper context for the GPU. Raised/lowered by
+            // `audio::start_recording`/`audio::stop_recording`.
+            app.manage(llm::open_recording_gate());
+
             // Single-generation-at-a-time gate, app-wide (a summarize and an ask
             // share it — see `llm::LlmBusy`'s docs), deliberately a separate
             // atomic from `llm_engine`'s mutex (see `llm::LlmEngineState`'s
