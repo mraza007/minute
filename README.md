@@ -5,15 +5,15 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.9.0-c8412a)
+![version](https://img.shields.io/badge/version-1.10.0-c8412a)
 
 <a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute - Meeting notes that never leave your Mac | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a>
 
 ![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
 
-**[⬇ Download Minute 1.9.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.9.0/Minute-1.9.0-arm64.zip)**
+**[⬇ Download Minute 1.10.0 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.10.0/Minute-1.10.0-arm64.zip)**
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.9.0/Minute-1.9.0-x86_64.zip).
+Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.10.0/Minute-1.10.0-x86_64.zip).
 
 </div>
 
