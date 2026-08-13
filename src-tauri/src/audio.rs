@@ -2699,15 +2699,11 @@ fn auto_trigger_summarize(
         }
     };
 
-    let (model_id, preferred_context, summary_style, summary_instructions) = {
-        let guard = settings::lock_settings(settings);
-        (
-            guard.llm_model.clone(),
-            guard.llm_context_tokens,
-            guard.summary_style,
-            guard.summary_instructions.clone(),
-        )
-    };
+    // Only the model selection is snapshotted here — style/instructions/
+    // context are read fresh by `run_summarize` at generation time
+    // (issue #41), so a queued note honors the settings current when it
+    // actually runs.
+    let model_id = settings::lock_settings(settings).llm_model.clone();
 
     let catalog = match catalog::load_catalog() {
         Ok(catalog) => catalog,
@@ -2737,9 +2733,7 @@ fn auto_trigger_summarize(
             busy: busy.clone(),
             model_id: entry.id,
             model_path,
-            preferred_context,
-            summary_style,
-            summary_instructions,
+            settings: settings.clone(),
             queue: queue.clone(),
             emit: Box::new(llm::tauri_emit(app.clone())),
         },

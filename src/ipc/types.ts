@@ -214,6 +214,8 @@ export interface SummaryTopic {
 
 export interface SummaryDoc {
   summary: string
+  /** Issue #41: the transcript was cut to fit the model's context window, so this summary covers only part of the recording. Optional so cached pre-#41 fixtures/payloads stay valid; absent means false. */
+  truncated?: boolean
   /**
    * Per-topic breakdown, empty unless the note was summarized under the
    * Detailed style (issue #14). Always present in JSON from `get_note`

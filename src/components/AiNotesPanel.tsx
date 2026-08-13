@@ -507,6 +507,14 @@ export const AiNotesPanel = memo(function AiNotesPanel({
           <>
             <Section label="Summary">
               <p className="leaf-body">{summary.summary}</p>
+              {/* Issue #41: a cut transcript quietly produced thin
+                  summaries — say so instead of leaving it a mystery. */}
+              {summary.truncated && (
+                <p className="leaf-body" style={{ marginTop: 8, color: 'var(--ink-muted)', fontSize: 12 }}>
+                  This meeting was too long for the summary model's memory, so this summary covers only part of it. A
+                  larger context window in Settings → Summary gives full coverage.
+                </p>
+              )}
             </Section>
             {/* Issue #14's topic breakdown, between the overview and the
                 decisions — only ever populated under the Detailed summary

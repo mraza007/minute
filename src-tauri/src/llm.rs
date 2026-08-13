@@ -134,6 +134,13 @@ pub struct SummaryDoc {
     pub topics: Vec<SummaryTopic>,
     pub decisions: Vec<String>,
     pub action_items: Vec<ActionItem>,
+    /// Issue #41: the transcript had to be cut to fit the context window,
+    /// so this summary covers only part of the recording — surfaced in
+    /// the AI-notes panel so a thin result isn't a mystery. Same
+    /// `#[serde(default)]` rationale as `topics`: older `summary.json`
+    /// files omit it and must keep parsing.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Formats a segment's start time as `mm:ss` for the transcript rendered
@@ -682,6 +689,7 @@ fn raw_to_summary_doc(parsed: RawSummary) -> SummaryDoc {
         .filter_map(summary_topic_from_value)
         .collect();
     SummaryDoc {
+        truncated: false,
         summary: parsed.summary,
         topics,
         decisions: parsed.decisions,
@@ -1191,7 +1199,12 @@ pub fn spawn_or_enqueue_summarize(
         return SummarizeDisposition::Started;
     }
     let mut pending = lock_summarize_queue(queue);
-    if pending.iter().any(|queued| queued.note_id == ctx.note_id) {
+    // Issue #41: a re-request of an already-waiting note replaces the
+    // stored context in place (keeping its FIFO position) — the newest
+    // request carries the freshest model snapshot, and silently dropping
+    // it made a post-settings-change Regenerate a no-op.
+    if let Some(slot) = pending.iter_mut().find(|queued| queued.note_id == ctx.note_id) {
+        *slot = ctx;
         return SummarizeDisposition::AlreadyQueued;
     }
     pending.push_back(ctx);
@@ -1983,12 +1996,18 @@ fn next_transcript_budget(
 /// `build_prompt` are closures (rather than this taking the engine and
 /// segments directly) so the loop is unit-testable against a fake
 /// tokenizer — see `tests::fitting_*`.
+/// Returns the generated text plus whether the transcript had to be
+/// truncated to fit (issue #41): a summary produced from a cut transcript
+/// is honest work, but the user deserves to know it covers only part of
+/// the recording — especially since Detailed reserves a bigger response
+/// budget and therefore fits LESS transcript than Standard on the same
+/// context window.
 fn generate_fitting_transcript(
     generate: impl Fn(&str) -> Result<String>,
     build_prompt: impl Fn(usize) -> String,
     transcript_bytes: usize,
     available_tokens: usize,
-) -> Result<String> {
+) -> Result<(String, bool)> {
     let mut budget = usize::MAX;
     let mut last_err: Option<MinuteError> = None;
 
@@ -2024,7 +2043,8 @@ fn generate_fitting_transcript(
                     }
                 }
             }
-            other => return other,
+            Ok(text) => return Ok((text, budget < transcript_bytes)),
+            Err(other) => return Err(other),
         }
     }
 
@@ -2339,7 +2359,9 @@ fn run_ask(ctx: &AskWorkerCtx) -> Result<String> {
         ));
     }
 
-    let raw_output = {
+    // Asks discard the truncation flag — an answer is transient
+    // session-only text with nowhere persistent to carry the notice.
+    let (raw_output, _truncated) = {
         let mut engine = lock_llm_engine(&ctx.engine);
         engine.reset_cancel();
         engine.ensure_loaded(&ctx.model_id, &ctx.model_path, ctx.preferred_context)?;
@@ -2483,17 +2505,14 @@ pub struct SummarizeWorkerCtx {
     pub busy: LlmBusy,
     pub model_id: String,
     pub model_path: PathBuf,
-    /// Settings' context-window override, read at command time (`None` =
-    /// automatic) — see [`resolve_context_tokens`].
-    pub preferred_context: Option<u32>,
-    /// Settings' summary style, read at command time — adjusts the prompt's
-    /// length/coverage guidance ([`build_summary_prompt`]) and the response
-    /// reservation ([`generation_params_for`]).
-    pub summary_style: SummaryStyle,
-    /// Settings' free-text custom instructions, read at command time —
-    /// appended to the prompt's rules (empty = none). See
-    /// [`build_summary_prompt`].
-    pub summary_instructions: String,
+    /// Live settings handle (issue #41): the summary style, custom
+    /// instructions, and context-window override are read fresh at RUN
+    /// time in [`run_summarize`], not snapshotted at request time — a
+    /// note that waited in the queue (engine busy, or deferred behind a
+    /// recording) must honor the settings current when it actually runs.
+    /// Snapshots here meant a note queued as Standard ran as Standard
+    /// even after the user switched to Detailed and clicked Regenerate.
+    pub settings: SharedSettings,
     /// The queue this worker drains when it finishes (issue #11) — carried
     /// on the context so a worker started from the queue can keep the chain
     /// going without any global lookup.
@@ -2673,11 +2692,24 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
         ));
     }
 
-    let raw_output = {
+    // Issue #41: read the style/instructions/context override NOW — this
+    // runs on the worker thread at generation time, so a note that waited
+    // in the queue honors the settings the user sees, not a stale snapshot
+    // from whenever the request was enqueued.
+    let (summary_style, summary_instructions, preferred_context) = {
+        let guard = settings::lock_settings(&ctx.settings);
+        (
+            guard.summary_style,
+            guard.summary_instructions.clone(),
+            guard.llm_context_tokens,
+        )
+    };
+
+    let (raw_output, transcript_truncated) = {
         let mut engine = lock_llm_engine(&ctx.engine);
         engine.reset_cancel();
-        engine.ensure_loaded(&ctx.model_id, &ctx.model_path, ctx.preferred_context)?;
-        let params = generation_params_for(ctx.summary_style);
+        engine.ensure_loaded(&ctx.model_id, &ctx.model_path, preferred_context)?;
+        let params = generation_params_for(summary_style);
         let available_tokens = (engine.loaded_context_tokens().unwrap_or(LLM_CONTEXT_TOKENS)
             as usize)
             .saturating_sub(params.max_tokens);
@@ -2688,8 +2720,8 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
                     &meta.title,
                     &transcript.segments,
                     budget,
-                    ctx.summary_style,
-                    &ctx.summary_instructions,
+                    summary_style,
+                    &summary_instructions,
                 )
             },
             transcript_bytes,
@@ -2703,7 +2735,10 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     };
 
     let extraction = extract_summary_parts(&raw_output)?;
-    let summary = require_nonempty_summary(extraction.doc)?;
+    let mut summary = require_nonempty_summary(extraction.doc)?;
+    // Issue #41: carry the fitting loop's verdict onto the persisted doc
+    // so the panel can say "this covers only part of the recording".
+    summary.truncated = transcript_truncated;
     lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary)?;
 
     // Issue #12: a note the user never named takes the title the model
@@ -2772,15 +2807,11 @@ pub async fn summarize_note(
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
-    let (model_id, preferred_context, summary_style, summary_instructions) = {
-        let guard = settings::lock_settings(&settings);
-        (
-            guard.llm_model.clone(),
-            guard.llm_context_tokens,
-            guard.summary_style,
-            guard.summary_instructions.clone(),
-        )
-    };
+    // Only the model selection is snapshotted here — style/instructions/
+    // context are read fresh by `run_summarize` at generation time
+    // (issue #41), so a queued note honors the settings current when it
+    // actually runs.
+    let model_id = settings::lock_settings(&settings).llm_model.clone();
     let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
         let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
         catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
@@ -2805,9 +2836,7 @@ pub async fn summarize_note(
             busy: busy.inner().clone(),
             model_id: entry.id.clone(),
             model_path,
-            preferred_context,
-            summary_style,
-            summary_instructions,
+            settings: settings.inner().clone(),
             queue: queue.inner().clone(),
             emit,
         },
@@ -3327,7 +3356,7 @@ mod tests {
             transcript.len(),
             7_168,
         );
-        assert_eq!(result.unwrap(), "generated");
+        assert_eq!(result.unwrap().0, "generated");
         let seen = seen.borrow();
         assert_eq!(seen.len(), 1, "must succeed on the first attempt");
         assert_eq!(seen[0], 10_000, "first attempt must be the full transcript");
@@ -3345,7 +3374,7 @@ mod tests {
             transcript.len(),
             7_168,
         );
-        assert_eq!(result.unwrap(), "generated");
+        assert_eq!(result.unwrap().0, "generated");
         let seen = seen.borrow();
         assert!(seen.len() >= 2, "the dense case must have retried");
         assert_eq!(seen[0], 24_000);
@@ -4280,9 +4309,7 @@ mod tests {
                 busy,
                 model_id: "qwen3.5-4b".to_string(),
                 model_path: dir.path().join("does-not-exist.gguf"),
-                preferred_context: None,
-                summary_style: SummaryStyle::Standard,
-                summary_instructions: String::new(),
+                settings: crate::settings::open_shared(dir.path()),
                 queue: queue.clone(),
                 emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
             },
@@ -4315,9 +4342,7 @@ mod tests {
             busy: busy.clone(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
-            preferred_context: None,
-            summary_style: SummaryStyle::Standard,
-            summary_instructions: String::new(),
+            settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
         };
@@ -4362,9 +4387,7 @@ mod tests {
             busy: busy.clone(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
-            preferred_context: None,
-            summary_style: SummaryStyle::Standard,
-            summary_instructions: String::new(),
+            settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
         });
@@ -4411,9 +4434,7 @@ mod tests {
             busy: busy.clone(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
-            preferred_context: None,
-            summary_style: SummaryStyle::Standard,
-            summary_instructions: String::new(),
+            settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
         });
@@ -4458,9 +4479,7 @@ mod tests {
                 busy: busy.clone(),
                 model_id: "qwen3.5-4b".to_string(),
                 model_path: dir.path().join("does-not-exist.gguf"),
-                preferred_context: None,
-                summary_style: SummaryStyle::Standard,
-                summary_instructions: String::new(),
+                settings: crate::settings::open_shared(dir.path()),
                 queue: queue.clone(),
                 emit: Box::new(|_| {}),
             },
@@ -4496,9 +4515,7 @@ mod tests {
             busy: busy.clone(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
-            preferred_context: None,
-            summary_style: SummaryStyle::Standard,
-            summary_instructions: String::new(),
+            settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
         };
@@ -4586,9 +4603,7 @@ mod tests {
                 busy: busy.clone(),
                 model_id: "qwen3.5-4b".to_string(),
                 model_path: dir.path().join("does-not-exist.gguf"),
-                preferred_context: None,
-                summary_style: SummaryStyle::Standard,
-                summary_instructions: String::new(),
+                settings: crate::settings::open_shared(dir.path()),
                 queue: queue.clone(),
                 emit,
             },
@@ -4633,9 +4648,7 @@ mod tests {
                 busy,
                 model_id: "qwen3.5-4b".to_string(),
                 model_path: dir.path().join("does-not-exist.gguf"),
-                preferred_context: None,
-                summary_style: SummaryStyle::Standard,
-                summary_instructions: String::new(),
+                settings: crate::settings::open_shared(dir.path()),
                 queue: queue.clone(),
                 emit: Box::new(|_event| {}),
             },
@@ -4684,9 +4697,7 @@ mod tests {
             busy: open_busy_flag(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
-            preferred_context: None,
-            summary_style: SummaryStyle::Standard,
-            summary_instructions: String::new(),
+            settings: crate::settings::open_shared(dir.path()),
             queue: open_summarize_queue(),
             emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
         };
@@ -4756,9 +4767,7 @@ mod tests {
             busy: busy.clone(),
             model_id: "qwen3.5-4b".to_string(),
             model_path: dir.path().join("does-not-exist.gguf"),
-            preferred_context: None,
-            summary_style: SummaryStyle::Standard,
-            summary_instructions: String::new(),
+            settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(move |event| {
                 let SummaryEvent::SummaryStatus(payload) = &event;
@@ -5397,7 +5406,7 @@ mod tests {
             available_tokens,
         )
         .expect("generation failed");
-        assert!(!raw.trim().is_empty(), "expected non-empty model output");
+        assert!(!raw.0.trim().is_empty(), "expected non-empty model output");
     }
 
     /// Issue #6's follow-up, as a test: a transcript that tokenizes far
@@ -5481,7 +5490,7 @@ mod tests {
         )
         .expect("generation failed — the fitting retry should have made this succeed");
         eprintln!("fit + generation took {:?}", fit_start.elapsed());
-        assert!(!raw.trim().is_empty(), "expected non-empty model output");
+        assert!(!raw.0.trim().is_empty(), "expected non-empty model output");
     }
 
     /// Issue #10's reproduction: an accidental overnight recording — ~25
@@ -5580,7 +5589,7 @@ mod tests {
         match &result {
             Ok(raw) => eprintln!(
                 "fit OK, output: {}…",
-                raw.chars().take(80).collect::<String>()
+                raw.0.chars().take(80).collect::<String>()
             ),
             Err(e) => eprintln!("fit FAILED: {e}"),
         }
