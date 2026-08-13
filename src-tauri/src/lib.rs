@@ -1133,58 +1133,46 @@ mod acl_tests {
 
     #[test]
     fn the_default_capability_still_grants_every_command_the_main_frontend_actually_calls() {
-        // A regression guard the other direction: tightening this ACL must not
-        // have silently dropped a command the real main-window frontend (see
-        // src/ipc/commands.ts) still needs — every one of these missing would
-        // break a real feature (settings, notes, recording, ...), not just a
-        // permissions test.
+        // A regression guard the other direction: tightening this ACL must
+        // not have silently dropped a command the real main-window frontend
+        // still needs. The expected list is *derived* from
+        // src/ipc/commands.ts rather than hand-copied here: a hand-copied
+        // list is how issue #37 happened — six registered commands
+        // (`dismiss_auto_stop`, `cancel_summarize`, `diarize_note`, ...)
+        // were missing from build.rs's APP_COMMANDS and this capability,
+        // silently dead-ending their buttons, and this test's own stale
+        // copy of the list matched the stale manifest perfectly.
+        let commands_ts = include_str!("../../src/ipc/commands.ts");
+        let called: Vec<&str> = commands_ts
+            .split("invokeCmd('")
+            .skip(1)
+            .map(|rest| {
+                rest.split('\'')
+                    .next()
+                    .expect("unterminated invokeCmd name in commands.ts")
+            })
+            // commands.ts serves both windows; the popup pair belongs to the
+            // meeting-popup capability alone, and a separate test above
+            // asserts main does NOT get it.
+            .filter(|command| !matches!(*command, "popup_start" | "popup_dismiss"))
+            .collect();
+        assert!(
+            called.len() >= 40,
+            "commands.ts parse looks broken — only {} invokeCmd calls found",
+            called.len()
+        );
+
         let capabilities = resolved_capabilities();
         let default = &capabilities["default"];
         let permissions = permissions_of(default);
-        for expected in [
-            "allow-hardware-info",
-            "allow-list-models",
-            "allow-recommended-models",
-            "allow-list-notes",
-            "allow-get-note",
-            "allow-search-notes",
-            "allow-rename-note",
-            "allow-toggle-action-item",
-            "allow-summarize-note",
-            "allow-ask-note",
-            "allow-delete-note",
-            "allow-restore-note",
-            "allow-delete-notes",
-            "allow-restore-notes",
-            "allow-note-storage-stats",
-            "allow-delete-note-audio",
-            "allow-export-notes",
-            "allow-export-diagnostics",
-            "allow-set-note-pinned",
-            "allow-add-note-marker",
-            "allow-update-note-marker",
-            "allow-delete-note-marker",
-            "allow-rename-speaker",
-            "allow-merge-speakers",
-            "allow-undo-speaker-merge",
-            "allow-storage-stats",
-            "allow-reveal-note",
-            "allow-get-settings",
-            "allow-set-settings",
-            "allow-download-model",
-            "allow-cancel-download",
-            "allow-delete-model",
-            "allow-start-recording",
-            "allow-pause-recording",
-            "allow-resume-recording",
-            "allow-stop-recording",
-            "allow-sys-audio-status",
-            "allow-request-sys-audio-permission",
-        ] {
+        for command in called {
+            let expected = format!("allow-{}", command.replace('_', "-"));
             assert!(
-        permissions.contains(&expected),
-        "main window is missing {expected} — this would break a real feature, not just a test"
-      );
+                permissions.contains(&expected.as_str()),
+                "main window is missing {expected} for commands.ts's `{command}` — \
+                 the button that calls it is silently dead (add the command to \
+                 build.rs APP_COMMANDS and capabilities/default.json)"
+            );
         }
     }
 
