@@ -701,6 +701,8 @@ export const RecordingView = memo(function RecordingView({
   const [markerLabel, setMarkerLabel] = useState('')
   /** Two-step confirm for "Restart with system audio" (issue #26) — the restart splits the meeting into two notes, so a single stray click must not trigger it. */
   const [restartArmed, setRestartArmed] = useState(false)
+  /** "Go back" returns focus here — backing out of the confirm unmounts the focused button, which would otherwise drop focus on body. */
+  const restartOfferRef = useRef<HTMLButtonElement>(null)
   const [markerSaving, setMarkerSaving] = useState(false)
 
   async function saveMarker() {
@@ -986,6 +988,7 @@ export const RecordingView = memo(function RecordingView({
                 </p>
                 <button
                   type="button"
+                  ref={restartOfferRef}
                   className="btn-outline"
                   disabled={processing}
                   style={{ marginTop: 8, padding: '6px 12px', fontSize: 11.5 }}
@@ -995,8 +998,14 @@ export const RecordingView = memo(function RecordingView({
                 </button>
               </>
             )}
+            {/* An inline confirm, not a modal — no dialog role (that would
+                promise focus trapping this block doesn't do). "Go back", not
+                "Keep recording": the auto-stop banner's own "Keep recording"
+                button can be on screen at the same time, and two identical
+                accessible names doing different things is how the wrong one
+                gets clicked. */}
             {!systemAudioActive && canRestartWithSystemAudio && restartArmed && (
-              <div role="alertdialog" aria-label="Confirm restart with system audio">
+              <div role="group" aria-label="Confirm restart with system audio">
                 <p className="recording-detail-note">
                   This saves the recording so far as its own note, then starts a new one with system audio on. The
                   meeting ends up as two notes.
@@ -1004,6 +1013,9 @@ export const RecordingView = memo(function RecordingView({
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button
                     type="button"
+                    // Arming unmounts the focused offer button — land focus
+                    // on the primary action instead of dropping it on body.
+                    autoFocus
                     className="btn-solid"
                     disabled={processing}
                     style={{ padding: '6px 12px', fontSize: 11.5 }}
@@ -1018,9 +1030,12 @@ export const RecordingView = memo(function RecordingView({
                     type="button"
                     className="btn-outline"
                     style={{ padding: '6px 12px', fontSize: 11.5 }}
-                    onClick={() => setRestartArmed(false)}
+                    onClick={() => {
+                      setRestartArmed(false)
+                      requestAnimationFrame(() => restartOfferRef.current?.focus())
+                    }}
                   >
-                    Keep recording
+                    Go back
                   </button>
                 </div>
               </div>

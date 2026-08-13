@@ -1204,7 +1204,10 @@ export function useAppState() {
    */
   const finishStop = useCallback((stoppedNoteId: string) => {
     setProcessingStage('preparing')
-    Promise.all([ipc.listNotes(), ipc.storageStats()])
+    // Returned so callers that must not release their own in-flight guards
+    // early (restartWithSystemAudio's failure path) can chain on the full
+    // transition, not just its kickoff.
+    return Promise.all([ipc.listNotes(), ipc.storageStats()])
       .then(([freshNotes, freshStorage]) => {
         setNotes(freshNotes)
         setStorage(freshStorage)
@@ -1311,8 +1314,12 @@ export function useAppState() {
             setView('recording')
           })
           .catch(error => {
-            finishStop(stopped.id)
             reportError(error)
+            // Returned so the outer `.finally` below can't release
+            // `stopping`/`recordingStartInFlight` while the notes-view
+            // transition is still in flight — that gap briefly re-enabled
+            // Stop/Restart against a recording that no longer exists.
+            return finishStop(stopped.id)
           })
       })
       .catch(error => {

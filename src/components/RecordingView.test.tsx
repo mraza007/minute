@@ -111,16 +111,37 @@ describe('RecordingView', () => {
       expect(onRestartWithSystemAudio).toHaveBeenCalledTimes(1)
     })
 
-    it('"Keep recording" backs out of the confirm step without restarting', () => {
+    it('"Go back" backs out of the confirm step without restarting', () => {
       const onRestartWithSystemAudio = vi.fn()
       render(<RecordingView {...base} canRestartWithSystemAudio={true} onRestartWithSystemAudio={onRestartWithSystemAudio} />)
 
       fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
-      fireEvent.click(screen.getByRole('button', { name: 'Keep recording' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Go back' }))
 
       expect(onRestartWithSystemAudio).not.toHaveBeenCalled()
       expect(screen.queryByText(/two notes/)).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Restart with system audio' })).toBeInTheDocument()
+    })
+
+    // The auto-stop banner has its own "Keep recording" button; with the
+    // confirm step open at the same time there must still be exactly one
+    // button by that name, and it must be the auto-stop one.
+    it('never shows a second "Keep recording" while the auto-stop banner is up', () => {
+      const onKeepRecording = vi.fn()
+      render(
+        <RecordingView
+          {...base}
+          canRestartWithSystemAudio={true}
+          autoStopSeconds={90}
+          onKeepRecording={onKeepRecording}
+        />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
+
+      const keepButtons = screen.getAllByRole('button', { name: 'Keep recording' })
+      expect(keepButtons).toHaveLength(1)
+      fireEvent.click(keepButtons[0])
+      expect(onKeepRecording).toHaveBeenCalledTimes(1)
     })
   })
 
