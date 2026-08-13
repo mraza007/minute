@@ -229,6 +229,31 @@ describe('Sidebar', () => {
       fireEvent.click(screen.getByRole('button', { name: /open search palette/i }))
       expect(onOpenPalette).toHaveBeenCalledTimes(1)
     })
+
+    it('shows no clear button while the query is empty', () => {
+      render(<Sidebar {...base} searchQuery="" />)
+      expect(screen.queryByRole('button', { name: 'Clear search' })).not.toBeInTheDocument()
+    })
+
+    it('clicking the clear button empties the query and refocuses the input', () => {
+      const onSearchQueryChange = vi.fn()
+      render(<Sidebar {...base} searchQuery="acme" onSearchQueryChange={onSearchQueryChange} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+      expect(onSearchQueryChange).toHaveBeenCalledWith('')
+      expect(screen.getByRole('textbox', { name: 'Search notes' })).toHaveFocus()
+    })
+
+    it('Escape clears a non-empty query but leaves an empty one alone', () => {
+      const onSearchQueryChange = vi.fn()
+      const { rerender } = render(<Sidebar {...base} searchQuery="acme" onSearchQueryChange={onSearchQueryChange} />)
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search notes' }), { key: 'Escape' })
+      expect(onSearchQueryChange).toHaveBeenCalledWith('')
+
+      onSearchQueryChange.mockClear()
+      rerender(<Sidebar {...base} searchQuery="" onSearchQueryChange={onSearchQueryChange} />)
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search notes' }), { key: 'Escape' })
+      expect(onSearchQueryChange).not.toHaveBeenCalled()
+    })
   })
 
   describe('matchedNoteIds filtering', () => {

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { NoteListItem, View } from '../types'
 import { NoteContextMenu } from './NoteContextMenu'
 
@@ -102,6 +102,7 @@ export const Sidebar = memo(function Sidebar({
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   /** The row currently renaming inline (context menu's Rename). */
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   /** Commits an inline rename the same way NoteView's title edit does: only a non-blank, actually-changed draft calls out. */
   function commitRename(note: NoteListItem, draft: string) {
@@ -229,13 +230,46 @@ export const Sidebar = memo(function Sidebar({
         }}
       >
         <input
+          ref={searchInputRef}
           placeholder="Search notes"
           aria-label="Search notes"
           className="input-ruled"
           value={searchQuery}
           onChange={e => onSearchQueryChange(e.target.value)}
+          onKeyDown={e => {
+            // Only intercept Escape while there is a query to clear, so an
+            // Escape on an empty box still bubbles (e.g. to close overlays).
+            if (e.key === 'Escape' && searchQuery) {
+              e.preventDefault()
+              onSearchQueryChange('')
+            }
+          }}
           style={{ flex: 1, borderBottom: 'none' }}
         />
+        {searchQuery && (
+          <button
+            type="button"
+            aria-label="Clear search"
+            title="Clear search"
+            onClick={() => {
+              onSearchQueryChange('')
+              searchInputRef.current?.focus()
+            }}
+            style={{
+              border: 'none',
+              background: 'none',
+              padding: '0 0 8px',
+              color: 'var(--ink-faint)',
+              cursor: 'pointer',
+              flex: 'none',
+              display: 'inline-flex',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenPalette}
