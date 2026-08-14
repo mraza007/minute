@@ -1095,6 +1095,67 @@ impl LlmEngineState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exit teardown — free ggml Metal resources before process exit
+// ---------------------------------------------------------------------------
+
+/// Raised once by [`begin_shutdown`] when the app is quitting; never
+/// cleared. [`LlmEngineState::ensure_loaded`] refuses to (re)load a model
+/// while this is up — see [`refuse_load_when_shutting_down`] for why a
+/// load during teardown is a crasher, not just wasted work.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// The load-refusal decision [`LlmEngineState::ensure_loaded`] makes
+/// against [`SHUTTING_DOWN`], split out as a pure function so it's
+/// unit-testable without touching the process-global flag (flipping the
+/// real static in a test would race every other test that calls
+/// `ensure_loaded` in the same process).
+///
+/// Why refuse at all: ggml-metal's exit-time static destructor
+/// (`ggml_metal_rsets_free`, run by `__cxa_finalize` inside `exit()`)
+/// `GGML_ASSERT`s — i.e. `abort()`s — if any Metal buffers are still
+/// resident. [`unload_for_exit`] empties them, but a summarize/ask worker
+/// that slipped past the busy gate could reload the model *after* that
+/// unload and re-arm the crash. This guard closes that window: once
+/// shutdown begins, no new load can succeed.
+fn refuse_load_when_shutting_down(shutting_down: bool) -> Result<()> {
+    if shutting_down {
+        return Err(MinuteError::Other(
+            "app is quitting; not loading an LLM model".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// First half of exit teardown, called by `lib.rs`'s `RunEvent::Exit`
+/// handler *before* the recording finalizer runs: raises
+/// [`SHUTTING_DOWN`] (so the finalizer's own auto-summarize trigger, or
+/// anything draining the queue, fails fast instead of loading a model
+/// into a dying process) and sets the shared cancel flag (so an
+/// in-flight generation stops at its next per-token
+/// [`generation_gate`] check and releases the engine mutex within
+/// moments instead of minutes). Lock-free on purpose: the whole point
+/// is to signal a worker that is currently *holding* the engine mutex.
+pub fn begin_shutdown(cancel: &GenerationCancel) {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    cancel.0.store(true, Ordering::SeqCst);
+}
+
+/// Second half of exit teardown: drops the loaded model (if any), which
+/// frees its Metal buffers and empties ggml's residency sets, so the
+/// ggml-metal static destructor's `GGML_ASSERT([rsets->data count] == 0)`
+/// passes instead of `abort()`ing the quit (the 1.12.0 crash-on-quit).
+/// Blocks on the engine mutex — bounded, not unbounded, because
+/// [`begin_shutdown`] already cancelled whatever generation holds it,
+/// and any worker that grabs the mutex after that fails its
+/// `ensure_loaded` immediately via [`refuse_load_when_shutting_down`].
+pub fn unload_for_exit(engine: &SharedLlmEngine) {
+    let mut guard = lock_llm_engine(engine);
+    if guard.loaded.take().is_some() {
+        log::info!("llm: unloaded model on exit (frees Metal residency sets before teardown)");
+    }
+}
+
 /// Single-generation-at-a-time gate, app-wide — deliberately *not* a field
 /// on [`LlmEngineState`] (see that struct's concurrency note for why): a
 /// bare `Arc<AtomicBool>`, claimed via `compare_exchange` in
@@ -1355,6 +1416,7 @@ impl LlmEngineState {
         model_path: &Path,
         preferred_context: Option<u32>,
     ) -> Result<()> {
+        refuse_load_when_shutting_down(SHUTTING_DOWN.load(Ordering::SeqCst))?;
         if let Some(loaded) = &mut self.loaded {
             if loaded.model_id == model_id {
                 let n_ctx_train = loaded.model.n_ctx_train();
@@ -4270,6 +4332,37 @@ mod tests {
             &busy,
             Instant::now() + IDLE_UNLOAD_AFTER + Duration::from_secs(600),
         );
+    }
+
+    // --- Exit teardown ------------------------------------------------------
+    //
+    // Same real-model limitation as the section above: the interesting
+    // production case (`unload_for_exit` dropping a real Metal-backed
+    // model) can't be constructed in a fast test, so these pin the pure
+    // refusal seam (`refuse_load_when_shutting_down`, tested without
+    // touching the process-global `SHUTTING_DOWN` — flipping the real
+    // static would race every other test that calls `ensure_loaded` in
+    // this same test process) and the nothing-loaded no-op.
+
+    #[test]
+    fn refuse_load_when_shutting_down_passes_while_running() {
+        assert!(refuse_load_when_shutting_down(false).is_ok());
+    }
+
+    #[test]
+    fn refuse_load_when_shutting_down_errors_once_shutdown_began() {
+        let err = refuse_load_when_shutting_down(true).unwrap_err();
+        assert!(
+            err.to_string().contains("quitting"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unload_for_exit_is_a_no_op_with_nothing_loaded() {
+        let engine = open_shared();
+        unload_for_exit(&engine);
+        assert!(lock_llm_engine(&engine).loaded.is_none());
     }
 
     #[test]

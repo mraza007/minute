@@ -1016,6 +1016,23 @@ pub fn run() {
             ..
         } => finalize_active_recording_on_exit(app_handle),
         tauri::RunEvent::ExitRequested { .. } => finalize_active_recording_on_exit(app_handle),
+        // The last event before the process dies — on macOS it's delivered
+        // synchronously inside `applicationWillTerminate:`, i.e. *before*
+        // `-[NSApplication terminate:]` calls `exit()`. That ordering is the
+        // whole fix for the 1.12.0 crash-on-quit: `exit()` runs ggml-metal's
+        // static destructor (`ggml_metal_rsets_free`), which `abort()`s if
+        // any Metal buffers are still resident — true whenever the
+        // summarization LLM is loaded. So: block new model loads + cancel
+        // any in-flight generation (`begin_shutdown`), finalize a recording
+        // Cmd+Q would otherwise strand (`ExitRequested` doesn't fire on the
+        // macOS Quit menu item — it targets `terminate:` directly), then
+        // drop the loaded model so the destructor's assert passes
+        // (`unload_for_exit`). See llm.rs's "Exit teardown" section.
+        tauri::RunEvent::Exit => {
+            llm::begin_shutdown(&app_handle.state::<llm::GenerationCancel>());
+            finalize_active_recording_on_exit(app_handle);
+            llm::unload_for_exit(&app_handle.state::<SharedLlmEngine>());
+        }
         _ => {}
     });
 }
