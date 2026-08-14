@@ -50,6 +50,12 @@ a permission dialog. It never opens the microphone itself and never
 listens to audio to decide whether to show up. Turn the toggle off and
 the detector thread stops existing, not just stops firing.
 
+The same watcher works in reverse while you record: when the meeting app
+quits — or keeps running but stops using the microphone, which is how
+Teams and Slack calls end — Minute treats the meeting as over and offers
+to stop, as described under auto-stop below. Same honest mechanism:
+process state, never audio.
+
 ![Minute — the meeting-detected pill, one click from recording](screenshots/popup.png)
 
 ## Recording, transcribed as it happens
@@ -79,15 +85,28 @@ own voice processing — the same echo canceller FaceTime uses — so what
 your Mac plays doesn't land in the recording a second time as speaker
 bleed through the mic.
 
-Forget to hit stop and Minute notices. After 10 minutes with nothing
-audible on either source it warns with a 10-minute countdown, then stops
-and transcribes on its own, exactly as if you'd clicked Stop — a
-forgotten recording becomes a normal note instead of an 18-hour WAV of an
-empty room. Any sound cancels the countdown; "Keep recording" silences it
-for that recording; a Settings toggle turns the whole behavior off.
-Relatedly, Whisper's habit of transcribing dead air as stray punctuation
-is filtered as it happens, so quiet stretches don't fill transcripts with
-"." lines.
+Started mic-only by mistake? Sources are fixed once a recording starts —
+that's a hard constraint of the capture pipeline — but the recording view
+offers **Restart with system audio**: it saves the recording so far as
+its own note and immediately starts a new one with system audio on,
+behind a confirm step that says the meeting ends up as two notes.
+
+Forget to hit stop and Minute notices. When nothing transcribable has
+been said — and nothing has been audible — for 2 minutes, it warns with
+a 2-minute countdown, then stops and transcribes on its own, exactly as
+if you'd clicked Stop. It reacts faster when the meeting is clearly
+over: a closing phrase like "thanks everyone" arms the warning after 1
+quiet minute, and the meeting app quitting — or, on macOS 14.2 and
+later, the app going quiet on the microphone while it stays open, the
+Teams and Slack case — arms it after a few quiet seconds. The recording
+view shows the quiet timer counting ("Quiet for 1:24"), new speech or
+one click on "Keep recording" cancels the countdown, and a Settings
+toggle turns the whole behavior off. While any recording runs, the Dock
+icon wears a REC badge so a forgotten one stays visible. Relatedly,
+Whisper's habit of transcribing dead air as stray punctuation is
+filtered as it happens, so quiet stretches don't fill transcripts with
+"." lines — and its habit of turning notification chimes into stray
+words doesn't fool the quiet timer either.
 
 ![Minute — a live recording with source, health, transcript, and marker details](screenshots/recording.png)
 
@@ -111,11 +130,17 @@ keeps that name across re-runs.
 
 Minute can also remember the people you meet with. Turn on **Remember
 named speakers** (Settings → Speakers) and renaming a speaker saves that
-voice locally; the next recording that contains a matching voice gets a
-suggestion — "Speaker 2 sounds like Sarah" — you confirm with one click
-or dismiss. Confirmations sharpen the profile over time. Voice profiles
-are opt-in, stored in your library folder, listed in Settings with a
-delete button each, and — like everything else — never leave your Mac.
+voice locally. The next recording that contains a clearly matching voice
+gets the real name written straight into the transcript — before the
+summary runs, so summaries say "Sarah", not "Speaker 2" — with an
+"auto-renamed — Undo" notice on the note. Your own corrections always
+win over later re-runs, and one name is never applied to two speakers.
+Borderline matches stay a suggestion chip — "Speaker 2 sounds like
+Sarah" — you confirm with one click or dismiss, and a nested Settings
+toggle turns automatic insertion off if you'd rather confirm everything.
+Confirmations sharpen the profile over time. Voice profiles are opt-in,
+stored in your library folder, listed in Settings with a delete button
+each, and — like everything else — never leave your Mac.
 
 ## A summary you can act on
 
@@ -134,9 +159,14 @@ breakdown of every topic discussed, on top of the usual decisions and
 follow-ups.
 
 A note you never named takes its title from the meeting itself once the
-summary lands — no more libraries of "New recording". And asking for a
+summary lands — no more libraries of "New recording". Asking for a
 second summary while one is already running queues it instead of turning
-you away; it starts on its own when the engine frees up.
+you away; it starts on its own when the engine frees up, honoring
+whatever style you've picked by then, not a stale snapshot. A running or
+queued summary can be cancelled with one click, generations stop
+themselves rather than run forever, and when a meeting is too long for
+the model's context window, the summary says it covers only part of the
+recording instead of silently coming out thin.
 
 ## Ask your notes, with receipts
 
@@ -211,9 +241,12 @@ whether Minute is still installed:
 
 ```
 ~/Library/Application Support/dev.minute.app/notes/<note-id>/
-├── audio.wav         # the recording (deleted automatically after 30 days, if enabled)
+├── audio.wav         # the recording (becomes audio.m4a if age-based compression
+│                     # is on; deleted after 30 days if that setting is on)
 ├── transcript.json   # timestamped, speaker-labeled segments
 ├── summary.json      # summary, decisions, action items
+├── meta.json         # title, timestamps, status, markers, speaker names
+├── speakers.json     # per-note voice embeddings (only when speakers were detected)
 └── note.md           # everything above, rendered as one Markdown file
 ```
 
@@ -227,9 +260,11 @@ requirements shown up front.
 
 **Nothing leaves this machine.** Concretely, not as a slogan:
 
-- Minute's [CSP](src-tauri/tauri.conf.json) has no network origin at all —
-  `default-src 'self'`, no exceptions. The only asset-loading rule is the
-  Tauri asset protocol serving your own note audio back to the player.
+- Minute's [CSP](src-tauri/tauri.conf.json) allows no external network
+  origin at all: every directive resolves to the app's own bundle, inline
+  styles, `data:` images, or the local Tauri asset protocol that serves
+  your own note audio back to the player. No remote host appears anywhere
+  in the policy.
 - Fonts (Instrument Sans) ship bundled in the app, not fetched from Google
   Fonts or any other CDN.
 - Transcription and summarization run as linked libraries in the same

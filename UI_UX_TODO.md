@@ -144,16 +144,16 @@ Goal: each release is reproducible, reviewable, and safe to install.
 - [x] Add screenshot-diff regression checks for light, dark, reduced-motion, and
       minimum-width layouts.
 - [x] Run frontend, Rust, accessibility, and visual checks in CI.
-- [ ] Complete macOS signing, notarization, packaging, and updater validation.
+- [x] Complete macOS signing, notarization, packaging, and updater validation.
 - [x] Finalize first-run privacy copy and permission explanations.
 - [x] Add a release checklist covering migration compatibility and rollback.
 
-Ad-hoc Apple Silicon and Intel bundles now build with per-binary architecture
-verification, and a private-build workflow produces checksummed artifacts.
-Final public-release validation stays open until Apple Developer Program
-credentials, an updater signing key and HTTPS endpoint, clean-Mac install
-targets, a physical Intel launch, and previous-version update/rollback runs are
-available.
+Public releases now ship Developer ID-signed, notarized, and stapled for both
+architectures (scripts/build-macos-release.sh), with checksummed artifacts and
+signed updater archives served from the GitHub `latest.json` endpoint —
+installed copies self-update release to release. A physical Intel launch and
+a clean-Mac previous-version update/rollback run remain manual
+release-validation items.
 
 ## Definition of done for each milestone
 
