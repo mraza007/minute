@@ -1187,10 +1187,13 @@ mod macos {
     use objc2_app_kit::NSWorkspace;
     use objc2_core_audio::{
         kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioHardwarePropertyDefaultInputDevice,
-        kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-        AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectID,
+        kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyElementMain,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioProcessPropertyBundleID,
+        kAudioProcessPropertyIsRunningInput, AudioObjectAddPropertyListener,
+        AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
         AudioObjectPropertyAddress, AudioObjectRemovePropertyListener,
     };
+    use objc2_core_foundation::{CFRetained, CFString};
 
     use crate::error::{MinuteError, Result};
 
@@ -1228,12 +1231,14 @@ mod macos {
 
     /// Pure matching logic, factored out from the actual `NSWorkspace` call
     /// so it's unit-testable without touching AppKit — see the tests below.
-    fn find_allowlisted(running_bundle_ids: &[String]) -> Option<String> {
+    /// Returns the matched (bundle id, friendly name) pair — the name feeds
+    /// the prompt machinery, the bundle id feeds issue #43's capture check.
+    fn find_allowlisted_pair(running_bundle_ids: &[String]) -> Option<(&'static str, &'static str)> {
         MEETING_APPS
             .iter()
             .chain(BROWSERS.iter())
             .find(|(id, _name)| running_bundle_ids.iter().any(|b| b == id))
-            .map(|(_id, name)| (*name).to_string())
+            .copied()
     }
 
     /// Checks `NSWorkspace.runningApplications` against the meeting-app/
@@ -1247,7 +1252,10 @@ mod macos {
     /// `NSWorkspace.runningApplications` is documented by Apple as safe to
     /// call from a background thread (its result is "returned atomically"),
     /// so this needs no dispatch back to the main thread.
-    pub fn meeting_app_present() -> Option<String> {
+    /// The running allowlisted meeting app as (friendly name, bundle id) —
+    /// the detector loop feeds the name to the prompt machinery and the
+    /// bundle to the capture check below (issue #43).
+    pub fn meeting_app_present_detail() -> Option<(String, String)> {
         let workspace = NSWorkspace::sharedWorkspace();
         let running = workspace.runningApplications();
         let bundle_ids: Vec<String> = running
@@ -1255,7 +1263,114 @@ mod macos {
             .filter_map(|app| app.bundleIdentifier())
             .map(|s| s.to_string())
             .collect();
-        find_allowlisted(&bundle_ids)
+        find_allowlisted_pair(&bundle_ids)
+            .map(|(id, name)| (name.to_string(), id.to_string()))
+    }
+
+    /// Issue #43: whether any CoreAudio process belonging to the meeting
+    /// app (bundle id prefix match — Electron apps capture in helpers like
+    /// `com.microsoft.teams2.helper`) is actively capturing mic input
+    /// right now. `None` when the per-process API is unavailable (it
+    /// shipped in macOS 14.2; older systems just keep today's app-quit
+    /// behavior) or any query fails — the caller treats `None` as
+    /// "cannot know", never as "capture stopped".
+    ///
+    /// Verified by spike on a real machine: the process-object list and
+    /// per-process `IsRunningInput` read need no TCC permission or
+    /// entitlement, helpers carry prefix-matching bundle ids, and the
+    /// flag flips with capture start/stop.
+    pub fn meeting_app_capturing_input(app_bundle: &str) -> Option<bool> {
+        let mut list_address = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let mut size: u32 = 0;
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                kAudioObjectSystemObject as AudioObjectID,
+                NonNull::from(&mut list_address),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        let mut objects = vec![0 as AudioObjectID; size as usize / std::mem::size_of::<AudioObjectID>()];
+        if objects.is_empty() {
+            return Some(false);
+        }
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                kAudioObjectSystemObject as AudioObjectID,
+                NonNull::from(&mut list_address),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+                NonNull::new(objects.as_mut_ptr())?.cast(),
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        objects.truncate(size as usize / std::mem::size_of::<AudioObjectID>());
+
+        for object in objects {
+            let mut bundle_address = AudioObjectPropertyAddress {
+                mSelector: kAudioProcessPropertyBundleID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+            let mut bundle_ptr: *mut CFString = std::ptr::null_mut();
+            let mut bundle_size = std::mem::size_of::<*mut CFString>() as u32;
+            let status = unsafe {
+                AudioObjectGetPropertyData(
+                    object,
+                    NonNull::from(&mut bundle_address),
+                    0,
+                    std::ptr::null(),
+                    NonNull::from(&mut bundle_size),
+                    NonNull::from(&mut bundle_ptr).cast(),
+                )
+            };
+            if status != 0 {
+                continue;
+            }
+            // The property hands back a +1-retained CFString — adopt it so
+            // it releases on drop (same CFRetained convention as syscap.rs).
+            let Some(bundle) =
+                NonNull::new(bundle_ptr).map(|ptr| unsafe { CFRetained::from_raw(ptr) })
+            else {
+                continue;
+            };
+            if !bundle.to_string().starts_with(app_bundle) {
+                continue;
+            }
+
+            let mut input_address = AudioObjectPropertyAddress {
+                mSelector: kAudioProcessPropertyIsRunningInput,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+            let mut running_input: u32 = 0;
+            let mut input_size = std::mem::size_of::<u32>() as u32;
+            let status = unsafe {
+                AudioObjectGetPropertyData(
+                    object,
+                    NonNull::from(&mut input_address),
+                    0,
+                    std::ptr::null(),
+                    NonNull::from(&mut input_size),
+                    NonNull::from(&mut running_input).cast(),
+                )
+            };
+            if status == 0 && running_input != 0 {
+                return Some(true);
+            }
+        }
+        Some(false)
     }
 
     // --- MicMonitor: CoreAudio "is the mic in use anywhere" listener -------
@@ -1567,7 +1682,7 @@ mod macos {
         #[test]
         fn find_allowlisted_prefers_a_real_meeting_app_over_a_browser() {
             let running = vec!["com.google.Chrome".to_string(), "us.zoom.xos".to_string()];
-            assert_eq!(find_allowlisted(&running), Some("Zoom".to_string()));
+            assert_eq!(find_allowlisted_pair(&running), Some(("us.zoom.xos", "Zoom")));
         }
 
         #[test]
@@ -1576,18 +1691,18 @@ mod macos {
                 "com.apple.Dock".to_string(),
                 "com.google.Chrome".to_string(),
             ];
-            assert_eq!(find_allowlisted(&running), Some("Chrome".to_string()));
+            assert_eq!(find_allowlisted_pair(&running), Some(("com.google.Chrome", "Chrome")));
         }
 
         #[test]
         fn find_allowlisted_recognizes_both_teams_bundle_ids() {
             assert_eq!(
-                find_allowlisted(&["com.microsoft.teams2".to_string()]),
-                Some("Microsoft Teams".to_string())
+                find_allowlisted_pair(&["com.microsoft.teams2".to_string()]),
+                Some(("com.microsoft.teams2", "Microsoft Teams"))
             );
             assert_eq!(
-                find_allowlisted(&["com.microsoft.teams".to_string()]),
-                Some("Microsoft Teams".to_string())
+                find_allowlisted_pair(&["com.microsoft.teams".to_string()]),
+                Some(("com.microsoft.teams", "Microsoft Teams"))
             );
         }
 
@@ -1602,7 +1717,7 @@ mod macos {
                 "com.microsoft.teams2".to_string(),
                 "us.zoom.xos".to_string(),
             ];
-            assert_eq!(find_allowlisted(&running), Some("Zoom".to_string()));
+            assert_eq!(find_allowlisted_pair(&running), Some(("us.zoom.xos", "Zoom")));
 
             // Same two apps, running-list order flipped — still Zoom.
             let running_reversed = vec![
@@ -1610,15 +1725,15 @@ mod macos {
                 "com.microsoft.teams2".to_string(),
             ];
             assert_eq!(
-                find_allowlisted(&running_reversed),
-                Some("Zoom".to_string())
+                find_allowlisted_pair(&running_reversed),
+                Some(("us.zoom.xos", "Zoom"))
             );
         }
 
         #[test]
         fn find_allowlisted_none_when_nothing_matches() {
             let running = vec!["com.apple.Dock".to_string(), "com.apple.finder".to_string()];
-            assert_eq!(find_allowlisted(&running), None);
+            assert_eq!(find_allowlisted_pair(&running), None);
         }
 
         /// Real FFI smoke test — attaches the actual CoreAudio listener
@@ -1668,7 +1783,11 @@ mod macos {
         }
     }
 
-    pub fn meeting_app_present() -> Option<String> {
+    pub fn meeting_app_present_detail() -> Option<(String, String)> {
+        None
+    }
+
+    pub fn meeting_app_capturing_input(_app_bundle: &str) -> Option<bool> {
         None
     }
 }
@@ -1887,6 +2006,52 @@ fn emit_meeting_detected(app: &AppHandle, app_name: &str) {
 /// [`POLL_INTERVAL`], so one slow poll or an app relaunch can't flap it.
 const APP_QUIT_DEBOUNCE: Duration = Duration::from_secs(6);
 
+/// Issue #43's sibling window: how long the meeting app must stay running
+/// WITHOUT capturing mic input before the call counts as over. Slightly
+/// longer than [`APP_QUIT_DEBOUNCE`]: a device switch (AirPods reconnect)
+/// can blip the capture off and back on, and a quit is a stronger signal
+/// than a release.
+const CAPTURE_GONE_DEBOUNCE: Duration = Duration::from_secs(8);
+
+/// One per-poll decision of the call-ended-inside-the-app debounce (issue
+/// #43): `true` once mic capture by the meeting app — seen at some point
+/// during THIS Minute recording — has been continuously absent for
+/// [`CAPTURE_GONE_DEBOUNCE`]. `capture_now` is `None` when the
+/// per-process CoreAudio API is unavailable (pre-14.2 macOS) or the app
+/// itself is gone; `None` never advances the debounce — "cannot know" is
+/// not "capture stopped". Same caller-owned-state shape as
+/// [`meeting_app_closed_tick`], and the same fail-safe direction: if
+/// capture was never attributed to the app, this never fires and the
+/// app-quit path stands alone. Pure — unit-tested without a thread.
+fn meeting_capture_gone_tick(
+    minute_recording: bool,
+    capture_now: Option<bool>,
+    capture_ever_seen: &mut bool,
+    gone_since: &mut Option<Instant>,
+    now: Instant,
+) -> bool {
+    if !minute_recording {
+        *capture_ever_seen = false;
+        *gone_since = None;
+        return false;
+    }
+    match capture_now {
+        None => false,
+        Some(true) => {
+            *capture_ever_seen = true;
+            *gone_since = None;
+            false
+        }
+        Some(false) => {
+            if !*capture_ever_seen {
+                return false;
+            }
+            let since = *gone_since.get_or_insert(now);
+            now.duration_since(since) >= CAPTURE_GONE_DEBOUNCE
+        }
+    }
+}
+
 /// One per-poll decision of the meeting-ended debounce (issue #40): `true`
 /// once a meeting app that was seen during THIS Minute recording has been
 /// continuously absent for [`APP_QUIT_DEBOUNCE`]. Deliberately a free
@@ -1998,6 +2163,127 @@ mod app_quit_tests {
         ));
     }
 
+    // --- meeting_capture_gone_tick (issue #43) -----------------------------
+
+    #[test]
+    fn capture_gone_fires_only_after_the_debounce_of_continuous_absence() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        assert!(!meeting_capture_gone_tick(true, Some(true), &mut seen, &mut since, base));
+        assert!(!meeting_capture_gone_tick(true, Some(false), &mut seen, &mut since, base));
+        assert!(!meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE - Duration::from_secs(1)
+        ));
+        assert!(meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE
+        ));
+    }
+
+    #[test]
+    fn capture_resuming_resets_the_absence_run() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        meeting_capture_gone_tick(true, Some(true), &mut seen, &mut since, base);
+        meeting_capture_gone_tick(true, Some(false), &mut seen, &mut since, base);
+        // A device-switch blip: capture comes back, the run starts over.
+        assert!(!meeting_capture_gone_tick(
+            true,
+            Some(true),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE
+        ));
+        assert!(!meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 2
+        ));
+        assert!(meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 3
+        ));
+    }
+
+    #[test]
+    fn unknown_capture_state_never_advances_the_debounce() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        meeting_capture_gone_tick(true, Some(true), &mut seen, &mut since, base);
+        // Pre-14.2 macOS (or the app vanished): None must neither fire nor
+        // accrue absence time.
+        assert!(!meeting_capture_gone_tick(
+            true,
+            None,
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 10
+        ));
+        // The gone-run only starts once a real `false` is observed.
+        assert!(!meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 10
+        ));
+        assert!(meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 11
+        ));
+    }
+
+    #[test]
+    fn capture_never_seen_during_this_recording_cannot_fire() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        assert!(!meeting_capture_gone_tick(true, Some(false), &mut seen, &mut since, base));
+        assert!(!meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 10
+        ));
+    }
+
+    #[test]
+    fn recording_stopping_resets_the_capture_state_too() {
+        let base = Instant::now();
+        let (mut seen, mut since) = (false, None);
+        meeting_capture_gone_tick(true, Some(true), &mut seen, &mut since, base);
+        meeting_capture_gone_tick(true, Some(false), &mut seen, &mut since, base);
+        assert!(!meeting_capture_gone_tick(
+            false,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE
+        ));
+        assert!(!meeting_capture_gone_tick(
+            true,
+            Some(false),
+            &mut seen,
+            &mut since,
+            base + CAPTURE_GONE_DEBOUNCE * 2
+        ));
+    }
+
     #[test]
     fn recording_stopping_resets_everything() {
         let base = Instant::now();
@@ -2058,6 +2344,9 @@ fn run_detector_thread(
     // Issue #40's meeting-ended debounce state — see meeting_app_closed_tick.
     let mut meeting_app_ever_seen = false;
     let mut meeting_app_closed_since: Option<Instant> = None;
+    // Issue #43's call-ended-inside-the-app state — see meeting_capture_gone_tick.
+    let mut meeting_capture_ever_seen = false;
+    let mut meeting_capture_gone_since: Option<Instant> = None;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -2078,6 +2367,8 @@ fn run_detector_thread(
         if !recording {
             meeting_app_ever_seen = false;
             meeting_app_closed_since = None;
+            meeting_capture_ever_seen = false;
+            meeting_capture_gone_since = None;
         }
 
         // Same every-iteration polling shape as the recording-state check
@@ -2104,22 +2395,42 @@ fn run_detector_thread(
             }
             Err(RecvTimeoutError::Timeout) => {
                 if mic_active {
-                    let app_present = macos::meeting_app_present();
+                    let app_detail = macos::meeting_app_present_detail();
+                    let app_present = app_detail.as_ref().map(|(name, _)| name.clone());
                     // Issue #40: a meeting app seen during this recording
                     // that has now been gone for the debounce window means
-                    // the meeting ended — push the level into the active
-                    // recording's shared state, where the auto-stop ticker
-                    // reads it. Poll-and-push every tick, same shape as
-                    // the SetMinuteRecording read above; a relaunch or the
+                    // the meeting ended. Issue #43: so does the app still
+                    // RUNNING but no longer capturing the mic (a Teams/
+                    // Slack call ends without the app quitting) — checked
+                    // per-process via CoreAudio, bundle-prefix matched so
+                    // Electron helper processes count. Either level is
+                    // pushed into the active recording's shared state,
+                    // where the auto-stop ticker reads it. Poll-and-push
+                    // every tick, same shape as the SetMinuteRecording
+                    // read above; a relaunch, capture resuming, or the
                     // recording ending pushes `false` right back.
-                    let closed = meeting_app_closed_tick(
+                    let quit_closed = meeting_app_closed_tick(
                         recording,
                         app_present.is_some(),
                         &mut meeting_app_ever_seen,
                         &mut meeting_app_closed_since,
                         Instant::now(),
                     );
-                    crate::audio::set_meeting_app_closed(&recorder, closed);
+                    let capture_now = if recording {
+                        app_detail
+                            .as_ref()
+                            .and_then(|(_, bundle)| macos::meeting_app_capturing_input(bundle))
+                    } else {
+                        None
+                    };
+                    let capture_gone = meeting_capture_gone_tick(
+                        recording,
+                        capture_now,
+                        &mut meeting_capture_ever_seen,
+                        &mut meeting_capture_gone_since,
+                        Instant::now(),
+                    );
+                    crate::audio::set_meeting_app_closed(&recorder, quit_closed || capture_gone);
                     core.process(
                         DetectorEvent::Tick {
                             meeting_app_present: app_present,

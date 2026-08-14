@@ -878,10 +878,12 @@ struct SharedState {
     /// AND the displayed quiet run must ignore the free-running words
     /// counter then.
     stt_worker_spawned: AtomicBool,
-    /// Level pushed by the meeting detector thread (issue #40): a meeting
-    /// app that was running during this recording has been gone for the
-    /// debounce window. Arms the auto-stop countdown after a short quiet
-    /// gap — see [`auto_stop_tick`]. Cleared if the app comes back.
+    /// Level pushed by the meeting detector thread: the meeting this
+    /// recording accompanied looks over — the meeting app quit (issue
+    /// #40), or it is still running but stopped capturing the mic for
+    /// the debounce window (issue #43, the Teams/Slack call-ended case).
+    /// Arms the auto-stop countdown after a short quiet gap — see
+    /// [`auto_stop_tick`]. Cleared if the app or its capture comes back.
     meeting_app_closed: AtomicBool,
 }
 
