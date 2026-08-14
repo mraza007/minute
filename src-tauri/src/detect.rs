@@ -1199,8 +1199,9 @@ mod macos {
 
     // --- meeting_app_present: NSWorkspace running-app allowlist check ------
 
-    /// Real meeting apps, checked (and named) first — see `find_allowlisted`.
-    /// Both current and legacy Teams bundle ids are listed, per the plan.
+    /// Real meeting apps, checked (and named) first — see
+    /// `find_allowlisted_pair`. Both current and legacy Teams bundle ids
+    /// are listed, per the plan.
     /// Webex's bundle id is the one most consistently reported for the
     /// "Webex Meetings" desktop app in the wild; unlike the others this one
     /// wasn't independently re-verified against a live install for this
@@ -1242,19 +1243,18 @@ mod macos {
     }
 
     /// Checks `NSWorkspace.runningApplications` against the meeting-app/
-    /// browser allowlist, returning the friendly name of the first (highest-
-    /// priority) match, or `None` if nothing on the allowlist is running.
-    /// Real apps are checked before browsers regardless of process order, so
-    /// e.g. Zoom-plus-Chrome-both-running reports "Zoom", never "Chrome".
+    /// browser allowlist, returning the first (highest-priority) match as
+    /// (friendly name, bundle id) — the detector loop feeds the name to
+    /// the prompt machinery and the bundle to the capture check below
+    /// (issue #43). `None` if nothing on the allowlist is running. Real
+    /// apps are checked before browsers regardless of process order, so
+    /// e.g. Zoom-plus-Chrome-both-running reports Zoom, never Chrome.
     ///
     /// Deliberately *not* a standing poll — see `run_detector_thread`, which
     /// only calls this while the mic is already known to be hot.
     /// `NSWorkspace.runningApplications` is documented by Apple as safe to
     /// call from a background thread (its result is "returned atomically"),
     /// so this needs no dispatch back to the main thread.
-    /// The running allowlisted meeting app as (friendly name, bundle id) —
-    /// the detector loop feeds the name to the prompt machinery and the
-    /// bundle to the capture check below (issue #43).
     pub fn meeting_app_present_detail() -> Option<(String, String)> {
         let workspace = NSWorkspace::sharedWorkspace();
         let running = workspace.runningApplications();
@@ -1265,6 +1265,21 @@ mod macos {
             .collect();
         find_allowlisted_pair(&bundle_ids)
             .map(|(id, name)| (name.to_string(), id.to_string()))
+    }
+
+    /// Whether `bundle` is the app itself or one of its subprocess bundles
+    /// (issue #43) — an exact match, or the app id followed by a `.`
+    /// segment (`com.microsoft.teams2.helper`). A bare `starts_with` is
+    /// NOT enough: the allowlist carries both `com.microsoft.teams` and
+    /// `com.microsoft.teams2`, and the legacy id is a plain string prefix
+    /// of the new one, so an unanchored match would attribute new-Teams
+    /// capture to a classic-Teams session. Pure — unit-tested below.
+    pub(super) fn bundle_belongs_to(bundle: &str, app_bundle: &str) -> bool {
+        match bundle.strip_prefix(app_bundle) {
+            Some("") => true,
+            Some(rest) => rest.starts_with('.'),
+            None => false,
+        }
     }
 
     /// Issue #43: whether any CoreAudio process belonging to the meeting
@@ -1345,7 +1360,7 @@ mod macos {
             else {
                 continue;
             };
-            if !bundle.to_string().starts_with(app_bundle) {
+            if !bundle_belongs_to(&bundle.to_string(), app_bundle) {
                 continue;
             }
 
@@ -1678,6 +1693,31 @@ mod macos {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Issue #43: the two Teams bundle ids are string-prefixes of each
+        /// other — the match must anchor on a segment boundary or capture
+        /// gets cross-attributed between classic and new Teams.
+        #[test]
+        fn bundle_belongs_to_requires_a_segment_boundary() {
+            assert!(bundle_belongs_to("com.microsoft.teams2", "com.microsoft.teams2"));
+            assert!(bundle_belongs_to(
+                "com.microsoft.teams2.helper",
+                "com.microsoft.teams2"
+            ));
+            assert!(bundle_belongs_to(
+                "com.tinyspeck.slackmacgap.helper",
+                "com.tinyspeck.slackmacgap"
+            ));
+
+            // Legacy Teams must NOT claim new-Teams processes, or vice versa.
+            assert!(!bundle_belongs_to("com.microsoft.teams2", "com.microsoft.teams"));
+            assert!(!bundle_belongs_to(
+                "com.microsoft.teams2.helper",
+                "com.microsoft.teams"
+            ));
+            assert!(!bundle_belongs_to("com.microsoft.teams", "com.microsoft.teams2"));
+            assert!(!bundle_belongs_to("us.zoom.xos", "com.microsoft.teams2"));
+        }
 
         #[test]
         fn find_allowlisted_prefers_a_real_meeting_app_over_a_browser() {
@@ -2345,8 +2385,13 @@ fn run_detector_thread(
     let mut meeting_app_ever_seen = false;
     let mut meeting_app_closed_since: Option<Instant> = None;
     // Issue #43's call-ended-inside-the-app state — see meeting_capture_gone_tick.
+    // `meeting_capture_bundle` pins the state to ONE app: switching apps
+    // mid-recording (Zoom quits, Teams opens) must not let Zoom's
+    // capture-was-seen flag count Teams's still-joining state as "capture
+    // gone" and false-arm the countdown while the meeting continues.
     let mut meeting_capture_ever_seen = false;
     let mut meeting_capture_gone_since: Option<Instant> = None;
+    let mut meeting_capture_bundle: Option<String> = None;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -2369,6 +2414,7 @@ fn run_detector_thread(
             meeting_app_closed_since = None;
             meeting_capture_ever_seen = false;
             meeting_capture_gone_since = None;
+            meeting_capture_bundle = None;
         }
 
         // Same every-iteration polling shape as the recording-state check
@@ -2416,6 +2462,15 @@ fn run_detector_thread(
                         &mut meeting_app_closed_since,
                         Instant::now(),
                     );
+                    // The capture state belongs to one app — a different
+                    // allowlisted app taking over mid-recording starts the
+                    // seen/gone tracking from scratch.
+                    let current_bundle = app_detail.as_ref().map(|(_, bundle)| bundle.clone());
+                    if current_bundle.is_some() && current_bundle != meeting_capture_bundle {
+                        meeting_capture_ever_seen = false;
+                        meeting_capture_gone_since = None;
+                        meeting_capture_bundle = current_bundle;
+                    }
                     let capture_now = if recording {
                         app_detail
                             .as_ref()
