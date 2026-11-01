@@ -2295,6 +2295,20 @@ pub fn render_note_md(
     summary: Option<&SummaryDoc>,
     transcript: &Transcript,
 ) -> String {
+    let mut out = render_note_sections(meta, summary);
+    out.push_str("\n\n");
+    out.push_str(&render_transcript_section(transcript));
+    out
+}
+
+/// Everything in a note's markdown above the transcript — the `# Title`
+/// header line, then (with a summary) `## Summary`, `## Topics`,
+/// `## Decisions`, `## Action items`, then `## Markers` — exactly as
+/// [`render_note_md`] lays it out. Split out (issue #47) so
+/// `obsidian::render_obsidian_md` can put the same sections under YAML
+/// frontmatter, with the transcript optional, without a second copy of this
+/// layout that could drift from `note.md`'s.
+pub(crate) fn render_note_sections(meta: &NoteMeta, summary: Option<&SummaryDoc>) -> String {
     let minutes = (meta.duration_sec / 60.0).round() as i64;
     let mut out = format!(
         "# {}\n\n**Date:** {} · **Duration:** {} min · **Speakers:** {}",
@@ -2362,12 +2376,14 @@ pub fn render_note_md(
             .join("\n");
         out.push_str(&format!("\n\n## Markers\n\n{markers}"));
     }
-
-    out.push_str(&format!(
-        "\n\n## Transcript\n\n{}",
-        transcript_body(&transcript.segments)
-    ));
     out
+}
+
+/// The `## Transcript` section — heading plus [`transcript_body`] — the
+/// other half of [`render_note_md`], shared with `obsidian.rs` for the same
+/// no-drift reason as [`render_note_sections`].
+pub(crate) fn render_transcript_section(transcript: &Transcript) -> String {
+    format!("## Transcript\n\n{}", transcript_body(&transcript.segments))
 }
 
 #[cfg(test)]

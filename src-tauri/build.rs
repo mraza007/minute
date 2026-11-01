@@ -59,6 +59,7 @@ const APP_COMMANDS: &[&str] = &[
     "reveal_note",
     "get_settings",
     "set_settings",
+    "obsidian_vault_status",
     "download_model",
     "cancel_download",
     "delete_model",

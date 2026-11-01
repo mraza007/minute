@@ -158,12 +158,61 @@ pub struct Settings {
     /// as enabled.
     #[serde(default = "default_true")]
     pub auto_apply_speaker_names: bool,
+    /// Issue #47: save each finished summary into an Obsidian vault as a
+    /// Markdown note with YAML frontmatter (see `obsidian.rs`, hooked in
+    /// from `llm::run_summarize`). Opt-in (`#[serde(default)]` = `false`),
+    /// same convention as `meetingDetection` — this one writes files
+    /// outside the library, so the user must ask for it.
+    #[serde(default)]
+    pub obsidian_enabled: bool,
+    /// Absolute path of the vault folder notes are saved into. `None` until
+    /// the user picks one in Settings → Obsidian — the toggle alone does
+    /// nothing without it (the export reports "no vault folder is set"
+    /// instead of guessing). `#[serde(default)]` so older `settings.json`
+    /// files load unchanged.
+    #[serde(default)]
+    pub obsidian_vault_path: Option<String>,
+    /// Subfolder inside the vault the notes land in — `"Meetings"` by
+    /// default, empty for the vault root. Always relative: `apply_and_save`
+    /// rejects a value with `..` or a leading slash before it's persisted,
+    /// and `obsidian::resolve_target_dir` re-checks at write time, so even a
+    /// hand-edited `settings.json` can't point exports outside the vault.
+    /// `#[serde(default = "default_obsidian_folder")]` so older files load
+    /// as `"Meetings"`.
+    #[serde(default = "default_obsidian_folder")]
+    pub obsidian_folder: String,
+    /// Filename template for the vault note, without `.md` (always
+    /// appended): `{date}`, `{time}`, `{title}`, `{id}` — see
+    /// `obsidian::render_filename` for the exact expansion and the
+    /// sanitizing that follows. `#[serde(default =
+    /// "default_obsidian_filename_template")]` so older files load as
+    /// `"{date} - {title}"`.
+    #[serde(default = "default_obsidian_filename_template")]
+    pub obsidian_filename_template: String,
+    /// Whether the vault note carries the full `## Transcript` section —
+    /// the same content `note.md` has. On by default so the vault copy
+    /// loses nothing; off keeps vault notes to the summary for people who
+    /// find hour-long transcripts noisy in Obsidian. `default_true` so
+    /// older files load as `true`.
+    #[serde(default = "default_true")]
+    pub obsidian_include_transcript: bool,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
 /// serde's plain `#[serde(default)]` on a `bool` gives `false`.
 fn default_true() -> bool {
     true
+}
+
+/// `serde(default = ...)` helper for [`Settings::obsidian_folder`] — the
+/// subfolder new installs (and pre-#47 `settings.json` files) save into.
+fn default_obsidian_folder() -> String {
+    crate::obsidian::DEFAULT_FOLDER.to_string()
+}
+
+/// `serde(default = ...)` helper for [`Settings::obsidian_filename_template`].
+fn default_obsidian_filename_template() -> String {
+    crate::obsidian::DEFAULT_FILENAME_TEMPLATE.to_string()
 }
 
 impl Default for Settings {
@@ -186,6 +235,11 @@ impl Default for Settings {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: default_obsidian_folder(),
+            obsidian_filename_template: default_obsidian_filename_template(),
+            obsidian_include_transcript: true,
         }
     }
 }
@@ -227,6 +281,21 @@ pub struct SettingsPatch {
     pub compress_audio_after_days: Option<u32>,
     pub speaker_profiles: Option<bool>,
     pub auto_apply_speaker_names: Option<bool>,
+    pub obsidian_enabled: Option<bool>,
+    /// `Some("")` clears the vault path back to `None` — the same
+    /// empty-string-clears convention as `summary_instructions`, chosen
+    /// over a `Some(0)`-style sentinel because an empty path is never a
+    /// valid vault anyway. Any other value replaces the path (trimmed).
+    pub obsidian_vault_path: Option<String>,
+    /// `Some("")` means the vault root — an empty folder is meaningful
+    /// here, so no sentinel is needed. `apply_and_save` rejects a value
+    /// that could escape the vault (`..`, a leading slash).
+    pub obsidian_folder: Option<String>,
+    /// `Some("")` (or all whitespace) resets to the default template, since
+    /// an empty template can't name a file — the same "a zero value means
+    /// back to the default" idea as `llm_context_tokens`'s `Some(0)`.
+    pub obsidian_filename_template: Option<String>,
+    pub obsidian_include_transcript: Option<bool>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -274,6 +343,31 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.auto_apply_speaker_names {
         settings.auto_apply_speaker_names = v;
+    }
+    if let Some(v) = patch.obsidian_enabled {
+        settings.obsidian_enabled = v;
+    }
+    if let Some(v) = patch.obsidian_vault_path {
+        let trimmed = v.trim();
+        settings.obsidian_vault_path = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+    if let Some(v) = patch.obsidian_folder {
+        settings.obsidian_folder = v.trim().to_string();
+    }
+    if let Some(v) = patch.obsidian_filename_template {
+        let trimmed = v.trim();
+        settings.obsidian_filename_template = if trimmed.is_empty() {
+            default_obsidian_filename_template()
+        } else {
+            trimmed.to_string()
+        };
+    }
+    if let Some(v) = patch.obsidian_include_transcript {
+        settings.obsidian_include_transcript = v;
     }
 }
 
@@ -372,6 +466,16 @@ pub fn apply_and_save(
     state: &SharedSettings,
     patch: SettingsPatch,
 ) -> Result<Settings> {
+    // Issue #47: refuse an Obsidian subfolder that could escape the vault
+    // before it's ever persisted. The export path re-checks the stored
+    // value at write time regardless (see `obsidian::resolve_target_dir`),
+    // but rejecting it here surfaces the mistake while the user is still
+    // looking at the Settings field that caused it. Checked only when the
+    // patch actually carries the field, so a bad value that somehow got
+    // onto disk can't wedge every unrelated toggle afterwards.
+    if let Some(folder) = patch.obsidian_folder.as_deref() {
+        crate::obsidian::vault_subfolder_components(folder)?;
+    }
     let mut guard = lock_settings(state);
     let mut candidate = guard.clone();
     apply_patch(&mut candidate, patch);
@@ -414,6 +518,11 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -462,6 +571,11 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
             }
         );
     }
@@ -505,6 +619,11 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
             }
         );
     }
@@ -549,6 +668,11 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
             }
         );
     }
@@ -589,6 +713,11 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -639,6 +768,11 @@ mod tests {
             compress_audio_after_days: Some(14),
             speaker_profiles: Some(true),
             auto_apply_speaker_names: Some(false),
+            obsidian_enabled: Some(true),
+            obsidian_vault_path: Some("/Users/sam/Vault".to_string()),
+            obsidian_folder: Some("Work/Meetings".to_string()),
+            obsidian_filename_template: Some("{date} {title}".to_string()),
+            obsidian_include_transcript: Some(false),
         };
 
         apply_patch(&mut settings, patch);
@@ -654,6 +788,11 @@ mod tests {
         assert!(!settings.auto_stop_recording);
         assert_eq!(settings.compress_audio_after_days, Some(14));
         assert!(settings.speaker_profiles);
+        assert!(settings.obsidian_enabled);
+        assert_eq!(settings.obsidian_vault_path, Some("/Users/sam/Vault".to_string()));
+        assert_eq!(settings.obsidian_folder, "Work/Meetings");
+        assert_eq!(settings.obsidian_filename_template, "{date} {title}");
+        assert!(!settings.obsidian_include_transcript);
     }
 
     #[test]
@@ -841,6 +980,11 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -874,6 +1018,11 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian_enabled: false,
+            obsidian_vault_path: None,
+            obsidian_folder: "Meetings".to_string(),
+            obsidian_filename_template: "{date} - {title}".to_string(),
+            obsidian_include_transcript: true,
         };
         let mut settings = original.clone();
 
@@ -1014,5 +1163,162 @@ mod tests {
         // The in-memory settings must be exactly what they were before the
         // failed call — not the patched candidate that never made it to disk.
         assert_eq!(*lock_settings(&shared), original);
+    }
+
+    #[test]
+    fn settings_json_without_obsidian_fields_defaults_to_off_with_meetings_folder() {
+        // Issue #47's migration case: a settings.json written by any
+        // pre-Obsidian build has none of the five "obsidian*" keys — they
+        // must load as off / no vault / "Meetings" / the default template /
+        // transcript included, not fail to parse or fall back to full
+        // defaults for the rest of the file.
+        let dir = tempdir().unwrap();
+        let pre_obsidian_json = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "llmModel": "qwen3.5-4b",
+            "deleteAudioAfter30d": false,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&pre_obsidian_json).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_settings(dir.path());
+
+        assert_eq!(loaded.stt_model, Some("whisper-medium".to_string()));
+        assert!(!loaded.delete_audio_after_30d);
+        assert!(!loaded.obsidian_enabled);
+        assert_eq!(loaded.obsidian_vault_path, None);
+        assert_eq!(loaded.obsidian_folder, "Meetings");
+        assert_eq!(loaded.obsidian_filename_template, "{date} - {title}");
+        assert!(loaded.obsidian_include_transcript);
+    }
+
+    #[test]
+    fn obsidian_fields_roundtrip_through_disk_in_camel_case() {
+        let dir = tempdir().unwrap();
+        let settings = Settings {
+            obsidian_enabled: true,
+            obsidian_vault_path: Some("/Users/sam/Vault".to_string()),
+            obsidian_folder: "Work/Meetings".to_string(),
+            obsidian_filename_template: "{date} {title}".to_string(),
+            obsidian_include_transcript: false,
+            ..Settings::default()
+        };
+
+        save_settings(dir.path(), &settings).unwrap();
+
+        assert_eq!(load_settings(dir.path()), settings);
+        let raw = fs::read_to_string(settings_path(dir.path())).unwrap();
+        assert!(raw.contains("\"obsidianEnabled\": true"));
+        assert!(raw.contains("\"obsidianVaultPath\": \"/Users/sam/Vault\""));
+        assert!(raw.contains("\"obsidianFolder\": \"Work/Meetings\""));
+        assert!(raw.contains("\"obsidianFilenameTemplate\": \"{date} {title}\""));
+        assert!(raw.contains("\"obsidianIncludeTranscript\": false"));
+    }
+
+    #[test]
+    fn apply_patch_empty_obsidian_vault_path_clears_it() {
+        // `Some("")` (or whitespace) is the clear sentinel — see
+        // `SettingsPatch::obsidian_vault_path`'s docs.
+        let mut settings = Settings {
+            obsidian_vault_path: Some("/Users/sam/Vault".to_string()),
+            ..Settings::default()
+        };
+        let patch = SettingsPatch {
+            obsidian_vault_path: Some("   ".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.obsidian_vault_path, None);
+    }
+
+    #[test]
+    fn apply_patch_trims_the_obsidian_vault_path_and_folder() {
+        let mut settings = Settings::default();
+        let patch = SettingsPatch {
+            obsidian_vault_path: Some("  /Users/sam/Vault \n".to_string()),
+            obsidian_folder: Some(" Meetings/2026 ".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.obsidian_vault_path, Some("/Users/sam/Vault".to_string()));
+        assert_eq!(settings.obsidian_folder, "Meetings/2026");
+    }
+
+    #[test]
+    fn apply_patch_empty_obsidian_folder_means_the_vault_root() {
+        let mut settings = Settings::default();
+        let patch = SettingsPatch {
+            obsidian_folder: Some(String::new()),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.obsidian_folder, "");
+    }
+
+    #[test]
+    fn apply_patch_empty_obsidian_filename_template_resets_to_the_default() {
+        // An empty template can't name a file, so `Some("")` means "back to
+        // the default" — see `SettingsPatch::obsidian_filename_template`.
+        let mut settings = Settings {
+            obsidian_filename_template: "{title}".to_string(),
+            ..Settings::default()
+        };
+        let patch = SettingsPatch {
+            obsidian_filename_template: Some("  ".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        apply_patch(&mut settings, patch);
+
+        assert_eq!(settings.obsidian_filename_template, "{date} - {title}");
+    }
+
+    #[test]
+    fn apply_and_save_rejects_an_obsidian_folder_that_escapes_the_vault() {
+        // The subfolder is checked before anything is persisted (issue
+        // #47): neither disk nor the shared settings may end up holding a
+        // folder that points outside the vault.
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        for bad in ["../Elsewhere", "Meetings/../../Elsewhere", "/Users/sam/Elsewhere"] {
+            let patch = SettingsPatch {
+                obsidian_folder: Some(bad.to_string()),
+                ..SettingsPatch::default()
+            };
+
+            let result = apply_and_save(dir.path(), &shared, patch);
+
+            assert!(result.is_err(), "{bad:?} must be rejected");
+            assert_eq!(lock_settings(&shared).obsidian_folder, "Meetings");
+        }
+        // Nothing was ever written — a fresh load is still all defaults.
+        assert_eq!(load_settings(dir.path()), Settings::default());
+    }
+
+    #[test]
+    fn apply_and_save_persists_a_nested_obsidian_folder() {
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        let patch = SettingsPatch {
+            obsidian_enabled: Some(true),
+            obsidian_folder: Some("Work/Meetings".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+
+        assert!(returned.obsidian_enabled);
+        assert_eq!(returned.obsidian_folder, "Work/Meetings");
+        assert_eq!(*lock_settings(&shared), returned);
+        assert_eq!(load_settings(dir.path()), returned);
     }
 }

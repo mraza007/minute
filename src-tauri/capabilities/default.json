@@ -44,6 +44,7 @@
     "allow-reveal-note",
     "allow-get-settings",
     "allow-set-settings",
+    "allow-obsidian-vault-status",
     "allow-download-model",
     "allow-cancel-download",
     "allow-delete-model",

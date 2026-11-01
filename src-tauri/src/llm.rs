@@ -86,6 +86,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::catalog;
 use crate::error::{MinuteError, Result};
+use crate::obsidian;
 use crate::settings::{self, SharedSettings, SummaryStyle};
 use crate::store::{lock_store, SharedStore, StoredSegment, DEFAULT_NOTE_TITLE};
 
@@ -2144,12 +2145,45 @@ pub struct SummaryStatusPayload {
     pub error: Option<String>,
 }
 
+/// `obsidian-export-status` event's outcome (issue #47) — what happened to
+/// the vault export that follows a successful summary. `exported`: a new
+/// file was written (`path` says where); `skipped`: Minute's own earlier
+/// export of this note is already in the folder (`path` names it) and was
+/// left untouched; `error`: the vault is missing, unwritable, etc. (`error`
+/// is the human message). Serialized lowercase like [`SummaryStatusState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ObsidianExportState {
+    Exported,
+    Skipped,
+    Error,
+}
+
+/// Payload of the `obsidian-export-status` event — deliberately its own
+/// event rather than a fourth `summary-status` state: by the time this
+/// fires the summary has already succeeded and `Done` is about to follow,
+/// and the frontend must never render a vault problem as a failed summary
+/// (see [`export_to_obsidian`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianExportStatusPayload {
+    pub note_id: String,
+    pub state: ObsidianExportState,
+    /// The vault file written (`exported`) or found (`skipped`); `None` on
+    /// `error`.
+    pub path: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Events a summarization worker emits — captured directly by tests via an
 /// injected closure, or wired to real Tauri events via [`tauri_emit`]. Same
 /// injectable-closure shape as `stt::SttEvent`/`stt::tauri_emit`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SummaryEvent {
     SummaryStatus(SummaryStatusPayload),
+    /// Issue #47 — see [`ObsidianExportStatusPayload`]. Emitted at most
+    /// once per successful summary, just before its `Done`.
+    ObsidianExport(ObsidianExportStatusPayload),
 }
 
 /// Builds the real emit closure used outside tests: serializes a
@@ -2163,6 +2197,12 @@ pub fn tauri_emit(app: AppHandle) -> impl Fn(SummaryEvent) + Send + 'static {
             let note_id = payload.note_id.clone();
             if let Err(e) = app.emit("summary-status", payload) {
                 log::warn!("failed to emit summary-status for {note_id}: {e}");
+            }
+        }
+        SummaryEvent::ObsidianExport(payload) => {
+            let note_id = payload.note_id.clone();
+            if let Err(e) = app.emit("obsidian-export-status", payload) {
+                log::warn!("failed to emit obsidian-export-status for {note_id}: {e}");
             }
         }
     }
@@ -2827,7 +2867,78 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
             );
         }
     }
+
+    // Issue #47: hand the finished note to the Obsidian vault, if the user
+    // turned that on. After the rename, so the vault note's title and
+    // filename are the final ones; and, like the rename, never `?` — the
+    // summary is already safely on disk, so a missing or unwritable vault
+    // is reported through its own event and the log, never as a failed
+    // summarization. See `export_to_obsidian`.
+    export_to_obsidian(ctx);
     Ok(())
+}
+
+/// The post-summary Obsidian hand-off (issue #47), factored out of
+/// [`run_summarize`] so it's testable without a model: reads the settings
+/// fresh (the user may have enabled Obsidian while this note sat in the
+/// queue — same reasoning as the summary style, see
+/// `SummarizeWorkerCtx::settings`), does nothing when the feature is off,
+/// and otherwise reads the note back from the store (the *renamed*
+/// `meta.json`, plus transcript and the summary just written) and calls
+/// `obsidian::export_note_to_vault` — with the store lock already released,
+/// since writing into the vault has nothing to do with the library.
+///
+/// Every outcome becomes exactly one [`SummaryEvent::ObsidianExport`]
+/// (`exported`/`skipped`/`error`); failures are additionally logged. This
+/// function has no error path of its own by design — nothing it does may
+/// turn a successful summarization into a failure.
+fn export_to_obsidian(ctx: &SummarizeWorkerCtx) {
+    let snapshot = settings::lock_settings(&ctx.settings).clone();
+    if !snapshot.obsidian_enabled {
+        return;
+    }
+
+    let note = {
+        let store = lock_store(&ctx.store);
+        store
+            .get_note(&ctx.note_id)
+            .and_then(|(meta, transcript)| {
+                let summary = store.read_summary(&ctx.note_id)?;
+                Ok((meta, transcript, summary))
+            })
+    };
+    let outcome = note.and_then(|(meta, transcript, summary)| {
+        let offset = obsidian::local_offset_for(&meta.created_at);
+        obsidian::export_note_to_vault(&snapshot, &meta, summary.as_ref(), &transcript, offset)
+    });
+
+    let payload = match outcome {
+        Ok(obsidian::ExportOutcome::Written(path)) => ObsidianExportStatusPayload {
+            note_id: ctx.note_id.clone(),
+            state: ObsidianExportState::Exported,
+            path: Some(path.to_string_lossy().into_owned()),
+            error: None,
+        },
+        Ok(obsidian::ExportOutcome::AlreadyExported(path)) => ObsidianExportStatusPayload {
+            note_id: ctx.note_id.clone(),
+            state: ObsidianExportState::Skipped,
+            path: Some(path.to_string_lossy().into_owned()),
+            error: None,
+        },
+        Err(e) => {
+            log::warn!(
+                "summarization succeeded for note {} but the Obsidian export failed: {e}",
+                ctx.note_id
+            );
+            ObsidianExportStatusPayload {
+                note_id: ctx.note_id.clone(),
+                state: ObsidianExportState::Error,
+                path: None,
+                error: Some(e.to_string()),
+            }
+        }
+    };
+    (ctx.emit)(SummaryEvent::ObsidianExport(payload));
 }
 
 // ---------------------------------------------------------------------------
@@ -4678,7 +4789,11 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let emit = Box::new(move |event: SummaryEvent| {
-            let SummaryEvent::SummaryStatus(payload) = &event;
+            // Only the summary's own lifecycle matters here — an
+            // `ObsidianExport` event (issue #47) has no `state` to gate on.
+            let SummaryEvent::SummaryStatus(payload) = &event else {
+                return;
+            };
             if payload.state == SummaryStatusState::Running {
                 let _ = started_tx.send(());
                 let _ = release_rx.recv();
@@ -4818,6 +4933,7 @@ mod tests {
             SummaryEvent::SummaryStatus(payload) => {
                 assert_eq!(payload.state, SummaryStatusState::Running)
             }
+            other => panic!("expected a summary-status event, got {other:?}"),
         }
         match &events[1] {
             SummaryEvent::SummaryStatus(payload) => {
@@ -4828,6 +4944,7 @@ mod tests {
                     .unwrap_or("")
                     .contains("nothing to summarize"));
             }
+            other => panic!("expected a summary-status event, got {other:?}"),
         }
         assert!(
             !busy.load(Ordering::SeqCst),
@@ -4863,7 +4980,10 @@ mod tests {
             settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(move |event| {
-                let SummaryEvent::SummaryStatus(payload) = &event;
+                // Same as above: ignore the Obsidian export event.
+                let SummaryEvent::SummaryStatus(payload) = &event else {
+                    return;
+                };
                 if payload.state == SummaryStatusState::Running {
                     let _ = tx.send(signal_id.clone());
                 }
@@ -4933,6 +5053,7 @@ mod tests {
                     payload.error
                 );
             }
+            other => panic!("expected a summary-status event, got {other:?}"),
         }
         assert!(
             !busy.load(Ordering::SeqCst),
@@ -5153,6 +5274,120 @@ mod tests {
         assert!(
             !busy.load(Ordering::SeqCst),
             "the worker's BusyGuard must clear busy on exit even though this test called it directly"
+        );
+    }
+
+    // --- export_to_obsidian (issue #47) --------------------------------------
+    //
+    // Testable without a model: the hand-off reads the note back from the
+    // store and writes into a vault folder — none of which needs the LLM.
+    // `worker_test_ctx`'s note has no transcript and no summary; the export
+    // doesn't require either (a note is a note), which keeps these tests
+    // free of any GGUF.
+
+    fn obsidian_events(
+        events: &Arc<Mutex<Vec<SummaryEvent>>>,
+    ) -> Vec<ObsidianExportStatusPayload> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                SummaryEvent::ObsidianExport(payload) => Some(payload.clone()),
+                SummaryEvent::SummaryStatus(_) => None,
+            })
+            .collect()
+    }
+
+    fn enable_obsidian(ctx: &SummarizeWorkerCtx, vault: &Path) {
+        *settings::lock_settings(&ctx.settings) = crate::settings::Settings {
+            obsidian_enabled: true,
+            obsidian_vault_path: Some(vault.to_string_lossy().into_owned()),
+            ..crate::settings::Settings::default()
+        };
+    }
+
+    #[test]
+    fn export_to_obsidian_does_nothing_while_the_feature_is_off() {
+        let (ctx, events, _dir) = worker_test_ctx();
+
+        export_to_obsidian(&ctx);
+
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn export_to_obsidian_writes_the_note_and_reports_the_path() {
+        let (ctx, events, dir) = worker_test_ctx();
+        let vault = dir.path().join("Vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        enable_obsidian(&ctx, &vault);
+
+        export_to_obsidian(&ctx);
+
+        let reported = obsidian_events(&events);
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].note_id, ctx.note_id);
+        assert_eq!(reported[0].state, ObsidianExportState::Exported);
+        assert_eq!(reported[0].error, None);
+        let path = PathBuf::from(reported[0].path.as_deref().expect("exported path"));
+        assert!(
+            path.starts_with(vault.join("Meetings")),
+            "{}",
+            path.display()
+        );
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with("---\ntitle: \"Empty note\"\n"),
+            "{written}"
+        );
+        assert!(written.contains(&format!("minute_id: \"{}\"", ctx.note_id)));
+    }
+
+    #[test]
+    fn export_to_obsidian_turns_a_missing_vault_into_its_own_error_event_not_a_failure() {
+        let (ctx, events, dir) = worker_test_ctx();
+        let missing = dir.path().join("NoSuchVault");
+        enable_obsidian(&ctx, &missing);
+        let (before, _) = lock_store(&ctx.store).get_note(&ctx.note_id).unwrap();
+
+        // Returns `()` — there is no error to propagate, by construction.
+        export_to_obsidian(&ctx);
+
+        let reported = obsidian_events(&events);
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].state, ObsidianExportState::Error);
+        assert_eq!(reported[0].path, None);
+        let message = reported[0].error.as_deref().unwrap_or("");
+        assert!(message.contains("not found"), "{message}");
+        assert!(message.contains("Settings → Obsidian"), "{message}");
+        // No summary-status event of any kind — the summary's own lifecycle
+        // is untouched …
+        assert_eq!(events.lock().unwrap().len(), 1);
+        // … and so is the note on disk; nor did anything create the vault.
+        let (after, _) = lock_store(&ctx.store).get_note(&ctx.note_id).unwrap();
+        assert_eq!(after, before);
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn export_to_obsidian_reports_an_earlier_export_as_skipped() {
+        let (ctx, events, dir) = worker_test_ctx();
+        let vault = dir.path().join("Vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        enable_obsidian(&ctx, &vault);
+
+        export_to_obsidian(&ctx);
+        export_to_obsidian(&ctx);
+
+        let reported = obsidian_events(&events);
+        assert_eq!(reported.len(), 2);
+        assert_eq!(reported[0].state, ObsidianExportState::Exported);
+        assert_eq!(reported[1].state, ObsidianExportState::Skipped);
+        assert_eq!(reported[1].path, reported[0].path);
+        assert_eq!(
+            std::fs::read_dir(vault.join("Meetings")).unwrap().count(),
+            1
         );
     }
 

@@ -5,6 +5,7 @@ mod diar;
 mod download;
 mod error;
 mod llm;
+mod obsidian;
 mod popup;
 mod profiles;
 mod settings;
@@ -471,6 +472,17 @@ fn reveal_note(state: State<SharedStore>, id: String) -> Result<(), String> {
     reveal_path(&target)
 }
 
+/// Issue #47: Settings → Obsidian's soft check of a chosen vault folder —
+/// does it exist, is it a folder, does it hold a `.obsidian` directory. A
+/// read-only hint for the section's caption, never a gate: a folder without
+/// `.obsidian` is still written to (Obsidian treats any folder it opens as
+/// a vault), and the real "is it writable" answer comes from the export
+/// itself, with its own message. See `obsidian::vault_status`.
+#[tauri::command]
+fn obsidian_vault_status(path: String) -> obsidian::VaultStatus {
+    obsidian::vault_status(&path)
+}
+
 /// Returns the current persisted settings.
 #[tauri::command]
 fn get_settings(state: State<SharedSettings>) -> Settings {
@@ -750,6 +762,7 @@ pub fn run() {
             reveal_note,
             get_settings,
             set_settings,
+            obsidian_vault_status,
             download::download_model,
             download::cancel_download,
             download::delete_model,

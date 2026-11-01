@@ -46,7 +46,13 @@ thiserror = "2.0.19"
 trash = "5.2.3"
 sysinfo = "0.36.1"
 reqwest = { version = "0.13.3", default-features = false, features = ["stream", "rustls"] }
-time = { version = "0.3.54", features = ["formatting", "macros", "parsing"] }
+# `local-offset` (issue #47): the Obsidian export names files by the
+# recording's *local* date (`{date}` in the filename template) and writes
+# the frontmatter `date:` in local time — `UtcOffset::local_offset_at` needs
+# this feature. Cargo.lock already lists `libc` and `num_threads` under
+# `time`'s dependencies (another dependency enables the feature), so this
+# adds nothing to the lockfile or the build.
+time = { version = "0.3.54", features = ["formatting", "macros", "parsing", "local-offset"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "rt", "time"] }
 tauri-plugin-dialog = "2"
