@@ -168,6 +168,64 @@ themselves rather than run forever, and when a meeting is too long for
 the model's context window, the summary says it covers only part of the
 recording instead of silently coming out thin.
 
+## Send summaries to Obsidian
+
+If your notes live in [Obsidian](https://obsidian.md), Minute can file each
+finished summary straight into your vault. Turn on **Save summaries to an
+Obsidian vault** (Settings → Data → Obsidian), choose the vault folder, and
+every summary from then on — including a regenerated one, and the title
+Minute picks for an unnamed note — lands as a Markdown file in the
+subfolder you name (`Meetings` by default; leave it empty for the vault's
+top level). The filename comes from a template: `{date}` (the recording's
+local date, `2026-05-21`), `{time}` (`14-30`), `{title}`, and `{id}`
+(Minute's note id), with `.md` added for you; the default is
+`{date} - {title}`.
+
+The note itself is the same one Minute keeps as `note.md`, under YAML
+properties Obsidian and Dataview can query:
+
+```markdown
+---
+title: "Client call — Acme"
+date: 2026-05-21T07:00:00-07:00
+duration: 48
+participants:
+  - "Sarah"
+  - "Speaker 2"
+tags:
+  - meeting
+  - minute
+minute_id: "20260521-140000"
+---
+
+# Client call — Acme
+
+**Date:** May 21, 2026 · **Duration:** 48 min · **Speakers:** 2
+
+## Summary
+
+…
+
+## Action items
+
+- [x] Write release notes
+- [ ] Schedule the retro
+
+## Transcript
+
+…
+```
+
+A toggle leaves the transcript out if you'd rather keep vault notes to the
+summary. Two rules keep your vault yours: Minute never overwrites a file —
+a name that's already taken gets ` (2)`, ` (3)`, and so on — and a
+recording that's already in the folder (recognized by its `minute_id`) is
+left exactly as it is when you regenerate the summary, so a note you've
+annotated in Obsidian stays annotated. If the vault folder is missing or
+can't be written to, the summary still succeeds and a message tells you
+which path to fix in Settings. All of this is a local file write into a
+folder you chose; nothing about the privacy promise below changes.
+
 ## Ask your notes, with receipts
 
 Ask a plain-language question about a meeting — "what did we decide about
