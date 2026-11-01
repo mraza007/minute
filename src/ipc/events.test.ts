@@ -3,6 +3,7 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { describe, expect, it, vi } from 'vitest'
 import * as events from './events'
 import type {
+  ObsidianExportStatusEvent,
   AudioInputLevelEvent,
   MeetingDetectedEvent,
   MeetingPopupPayloadEvent,
@@ -133,6 +134,32 @@ describe('ipc/events', () => {
     await emit('summary-status', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onObsidianExportStatus subscribes to obsidian-export-status and delivers the payload', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onObsidianExportStatus(cb)
+    const payload: ObsidianExportStatusEvent = {
+      noteId: '20260722-120000',
+      state: 'exported',
+      path: '/Users/test/Vault/Meetings/2026-07-22 - Standup.md',
+      error: null,
+    }
+    await emit('obsidian-export-status', payload)
+
+    expect(cb).toHaveBeenCalledWith(payload)
+  })
+
+  it('onObsidianExportStatus does not fire for summary-status', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onObsidianExportStatus(cb)
+    await emit('summary-status', { noteId: '20260722-120000', state: 'done', error: null })
+
+    expect(cb).not.toHaveBeenCalled()
   })
 
   it('onMeetingDetected subscribes to meeting-detected and delivers the payload', async () => {

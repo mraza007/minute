@@ -42,6 +42,11 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     compressAudioAfterDays: null,
     speakerProfiles: false,
     autoApplySpeakerNames: true,
+    obsidianEnabled: false,
+    obsidianVaultPath: null,
+    obsidianFolder: 'Meetings',
+    obsidianFilenameTemplate: '{date} - {title}',
+    obsidianIncludeTranscript: true,
     libraryRoot: null,
     ...overrides,
   }
@@ -481,6 +486,98 @@ describe('useAppState', () => {
     expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.compressAudioAfterDays === 0)).toBe(
       true,
     )
+  })
+
+  it('initializes the Obsidian settings from persisted settings rather than the hardcoded defaults', async () => {
+    setupIPC({
+      settings: settingsFixture({
+        obsidianEnabled: true,
+        obsidianVaultPath: '/Users/test/Vault',
+        obsidianFolder: 'Work/Meetings',
+        obsidianFilenameTemplate: '{id}',
+        obsidianIncludeTranscript: false,
+      }),
+    })
+    const result = await loaded()
+    expect(result.current.tObsidianEnabled).toBe(true)
+    expect(result.current.tObsidianVaultPath).toBe('/Users/test/Vault')
+    expect(result.current.tObsidianFolder).toBe('Work/Meetings')
+    expect(result.current.tObsidianFilenameTemplate).toBe('{id}')
+    expect(result.current.tObsidianIncludeTranscript).toBe(false)
+  })
+
+  it('toggleObsidianEnabled flips local state and persists it via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+    expect(result.current.tObsidianEnabled).toBe(false)
+
+    act(() => result.current.toggleObsidianEnabled())
+
+    expect(result.current.tObsidianEnabled).toBe(true)
+    expect(calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.obsidianEnabled === true)).toBe(
+      true,
+    )
+  })
+
+  it('setObsidianFolder persists the folder via set_settings', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
+    const result = await loaded()
+
+    await act(async () => result.current.setObsidianFolder('Work/Meetings'))
+
+    expect(
+      calls.some(c => c.cmd === 'set_settings' && (c.args as { patch: Partial<Settings> }).patch.obsidianFolder === 'Work/Meetings'),
+    ).toBe(true)
+  })
+
+  it('checks the chosen vault folder once settings load', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      settings: settingsFixture({ obsidianEnabled: true, obsidianVaultPath: '/Users/test/Vault' }),
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+    })
+    await loaded()
+    await waitFor(() =>
+      expect(calls.some(c => c.cmd === 'obsidian_vault_status' && (c.args as { path: string }).path === '/Users/test/Vault')).toBe(true),
+    )
+  })
+
+  it('reports an Obsidian export through the quiet notice, and a failure through lastError — never summary state', async () => {
+    setupIPC()
+    const result = await loaded()
+
+    await act(async () => {
+      await emit('obsidian-export-status', {
+        noteId: '20260722-120000',
+        state: 'exported',
+        path: '/Users/test/Vault/Meetings/2026-07-22 - Standup.md',
+        error: null,
+      })
+    })
+    expect(result.current.libraryNotice).toBe('Saved to Obsidian: 2026-07-22 - Standup.md')
+
+    await act(async () => {
+      await emit('obsidian-export-status', {
+        noteId: '20260722-120000',
+        state: 'skipped',
+        path: '/Users/test/Vault/Meetings/2026-07-22 - Standup.md',
+        error: null,
+      })
+    })
+    expect(result.current.libraryNotice).toContain('Already in your Obsidian vault')
+
+    await act(async () => {
+      await emit('obsidian-export-status', {
+        noteId: '20260722-120000',
+        state: 'error',
+        path: null,
+        error: 'Obsidian vault folder not found: /Users/test/Vault. Choose it again in Settings → Obsidian.',
+      })
+    })
+    expect(result.current.lastError).toContain('Obsidian vault folder not found')
+    expect(result.current.summaryStatus['20260722-120000']).toBeUndefined()
   })
 
   it('setSttModel/setLlmModel persist the selection via set_settings', async () => {

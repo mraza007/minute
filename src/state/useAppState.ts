@@ -3,7 +3,7 @@ import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
 import * as ipc from '../ipc/commands'
-import { onAutoStopState, onMeetingPopupStart, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
+import { onAutoStopState, onMeetingPopupStart, onObsidianExportStatus, onRecordingState, onSttStatus, onTranscriptSegment } from '../ipc/events'
 import type {
   AudioInputDevice,
   DeletedNoteUndo,
@@ -13,6 +13,7 @@ import type {
   NoteMarker,
   NoteMeta,
   NoteStorageStats,
+  ObsidianVaultStatus,
   SpeakerMergeUndo,
   StorageStats,
   SummaryStyle,
@@ -195,6 +196,15 @@ export function useAppState() {
   const [tAutoStopRecording, setTAutoStopRecording] = useState(true)
   const [tSpeakerProfiles, setTSpeakerProfiles] = useState(false)
   const [tAutoApplySpeakerNames, setTAutoApplySpeakerNames] = useState(true)
+  // Issue #47: Settings → Obsidian. `obsidianVaultStatus` is the soft check
+  // of the chosen vault folder (refreshed whenever the path changes — see
+  // the effect below), `null` while unset or still being looked up.
+  const [tObsidianEnabled, setTObsidianEnabled] = useState(false)
+  const [tObsidianVaultPath, setTObsidianVaultPath] = useState<string | null>(null)
+  const [tObsidianFolder, setTObsidianFolder] = useState('Meetings')
+  const [tObsidianFilenameTemplate, setTObsidianFilenameTemplate] = useState('{date} - {title}')
+  const [tObsidianIncludeTranscript, setTObsidianIncludeTranscript] = useState(true)
+  const [obsidianVaultStatus, setObsidianVaultStatus] = useState<ObsidianVaultStatus | null>(null)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
   /** Issue #42: seconds of the current quiet run, from `recording-state` — the pre-arm "Quiet for M:SS" feedback. */
   const [quietSecs, setQuietSecs] = useState(0)
@@ -804,6 +814,11 @@ export function useAppState() {
           setTAutoStopRecording(loadedSettings.autoStopRecording ?? true)
           setTSpeakerProfiles(loadedSettings.speakerProfiles ?? false)
           setTAutoApplySpeakerNames(loadedSettings.autoApplySpeakerNames ?? true)
+          setTObsidianEnabled(loadedSettings.obsidianEnabled ?? false)
+          setTObsidianVaultPath(loadedSettings.obsidianVaultPath ?? null)
+          setTObsidianFolder(loadedSettings.obsidianFolder ?? 'Meetings')
+          setTObsidianFilenameTemplate(loadedSettings.obsidianFilenameTemplate ?? '{date} - {title}')
+          setTObsidianIncludeTranscript(loadedSettings.obsidianIncludeTranscript ?? true)
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1484,6 +1499,128 @@ export function useAppState() {
     })
   }, [reportError])
 
+  /**
+   * Settings screen's "Save summaries to an Obsidian vault" toggle (issue
+   * #47) — same optimistic-flip-then-persist shape as the toggles above.
+   * The export itself runs on the backend after each summary and reads the
+   * live setting, so flipping this while a summary is queued takes effect
+   * for that summary.
+   */
+  const toggleObsidianEnabled = useCallback(() => {
+    setTObsidianEnabled(previous => {
+      const flipped = !previous
+      ipc.setSettings({ obsidianEnabled: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  /** Settings → Obsidian's "Include the transcript" toggle (issue #47). */
+  const toggleObsidianIncludeTranscript = useCallback(() => {
+    setTObsidianIncludeTranscript(previous => {
+      const flipped = !previous
+      ipc.setSettings({ obsidianIncludeTranscript: flipped }).catch(reportError)
+      return flipped
+    })
+  }, [reportError])
+
+  /**
+   * Settings → Obsidian "Choose vault…": the native folder picker (the same
+   * dialog plugin `changeLibraryFolder` uses), then the pick is persisted
+   * as `obsidianVaultPath`. Unlike the library move there's nothing to
+   * relocate — the vault is Obsidian's folder, Minute only ever writes new
+   * files into it. A cancelled picker is a plain no-op.
+   */
+  const chooseObsidianVault = useCallback(async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: 'Choose your Obsidian vault folder',
+        defaultPath: tObsidianVaultPath ?? undefined,
+      })
+      if (typeof picked !== 'string') return
+      setTObsidianVaultPath(picked)
+      await ipc.setSettings({ obsidianVaultPath: picked })
+    } catch (error) {
+      reportError(error)
+    }
+  }, [tObsidianVaultPath, reportError])
+
+  /**
+   * Settings → Obsidian's folder and filename fields, committed by the
+   * section's Save button. Deliberately not optimistic: local state takes
+   * the backend's normalized value back (trimmed; an empty template resets
+   * to the default — see `settings::apply_patch`), so the field shows what
+   * was actually saved, and a rejected folder (`..`, an absolute path)
+   * surfaces through the error banner while the saved value stays as it
+   * was.
+   */
+  const setObsidianFolder = useCallback(
+    (folder: string) => {
+      ipc
+        .setSettings({ obsidianFolder: folder })
+        .then(updated => setTObsidianFolder(updated.obsidianFolder))
+        .catch(reportError)
+    },
+    [reportError],
+  )
+
+  const setObsidianFilenameTemplate = useCallback(
+    (template: string) => {
+      ipc
+        .setSettings({ obsidianFilenameTemplate: template })
+        .then(updated => setTObsidianFilenameTemplate(updated.obsidianFilenameTemplate))
+        .catch(reportError)
+    },
+    [reportError],
+  )
+
+  // Issue #47: re-check the chosen vault folder whenever it changes (and
+  // once at load) so Settings can say whether it still looks like a vault.
+  // A failed check is just "no hint", never an error banner.
+  useEffect(() => {
+    if (!tObsidianVaultPath) {
+      setObsidianVaultStatus(null)
+      return
+    }
+    let cancelled = false
+    setObsidianVaultStatus(null)
+    ipc
+      .obsidianVaultStatus(tObsidianVaultPath)
+      .then(status => {
+        if (!cancelled) setObsidianVaultStatus(status ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setObsidianVaultStatus(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tObsidianVaultPath])
+
+  // Issue #47: the backend's one-shot report of what the post-summary
+  // Obsidian export did. Success and "already in the vault" use the same
+  // quiet toast the Finder exports use; a failure goes through the error
+  // banner with the backend's own message (which names the path and the
+  // fix) — never through the summary's status, which stays `done`.
+  useTauriEvent(
+    onObsidianExportStatus,
+    payload => {
+      if (payload.state === 'error') {
+        reportError(new Error(payload.error ?? 'Saving the note to Obsidian failed.'))
+        return
+      }
+      const filename = payload.path?.split('/').pop() ?? 'note'
+      setLibraryNotice(
+        payload.state === 'exported'
+          ? `Saved to Obsidian: ${filename}`
+          : `Already in your Obsidian vault as ${filename} — left untouched.`,
+      )
+    },
+    [],
+  )
+
   // Issue #22: load the saved profiles once at startup so Settings has
   // them ready; rename/delete refresh the list as they go.
   useEffect(() => {
@@ -1850,6 +1987,17 @@ export function useAppState() {
     toggleSpeakerProfiles,
     tAutoApplySpeakerNames,
     toggleAutoApplySpeakerNames,
+    tObsidianEnabled,
+    toggleObsidianEnabled,
+    tObsidianVaultPath,
+    obsidianVaultStatus,
+    chooseObsidianVault,
+    tObsidianFolder,
+    setObsidianFolder,
+    tObsidianFilenameTemplate,
+    setObsidianFilenameTemplate,
+    tObsidianIncludeTranscript,
+    toggleObsidianIncludeTranscript,
     mergeSpeakers,
     undoSpeakerMerge,
     deleteNote,

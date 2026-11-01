@@ -318,6 +318,11 @@ export const SETTINGS: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidianEnabled: false,
+  obsidianVaultPath: null,
+  obsidianFolder: 'Meetings',
+  obsidianFilenameTemplate: '{date} - {title}',
+  obsidianIncludeTranscript: true,
 }
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 

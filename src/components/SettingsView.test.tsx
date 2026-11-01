@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Hardware, ModelStatus, Recommendation, StorageStats } from '../ipc/types'
-import { SettingsView, storageBarSegments } from './SettingsView'
+import { SettingsView, obsidianVaultHint, storageBarSegments } from './SettingsView'
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -100,6 +100,17 @@ const base = {
   toggleSpeakerProfiles: vi.fn(),
   autoApplySpeakerNames: true,
   toggleAutoApplySpeakerNames: vi.fn(),
+  obsidianEnabled: false,
+  toggleObsidianEnabled: vi.fn(),
+  obsidianVaultPath: null,
+  obsidianVaultStatus: null,
+  onChooseObsidianVault: vi.fn().mockResolvedValue(undefined),
+  obsidianFolder: 'Meetings',
+  setObsidianFolder: vi.fn(),
+  obsidianFilenameTemplate: '{date} - {title}',
+  setObsidianFilenameTemplate: vi.fn(),
+  obsidianIncludeTranscript: true,
+  toggleObsidianIncludeTranscript: vi.fn(),
   voiceProfiles: [],
   onDeleteVoiceProfile: vi.fn(),
   onExportDiagnostics: vi.fn().mockResolvedValue(undefined),
@@ -452,6 +463,122 @@ describe('SettingsView', () => {
       expect(screen.queryByRole('button', { name: /grant permission/i })).not.toBeInTheDocument()
       expect(screen.queryByText('Requires macOS 13 or later.')).not.toBeInTheDocument()
       expect(screen.queryByText(/may need Minute to restart/)).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Obsidian section (issue #47)', () => {
+    function obsidianSection() {
+      const section = screen.getByRole('heading', { name: 'Obsidian' }).closest('section')
+      if (!section) throw new Error('the Obsidian heading is not inside a section')
+      return within(section)
+    }
+
+    it('renders the toggle off by default and keeps the vault controls hidden until it is on', () => {
+      render(<SettingsView {...base} />)
+      expect(screen.getByRole('switch', { name: 'Save summaries to an Obsidian vault' })).toHaveAttribute('aria-checked', 'false')
+      expect(screen.queryByRole('button', { name: /vault…/ })).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Folder inside the vault')).not.toBeInTheDocument()
+      expect(screen.getByText(/Only local files are written/)).toBeInTheDocument()
+    })
+
+    it('wires the toggle to its handler', () => {
+      const toggleObsidianEnabled = vi.fn()
+      render(<SettingsView {...base} toggleObsidianEnabled={toggleObsidianEnabled} />)
+      fireEvent.click(screen.getByRole('switch', { name: 'Save summaries to an Obsidian vault' }))
+      expect(toggleObsidianEnabled).toHaveBeenCalledTimes(1)
+    })
+
+    it('asks for a vault folder when none is chosen yet', () => {
+      const onChooseObsidianVault = vi.fn().mockResolvedValue(undefined)
+      render(<SettingsView {...base} obsidianEnabled onChooseObsidianVault={onChooseObsidianVault} />)
+      expect(screen.getByText('Not chosen yet')).toBeInTheDocument()
+      expect(screen.getByText('Choose the folder Obsidian opens as your vault.')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Choose vault…' }))
+      expect(onChooseObsidianVault).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows the chosen vault with a soft verdict on whether it looks like one', () => {
+      const { rerender } = render(
+        <SettingsView
+          {...base}
+          obsidianEnabled
+          obsidianVaultPath="/Users/test/Vault"
+          obsidianVaultStatus={{ exists: true, isDirectory: true, looksLikeVault: true }}
+        />,
+      )
+      expect(screen.getByText('/Users/test/Vault')).toBeInTheDocument()
+      expect(screen.getByText('Obsidian vault found.')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Change vault…' })).toBeInTheDocument()
+
+      rerender(
+        <SettingsView
+          {...base}
+          obsidianEnabled
+          obsidianVaultPath="/Users/test/Vault"
+          obsidianVaultStatus={{ exists: true, isDirectory: true, looksLikeVault: false }}
+        />,
+      )
+      expect(screen.getByText(/No \.obsidian folder here yet/)).toBeInTheDocument()
+
+      rerender(
+        <SettingsView
+          {...base}
+          obsidianEnabled
+          obsidianVaultPath="/Users/test/Vault"
+          obsidianVaultStatus={{ exists: false, isDirectory: false, looksLikeVault: false }}
+        />,
+      )
+      expect(screen.getByText(/can’t be found right now/)).toBeInTheDocument()
+    })
+
+    it('saves only the fields that changed, and only on Save', () => {
+      const setObsidianFolder = vi.fn()
+      const setObsidianFilenameTemplate = vi.fn()
+      render(
+        <SettingsView
+          {...base}
+          obsidianEnabled
+          obsidianVaultPath="/Users/test/Vault"
+          setObsidianFolder={setObsidianFolder}
+          setObsidianFilenameTemplate={setObsidianFilenameTemplate}
+        />,
+      )
+      const save = obsidianSection().getByRole('button', { name: 'Save' })
+      expect(save).toBeDisabled()
+
+      fireEvent.change(screen.getByLabelText('Folder inside the vault'), { target: { value: 'Work/Meetings' } })
+      expect(save).toBeEnabled()
+      expect(setObsidianFolder).not.toHaveBeenCalled()
+
+      fireEvent.click(save)
+      expect(setObsidianFolder).toHaveBeenCalledWith('Work/Meetings')
+      expect(setObsidianFilenameTemplate).not.toHaveBeenCalled()
+    })
+
+    it('saves the filename template on Enter', () => {
+      const setObsidianFilenameTemplate = vi.fn()
+      render(<SettingsView {...base} obsidianEnabled setObsidianFilenameTemplate={setObsidianFilenameTemplate} />)
+      const field = screen.getByLabelText('Filename')
+      fireEvent.change(field, { target: { value: '{date} {title}' } })
+      fireEvent.keyDown(field, { key: 'Enter' })
+      expect(setObsidianFilenameTemplate).toHaveBeenCalledWith('{date} {title}')
+    })
+
+    it('wires the include-transcript toggle and explains the never-overwrite rule', () => {
+      const toggleObsidianIncludeTranscript = vi.fn()
+      render(<SettingsView {...base} obsidianEnabled toggleObsidianIncludeTranscript={toggleObsidianIncludeTranscript} />)
+      fireEvent.click(screen.getByRole('switch', { name: 'Include the transcript' }))
+      expect(toggleObsidianIncludeTranscript).toHaveBeenCalledTimes(1)
+      expect(screen.getByText(/never overwrites a note in your vault/)).toBeInTheDocument()
+    })
+
+    it('obsidianVaultHint covers every verdict', () => {
+      expect(obsidianVaultHint(null, null)).toMatch(/Choose the folder/)
+      expect(obsidianVaultHint('/v', null)).toBe('')
+      expect(obsidianVaultHint('/v', { exists: false, isDirectory: false, looksLikeVault: false })).toMatch(/can’t be found/)
+      expect(obsidianVaultHint('/v', { exists: true, isDirectory: false, looksLikeVault: false })).toMatch(/a file, not a folder/)
+      expect(obsidianVaultHint('/v', { exists: true, isDirectory: true, looksLikeVault: false })).toMatch(/No \.obsidian folder/)
+      expect(obsidianVaultHint('/v', { exists: true, isDirectory: true, looksLikeVault: true })).toBe('Obsidian vault found.')
     })
   })
 

@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { AudioInputStatus, Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
+import type { AudioInputStatus, Hardware, ModelStatus, NoteMeta, NoteWithTranscript, ObsidianVaultStatus, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -462,6 +462,11 @@ describe('ipc/commands', () => {
       compressAudioAfterDays: null,
       speakerProfiles: false,
       autoApplySpeakerNames: true,
+      obsidianEnabled: false,
+      obsidianVaultPath: null,
+      obsidianFolder: 'Meetings',
+      obsidianFilenameTemplate: '{date} - {title}',
+      obsidianIncludeTranscript: true,
     }
     const calls = captureIPC(() => settings)
 
@@ -489,6 +494,11 @@ describe('ipc/commands', () => {
       compressAudioAfterDays: null,
       speakerProfiles: false,
       autoApplySpeakerNames: true,
+      obsidianEnabled: false,
+      obsidianVaultPath: null,
+      obsidianFolder: 'Meetings',
+      obsidianFilenameTemplate: '{date} - {title}',
+      obsidianIncludeTranscript: true,
     }
     const calls = captureIPC(() => updated)
 
@@ -497,6 +507,17 @@ describe('ipc/commands', () => {
     expect(calls[0].cmd).toBe('set_settings')
     expect(calls[0].args).toEqual({ patch: { sttModel: 'whisper-medium' } })
     expect(result).toEqual(updated)
+  })
+
+  it('obsidianVaultStatus invokes obsidian_vault_status with { path } and passes the status through', async () => {
+    const status: ObsidianVaultStatus = { exists: true, isDirectory: true, looksLikeVault: true }
+    const calls = captureIPC(() => status)
+
+    const result = await commands.obsidianVaultStatus('/Users/test/Vault')
+
+    expect(calls[0].cmd).toBe('obsidian_vault_status')
+    expect(calls[0].args).toEqual({ path: '/Users/test/Vault' })
+    expect(result).toEqual(status)
   })
 
   it('summarizeNote invokes summarize_note with { id }', async () => {

@@ -14,6 +14,7 @@ import type {
   MicrophonePermission,
   NoteMeta,
   NoteStorageStats,
+  ObsidianVaultStatus,
   SpeakerMergeResult,
   SpeakerMergeUndo,
   SpeakerMergeUndoResult,
@@ -203,6 +204,14 @@ export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
 /** Merges `patch` into the persisted settings and resolves with the updated settings. */
 export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
   invokeCmd('set_settings', { patch })
+
+/**
+ * Soft check of a chosen Obsidian vault folder for Settings → Obsidian's
+ * caption (issue #47): does it exist, is it a folder, does it hold
+ * `.obsidian`. Read-only and never a blocker — see `lib.rs::obsidian_vault_status`.
+ */
+export const obsidianVaultStatus = (path: string): Promise<ObsidianVaultStatus> =>
+  invokeCmd('obsidian_vault_status', { path })
 
 /**
  * Triggers (or re-triggers — this is also what "Regenerate" calls)

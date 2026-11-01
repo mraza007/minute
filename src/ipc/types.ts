@@ -319,6 +319,16 @@ export interface Settings {
   speakerProfiles: boolean
   /** Issue #32: write confident voice-profile matches into the transcript (and summary) automatically. Only acts while `speakerProfiles` is on; every application shows an Undo. */
   autoApplySpeakerNames: boolean
+  /** Issue #47: save each finished summary into an Obsidian vault as a Markdown note (opt-in). */
+  obsidianEnabled: boolean
+  /** Absolute path of the vault folder; `null` until chosen in Settings → Obsidian. */
+  obsidianVaultPath: string | null
+  /** Subfolder inside the vault (`"Meetings"` by default; `""` = the vault root). Always relative — the backend rejects `..` and absolute paths. */
+  obsidianFolder: string
+  /** Filename template without `.md`: `{date}`, `{time}`, `{title}`, `{id}` — see `obsidian::render_filename`. */
+  obsidianFilenameTemplate: string
+  /** Whether the vault note includes the full `## Transcript` section (on by default). */
+  obsidianIncludeTranscript: boolean
 }
 
 /**
@@ -345,6 +355,26 @@ export interface SettingsPatch {
   compressAudioAfterDays?: number
   speakerProfiles?: boolean
   autoApplySpeakerNames?: boolean
+  obsidianEnabled?: boolean
+  /** `''` clears the vault path back to unset — see `settings::SettingsPatch::obsidian_vault_path`'s docs. */
+  obsidianVaultPath?: string
+  /** `''` means the vault root. The command rejects a value containing `..` or starting with a slash. */
+  obsidianFolder?: string
+  /** `''` resets to the default template (`{date} - {title}`). */
+  obsidianFilenameTemplate?: string
+  obsidianIncludeTranscript?: boolean
+}
+
+/**
+ * `obsidian::VaultStatus` — the `obsidian_vault_status` command's soft check
+ * of the chosen vault folder (issue #47). A hint for Settings' caption only;
+ * the export itself reports the real, actionable error when it runs.
+ */
+export interface ObsidianVaultStatus {
+  exists: boolean
+  isDirectory: boolean
+  /** A `.obsidian` folder is present — what Obsidian creates when it opens a folder as a vault. */
+  looksLikeVault: boolean
 }
 
 // --- events ----------------------------------------------------------------
@@ -437,6 +467,22 @@ export interface SttStatusEvent {
 export interface SummaryStatusEvent {
   noteId: string
   state: 'queued' | 'running' | 'done' | 'error'
+  error: string | null
+}
+
+/**
+ * `llm.rs::ObsidianExportStatusPayload` — event `obsidian-export-status`
+ * (issue #47). Emitted at most once per successful summary, just before its
+ * `summary-status` `done`, when Obsidian export is on. Its own event rather
+ * than a `summary-status` state on purpose: the summary succeeded either
+ * way, and a vault problem must never read as a failed summary. `path` is
+ * the vault file written (`exported`) or the earlier export found and left
+ * alone (`skipped`); `error` is the human-readable message on `error`.
+ */
+export interface ObsidianExportStatusEvent {
+  noteId: string
+  state: 'exported' | 'skipped' | 'error'
+  path: string | null
   error: string | null
 }
 

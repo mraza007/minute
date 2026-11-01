@@ -25,6 +25,11 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     compressAudioAfterDays: null,
     speakerProfiles: false,
     autoApplySpeakerNames: true,
+    obsidianEnabled: false,
+    obsidianVaultPath: null,
+    obsidianFolder: 'Meetings',
+    obsidianFilenameTemplate: '{date} - {title}',
+    obsidianIncludeTranscript: true,
     libraryRoot: null,
     ...overrides,
   }

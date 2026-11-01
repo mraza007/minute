@@ -23,6 +23,11 @@ const DEFAULT_SETTINGS: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidianEnabled: false,
+  obsidianVaultPath: null,
+  obsidianFolder: 'Meetings',
+  obsidianFilenameTemplate: '{date} - {title}',
+  obsidianIncludeTranscript: true,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
-import type { Hardware, ModelStatus, Recommendation, StorageStats, SummaryStyle, SysAudioAvailability, VoiceProfile } from '../ipc/types'
+import type { Hardware, ModelStatus, ObsidianVaultStatus, Recommendation, StorageStats, SummaryStyle, SysAudioAvailability, VoiceProfile } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
 import { DownloadProgressBar } from './DownloadProgressBar'
 import { assessModelSuitability } from '../state/modelSuitability'
@@ -56,6 +56,23 @@ export interface SettingsViewProps {
   /** Issue #32: write confident voice-profile matches into the transcript automatically. */
   autoApplySpeakerNames: boolean
   toggleAutoApplySpeakerNames: () => void
+  /** Issue #47: save each finished summary into an Obsidian vault as a Markdown note (opt-in). */
+  obsidianEnabled: boolean
+  toggleObsidianEnabled: () => void
+  /** Absolute vault path, or `null` until chosen. */
+  obsidianVaultPath: string | null
+  /** Soft check of that path for the caption — `null` while unset or still unknown. */
+  obsidianVaultStatus: ObsidianVaultStatus | null
+  /** Opens the native folder picker and persists the pick — see `useAppState.chooseObsidianVault`. */
+  onChooseObsidianVault: () => Promise<void>
+  /** Subfolder inside the vault; `''` means the vault root. Committed via the section's Save button. */
+  obsidianFolder: string
+  setObsidianFolder: (folder: string) => void
+  /** Filename template without `.md`; committed via the same Save button. */
+  obsidianFilenameTemplate: string
+  setObsidianFilenameTemplate: (template: string) => void
+  obsidianIncludeTranscript: boolean
+  toggleObsidianIncludeTranscript: () => void
   /** Saved voice profiles, shown (with delete) while the toggle above is on. */
   voiceProfiles: VoiceProfile[]
   onDeleteVoiceProfile: (name: string) => void
@@ -245,6 +262,35 @@ const fineTextStyle: CSSProperties = {
   fontSize: 12,
   lineHeight: 1.5,
   color: 'var(--ink-faint)',
+}
+
+/** A single-line text field, styled like the custom-instructions textarea. */
+const textInputStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '7px 10px',
+  fontFamily: 'inherit',
+  fontSize: 12.5,
+  lineHeight: 1.5,
+  color: 'var(--ink)',
+  background: 'transparent',
+  border: '1px solid var(--rule)',
+}
+
+/**
+ * Settings → Obsidian's one-line verdict on the chosen folder (issue #47).
+ * Soft by design: a folder without `.obsidian` still works the moment
+ * Obsidian opens it as a vault, so nothing here blocks anything — the
+ * export's own error banner is where a real problem shows up. Exported for
+ * tests.
+ */
+export function obsidianVaultHint(path: string | null, status: ObsidianVaultStatus | null): string {
+  if (!path) return 'Choose the folder Obsidian opens as your vault.'
+  if (!status) return ''
+  if (!status.exists) return 'That folder can’t be found right now — choose it again if it moved.'
+  if (!status.isDirectory) return 'That path is a file, not a folder — choose a folder instead.'
+  if (status.looksLikeVault) return 'Obsidian vault found.'
+  return 'No .obsidian folder here yet — notes are still saved, and Obsidian can open this folder as a vault.'
 }
 
 const secondaryBtnStyle: CSSProperties = {
@@ -506,6 +552,17 @@ export function SettingsView({
   toggleSpeakerProfiles,
   autoApplySpeakerNames,
   toggleAutoApplySpeakerNames,
+  obsidianEnabled,
+  toggleObsidianEnabled,
+  obsidianVaultPath,
+  obsidianVaultStatus,
+  onChooseObsidianVault,
+  obsidianFolder,
+  setObsidianFolder,
+  obsidianFilenameTemplate,
+  setObsidianFilenameTemplate,
+  obsidianIncludeTranscript,
+  toggleObsidianIncludeTranscript,
   voiceProfiles,
   onDeleteVoiceProfile,
   onExportDiagnostics,
@@ -531,6 +588,18 @@ export function SettingsView({
   // finishing after this view mounted).
   const [instructionsDraft, setInstructionsDraft] = useState(summaryInstructions)
   useEffect(() => setInstructionsDraft(summaryInstructions), [summaryInstructions])
+  // Issue #47: the same draft-then-Save shape for Obsidian's folder and
+  // filename fields — one Save for both, since they're edited together.
+  const [obsidianFolderDraft, setObsidianFolderDraft] = useState(obsidianFolder)
+  useEffect(() => setObsidianFolderDraft(obsidianFolder), [obsidianFolder])
+  const [obsidianTemplateDraft, setObsidianTemplateDraft] = useState(obsidianFilenameTemplate)
+  useEffect(() => setObsidianTemplateDraft(obsidianFilenameTemplate), [obsidianFilenameTemplate])
+  const obsidianDraftsDirty =
+    obsidianFolderDraft !== obsidianFolder || obsidianTemplateDraft !== obsidianFilenameTemplate
+  const saveObsidianDrafts = () => {
+    if (obsidianFolderDraft !== obsidianFolder) setObsidianFolder(obsidianFolderDraft)
+    if (obsidianTemplateDraft !== obsidianFilenameTemplate) setObsidianFilenameTemplate(obsidianTemplateDraft)
+  }
   const sttModels = models.filter(m => m.kind === 'stt')
   const llmModels = models.filter(m => m.kind === 'llm')
   // The diarization pair behind "Detect speakers" — never listed in the
@@ -940,6 +1009,102 @@ export function SettingsView({
             Recordings, transcripts, and notes move to the folder you choose. Models stay in app data.
           </div>
           <div style={fineTextStyle}>Your library inherits FileVault full-disk encryption.</div>
+        </Section>
+
+        {/*
+          Issue #47. Lives in Data rather than its own chapter: like Storage
+          it's about where notes end up on disk, and like the Finder export
+          it only ever writes local files.
+        */}
+        <Section title="Obsidian">
+          <Toggle on={obsidianEnabled} onToggle={toggleObsidianEnabled} label="Save summaries to an Obsidian vault" />
+          <div style={noteTextStyle}>
+            After each summary, Minute writes the note into your vault as a Markdown file: properties (title, date,
+            duration, participants, tags), the summary, decisions, action items as checkboxes, and the transcript.
+            Only local files are written — nothing is sent anywhere.
+          </div>
+          {obsidianEnabled && (
+            <>
+              <div style={{ marginTop: 18, display: 'flex', alignItems: 'baseline', gap: 12, maxWidth: 520 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>Vault folder</div>
+                  <div
+                    style={{ fontSize: 11.5, color: 'var(--ink-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={obsidianVaultPath ?? undefined}
+                  >
+                    {obsidianVaultPath ?? 'Not chosen yet'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-light"
+                  style={{ ...secondaryBtnStyle, flex: 'none' }}
+                  onClick={() => void onChooseObsidianVault()}
+                >
+                  {obsidianVaultPath ? 'Change vault…' : 'Choose vault…'}
+                </button>
+              </div>
+              <div style={fineTextStyle}>{obsidianVaultHint(obsidianVaultPath, obsidianVaultStatus)}</div>
+              <div style={{ marginTop: 18, maxWidth: 520 }}>
+                <label htmlFor="obsidian-folder" style={{ ...pickerLabelStyle, display: 'block', marginBottom: 8 }}>
+                  Folder inside the vault
+                </label>
+                <input
+                  id="obsidian-folder"
+                  type="text"
+                  value={obsidianFolderDraft}
+                  placeholder="Meetings"
+                  onChange={e => setObsidianFolderDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') saveObsidianDrafts()
+                  }}
+                  style={textInputStyle}
+                />
+                <div style={fineTextStyle}>
+                  Created inside the vault if it doesn’t exist yet. Leave empty to save at the vault’s top level.
+                </div>
+              </div>
+              <div style={{ marginTop: 14, maxWidth: 520 }}>
+                <label htmlFor="obsidian-filename-template" style={{ ...pickerLabelStyle, display: 'block', marginBottom: 8 }}>
+                  Filename
+                </label>
+                <input
+                  id="obsidian-filename-template"
+                  type="text"
+                  value={obsidianTemplateDraft}
+                  placeholder="{date} - {title}"
+                  onChange={e => setObsidianTemplateDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') saveObsidianDrafts()
+                  }}
+                  style={textInputStyle}
+                />
+                <div style={fineTextStyle}>
+                  {'{date}'} is the recording’s date (2026-05-21), {'{time}'} its start time (14-30), {'{title}'} the note’s
+                  title, {'{id}'} Minute’s note id. “.md” is added for you.
+                </div>
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn-light"
+                  style={{ ...secondaryBtnStyle, flex: 'none' }}
+                  disabled={!obsidianDraftsDirty}
+                  onClick={saveObsidianDrafts}
+                >
+                  Save
+                </button>
+                {!obsidianDraftsDirty && <span style={{ fontSize: 11.5, color: 'var(--ink-muted)' }}>Saved</span>}
+              </div>
+              <div style={{ marginTop: 14 }}>
+                <Toggle on={obsidianIncludeTranscript} onToggle={toggleObsidianIncludeTranscript} label="Include the transcript" />
+              </div>
+              <div style={fineTextStyle}>
+                Minute never overwrites a note in your vault: a taken filename gets “(2)”, and a note already saved from
+                the same recording is left alone.
+              </div>
+            </>
+          )}
         </Section>
 
         <Section title="Updates">

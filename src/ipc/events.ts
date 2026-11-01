@@ -16,6 +16,7 @@ import type {
   MeetingPopupPayloadEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
+  ObsidianExportStatusEvent,
   RecordingStateEvent,
   SttStatusEvent,
   SummaryStatusEvent,
@@ -62,6 +63,13 @@ export function onAutoStopState(cb: (payload: AutoStopStatePayload) => void): Pr
 
 export function onSummaryStatus(cb: (payload: SummaryStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SummaryStatusEvent>('summary-status', (event) => cb(event.payload))
+}
+
+/** The post-summary Obsidian export's outcome (issue #47) — see `ObsidianExportStatusEvent`'s docs. */
+export function onObsidianExportStatus(
+  cb: (payload: ObsidianExportStatusEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ObsidianExportStatusEvent>('obsidian-export-status', (event) => cb(event.payload))
 }
 
 /** `diar.rs`'s speaker-detection lifecycle — see `DiarStatusPayload`'s docs. */

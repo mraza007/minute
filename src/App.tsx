@@ -323,6 +323,17 @@ export default function App() {
               toggleSpeakerProfiles={s.toggleSpeakerProfiles}
               autoApplySpeakerNames={s.tAutoApplySpeakerNames}
               toggleAutoApplySpeakerNames={s.toggleAutoApplySpeakerNames}
+              obsidianEnabled={s.tObsidianEnabled}
+              toggleObsidianEnabled={s.toggleObsidianEnabled}
+              obsidianVaultPath={s.tObsidianVaultPath}
+              obsidianVaultStatus={s.obsidianVaultStatus}
+              onChooseObsidianVault={s.chooseObsidianVault}
+              obsidianFolder={s.tObsidianFolder}
+              setObsidianFolder={s.setObsidianFolder}
+              obsidianFilenameTemplate={s.tObsidianFilenameTemplate}
+              setObsidianFilenameTemplate={s.setObsidianFilenameTemplate}
+              obsidianIncludeTranscript={s.tObsidianIncludeTranscript}
+              toggleObsidianIncludeTranscript={s.toggleObsidianIncludeTranscript}
               voiceProfiles={s.voiceProfiles}
               onDeleteVoiceProfile={s.deleteVoiceProfile}
               autoStopRecording={s.tAutoStopRecording}

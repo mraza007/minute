@@ -31,6 +31,11 @@ const settings: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidianEnabled: false,
+  obsidianVaultPath: null,
+  obsidianFolder: 'Meetings',
+  obsidianFilenameTemplate: '{date} - {title}',
+  obsidianIncludeTranscript: true,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {
