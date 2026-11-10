@@ -25,6 +25,7 @@
 const APP_COMMANDS: &[&str] = &[
     "hardware_info",
     "list_models",
+    "browse_models",
     "recommended_models",
     "list_notes",
     "get_note",

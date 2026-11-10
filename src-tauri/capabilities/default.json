@@ -10,6 +10,7 @@
     "core:window:allow-start-dragging",
     "allow-hardware-info",
     "allow-list-models",
+    "allow-browse-models",
     "allow-recommended-models",
     "allow-list-notes",
     "allow-get-note",
