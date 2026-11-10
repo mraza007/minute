@@ -2523,7 +2523,7 @@ pub async fn ask_note(
         let guard = settings::lock_settings(&settings);
         (guard.llm_model.clone(), guard.llm_context_tokens)
     };
-    let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
+    let installed_entry = catalog::merged_catalog(&models_root).ok().and_then(|catalog| {
         let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
         catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
     });
@@ -2874,7 +2874,7 @@ pub async fn summarize_note(
     // (issue #41), so a queued note honors the settings current when it
     // actually runs.
     let model_id = settings::lock_settings(&settings).llm_model.clone();
-    let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
+    let installed_entry = catalog::merged_catalog(&models_root).ok().and_then(|catalog| {
         let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
         catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
     });
