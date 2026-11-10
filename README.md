@@ -2,412 +2,406 @@
 
 # Minute
 
-**Meeting notes that never leave your Mac.**
+### Meeting notes that never leave your Mac.
 
-![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.12.1-1769f6)
+Minute records a meeting, transcribes it while you talk, and writes the summary.
+All of it runs on your Mac.
 
-<a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute - Meeting notes that never leave your Mac | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a>
+**[Download for Apple silicon](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-arm64.zip)**
+&nbsp;·&nbsp;
+[Download for Intel](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-x86_64.zip)
+&nbsp;·&nbsp;
+[All releases](https://github.com/mraza007/minute/releases/latest)
 
-![Minute — a note with its summary, decisions, action items, and transcript on one page](screenshots/hero.png)
+<a href="screenshots/demo.mp4"><img src="screenshots/demo.gif" alt="Minute in 18 seconds: it notices a Zoom call, transcribes it live, and writes the note. Click for the full demo with sound." width="720"></a>
 
-**[⬇ Download Minute 1.12.1 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-arm64.zip)**
+[Watch the full demo with sound](screenshots/demo.mp4)
 
-Using an Intel Mac? [Download the Intel build](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-x86_64.zip).
+![A finished note in Minute, with the summary, decisions, and action items above the transcript](screenshots/hero.webp)
 
 </div>
 
-Minute is a fully offline meeting notetaker for macOS. It records audio,
-transcribes it live with Whisper, labels who spoke, and turns the
-transcript into a summary, decisions, and action items with a local LLM —
-all of it running on-device, in-process, with Metal acceleration. No
-account, no cloud, no server. The only network traffic Minute ever makes
-is an optional model download and — unless you turn it off — a periodic
-check against GitHub for a newer version of the app itself. Neither one
-carries anything about you or your notes.
+## Why Minute
 
-## Why
+Most meeting recorders send your audio to a server. Minute does not have one.
+The speech model and the language model run inside the app, and each note is a
+folder of plain files on your disk.
 
-Most meeting notetakers are a microphone hooked up to somebody else's
-server. Minute is a notebook: it writes to a folder on your disk, in plain
-text and WAV, and asks nothing of the network to work. Turn off Wi-Fi and
-record a meeting — it transcribes, summarizes, and answers questions about
-it exactly the same as it does online, because it never used the network in
-the first place.
+Turn off Wi-Fi and record a meeting. Minute transcribes it, summarizes it, and
+answers questions about it the same way it does online.
 
-## Meeting detection, without a permission prompt
+Minute is free and open source under the MIT license. It has no account and no
+analytics, and you choose the models.
 
-When another app starts using your microphone — Zoom, Teams, Webex, Slack,
-FaceTime, Discord, or a browser call — Minute notices and offers a quiet
-pill above whatever you're looking at: one click starts recording, one
-click dismisses it, and it goes away on its own after 12 seconds. It's off
-by default; turn it on in Settings → Recording.
+## What it does
 
-Each app has its own policy. Pick **Ask me**, **Record automatically**, or
-**Do nothing** for Zoom, Microsoft Teams, Webex, Slack, FaceTime, Discord,
-and calls in a browser. Everything starts as Ask me. With Record
-automatically, Minute starts the recording the moment it detects the
-meeting and shows a small "Recording Teams" pill with a Stop button. The
-recording view says it started automatically and links to the setting. Auto-stop
-still ends the recording when the meeting ends.
+### Detects your meetings
 
-![Minute — Settings → Recording, with a policy for each meeting app](screenshots/automatic.png)
+Turn on **Detect meetings**. When a call starts in Zoom, Teams, Slack, FaceTime,
+Webex, Discord, or a browser, a small pill offers to record it. Minute stops
+when the call ends.
 
-This is the honest version of what that pill is doing: it checks whether
-the default microphone is in use and which apps are currently running —
-both things any app on the system can already see, neither one requiring
-a permission dialog. It never opens the microphone itself and never
-listens to audio to decide whether to show up. Turn the toggle off and
-the detector thread stops existing, not just stops firing.
+<p align="center"><img src="screenshots/detection.webp" alt="Two pills: one offers to record a Zoom meeting, one shows a Teams recording that started automatically" width="760"></p>
 
-The same watcher works in reverse while you record: when the meeting app
-quits — or keeps running but stops using the microphone, which is how
-Teams and Slack calls end — Minute treats the meeting as over and offers
-to stop, as described under auto-stop below. Same honest mechanism:
-process state, never audio.
+Detection is off by default, and it does not open the microphone.
 
-![Minute — the meeting-detected pill, one click from recording](screenshots/popup.png)
+<details>
+<summary>Detection rules and automatic stop</summary>
 
-## Recording, transcribed as it happens
+<br>
 
-Before recording, Minute shows exactly what it will capture: the microphone
-you pick, a live input meter, system-audio availability, and a transcription
-mode with an honest fit label for this Mac. The recording view names the
-sources for the whole meeting, so there is never any ambiguity about where
-the input is coming from.
+Turn on **Detect meetings** in **Settings → Recording**. When a meeting app
+starts to use the microphone, the pill appears above your work. Click
+**Record**, or click **Dismiss**. The pill closes after 12 seconds if you do nothing.
 
-![Minute — recording preflight with microphone, input level, system audio, and model fit](screenshots/preflight.png)
+Each app has its own rule: **Ask me**, **Record automatically**, or **Do nothing**.
+The list covers Zoom, Microsoft Teams, Webex, Slack, FaceTime, Discord, and calls
+in Safari, Chrome, Arc, Edge, or Firefox. A Google Meet call counts as a browser call.
 
-Once recording starts, Whisper transcribes in real time and scrolls live as
-the meeting runs. Rename the working title, pause and resume with Space,
-add timestamped markers with `⌘⇧M`, or stop with `⌘↵`. Minute calls out prolonged
-silence, clipping, a disconnected input, or transcription lag without hiding
-the audio capture that is still safe.
+<p align="center"><img src="screenshots/detection-settings.webp" alt="Settings, Recording: a rule for each meeting app, system audio, and stop when the meeting ends" width="680"></p>
 
-Turn on **Capture system audio** in Settings and a recording captures both
-sides of the call — your microphone and what your Mac is playing — so the
-other participants land in the transcript too, not just you. It needs
-macOS 13 or later and Screen Recording permission (the one system prompt
-this whole feature ever triggers); say no, or run an older macOS, and
-recording still works exactly as before, mic-only. And speakers are fine:
-when system audio is part of the mix, the microphone runs through macOS's
-own voice processing — the same echo canceller FaceTime uses — so what
-your Mac plays doesn't land in the recording a second time as speaker
-bleed through the mic.
+To detect a meeting, Minute checks which apps are running and whether they use
+the microphone. It does not open the microphone and it does not listen.
 
-Started mic-only by mistake? Sources are fixed once a recording starts —
-that's a hard constraint of the capture pipeline — but the sources line
-under the title offers **Add system audio**: it saves the recording so far as
-its own note and immediately starts a new one with system audio on,
-behind a confirm step that says the meeting ends up as two notes.
+Minute stops a recording as follows:
 
-Forget to hit stop and Minute notices. When nothing transcribable has
-been said — and nothing has been audible — for 2 minutes, it warns with
-a 2-minute countdown, then stops and transcribes on its own, exactly as
-if you'd clicked Stop. It reacts faster when the meeting is clearly
-over: a closing phrase like "thanks everyone" arms the warning after 1
-quiet minute, and the meeting app quitting — or, on macOS 14.2 and
-later, the app going quiet on the microphone while it stays open, the
-Teams and Slack case — arms it after a few quiet seconds. The recording
-view shows the quiet timer counting ("Quiet for 1:24"), new speech or
-one click on "Keep recording" cancels the countdown, and a Settings
-toggle turns the whole behavior off. While any recording runs, the Dock
-icon wears a REC badge so a forgotten one stays visible. Relatedly,
-Whisper's habit of transcribing dead air as stray punctuation is
-filtered as it happens, so quiet stretches don't fill transcripts with
-"." lines — and its habit of turning notification chimes into stray
-words doesn't fool the quiet timer either.
+- After 2 quiet minutes, Minute shows a 2-minute countdown, then stops and transcribes.
+- A closing phrase such as "thanks everyone" shortens the wait to 1 minute.
+- When the meeting app quits, the countdown starts after a few seconds.
+- New speech or **Keep recording** cancels the countdown.
 
-![Minute — a live recording with source, health, transcript, and marker details](screenshots/recording.png)
+</details>
 
-## Who said what
+### Transcribes while you talk
 
-Turn on **Detect speakers** (Settings → Speakers) and every recording's
-turns get labeled by voice — Speaker 1, Speaker 2, and so on — ready for
-the rename and merge tools below. Detection runs entirely on-device
-through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): pyannote
-segmentation finds the speech turns, 3D-Speaker CAM++ voice embeddings
-tell the voices apart, two small models (~34 MB total) downloaded once
-when you enable it. It runs after transcription and before the summary,
-so summaries refer to real speakers.
+The transcript appears as people speak. Turn on **Capture system audio** to
+record the other people on the call.
 
-It works on existing notes too — a "Detect speakers" button in the
-transcript toolbar runs the same pass on any note that still has its
-audio. (You can also find it in the note's "…" menu.) Automatic speaker counting is strongest on clear call audio; when
-it gets the count wrong, re-run it with the exact number of speakers and
-it's very accurate. Names you've confirmed stick: a speaker you renamed
-keeps that name across re-runs. A turn the detector heard no voice in is
-labeled "Unknown speaker" instead of being handed to the nearest speaker.
-You can also choose **Mark these turns as unknown** in a speaker's popover
-when a label is wrong and no other name fits. Undo is one click.
+![A live recording: the transcript by speaker, a marker, and the audio health status](screenshots/recording.webp)
 
-Renaming a speaker renames them in the summary, decisions, and action
-items too, and renaming them back restores the notes exactly. The same
-holds for merging two speakers or marking one unknown. Minute changes only
-the places where the summary used that speaker's name, never other text.
+<details>
+<summary>Recording details</summary>
 
-Minute can also remember the people you meet with. Turn on **Remember
-named speakers** (Settings → Speakers) and renaming a speaker saves that
-voice locally. The next recording that contains a clearly matching voice
-gets the real name written straight into the transcript — before the
-summary runs, so summaries say "Sarah", not "Speaker 2" — with an
-"auto-renamed — Undo" notice on the note. Your own corrections always
-win over later re-runs, and one name is never applied to two speakers.
-Borderline matches stay a suggestion chip — "Speaker 2 sounds like
-Sarah" — you confirm with one click or dismiss, and a nested Settings
-toggle turns automatic insertion off if you'd rather confirm everything.
-Confirmations sharpen the profile over time. Voice profiles are opt-in,
-stored in your library folder, listed in Settings with a delete button
-each, and — like everything else — never leave your Mac.
+<br>
 
-## A summary you can act on
+- Before you record, Minute shows the microphone, a live input level, and the transcription model.
+- **Capture system audio** needs macOS 13 or later and the Screen Recording permission. Without it, Minute records your microphone only.
+- Minute warns you about long silence, clipping, a disconnected microphone, or slow transcription.
+- Press `Space` to pause, `⌘⇧M` to add a marker, and `⌘↵` to stop.
 
-Once a note is transcribed, a local LLM turns it into a short summary,
-a list of decisions, and action items you can check off without leaving the
-note. A note is one page. The summary, decisions, and action items sit above
-the transcript, with speaker chips under the title and a player bar along
-the bottom. Every generated field comes from the local
-transcript and can be regenerated without uploading the meeting.
+</details>
 
-Summaries are yours to shape: pick a length (short / standard / detailed),
-add standing custom instructions ("write it in German", "focus on
-engineering decisions"), and let the context window size itself to this
-Mac's memory, or pin it yourself. All of it lives in Settings → Summaries,
-and all of it applies to the next summary you generate. Each summary names
-the length it was made at, as in "Detailed · made on this Mac". Summaries
-from before this label existed show only "Made on this Mac". **Detailed** adds a section-by-section
-breakdown of every topic discussed, on top of the usual decisions and
-follow-ups.
+### Writes the summary, decisions, and action items
 
-A note you never named takes its title from the meeting itself once the
-summary lands — no more libraries of "New recording". Asking for a
-second summary while one is already running queues it instead of turning
-you away; it starts on its own when the engine frees up, honoring
-whatever style you've picked by then, not a stale snapshot. A live
-recording holds the queue, so a summary asked for during a meeting waits
-for it to end. The note then shows a card with how long the summary has
-waited and why, plus **Cancel** and **Summarize now**. Summarize now starts
-it without waiting for the recording. If another summary is running, the
-queued one goes first in line instead.
+When the recording stops, the language model reads the transcript and writes a
+summary, the decisions, and the action items. They sit above the transcript on
+one page, and you can check off action items there.
 
-A running or queued summary can be cancelled with one click, generations
-stop themselves rather than run forever, and when a meeting is too long
-for the model's context window, the summary says it covers only part of
-the recording instead of silently coming out thin. When the model runs
-out of room mid-answer, Minute keeps the items it finished and says the
-last ones are missing, rather than throwing the summary away. A larger
-context window in Settings → Summaries gives it more room.
+<details>
+<summary>Summary options</summary>
 
-## Save summaries to Obsidian
+<br>
 
-Turn on Obsidian in Settings, pick your vault folder, and Minute writes a
-Markdown file into it each time a summary finishes, including a regenerated one.
-You find it in Settings → Integrations. The vault must be an existing folder. The default folder is `Meetings` and the default file name is
-`{date} - {title}`. The file name template accepts `{date}` and `{title}`.
-Minute removes characters that are not safe in a file name.
+- Choose **Short**, **Standard**, or **Detailed** in **Settings → Summaries**.
+- Add your own instructions, such as "write it in German".
+- Click **Regenerate** to write the summary again with the current settings.
+- If the meeting is too long for the model, the summary says that it covers only part of the recording.
 
-- **Properties.** The file starts with YAML frontmatter: `date`, `title`,
-  `duration` (minutes) and `speakers`. Unknown turns are not listed as
-  speakers. You can turn this off.
-- **Transcript.** Off by default. Turn it on to add the full transcript.
-- **One file per note.** Minute remembers the path it saved. A later save
-  writes to the same file, even after you rename the note. A file that was
-  not written by Minute is never overwritten. Minute adds a number to the
-  name instead.
-- **Edits in Obsidian.** If you edit the file, Minute leaves it alone when a
-  summary finishes and the note's toolbar says "Not saved to Obsidian".
-  Hover it to read why. "Save to Obsidian again" in the note's "…" menu
-  replaces your edits. If you delete the file, the next save creates it again.
-- **Errors.** A missing vault or a folder that cannot be written never stops
-  the summary. The toolbar shows the same "Not saved to Obsidian" status,
-  and a successful save shows "Saved to Obsidian".
+</details>
 
-![Minute — Settings → Integrations, with the Obsidian vault, folder, and file name](screenshots/obsidian.png)
+### Answers questions about the meeting
 
-## Ask your notes, with receipts
+Click **Ask** and type a question. Minute answers from this meeting's transcript
+only. Click a time in the answer to play that moment.
 
-Ask a plain-language question about a meeting — "what did we decide about
-the launch date?" — and Minute answers from the transcript, with inline
-`[mm:ss]` citations you can click to jump straight to that moment in the
-recording. It's a conversation with your own notes, not a chatbot guessing
-from a summary.
+![The Ask panel answers two questions about the meeting, with clickable times](screenshots/ask.webp)
 
-![Minute — ask-your-notes answering with clickable timestamp citations](screenshots/ask.png)
+### Knows who spoke
 
-## Find anything, instantly
+Turn on **Detect speakers** and Minute labels each turn by voice. Click a speaker
+to rename it, and the new name replaces the old one everywhere in the note.
 
-⌘K (or ⌘F) opens a palette that searches titles and full transcript text
-across your whole library. A transcript hit opens the note and plays from
-the moment someone said the thing you're looking for. The Search field at
-the top of the sidebar opens the same palette. `⌘/` opens the list of keyboard
-shortcuts under Settings → About.
+<p align="center"><img src="screenshots/speakers.webp" alt="Renaming Speaker 3, with a suggestion that the voice sounds like a person named before" width="720"></p>
 
-For larger libraries, the button beside Search opens one menu. It sorts by
-newest, oldest, longest, or title, and shows all notes, pinned, summarized,
-needing a summary, or recording. It also filters by source (microphone or
-system audio) and by date (past 24 hours or last 7 days), and it starts
-select mode for bulk export and recoverable deletion. Right-click a note
-for rename, pin, reveal, export, and delete. The sidebar groups notes by
-day. Per-note storage size shows in the note's "…" menu, which also offers
-**Delete audio only**, so audio retention is visible instead of mysterious. Recordings don't have to
-stay heavyweight either: an optional storage setting converts audio older
-than 7, 14, or 30 days from WAV to compact AAC — still playable, still
-seekable from the transcript, at a fraction of the disk space.
+<details>
+<summary>Speaker detection, voice profiles, and unknown speakers</summary>
 
-![Minute — the ⌘K search palette showing title and transcript hits](screenshots/search.png)
+<br>
 
-## Clean up without losing work
+Turn on **Detect speakers** in **Settings → Speakers**. Two small models
+(34 MB together) label the turns on your Mac. A new name replaces the old one in
+the transcript, the summary, the decisions, and the action items.
 
-Rename speakers, filter the transcript by speaker, merge duplicate speaker
-identities, or mark a speaker's turns unknown, each with an exact undo path.
-This is the manual half of the speaker story, for when detection gets a
-label wrong or you'd rather see "Sam" than "Speaker 2". Markers remain editable after recording, deleted notes move
-into local recovery, and destructive cleanup always offers Undo.
+Turn on **Remember named speakers** and Minute saves a voice profile when you
+name someone. In later meetings, a clear match gets the name automatically, and
+a weaker match becomes a suggestion that you confirm or dismiss. Voice profiles
+stay in your library folder. You can delete each one in Settings.
 
-## Light and dark, in blue and white
+Minute does not guess. A turn with no clear voice is labeled **Unknown speaker**.
+You can also mark a speaker's turns as unknown, then assign them to the right
+person later. Every one of these changes has **Undo**.
 
-Minute uses one cool white-and-blue design set in Inter. It follows macOS's
-appearance setting. The dark theme isn't an inverted light theme. It has
-its own deep navy surfaces and the same blue accent.
+<p align="center"><img src="screenshots/speakers-unknown.webp" alt="Turns marked as Unknown speaker, with a menu to assign them to a person and an Undo button" width="720"></p>
 
-![Minute — note view in dark mode](screenshots/dark.png)
+</details>
 
-## Models sized to your Mac
+### Finds anything you said
 
-Whisper (small / medium / large-v3-turbo) for transcription and a choice of
-local LLMs (Qwen3.5-4B, Qwen3.5-9B, Gemma 4 E4B, and LFM2-2.6B-Transcript —
-a 1.6 GB model fine-tuned specifically for meeting notes) for summarization
-— pick what fits your hardware and disk budget, or let Minute suggest a pair based
-on the detected architecture, memory, and CPU cores. Every choice is labeled
-**Recommended**, **Good fit**, **Near memory limit**, **Below minimum**, or
-**Not supported** without pretending to have benchmarked hardware it has not.
-The two small speaker-detection models ride along the same catalog,
-fetched only when you enable that feature. Everything downloads once, runs
-entirely offline after that, and can be removed just as easily.
+Press `⌘K` to search titles and the full text of every transcript. Open a
+transcript result and Minute plays the recording from that sentence.
 
-![Minute — the model manager, showing installed and available models](screenshots/models.png)
+![The search palette shows one note title and four transcript matches for "pricing"](screenshots/search.webp)
 
-## How it works
+The filter menu beside the search field sorts the library and filters it by
+status, source, or date.
 
-Minute is a [Tauri 2](https://tauri.app) app: a React 19 + TypeScript
-frontend around a Rust backend that runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
-[llama.cpp](https://github.com/ggml-org/llama.cpp), and
-[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (speaker detection)
-in-process, with Metal acceleration on Apple Silicon — no sidecar process,
-no local server, no localhost port. The frontend talks to the backend over
-Tauri's IPC; the backend talks to the inference engines as linked
-libraries.
+### Saves to Obsidian and Markdown
 
-Each note is a plain folder on disk, human-readable and yours regardless of
-whether Minute is still installed:
+Choose your Obsidian vault folder, and Minute writes one Markdown file each time
+a summary finishes. Without Obsidian, export a note or copy it as Markdown.
 
-```
-~/Library/Application Support/dev.minute.app/notes/<note-id>/
-├── audio.wav         # the recording (becomes audio.m4a if age-based compression
-│                     # is on; deleted after 30 days if that setting is on)
-├── transcript.json   # timestamped, speaker-labeled segments
-├── summary.json      # summary, decisions, action items
-├── meta.json         # title, timestamps, status, markers, speaker names
-├── speakers.json     # per-note voice embeddings (only when speakers were detected)
-└── note.md           # everything above, rendered as one Markdown file
-```
+<p align="center"><img src="screenshots/obsidian.webp" alt="Settings, Integrations: the Obsidian vault, folder, file name template, and properties" width="680"></p>
 
-Models live alongside them, in a shared `models/` directory, downloaded once
-and reused across every note. `hardware_info` reads your Mac's RAM and chip
-to recommend a Whisper + LLM pair that fits comfortably — nothing is forced,
-every model in the catalog stays choosable, download size and RAM
-requirements shown up front.
+<details>
+<summary>Obsidian and export details</summary>
+
+<br>
+
+- Turn on Obsidian in **Settings → Integrations** and choose your vault folder.
+- The file name template accepts `{date}` and `{title}`.
+- **Add properties** writes `date`, `title`, `duration`, and `speakers` as YAML frontmatter.
+- Minute does not overwrite your edits. If you change the file in Obsidian, the note shows "Not saved to Obsidian" until you choose **Save to Obsidian again**.
+- Without Obsidian, use **Export** to save a note as Markdown, or **Copy as Markdown** in the note's **…** menu.
+
+</details>
+
+### Follows light and dark mode
+
+Minute follows the macOS appearance setting.
+
+![The same note in dark mode](screenshots/dark.webp)
+
+## Models
+
+Minute uses Whisper for transcription, a language model for summaries and Ask,
+and two small models for speaker detection. You download each model once. After
+that, it runs offline.
+
+<p align="center"><img src="screenshots/models.webp" alt="Settings, Models: installed models, models tested by Minute, and newer models from Hugging Face" width="680"></p>
+
+Minute reads the chip, memory, and CPU cores of your Mac and tells you which
+models fit. You can remove a model at any time in **Settings → Models**.
+
+<details>
+<summary>Tested models</summary>
+
+<br>
+
+These models are in [`src-tauri/catalog.json`](src-tauri/catalog.json). Each one
+has a pinned SHA-256 hash.
+
+| Transcription | Size | Memory | Notes |
+| --- | --- | --- | --- |
+| Whisper small | 488 MB | Any | Fast, 99 languages |
+| Whisper small, English | 488 MB | Any | Fast, English only |
+| Whisper medium, compact | 539 MB | 8 GB | Balanced, 99 languages |
+| Whisper medium | 1.5 GB | 16 GB | Balanced, 99 languages |
+| Whisper large-v3-turbo, compact | 574 MB | 8 GB | Most accurate, Apple silicon only |
+| Whisper large-v3-turbo | 1.6 GB | 16 GB | Most accurate, Apple silicon only |
+| Whisper large-v3, compact | 1.1 GB | 16 GB | Most accurate, slower, Apple silicon only |
+
+| Summaries and Ask | Size | Memory | Notes |
+| --- | --- | --- | --- |
+| LFM2-2.6B-Transcript | 1.6 GB | 8 GB | Smallest, tuned for meeting notes |
+| Ministral 3 3B | 2.1 GB | 8 GB | Fast, gets owners right |
+| Qwen3.5-4B | 2.7 GB | 8 GB | Fast, good default |
+| Gemma 4 E4B | 5.3 GB | 16 GB | Balanced, clear and careful writing |
+| Granite 4.2 8B | 5.3 GB | 16 GB | Balanced, most complete notes |
+| Qwen3.5-9B | 5.7 GB | 16 GB | Most capable, slower |
+| Gemma 4 12B | 7.0 GB | 16 GB | Thorough, best in our tests |
+
+Minute labels each model **Recommended**, **Good fit**, **Near memory limit**,
+**Below minimum**, or **Not supported**.
+
+</details>
+
+<details>
+<summary>Newer models from Hugging Face</summary>
+
+<br>
+
+The Models page also lists models that are newer than the tested list.
+
+- **Newer on Hugging Face** shows trending GGUF models from trusted publishers only. The trusted publishers are `ggml-org`, `ggerganov`, `unsloth`, `bartowski`, `lmstudio-community`, `Qwen`, `google`, `LiquidAI`, `ibm-granite`, `mistralai`, `microsoft`, `HuggingFaceTB`, `meta-llama`, `nvidia`, and `allenai`.
+- Minute lists a model only if the app can run it. The model must be public, must have a chat template, and must use an architecture that passed the app's summary tests: Qwen 3.5, Gemma 4, LFM2, Granite, or Mistral 3.
+- **Search** finds models from any publisher. A model from another publisher is labeled **Unknown publisher**, and Minute asks you to confirm before it downloads.
+- Minute checks every download against the SHA-256 hash that Hugging Face lists for the file.
+- Minute keeps the list for 24 hours. If you are offline, the page shows the last list.
+
+</details>
 
 ## Privacy
 
-**Nothing leaves this machine.** Concretely, not as a slogan:
+Recording, transcription, speaker detection, summaries, Ask, and search do not
+use the network.
 
-- Minute's [CSP](src-tauri/tauri.conf.json) allows no external network
-  origin at all: every directive resolves to the app's own bundle, inline
-  styles, `data:` images, or the local Tauri asset protocol that serves
-  your own note audio back to the player. No remote host appears anywhere
-  in the policy.
-- Fonts (Inter) ship bundled in the app, not fetched from Google
-  Fonts or any other CDN.
-- Transcription and summarization run as linked libraries in the same
-  process as the app itself — there is no local server, no localhost port,
-  nothing to inspect in a network tab, because there's no network activity
-  to inspect.
-- Turn off Wi-Fi before a meeting. Record, transcribe, summarize, ask
-  questions about it. Nothing about that flow behaves any differently
-  offline, because it's never anything but offline.
-- The two deliberate exceptions, both your choice: model downloads (only
-  when you pick one) and the automatic update check (on by default, one
-  HTTPS request to GitHub for release metadata — never anything about you
-  or your notes — with a Settings toggle that turns it off entirely).
-- A privacy-safe diagnostics export records app, model, source, storage, and
-  recovery state without including the recording or transcript.
+Minute connects to the internet in three cases only: to download a model, to
+list models, and to check for an update. None of these requests contains audio,
+transcripts, summaries, or note titles.
 
-## Requirements
+<details>
+<summary>Every network request</summary>
 
-- macOS 11 or later; macOS 13 or later for system-audio capture.
-- Apple Silicon is the tested and recommended target. A separate Intel build
-  is produced and architecture-verified, but launch and transcription on
-  physical Intel hardware remain a release-validation item.
-- Model availability depends on architecture and memory. Minute shows the
-  compatibility result before download.
-- About 3 GB of free disk space for the default Whisper small + Qwen3.5-4B
-  pair, plus space for retained recordings.
+<br>
+
+| When | Where | What Minute sends |
+| --- | --- | --- |
+| You download a model | `huggingface.co` | A request for the model file |
+| You open **Settings → Models**, click **Refresh**, or search there | `huggingface.co` | A request for the model list, plus your search text if you search |
+| Minute checks for an update, at launch and every 6 hours | `github.com` | A request for the release file `latest.json` |
+
+To stop the update check, turn it off in **Settings → About**.
+
+More facts you can check in the code:
+
+- The app's [content security policy](src-tauri/tauri.conf.json) allows no remote origin. The interface cannot load a script, font, or image from the internet.
+- Whisper, llama.cpp, and sherpa-onnx run inside the app process. Minute starts no local server and opens no port.
+- The Inter font ships inside the app.
+- Minute has no account and no analytics.
+
+</details>
+
+<details>
+<summary>Note files and audio retention</summary>
+
+<br>
+
+Your notes are plain files:
+
+```
+~/Library/Application Support/dev.minute.app/notes/<note-id>/
+├── audio.wav         the recording
+├── transcript.json   timestamped segments with speaker labels
+├── summary.json      summary, decisions, action items
+├── meta.json         title, times, status, markers, speaker names
+├── speakers.json     voice data for this note, if speakers were detected
+└── note.md           the whole note as Markdown
+```
+
+By default, Minute deletes a note's audio 30 days after transcription and keeps
+the transcript and the summary. You can turn this off in **Settings → Storage**.
+The same page can convert older audio from WAV to AAC to save space.
+
+</details>
 
 ## Install
 
-Grab the architecture-appropriate ZIP above, unzip it, and drag `Minute.app`
-into Applications. On first launch, macOS asks for microphone access when you
-start your first recording. System-audio capture additionally asks for Screen
-Recording access on macOS 13 or later.
+![platform](https://img.shields.io/badge/platform-macOS%2011%2B-172033)
+![version](https://img.shields.io/badge/version-1.12.1-1769f6)
+![license](https://img.shields.io/badge/license-MIT-1769f6)
 
-That's the last install you do by hand: Minute checks for new releases and
-offers a one-click **Update & restart** in Settings. Updates are
-cryptographically signed and verified against a key baked into the app —
-nothing installs without your click.
+1. Download the ZIP for your Mac: [Apple silicon](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-arm64.zip) or [Intel](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-x86_64.zip).
+2. Unzip the file and move `Minute.app` to the Applications folder.
+3. Open Minute and download the recommended models.
+4. Start a recording. macOS asks for microphone access the first time.
 
-You can also build Minute from source:
+Minute needs macOS 11 or later. Apple silicon is the tested target.
+
+<details>
+<summary>Requirements</summary>
+
+<br>
+
+- macOS 11 or later.
+- macOS 13 or later to capture system audio.
+- macOS 14.2 or later for Minute to detect that a call ended while the meeting app stays open.
+- Apple silicon is the tested target. The Intel build is not yet tested on physical Intel hardware, and the large Whisper models need Apple silicon.
+- 8 GB of memory for the smaller models. 16 GB for the larger models.
+- About 3.2 GB of free disk space for Whisper small and Qwen3.5-4B, plus space for recordings.
+
+</details>
+
+<details>
+<summary>Updates</summary>
+
+<br>
+
+Minute checks for new versions and shows an update button in **Settings → About**.
+An update installs only when you click the button. Each update is signed, and
+the app verifies the signature before it installs.
+
+</details>
+
+<details>
+<summary>Keyboard shortcuts</summary>
+
+<br>
+
+| Action | Keys |
+| --- | --- |
+| Search notes and transcripts | `⌘K` or `⌘F` |
+| Show the shortcut list | `⌘/` |
+| Pause or resume a recording | `Space` |
+| Add a marker while recording | `⌘⇧M` |
+| Stop and transcribe | `⌘↵` |
+| Go to the previous or next transcript turn | `↑` `↓` |
+| Close a sheet | `Esc` |
+
+</details>
+
+## Contributing
+
+Issues and pull requests are welcome. For a large change, open an
+[issue](https://github.com/mraza007/minute/issues) first.
+
+<details>
+<summary>Build from source</summary>
+
+<br>
+
+Minute is a [Tauri 2](https://tauri.app) app with a React and TypeScript
+interface and a Rust backend. You need Node 22, Rust 1.77.2 or later, and the
+Xcode command line tools.
 
 ```bash
 git clone https://github.com/mraza007/minute.git
 cd minute
 npm ci
-npm run tauri build
+npm run tauri:dev:sandbox
 ```
 
-## Development
+Use `npm run tauri:dev:sandbox` for development. It runs the app under a
+separate identifier, so the app gets an empty library and its own settings.
+`npm run tauri dev` opens your real library, and a bug in your change can
+damage real recordings.
 
-```bash
-npm install
-npm run tauri dev   # run the app with hot reload, on your real library
-npm run tauri:dev:sandbox   # same, with a separate empty library and settings
-npm test            # frontend tests (vitest)
-npm run test:rust   # Rust backend tests (cargo test)
-npm run lint        # oxlint
-npm run verify      # lint + frontend + build + Rust + release metadata
-npm run test:soak   # multi-hour logical recording soak
-npm run test:scale  # large synthetic library performance
-npm run test:visual # screenshot regression suite
-```
+| Command | What it does |
+| --- | --- |
+| `npm run tauri:dev:sandbox` | Runs the app with hot reload and a separate, empty library |
+| `npm run tauri build` | Builds the app for release |
+| `npm test` | Runs the frontend tests |
+| `npm run test:rust` | Runs the Rust tests |
+| `npm run lint` | Runs oxlint |
+| `npm run test:visual` | Runs the screenshot regression tests |
+| `npm run verify` | Runs lint, tests, the build, and the release checks |
 
-## Roadmap
+</details>
 
-Honestly, in rough priority order:
+<details>
+<summary>Pull request checklist</summary>
 
-- **Real-device release matrix** — removable-microphone disconnect/reconnect,
-  physical sleep/wake, constrained-volume failure, and overnight finalization.
-- **Cross-note ask** — ask-your-notes currently answers from one note's
-  transcript at a time; asking across your whole library is the natural
-  next step.
-- **More models** — the catalog grows as good on-device options do; nothing
-  about the architecture is tied to the current lineup.
-- **Calendar-aware nudges** — meeting detection currently reacts to the mic
-  going hot in a known app; reading your calendar to know a meeting's name
-  and attendees ahead of time is scoped but parked for a later release.
-- **Per-app audio taps** — system audio currently captures the whole
-  machine's output; Apple's newer CATap API would let capture target a
-  single app's audio instead, once it's broadly available to build against.
+<br>
+
+1. Develop against the sandbox library.
+2. Run `npm run verify` before you open the pull request.
+3. If you change the interface, run `npm run test:visual` and include the updated baselines.
+
+</details>
 
 ## License
 
-[MIT](LICENSE). The bundled `llama-cpp-2` sources in `src-tauri/vendor/` retain their upstream MIT/Apache-2.0 licensing; model weights downloaded in-app carry their own licenses (Whisper: MIT; Qwen: Apache-2.0; Gemma: Gemma Terms of Use; pyannote segmentation-3.0: MIT; 3D-Speaker CAM++: Apache-2.0).
+[MIT](LICENSE). The bundled `llama-cpp-2` sources in `src-tauri/vendor/` keep
+their upstream MIT and Apache-2.0 licenses. Each model you download has its own
+license.
+
+<p align="center"><a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute on Product Hunt" width="200" height="43" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a></p>
