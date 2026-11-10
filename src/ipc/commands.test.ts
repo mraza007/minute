@@ -336,6 +336,7 @@ describe('ipc/commands', () => {
       modelId: 'whisper-small',
       includeSystemAudio: true,
       inputDeviceId: 'studio',
+      origin: { kind: 'manual' },
     })
     expect(result).toBe('20260722-130000')
   })

@@ -17,6 +17,7 @@ function event(overrides: Partial<RecordingStateEvent> = {}): RecordingStateEven
     inputSequence: 1,
     inputError: null,
     quietSecs: 0,
+    origin: { kind: 'manual' },
     ...overrides,
   }
 }

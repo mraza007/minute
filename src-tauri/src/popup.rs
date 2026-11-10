@@ -69,6 +69,7 @@
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::audio::RecordingOrigin;
 use crate::detect::{self, PromptOutcome, SharedDetectorHandle};
 
 /// Window/panel label — also the frontend's own `meeting-popup-payload`
@@ -76,17 +77,15 @@ use crate::detect::{self, PromptOutcome, SharedDetectorHandle};
 pub const PANEL_LABEL: &str = "meeting-popup";
 
 /// Logical pixel size of the pill window. The window holds the pill's full
-/// CSS footprint: `Pill.tsx` draws a 470×72 pill inside an 8px `margin` on
-/// every side (breathing room for its border and shadow), so the panel is
-/// 470+16 × 72+16. The original 470×72 window ignored that margin and cut
-/// the pill's right and bottom edges flat — border, shadow, and the whole
-/// countdown bar (issue #23's "clickable area is off"). Keep these in
-/// lockstep with `Pill.tsx`'s `width`/`height`/`margin`;
+/// CSS footprint: `.popup-pill` is a 52px-high capsule, at most 470px wide,
+/// inside an 8px `margin` on every side (breathing room for its shadow), so
+/// the panel is 470+16 × 52+16. A window smaller than that cuts the pill's
+/// edges flat (issue #23's "clickable area is off"). Keep these in lockstep
+/// with `.popup-pill`'s `max-width`/`height`/`margin` in `src/index.css`;
 /// `src/popup/panelGeometry.test.ts` fails the frontend suite when the two
-/// sides drift. (The pill width itself was widened from the plan's original
-/// 380 to 470 so the longest real subtitle copy no longer ellipsizes.)
+/// sides drift. The capsule hugs its text, so it sits centred in the window.
 const PANEL_WIDTH: f64 = 486.0;
-const PANEL_HEIGHT: f64 = 88.0;
+const PANEL_HEIGHT: f64 = 68.0;
 
 /// Logical-pixel gap between the top of the target display's work area
 /// (i.e. below the menu bar, not the raw screen edge) and the panel's top
@@ -94,10 +93,23 @@ const PANEL_HEIGHT: f64 = 88.0;
 /// inside the window.
 const TOP_MARGIN: f64 = 16.0;
 
+/// What the pill shows. `Ask` is "<app> meeting started / Minute is not
+/// recording" with Dismiss and Record. `Started` is "Recording <app> /
+/// Started automatically" with Stop. Serialized as
+/// `{ "kind": "ask" | "started", "appName": "..." }`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum MeetingPopupPayload {
+    Ask { app_name: String },
+    Started { app_name: String },
+}
+
+/// What `meeting-popup-start` tells the main window: start a recording, and
+/// why. The pill's Record button sends `Manual`; an automatic start sends
+/// `Automatic` with the app's name.
 #[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MeetingPopupPayload {
-    app_name: String,
+struct MeetingStartPayload {
+    origin: RecordingOrigin,
 }
 
 /// Queues a main-thread task that shows (creating once, then reusing for the
@@ -105,13 +117,57 @@ struct MeetingPopupPayload {
 /// positioned top-center of whichever display currently has the mouse
 /// cursor. Called by `detect::run_detector_thread` on every
 /// `Action::ShowPrompt` — see that function's docs.
-#[cfg(target_os = "macos")]
 pub fn show_meeting_prompt(app: &AppHandle, app_name: &str) {
-    macos::show_meeting_prompt(app, app_name)
+    show(
+        app,
+        MeetingPopupPayload::Ask {
+            app_name: app_name.to_string(),
+        },
+    )
+}
+
+/// Shows the "Recording <app>" pill once an automatic recording has really
+/// started (`audio::start_recording` calls this after it commits).
+pub fn show_auto_started(app: &AppHandle, app_name: &str) {
+    show(
+        app,
+        MeetingPopupPayload::Started {
+            app_name: app_name.to_string(),
+        },
+    )
+}
+
+/// Hides the pill when an automatic recording stops, however it stopped.
+pub(crate) fn hide_auto_started(app: &AppHandle) {
+    hide(app)
+}
+
+/// Starts a recording for `app_name` with no click, through the same
+/// `meeting-popup-start` event the pill's Record button ends up emitting, so
+/// the frontend's one `startRec` path (model check, navigation, state
+/// reset) runs. Unlike `popup_start` it leaves the main window where it is:
+/// the point is that nothing interrupts the user.
+pub fn start_automatically(app: &AppHandle, app_name: &str) {
+    let origin = RecordingOrigin::Automatic {
+        app_name: app_name.to_string(),
+    };
+    if let Err(e) = emit_start(app, origin) {
+        log::warn!("automatic start for {app_name} failed: {e}");
+    }
+}
+
+fn emit_start(app: &AppHandle, origin: RecordingOrigin) -> Result<(), String> {
+    app.emit("meeting-popup-start", MeetingStartPayload { origin })
+        .map_err(|e| format!("failed to emit meeting-popup-start: {e}"))
+}
+
+#[cfg(target_os = "macos")]
+fn show(app: &AppHandle, payload: MeetingPopupPayload) {
+    macos::show(app, payload)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn show_meeting_prompt(_app: &AppHandle, _app_name: &str) {
+fn show(_app: &AppHandle, _payload: MeetingPopupPayload) {
     // Meeting detection (and therefore its popup) is macOS-only — see
     // detect.rs's module docs. `run_detector_thread` itself never runs on
     // other platforms (its `MicMonitor::start` stub always errors out
@@ -190,8 +246,23 @@ pub fn popup_start(app: AppHandle, detector: State<SharedDetectorHandle>) -> Res
         }
     }
 
-    app.emit("meeting-popup-start", ())
-        .map_err(|e| format!("failed to emit meeting-popup-start: {e}"))
+    emit_start(&app, RecordingOrigin::Manual)
+}
+
+/// The "Recording <app>" pill's Stop button. Hides the pill and stops the
+/// active recording on its own thread: `stop_active_recording` joins the
+/// transcription worker and can take a while, and a sync command runs on
+/// the main thread. The main window learns of the stop from the final
+/// `recording-state` event, the same way it does for an auto-stop.
+#[tauri::command]
+pub fn popup_stop(app: AppHandle) -> Result<(), String> {
+    hide(&app);
+    std::thread::spawn(move || {
+        if let Err(e) = crate::stop_active_recording(&app) {
+            log::warn!("popup_stop failed to stop the recording: {e}");
+        }
+    });
+    Ok(())
 }
 
 /// Resolves the currently-shown prompt as dismissed — either the quiet ×
@@ -265,10 +336,10 @@ mod macos {
     #[derive(Default)]
     struct PopupState {
         ready: AtomicBool,
-        pending: Mutex<Option<String>>,
+        pending: Mutex<Option<MeetingPopupPayload>>,
     }
 
-    fn lock_pending(state: &PopupState) -> std::sync::MutexGuard<'_, Option<String>> {
+    fn lock_pending(state: &PopupState) -> std::sync::MutexGuard<'_, Option<MeetingPopupPayload>> {
         state
             .pending
             .lock()
@@ -299,14 +370,13 @@ mod macos {
         }
     }
 
-    pub fn show_meeting_prompt(app: &AppHandle, app_name: &str) {
-        let app_name = app_name.to_string();
+    pub fn show(app: &AppHandle, payload: MeetingPopupPayload) {
         dispatch_to_main_thread(app, "show", move |app| {
-            show_meeting_prompt_on_main_thread(app, &app_name);
+            show_on_main_thread(app, payload);
         });
     }
 
-    fn show_meeting_prompt_on_main_thread(app: &AppHandle, app_name: &str) {
+    fn show_on_main_thread(app: &AppHandle, payload: MeetingPopupPayload) {
         debug_assert_main_thread("show");
         let window = match ensure_window(app) {
             Ok(window) => window,
@@ -320,14 +390,14 @@ mod macos {
 
         let state = app.state::<PopupState>();
         if state.ready.load(Ordering::SeqCst) {
-            deliver_prompt(app, app_name);
+            deliver_prompt(app, payload);
         } else {
             // First-ever popup of this session and its page hasn't finished
             // loading yet — stash the request; `on_page_load` below
             // delivers it (and shows the panel) the moment the page's own
             // `meeting-popup-payload` listener is actually mounted, rather
             // than risking the emit landing before anything is listening.
-            *lock_pending(&state) = Some(app_name.to_string());
+            *lock_pending(&state) = Some(payload);
         }
     }
 
@@ -346,11 +416,8 @@ mod macos {
     /// panel — the "deliver" half of `show_meeting_prompt`, split out so
     /// both the ready-immediately path and `on_page_load`'s deferred path
     /// funnel through the exact same two steps.
-    fn deliver_prompt(app: &AppHandle, app_name: &str) {
+    fn deliver_prompt(app: &AppHandle, payload: MeetingPopupPayload) {
         debug_assert_main_thread("delivery");
-        let payload = MeetingPopupPayload {
-            app_name: app_name.to_string(),
-        };
         if let Err(e) = app.emit_to(PANEL_LABEL, "meeting-popup-payload", payload) {
             log::warn!("meeting popup: failed to emit meeting-popup-payload: {e}");
         }
@@ -450,8 +517,8 @@ mod macos {
         // having its lifetime extended across the whole `if` block, which
         // `state` (a plain local binding) doesn't outlive.
         let pending = lock_pending(&state).take();
-        if let Some(app_name) = pending {
-            deliver_prompt(app, &app_name);
+        if let Some(payload) = pending {
+            deliver_prompt(app, payload);
         }
     }
 

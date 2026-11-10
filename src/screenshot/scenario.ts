@@ -194,13 +194,36 @@ async function waitForSelector<T extends Element>(selector: string): Promise<T |
   return found
 }
 
-async function drivePopup(): Promise<void> {
-  await waitFor(() => document.querySelector('[role="dialog"][aria-label="Meeting detected"]') !== null)
-  // Same event the real detector (detect.rs) fires into the popup webview —
-  // see src/ipc/events.ts's `onMeetingPopupPayload`. "Zoom" mirrors the
-  // allowlisted app named in the detection engine's own bundle-id list.
-  await emit('meeting-popup-payload', { appName: 'Zoom' })
-  await waitFor(() => document.body.textContent?.includes('Zoom is using the microphone') ?? false)
+async function drivePopup(params: URLSearchParams): Promise<void> {
+  await waitFor(() => document.querySelector('[role="dialog"]') !== null)
+  // Same events the backend sends the popup webview: the payload from
+  // popup.rs, and for the auto-started pill the recorder's clock. The app
+  // names mirror the detector's own list.
+  if (params.get('kind') === 'started') {
+    await emit('meeting-popup-payload', { kind: 'started', appName: 'Microsoft Teams' })
+    const tick = {
+      noteId: 'demo-note',
+      state: 'recording',
+      elapsed: 4,
+      systemAudioActive: true,
+      microphoneName: 'MacBook Pro Microphone',
+      inputRms: 0.08,
+      inputPeak: 0.4,
+      inputSequence: 1,
+      inputError: null,
+      quietSecs: 0,
+      origin: { kind: 'automatic', appName: 'Microsoft Teams' },
+    }
+    // The pill subscribes to the recorder clock after its payload renders,
+    // so keep sending the tick until it lands.
+    await waitFor(() => {
+      void emit('recording-state', tick)
+      return document.body.textContent?.includes('Started automatically · 0:04') ?? false
+    })
+  } else {
+    await emit('meeting-popup-payload', { kind: 'ask', appName: 'Zoom' })
+    await waitFor(() => document.body.textContent?.includes('Zoom meeting started') ?? false)
+  }
 }
 
 async function driveSettings(): Promise<void> {
@@ -341,7 +364,7 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
   } else if (state === 'onboarding') {
     await waitFor(() => document.body.textContent?.includes('Start using Minute') ?? false)
   } else if (state === 'popup') {
-    await drivePopup()
+    await drivePopup(params)
   } else if (state === 'empty') {
     await driveEmpty()
   } else {

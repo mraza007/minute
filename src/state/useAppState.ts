@@ -10,6 +10,7 @@ import type {
   Hardware,
   LibraryInfo,
   MicrophonePermission,
+  RecordingOrigin,
   NoteMarker,
   NoteMeta,
   NoteStorageStats,
@@ -57,6 +58,8 @@ function mergeNoteUpdate(current: NoteMeta, updated: NoteMeta): NoteMeta {
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000
+
+const MANUAL_ORIGIN: RecordingOrigin = { kind: 'manual' }
 
 export interface ProcessingFailure {
   stage: 'saving' | 'preparing'
@@ -122,6 +125,8 @@ export function useAppState() {
   // in `startRec`/`stopRec`.
   const [systemAudioActive, setSystemAudioActive] = useState(false)
   const [microphoneName, setMicrophoneName] = useState('Default microphone')
+  // Issue #46: why the current recording started. The backend confirms it on every `recording-state` event.
+  const [recOrigin, setRecOrigin] = useState<RecordingOrigin>(MANUAL_ORIGIN)
   const [recordingTitle, setRecordingTitle] = useState('New recording')
   const [recordingMarkers, setRecordingMarkers] = useState<NoteMarker[]>([])
   const [sttStatus, setSttStatus] = useState<SttStatus>('idle')
@@ -796,6 +801,7 @@ export function useAppState() {
       setPaused(payload.state === 'paused')
       setSystemAudioActive(payload.systemAudioActive)
       setMicrophoneName(payload.microphoneName || 'Default microphone')
+      setRecOrigin(payload.origin ?? MANUAL_ORIGIN)
       setQuietSecs(payload.quietSecs ?? 0)
       const nextHealth = nextCaptureHealth(captureHealthTracker.current, payload)
       captureHealthTracker.current = nextHealth.tracker
@@ -942,7 +948,7 @@ export function useAppState() {
    * backend's settings read. A ref closes the sub-render gap where two
    * rapid clicks could otherwise issue two start commands.
    */
-  const startRec = useCallback(() => {
+  const beginRecording = useCallback((origin: RecordingOrigin) => {
     if (recordingStartInFlight.current) return
     recordingStartInFlight.current = true
     setRecordingStarting(true)
@@ -951,7 +957,7 @@ export function useAppState() {
       device => device.id === selectedPreflightMicrophoneId,
     )
     ipc
-      .startRecording(modelManager.sttModel, includeSystemAudio, selectedPreflightMicrophoneId)
+      .startRecording(modelManager.sttModel, includeSystemAudio, selectedPreflightMicrophoneId, origin)
       .then(noteId => {
         setActiveNoteId(noteId)
         setLiveSegmentsRaw([])
@@ -972,6 +978,7 @@ export function useAppState() {
         // between "we have a note id" and that event arriving.
         setSystemAudioActive(false)
         setMicrophoneName(selectedMicrophone?.name ?? 'Default microphone')
+        setRecOrigin(origin)
         setRecordingTitle('New recording')
         setRecordingMarkers([])
         setRecordingPreflightOpen(false)
@@ -995,6 +1002,8 @@ export function useAppState() {
     sysAudioAvailability,
     tCaptureSystemAudio,
   ])
+
+  const startRec = useCallback(() => beginRecording(MANUAL_ORIGIN), [beginRecording])
 
   /**
    * The meeting-popup's "Start recording" click (`popup::popup_start`'s
@@ -1036,17 +1045,17 @@ export function useAppState() {
    */
   useTauriEvent(
     onMeetingPopupStart,
-    () => {
+    payload => {
       if (activeNoteId !== null || view === 'onboarding') return
       const hasInstalledStt = modelManager.models.some(m => m.kind === 'stt' && m.state === 'installed')
       if (hasInstalledStt) {
-        startRec()
+        beginRecording(payload?.origin ?? MANUAL_ORIGIN)
       } else {
         setView('onboarding')
         reportError('Install a transcription model in onboarding before Minute can start recording.')
       }
     },
-    [activeNoteId, view, modelManager.models, startRec, reportError],
+    [activeNoteId, view, modelManager.models, beginRecording, reportError],
   )
 
   /**
@@ -1786,6 +1795,7 @@ export function useAppState() {
     recordingStarting,
     systemAudioActive,
     microphoneName,
+    recOrigin,
     recordingTitle,
     recordingMarkers,
     captureHealth,

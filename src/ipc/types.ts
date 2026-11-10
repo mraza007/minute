@@ -335,6 +335,8 @@ export interface Settings {
   autoApplySpeakerNames: boolean
   /** Issue #47: save finished summaries into an Obsidian vault (opt-in). */
   obsidian: ObsidianSettings
+  /** Issue #46: what to do per app when a meeting is detected. Only used while `meetingDetection` is on. */
+  meetingPolicies?: MeetingPolicies
 }
 
 /** `settings::ObsidianSettings`. */
@@ -353,6 +355,18 @@ export interface ObsidianSettings {
 
 /** `settings::ObsidianPatch` — omitted fields are left unchanged. */
 export type ObsidianPatch = Partial<ObsidianSettings>
+
+/** What Minute does when the detector sees a meeting in one app: show the pill, record at once, or do nothing. */
+export type MeetingPolicy = 'ask' | 'record' | 'ignore'
+
+/** The apps the detector tells apart. `browser` covers Safari, Chrome, Arc, Edge and Firefox. */
+export type MeetingApp = 'zoom' | 'teams' | 'webex' | 'slack' | 'faceTime' | 'discord' | 'browser'
+
+/** `settings::MeetingPolicies` — one policy per app, always all present. */
+export type MeetingPolicies = Record<MeetingApp, MeetingPolicy>
+
+/** `audio::RecordingOrigin` — why a recording started. */
+export type RecordingOrigin = { kind: 'manual' } | { kind: 'automatic'; appName: string }
 
 /**
  * `settings::SettingsPatch` — `#[serde(rename_all = "camelCase")]`. Every
@@ -380,6 +394,8 @@ export interface SettingsPatch {
   autoApplySpeakerNames?: boolean
   /** Rejected with a readable message when the vault path is missing or not a folder. */
   obsidian?: ObsidianPatch
+  /** Changes one app's meeting policy and leaves the other apps as they are. */
+  meetingPolicy?: { app: MeetingApp; policy: MeetingPolicy }
 }
 
 // --- events ----------------------------------------------------------------
@@ -443,6 +459,8 @@ export interface RecordingStateEvent {
   inputError: string | null
   /** Issue #42: seconds of the current quiet run (max of the sound-level and no-transcribed-words counters) — shows "Quiet for M:SS" before the auto-stop countdown arms. */
   quietSecs: number
+  /** Issue #46: why this recording started. Fixed for the whole session. */
+  origin: RecordingOrigin
 }
 
 /** `stt.rs::TranscriptSegmentPayload` — event `transcript-segment`. */
@@ -524,7 +542,14 @@ export interface MeetingDetectedEvent {
  * particular showing.
  */
 export interface MeetingPopupPayloadEvent {
+  /** `ask`: "<app> meeting started", Dismiss and Record. `started`: "Recording <app>", with Stop. */
+  kind: 'ask' | 'started'
   appName: string
+}
+
+/** `popup.rs::MeetingStartPayload` — event `meeting-popup-start`, sent to the main window. */
+export interface MeetingStartEvent {
+  origin: RecordingOrigin
 }
 
 // --- syscap.rs ---------------------------------------------------------

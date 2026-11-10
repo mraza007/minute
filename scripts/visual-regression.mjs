@@ -10,7 +10,7 @@ const baselineDir = path.join(root, 'tests', 'visual', 'baselines')
 const actualDir = path.join(root, 'tests', 'visual', 'actual')
 const diffDir = path.join(root, 'tests', 'visual', 'diff')
 const update = process.env.UPDATE_VISUAL_BASELINES === '1'
-const port = 4173
+const port = Number(process.env.VISUAL_PORT ?? 4173)
 
 const scenarios = [
   { name: 'note-light', url: 'screenshot-app.html?state=note&theme=light', width: 1440, height: 900 },
@@ -23,6 +23,8 @@ const scenarios = [
   { name: 'library-empty', url: 'screenshot-app.html?state=empty&theme=light', width: 1440, height: 900 },
   { name: 'sidebar-select-mode', url: 'screenshot-app.html?state=note&theme=light&select=3&summarizing=1', width: 1440, height: 900 },
   { name: 'sidebar-filter-menu', url: 'screenshot-app.html?state=note&theme=light&menu=open&summarizing=1', width: 1440, height: 900 },
+  { name: 'popup-ask-light', url: 'screenshot-app.html?state=popup&kind=ask&theme=light', width: 486, height: 68 },
+  { name: 'popup-started-light', url: 'screenshot-app.html?state=popup&kind=started&theme=light', width: 486, height: 68 },
   { name: 'settings-enlarged-text', url: 'screenshot-app.html?state=settings&theme=light', width: 720, height: 450 },
 ]
 

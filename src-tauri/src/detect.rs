@@ -55,7 +55,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::SharedRecorderState;
 use crate::catalog::{self, ModelKind};
-use crate::settings::SharedSettings;
+use crate::settings::{self, MeetingPolicies, MeetingPolicy, SharedSettings};
 
 // ---------------------------------------------------------------------------
 // DetectorCore — pure decision core
@@ -1207,7 +1207,7 @@ mod macos {
     /// wasn't independently re-verified against a live install for this
     /// change, so treat it as the one entry in this table most likely to
     /// need adjusting if it doesn't match in practice.
-    const MEETING_APPS: &[(&str, &str)] = &[
+    pub(super) const MEETING_APPS: &[(&str, &str)] = &[
         ("us.zoom.xos", "Zoom"),
         ("com.microsoft.teams2", "Microsoft Teams"),
         ("com.microsoft.teams", "Microsoft Teams"),
@@ -1222,7 +1222,7 @@ mod macos {
     /// mic has already been continuously hot for the full debounce window
     /// (see `run_detector_thread`), so the AND with real mic activity is
     /// always already satisfied by the time a browser match matters.
-    const BROWSERS: &[(&str, &str)] = &[
+    pub(super) const BROWSERS: &[(&str, &str)] = &[
         ("com.apple.Safari", "Safari"),
         ("com.google.Chrome", "Chrome"),
         ("company.thebrowser.Browser", "Arc"),
@@ -2349,9 +2349,86 @@ mod app_quit_tests {
     }
 }
 
+/// The app name the start-prompt core should see: `None` when the user chose
+/// "do nothing" for that app, so it never gets a pill or a recording. Only
+/// the core is fed this. The meeting-ended checks keep the unfiltered name,
+/// so an automatic recording still ends with its meeting.
+fn visible_to_core(policies: &MeetingPolicies, detected: Option<String>) -> Option<String> {
+    detected.filter(|name| policies.resolve(name) != MeetingPolicy::Ignore)
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::settings::MeetingApp;
+
+    #[test]
+    fn an_ignored_app_is_invisible_to_the_start_prompt_core() {
+        let mut policies = MeetingPolicies::default();
+        policies.set(MeetingApp::Slack, MeetingPolicy::Ignore);
+        assert_eq!(visible_to_core(&policies, Some("Slack".to_string())), None);
+    }
+
+    #[test]
+    fn ask_and_record_apps_stay_visible_to_the_core() {
+        let mut policies = MeetingPolicies::default();
+        policies.set(MeetingApp::Teams, MeetingPolicy::Record);
+        assert_eq!(
+            visible_to_core(&policies, Some("Microsoft Teams".to_string())),
+            Some("Microsoft Teams".to_string())
+        );
+        assert_eq!(
+            visible_to_core(&policies, Some("Zoom".to_string())),
+            Some("Zoom".to_string())
+        );
+        assert_eq!(visible_to_core(&policies, None), None);
+    }
+
+    #[test]
+    fn a_record_app_shows_up_as_a_prompt_the_thread_turns_into_a_start() {
+        let base = Instant::now();
+        let mut core = DetectorCore::new(true);
+        core.process(DetectorEvent::MicStarted, base);
+        let action = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Microsoft Teams".to_string()),
+            },
+            base + DEBOUNCE,
+        );
+        let Action::ShowPrompt { app_name } = action else {
+            panic!("expected a prompt");
+        };
+        let mut policies = MeetingPolicies::default();
+        policies.set(crate::settings::MeetingApp::Teams, MeetingPolicy::Record);
+        assert_eq!(policies.resolve(&app_name), MeetingPolicy::Record);
+
+        // The thread then reports the start as accepted: no second prompt
+        // for the same call, even if the debounce window passes again.
+        core.process(DetectorEvent::Outcome(PromptOutcome::Accepted), base + DEBOUNCE);
+        let again = core.process(
+            DetectorEvent::Tick {
+                meeting_app_present: Some("Microsoft Teams".to_string()),
+            },
+            base + DEBOUNCE * 4,
+        );
+        assert_eq!(again, Action::None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_name_the_detector_can_report_has_a_policy_key() {
+        for (_, name) in macos::MEETING_APPS.iter().chain(macos::BROWSERS.iter()) {
+            assert!(
+                crate::settings::MeetingApp::from_detected_name(name).is_some(),
+                "{name} has no MeetingApp"
+            );
+        }
+    }
+}
+
 fn run_detector_thread(
     app: AppHandle,
-    _settings: SharedSettings,
+    settings: SharedSettings,
     recorder: SharedRecorderState,
     shutdown: Arc<AtomicBool>,
     msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
@@ -2486,9 +2563,10 @@ fn run_detector_thread(
                         Instant::now(),
                     );
                     crate::audio::set_meeting_app_closed(&recorder, quit_closed || capture_gone);
+                    let policies = settings::lock_settings(&settings).meeting_policies;
                     core.process(
                         DetectorEvent::Tick {
-                            meeting_app_present: app_present,
+                            meeting_app_present: visible_to_core(&policies, app_present),
                         },
                         Instant::now(),
                     )
@@ -2510,8 +2588,30 @@ fn run_detector_thread(
         };
 
         if let Action::ShowPrompt { app_name } = action {
-            emit_meeting_detected(&app, &app_name);
-            crate::popup::show_meeting_prompt(&app, &app_name);
+            let policy = settings::lock_settings(&settings)
+                .meeting_policies
+                .resolve(&app_name);
+            match policy {
+                MeetingPolicy::Ask => {
+                    emit_meeting_detected(&app, &app_name);
+                    crate::popup::show_meeting_prompt(&app, &app_name);
+                }
+                MeetingPolicy::Record => {
+                    core.process(
+                        DetectorEvent::Outcome(PromptOutcome::Accepted),
+                        Instant::now(),
+                    );
+                    crate::popup::start_automatically(&app, &app_name);
+                }
+                // The policy changed to "do nothing" between the tick and
+                // here. Resolve the prompt like a dismissal.
+                MeetingPolicy::Ignore => {
+                    core.process(
+                        DetectorEvent::Outcome(PromptOutcome::Dismissed),
+                        Instant::now(),
+                    );
+                }
+            }
         }
     }
 }

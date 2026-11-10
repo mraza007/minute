@@ -294,6 +294,7 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           return null
         case 'popup_start':
         case 'popup_dismiss':
+        case 'popup_stop':
           // The `popup` marketing shot never clicks through (nothing to
           // navigate to in this dev-only harness) — mocked just so Pill's
           // click handlers don't throw if the capture script or a stray
