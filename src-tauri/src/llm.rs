@@ -87,7 +87,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::catalog;
 use crate::error::{MinuteError, Result};
 use crate::settings::{self, SharedSettings, SummaryStyle};
-use crate::store::{lock_store, SharedStore, StoredSegment, DEFAULT_NOTE_TITLE};
+use crate::store::{
+    lock_store, SharedStore, StoredSegment, DEFAULT_NOTE_TITLE, UNKNOWN_SPEAKER_LABEL,
+};
 
 /// One action item extracted from a summary: its text and whether the user
 /// has checked it off. Models never produce `done: true` themselves — every
@@ -141,6 +143,11 @@ pub struct SummaryDoc {
     /// files omit it and must keep parsing.
     #[serde(default)]
     pub truncated: bool,
+    /// Issue #49: where the text above names a transcript speaker, so a
+    /// rename can rewrite exactly those spans (see `mentions.rs`). Filled
+    /// by the store when it saves a fresh summary; a model never writes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speaker_mentions: Vec<crate::mentions::SpeakerMention>,
 }
 
 /// Formats a segment's start time as `mm:ss` for the transcript rendered
@@ -179,7 +186,7 @@ fn format_transcript_lines(segments: &[StoredSegment]) -> String {
             format!(
                 "[{}] {}: {}",
                 format_mm_ss(seg.start),
-                seg.speaker,
+                seg.speaker.display(),
                 seg.text
             )
         })
@@ -353,6 +360,9 @@ pub fn build_summary_prompt(
          {topics_rule}\
          - \"decisions\": things that were agreed or resolved during the meeting.\n\
          - \"action_items\": concrete follow-up tasks that came out of the meeting.\n\
+         - When the transcript shows who decided something or owns a task, name that \
+         speaker exactly as the transcript writes the name. Lines from \"{UNKNOWN_SPEAKER_LABEL}\" \
+         could not be attributed: never credit them to a named speaker.\n\
          {coverage_rule}\
          {user_rules}\
          Respond with the JSON object only — no prose, no markdown fences, no reasoning.\n\
@@ -694,6 +704,7 @@ fn raw_to_summary_doc(parsed: RawSummary) -> SummaryDoc {
         topics,
         decisions: parsed.decisions,
         action_items,
+        speaker_mentions: Vec::new(),
     }
 }
 
@@ -2978,7 +2989,7 @@ mod tests {
 
     fn seg(speaker: &str, start: f64, text: &str) -> StoredSegment {
         StoredSegment {
-            speaker: speaker.to_string(),
+            speaker: speaker.into(),
             start,
             end: start + 1.0,
             text: text.to_string(),
@@ -3224,6 +3235,18 @@ mod tests {
             generation_params_for(SummaryStyle::Detailed).max_tokens
                 > generation_params_for(SummaryStyle::Standard).max_tokens
         );
+    }
+
+    /// Issue #49: the model reads unplaced speech as "Unknown speaker",
+    /// never as a name and never as a blank.
+    #[test]
+    fn summary_prompt_shows_unknown_turns_as_unknown_speaker() {
+        let mut unknown = seg("Speaker 1", 65.0, "I can get it into the next build.");
+        unknown.speaker = crate::store::Speaker::Unknown;
+        let segments = vec![seg("Speaker 1", 0.0, "Hello."), unknown];
+        let prompt =
+            build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
+        assert!(prompt.contains("[00:00] Speaker 1: Hello.\n[01:05] Unknown speaker: I can get it"));
     }
 
     #[test]
@@ -5386,7 +5409,7 @@ mod tests {
         lines
             .iter()
             .map(|(speaker, start, text)| StoredSegment {
-                speaker: speaker.to_string(),
+                speaker: (*speaker).into(),
                 start: *start,
                 end: *start + 6.0,
                 text: text.to_string(),
@@ -5442,7 +5465,7 @@ mod tests {
             .map(|i| {
                 let start = i as f64 * 2.5;
                 StoredSegment {
-                    speaker: "Speaker 1".to_string(),
+                    speaker: "Speaker 1".into(),
                     start,
                     end: start + 2.4,
                     text: format!(
@@ -5534,7 +5557,7 @@ mod tests {
             .map(|i| {
                 let start = i as f64 * 2.5;
                 StoredSegment {
-                    speaker: "Speaker 1".to_string(),
+                    speaker: "Speaker 1".into(),
                     start,
                     end: start + 2.4,
                     text: format!("ターン{i}: {sentence}"),
@@ -5618,7 +5641,7 @@ mod tests {
             .map(|i| {
                 let start = i as f64 * 2.5;
                 StoredSegment {
-                    speaker: "Speaker 1".to_string(),
+                    speaker: "Speaker 1".into(),
                     start,
                     end: start + 2.4,
                     text: format!(
@@ -5634,7 +5657,7 @@ mod tests {
         segments.extend((0..9_000).map(|i| {
             let start = dead_air_start + i as f64 * 7.0;
             StoredSegment {
-                speaker: "Speaker 1".to_string(),
+                speaker: "Speaker 1".into(),
                 start,
                 end: start + 6.9,
                 text: ".".to_string(),
