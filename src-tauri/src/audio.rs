@@ -1826,6 +1826,7 @@ struct ActiveRecording {
     /// event reports the session source even if macOS changes its default
     /// microphone later.
     microphone_name: String,
+    origin: RecordingOrigin,
 }
 
 /// Managed state: at most one active recording at a time.
@@ -1873,6 +1874,18 @@ pub(crate) fn set_meeting_app_closed(state: &SharedRecorderState, closed: bool) 
     }
 }
 
+/// Why a recording started. Fixed for the whole session and carried on every
+/// `recording-state` event, so the recording view can say "Started
+/// automatically when Microsoft Teams began a call." Serialized as
+/// `{ "kind": "manual" }` or `{ "kind": "automatic", "appName": "..." }`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RecordingOrigin {
+    #[default]
+    Manual,
+    Automatic { app_name: String },
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecordingStateEvent {
@@ -1903,6 +1916,7 @@ struct RecordingStateEvent {
     /// countdown arms, so a user waiting out the arm window can see the
     /// feature counting instead of concluding it's broken.
     quiet_secs: u64,
+    origin: RecordingOrigin,
 }
 
 fn emit_recording_state(
@@ -1912,6 +1926,7 @@ fn emit_recording_state(
     elapsed_secs: f64,
     system_audio_active: bool,
     microphone_name: &str,
+    origin: &RecordingOrigin,
     input: RecordingInputSnapshot,
     quiet_secs: u64,
 ) {
@@ -1926,6 +1941,7 @@ fn emit_recording_state(
         input_sequence: input.sequence,
         input_error: input.error,
         quiet_secs,
+        origin: origin.clone(),
     };
     if let Err(e) = app.emit("recording-state", event) {
         log::warn!("failed to emit recording-state for {note_id}: {e}");
@@ -2034,7 +2050,9 @@ pub async fn start_recording(
     model_id: Option<String>,
     include_system_audio: Option<bool>,
     input_device_id: Option<String>,
+    origin: Option<RecordingOrigin>,
 ) -> std::result::Result<String, String> {
+    let origin = origin.unwrap_or_default();
     if lock_recorder_state(&recorder).active.is_some() {
         return Err("a recording is already in progress".to_string());
     }
@@ -2125,6 +2143,7 @@ pub async fn start_recording(
     let tick_note_id = note_id.clone();
     let tick_shared = handle.shared.clone();
     let tick_microphone_name = microphone_name.clone();
+    let tick_origin = origin.clone();
     let tick_settings = settings.inner().clone();
     let tick_handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -2148,6 +2167,7 @@ pub async fn start_recording(
                 elapsed_ms as f64 / 1000.0,
                 system_audio_active,
                 &tick_microphone_name,
+                &tick_origin,
                 recording_input_snapshot(&tick_shared),
                 quiet_secs_of(&tick_shared),
             );
@@ -2225,6 +2245,7 @@ pub async fn start_recording(
         tick_handle,
         system_audio_active,
         microphone_name: microphone_name.clone(),
+        origin: origin.clone(),
     });
     drop(preview_guard);
 
@@ -2235,10 +2256,14 @@ pub async fn start_recording(
         0.0,
         system_audio_active,
         &microphone_name,
+        &origin,
         initial_input,
         0,
     );
     set_dock_recording_indicator(&app, true);
+    if let RecordingOrigin::Automatic { app_name } = &origin {
+        crate::popup::show_auto_started(&app, app_name);
+    }
     Ok(note_id)
 }
 
@@ -2350,6 +2375,7 @@ pub fn pause_recording(
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
     let system_audio_active = active.system_audio_active;
     let microphone_name = active.microphone_name.clone();
+    let origin = active.origin.clone();
     let input = recording_input_snapshot(&active.handle.shared);
     let quiet_secs = quiet_secs_of(&active.handle.shared);
     drop(guard);
@@ -2360,6 +2386,7 @@ pub fn pause_recording(
         elapsed_secs,
         system_audio_active,
         &microphone_name,
+        &origin,
         input,
         quiet_secs,
     );
@@ -2403,6 +2430,7 @@ pub fn resume_recording(
     let elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
     let system_audio_active = active.system_audio_active;
     let microphone_name = active.microphone_name.clone();
+    let origin = active.origin.clone();
     let input = recording_input_snapshot(&active.handle.shared);
     let quiet_secs = quiet_secs_of(&active.handle.shared);
     drop(guard);
@@ -2413,6 +2441,7 @@ pub fn resume_recording(
         elapsed_secs,
         system_audio_active,
         &microphone_name,
+        &origin,
         input,
         quiet_secs,
     );
@@ -2503,6 +2532,7 @@ pub fn stop_recording(
     let note_id = active.note_id;
     let system_audio_active = active.system_audio_active;
     let microphone_name = active.microphone_name;
+    let origin = active.origin;
     let final_input = recording_input_snapshot(&active.handle.shared);
     let fallback_elapsed_secs = active.handle.elapsed_ms() as f64 / 1000.0;
 
@@ -2607,9 +2637,13 @@ pub fn stop_recording(
         duration_sec,
         system_audio_active,
         &microphone_name,
+        &origin,
         final_input,
         0,
     );
+    if matches!(origin, RecordingOrigin::Automatic { .. }) {
+        crate::popup::hide_auto_started(&app);
+    }
 
     // Issue #35: with the transcript complete and the note finalized,
     // start whatever deferred itself behind this recording — first, so
@@ -3002,6 +3036,7 @@ mod tests {
             input_sequence: 88,
             input_error: None,
             quiet_secs: 42,
+            origin: RecordingOrigin::Manual,
         })
         .unwrap();
         assert!((value["inputRms"].as_f64().unwrap() - 0.08).abs() < 1e-6);
@@ -3009,6 +3044,34 @@ mod tests {
         assert_eq!(value["inputSequence"], 88);
         assert!(value["inputError"].is_null());
         assert_eq!(value["quietSecs"], 42);
+        assert_eq!(value["origin"], serde_json::json!({ "kind": "manual" }));
+    }
+
+    #[test]
+    fn automatic_origin_serializes_with_the_app_name_for_the_frontend() {
+        let value = serde_json::to_value(RecordingOrigin::Automatic {
+            app_name: "Microsoft Teams".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "kind": "automatic", "appName": "Microsoft Teams" })
+        );
+    }
+
+    #[test]
+    fn origin_parses_from_the_frontend_and_defaults_to_manual() {
+        let parsed: RecordingOrigin = serde_json::from_value(
+            serde_json::json!({ "kind": "automatic", "appName": "Zoom" }),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            RecordingOrigin::Automatic {
+                app_name: "Zoom".to_string()
+            }
+        );
+        assert_eq!(RecordingOrigin::default(), RecordingOrigin::Manual);
     }
 
     // --- downmix_to_mono -----------------------------------------------

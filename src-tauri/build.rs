@@ -73,6 +73,7 @@ const APP_COMMANDS: &[&str] = &[
     "dismiss_auto_stop",
     "popup_start",
     "popup_dismiss",
+    "popup_stop",
     "sys_audio_status",
     "request_sys_audio_permission",
 ];

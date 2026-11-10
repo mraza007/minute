@@ -764,6 +764,7 @@ pub fn run() {
             audio::dismiss_auto_stop,
             popup::popup_start,
             popup::popup_dismiss,
+            popup::popup_stop,
             syscap::sys_audio_status,
             syscap::request_sys_audio_permission
         ])
@@ -1116,15 +1117,20 @@ mod acl_tests {
     }
 
     #[test]
-    fn the_popup_capability_grants_exactly_its_own_two_commands_plus_core_event() {
+    fn the_popup_capability_grants_exactly_its_own_three_commands_plus_core_event() {
         let capabilities = resolved_capabilities();
         let popup = &capabilities["popup"];
         let mut permissions = permissions_of(popup);
         permissions.sort_unstable();
         assert_eq!(
       permissions,
-      vec!["allow-popup-dismiss", "allow-popup-start", "core:event:default"],
-      "the popup window's capability must grant nothing beyond its own two commands and core event listening"
+      vec![
+          "allow-popup-dismiss",
+          "allow-popup-start",
+          "allow-popup-stop",
+          "core:event:default"
+      ],
+      "the popup window's capability must grant nothing beyond its own three commands and core event listening"
     );
     }
 
@@ -1161,8 +1167,10 @@ mod acl_tests {
         let default = &capabilities["default"];
         let permissions = permissions_of(default);
         assert!(
-      !permissions.contains(&"allow-popup-start") && !permissions.contains(&"allow-popup-dismiss"),
-      "the main window has no business calling popup_start/popup_dismiss — got: {permissions:?}"
+      !permissions.contains(&"allow-popup-start")
+        && !permissions.contains(&"allow-popup-dismiss")
+        && !permissions.contains(&"allow-popup-stop"),
+      "the main window has no business calling popup_start/popup_dismiss/popup_stop — got: {permissions:?}"
     );
     }
 
@@ -1189,7 +1197,7 @@ mod acl_tests {
             // commands.ts serves both windows; the popup pair belongs to the
             // meeting-popup capability alone, and a separate test above
             // asserts main does NOT get it.
-            .filter(|command| !matches!(*command, "popup_start" | "popup_dismiss"))
+            .filter(|command| !matches!(*command, "popup_start" | "popup_dismiss" | "popup_stop"))
             .collect();
         assert!(
             called.len() >= 40,
