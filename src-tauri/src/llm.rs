@@ -4035,6 +4035,65 @@ mod tests {
         assert_eq!(doc.summary, "Found it.");
     }
 
+    // --- extract_summary_parts: answers that stop early (issue #45) -------------
+    //
+    // Generation stops at the response token cap without closing the JSON.
+    // A Detailed answer is the long one, so it is the one that gets cut. The
+    // scan then used to move on to the next `{`, which is the first topic,
+    // and a topic (`title` + `summary`) parses as a whole summary: the note
+    // got one topic's paragraph as its summary, that topic's name as its
+    // title, and no topics, decisions, or action items.
+
+    const CUT_OFF_DETAILED_ANSWER: &str = concat!(
+        r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+        r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}, "#,
+        r#"{"title": "Rollout", "summary": "Enterprise customers go first."}], "#,
+        r#""decisions": ["Ship on the 14th"], "#,
+        r#""action_items": [{"text": "Write the pricing page"}, {"text": "Email the bet"#,
+    );
+
+    #[test]
+    fn a_cut_off_detailed_answer_is_not_mistaken_for_its_first_topic() {
+        let extraction = extract_summary_parts(CUT_OFF_DETAILED_ANSWER).unwrap();
+        assert_eq!(extraction.suggested_title, "Launch planning");
+        assert_eq!(extraction.doc.summary, "The team planned the launch.");
+    }
+
+    #[test]
+    fn a_cut_off_detailed_answer_keeps_everything_that_was_finished() {
+        let doc = extract_summary_json(CUT_OFF_DETAILED_ANSWER).unwrap();
+        let topics: Vec<&str> = doc.topics.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(topics, ["Pricing", "Rollout"]);
+        assert_eq!(doc.decisions, ["Ship on the 14th"]);
+        let actions: Vec<&str> = doc.action_items.iter().map(|a| a.text.as_str()).collect();
+        assert_eq!(actions, ["Write the pricing page"]);
+    }
+
+    #[test]
+    fn an_answer_cut_off_inside_a_topic_drops_only_that_topic() {
+        let raw = concat!(
+            r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+            r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}, "#,
+            r#"{"title": "Rollout", "summary": "Enterprise custo"#,
+        );
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc.summary, "The team planned the launch.");
+        let topics: Vec<&str> = doc.topics.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(topics, ["Pricing"]);
+    }
+
+    #[test]
+    fn a_detailed_answer_that_is_not_valid_json_is_an_error_not_its_first_topic() {
+        // A trailing comma makes the whole object unparseable.
+        let raw = concat!(
+            r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+            r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}], "#,
+            r#""decisions": ["Ship on the 14th",], "action_items": []}"#,
+        );
+        let err = extract_summary_json(raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
+    }
+
     // --- extract_summary_json: shapeless-but-valid JSON candidates (rider) -----
     //
     // A candidate that's syntactically valid JSON but converts to an empty
@@ -4901,6 +4960,81 @@ mod tests {
             "the drained note must not still be queued"
         );
     }
+
+    // --- a request racing a finishing worker (issue #44) ------------------------
+
+    /// A request that arrives as the running generation ends must not be
+    /// left in the queue with an idle engine: nothing would ever start it.
+    ///
+    /// Each round replays the two halves of that moment on two threads. One
+    /// does what a worker does on its way out (release `busy`, then drain).
+    /// The other asks for a summary. Whatever the interleaving, the note
+    /// must start.
+    #[test]
+    fn a_request_racing_a_finishing_worker_is_never_stranded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let note_id = lock_store(&store)
+            .create_note_now("Racing note", "whisper-small")
+            .unwrap()
+            .id;
+        let engine = open_shared();
+        let settings = crate::settings::open_shared(dir.path());
+
+        for round in 0..RACE_ROUNDS {
+            let queue = open_summarize_queue();
+            let busy = open_busy_flag();
+            busy.store(true, Ordering::SeqCst);
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let ctx = SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
+                note_id: note_id.clone(),
+                store: store.clone(),
+                engine: engine.clone(),
+                busy: busy.clone(),
+                model_id: "qwen3.5-4b".to_string(),
+                model_path: dir.path().join("does-not-exist.gguf"),
+                settings: settings.clone(),
+                queue: queue.clone(),
+                emit: Box::new(move |event| {
+                    let SummaryEvent::SummaryStatus(payload) = &event;
+                    if payload.state == SummaryStatusState::Running {
+                        let _ = tx.send(());
+                    }
+                }),
+            };
+
+            let go = Arc::new(AtomicBool::new(false));
+            let finishing_worker = std::thread::spawn({
+                let (queue, busy, go) = (queue.clone(), busy.clone(), go.clone());
+                move || {
+                    while !go.load(Ordering::Acquire) {
+                        std::hint::spin_loop();
+                    }
+                    busy.store(false, Ordering::SeqCst);
+                    drain_summarize_queue(&queue, &busy);
+                }
+            });
+            // Vary which side leads, so the rounds cover both orders and
+            // the overlap between them.
+            for _ in 0..(round % 64) {
+                std::hint::spin_loop();
+            }
+            go.store(true, Ordering::Release);
+            spawn_or_enqueue_summarize(&queue, ctx, false);
+            finishing_worker.join().unwrap();
+
+            assert!(
+                rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+                "round {round}: the note is waiting in the queue ({} queued, busy = {}) and \
+                 nothing is left to start it",
+                lock_summarize_queue(&queue).len(),
+                busy.load(Ordering::SeqCst),
+            );
+        }
+    }
+
+    const RACE_ROUNDS: usize = 20_000;
 
     // --- worker panic containment (issue #21) -----------------------------------
     //
