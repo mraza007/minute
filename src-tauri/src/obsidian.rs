@@ -141,7 +141,11 @@ fn yaml_string(s: &str) -> String {
 /// first appearance; unknown turns name nobody, so they add no entry).
 pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript) -> String {
     let mut speakers: Vec<&str> = Vec::new();
-    for name in transcript.segments.iter().filter_map(|seg| seg.speaker.name()) {
+    for name in transcript
+        .segments
+        .iter()
+        .filter_map(|seg| seg.speaker.name())
+    {
         if !speakers.contains(&name) {
             speakers.push(name);
         }
