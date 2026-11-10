@@ -664,6 +664,7 @@ describe('useAppState', () => {
         inputSequence: 1,
         inputError: null,
         quietSecs: 0,
+        origin: { kind: 'manual' },
         ...overrides,
       }
     }
@@ -880,6 +881,19 @@ describe('useAppState', () => {
         await emit('recording-state', recordingState({ state: 'paused', elapsed: 12.5 }))
       })
       expect(result.current.paused).toBe(true)
+    })
+
+    it('recording-state events carry the origin into recOrigin', async () => {
+      const result = await loadedAndRecording()
+      expect(result.current.recOrigin).toEqual({ kind: 'manual' })
+
+      await act(async () => {
+        await emit(
+          'recording-state',
+          recordingState({ origin: { kind: 'automatic', appName: 'Microsoft Teams' } }),
+        )
+      })
+      expect(result.current.recOrigin).toEqual({ kind: 'automatic', appName: 'Microsoft Teams' })
     })
 
     it('recording-state events for a different noteId are ignored', async () => {
@@ -1209,6 +1223,48 @@ describe('useAppState', () => {
 
       await waitFor(() => expect(result.current.view).toBe('recording'))
       expect(calls.some(c => c.cmd === 'start_recording' && (c.args as { modelId: string }).modelId === 'whisper-small')).toBe(true)
+    })
+
+    it('starts with the automatic origin the backend sent, so the recording view can say why', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: { kind: 'automatic', appName: 'Microsoft Teams' } })
+      })
+
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+      const start = calls.find(c => c.cmd === 'start_recording')
+      expect(start).toBeDefined()
+      expect((start!.args as { origin: unknown }).origin).toEqual({
+        kind: 'automatic',
+        appName: 'Microsoft Teams',
+      })
+      expect(result.current.recOrigin).toEqual({ kind: 'automatic', appName: 'Microsoft Teams' })
+    })
+
+    it('a plain start has the manual origin', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: { kind: 'manual' } })
+      })
+
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+      const start = calls.find(c => c.cmd === 'start_recording')
+      expect(start).toBeDefined()
+      expect((start!.args as { origin: unknown }).origin).toEqual({ kind: 'manual' })
     })
 
     it('navigates to onboarding with an honest error instead of recording when no STT model is installed (and the view is not already onboarding)', async () => {

@@ -319,7 +319,21 @@ export interface Settings {
   speakerProfiles: boolean
   /** Issue #32: write confident voice-profile matches into the transcript (and summary) automatically. Only acts while `speakerProfiles` is on; every application shows an Undo. */
   autoApplySpeakerNames: boolean
+  /** Issue #46: what to do per app when a meeting is detected. Only used while `meetingDetection` is on. */
+  meetingPolicies?: MeetingPolicies
 }
+
+/** What Minute does when the detector sees a meeting in one app: show the pill, record at once, or do nothing. */
+export type MeetingPolicy = 'ask' | 'record' | 'ignore'
+
+/** The apps the detector tells apart. `browser` covers Safari, Chrome, Arc, Edge and Firefox. */
+export type MeetingApp = 'zoom' | 'teams' | 'webex' | 'slack' | 'faceTime' | 'discord' | 'browser'
+
+/** `settings::MeetingPolicies` — one policy per app, always all present. */
+export type MeetingPolicies = Record<MeetingApp, MeetingPolicy>
+
+/** `audio::RecordingOrigin` — why a recording started. */
+export type RecordingOrigin = { kind: 'manual' } | { kind: 'automatic'; appName: string }
 
 /**
  * `settings::SettingsPatch` — `#[serde(rename_all = "camelCase")]`. Every
@@ -345,6 +359,8 @@ export interface SettingsPatch {
   compressAudioAfterDays?: number
   speakerProfiles?: boolean
   autoApplySpeakerNames?: boolean
+  /** Changes one app's meeting policy and leaves the other apps as they are. */
+  meetingPolicy?: { app: MeetingApp; policy: MeetingPolicy }
 }
 
 // --- events ----------------------------------------------------------------
@@ -408,6 +424,8 @@ export interface RecordingStateEvent {
   inputError: string | null
   /** Issue #42: seconds of the current quiet run (max of the sound-level and no-transcribed-words counters) — shows "Quiet for M:SS" before the auto-stop countdown arms. */
   quietSecs: number
+  /** Issue #46: why this recording started. Fixed for the whole session. */
+  origin: RecordingOrigin
 }
 
 /** `stt.rs::TranscriptSegmentPayload` — event `transcript-segment`. */
@@ -489,7 +507,14 @@ export interface MeetingDetectedEvent {
  * particular showing.
  */
 export interface MeetingPopupPayloadEvent {
+  /** `ask`: "<app> meeting started", Dismiss and Record. `started`: "Recording <app>", with Stop. */
+  kind: 'ask' | 'started'
   appName: string
+}
+
+/** `popup.rs::MeetingStartPayload` — event `meeting-popup-start`, sent to the main window. */
+export interface MeetingStartEvent {
+  origin: RecordingOrigin
 }
 
 // --- syscap.rs ---------------------------------------------------------

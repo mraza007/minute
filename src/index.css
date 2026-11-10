@@ -65,7 +65,7 @@
   --ease-out: cubic-bezier(.2, .8, .2, 1);
   --control-height: 36px;
 
-  --shadow-pill: 0 4px 16px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .12);
+  --shadow-pill: 0 12px 32px rgba(23, 32, 51, .2), 0 0 0 1px rgba(23, 32, 51, .06);
 
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
   --grain-opacity: 0;
@@ -130,7 +130,7 @@
     --btn-light-hover: #222b3a;
     --btn-dark-hover: #364153;
 
-    --shadow-pill: 0 4px 16px rgba(0, 0, 0, .1), 0 1px 3px rgba(0, 0, 0, .08);
+    --shadow-pill: 0 12px 32px rgba(0, 0, 0, .5), 0 0 0 1px rgba(232, 236, 243, .1);
 
     --grain-opacity: 0;
     --grain-blend: screen;
@@ -207,17 +207,81 @@ a:hover { color: var(--accent-text); }
   from { opacity: 0; transform: translateY(7px); }
   to { opacity: 1; transform: translateY(0); }
 }
-/* Meeting-popup pill (src/popup/Pill.tsx) countdown hairline — shrinks
-   left-to-right over the pill's auto-dismiss window (duration set inline
-   per-instance via `animationDuration`, since it's driven by a prop, not a
-   fixed constant). */
-@keyframes popup-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-.popup-countdown-bar {
-  animation-name: popup-countdown;
-  animation-timing-function: linear;
-  animation-fill-mode: forwards;
-  transform-origin: left;
+/* Meeting-popup pill (src/popup/Pill.tsx): the "ask" and "recording" states
+   share one 52px capsule. */
+.popup-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-sizing: border-box;
+  width: fit-content;
+  height: 52px;
+  max-width: 470px;
+  margin: 8px;
+  padding: 0 8px 0 18px;
+  border-radius: 26px;
+  background: var(--panel);
+  box-shadow: var(--shadow-pill);
+  font-family: var(--sans);
 }
+.popup-pill-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.popup-pill-title,
+.popup-pill-detail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  line-height: 16px;
+}
+.popup-pill-title { font-weight: 500; color: var(--ink); }
+.popup-pill-detail { font-size: 12px; color: var(--ink-muted); }
+.popup-pill-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--red);
+}
+.popup-pill-dismiss,
+.popup-pill-record,
+.popup-pill-stop {
+  flex: none;
+  display: flex;
+  align-items: center;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.popup-pill-dismiss {
+  padding: 0 4px 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+}
+.popup-pill-dismiss:hover { color: var(--ink); }
+.popup-pill-record,
+.popup-pill-stop {
+  box-sizing: border-box;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  font-weight: 500;
+}
+.popup-pill-record {
+  gap: 8px;
+  border: none;
+  background: var(--ink);
+  color: var(--panel);
+}
+.popup-pill-record:hover { opacity: .88; }
+.popup-pill-stop {
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--ink);
+}
+.popup-pill-stop:hover { background: var(--hover-overlay); }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 
 /* Shared switch control. The visual track stays compact while the adjacent
@@ -2629,13 +2693,6 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
   .processing-spinner { animation: none !important; }
   .toggle-track,
   .toggle-thumb { transition: none !important; }
-  /* The countdown bar is purely decorative — the actual 12s auto-dismiss
-     timer is a plain JS setTimeout in Pill.tsx, entirely independent of
-     this animation, so disabling the motion here loses no information (the
-     pill's text/buttons already carry everything the bar communicates
-     visually). Frozen full rather than collapsed to 0 so it doesn't read as
-     "already expired". */
-  .popup-countdown-bar { animation: none !important; transform: scaleX(1); }
 }
 
 /* The screenshot harness uses the same rules as the OS preference, but can
@@ -2652,7 +2709,6 @@ html[data-reduced-motion="true"] .processing-spinner {
   animation: none !important;
 }
 html[data-reduced-motion="true"] .input-level-fill { transition: none !important; }
-html[data-reduced-motion="true"] .popup-countdown-bar { animation: none !important; transform: scaleX(1); }
 html[data-reduced-motion="true"] .toggle-track,
 html[data-reduced-motion="true"] .toggle-thumb { transition: none !important; }
 

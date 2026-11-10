@@ -43,6 +43,12 @@ pill above whatever you're looking at: one click starts recording, one
 click (or 12 seconds of silence) dismisses it. It's off by default; turn
 it on in Settings.
 
+Each app has its own policy: ask (the pill), record automatically, or do
+nothing. Everything starts as ask. With "record automatically" Minute
+starts the recording the moment the meeting is detected and shows a small
+"Recording Teams" pill with a Stop button. Auto-stop still ends it when
+the meeting ends.
+
 This is the honest version of what that pill is doing: it checks whether
 the default microphone is in use and which apps are currently running —
 both things any app on the system can already see, neither one requiring

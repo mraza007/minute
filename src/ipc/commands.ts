@@ -21,6 +21,7 @@ import type {
   NoteWithTranscript,
   Recommendation,
   SearchHit,
+  RecordingOrigin,
   Settings,
   SettingsPatch,
   StorageStats,
@@ -167,8 +168,9 @@ export const startRecording = (
   modelId: string,
   includeSystemAudio: boolean,
   inputDeviceId: string | null = null,
+  origin: RecordingOrigin = { kind: 'manual' },
 ): Promise<string> =>
-  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId })
+  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId, origin })
 
 export const pauseRecording = (): Promise<void> => invokeCmd('pause_recording')
 
@@ -197,6 +199,9 @@ export const popupStart = (): Promise<void> => invokeCmd('popup_start')
  */
 export const popupDismiss = (timedOut: boolean): Promise<void> =>
   invokeCmd('popup_dismiss', { timedOut })
+
+/** Stops the active recording from the "Recording <app>" pill (`popup::popup_stop`). */
+export const popupStop = (): Promise<void> => invokeCmd('popup_stop')
 
 export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
 
