@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://mraza007.github.io/minute/sitemap.xml
