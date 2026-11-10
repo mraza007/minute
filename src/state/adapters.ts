@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, SpeakerSuggestion, StoredSegment, SummaryDoc, SummaryStatusEvent, TranscriptSegmentEvent } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, SpeakerSuggestion, StoredSegment, SummaryDoc, SummaryStatusEvent, SummaryStyle, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -310,6 +310,12 @@ export function formatWait(queuedAt: number, now: number): string {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return plural(hours, 'hour')
   return plural(Math.floor(hours / 24), 'day')
+}
+
+export const SUMMARY_STYLE_NAMES: Record<SummaryStyle, string> = {
+  short: 'Short',
+  standard: 'Standard',
+  detailed: 'Detailed',
 }
 
 function plural(count: number, unit: string): string {

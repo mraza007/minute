@@ -154,6 +154,11 @@ pub struct SummaryDoc {
     /// by the store when it saves a fresh summary; a model never writes it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub speaker_mentions: Vec<crate::mentions::SpeakerMention>,
+    /// The summary length setting the model wrote this at, so the note can
+    /// name it. `None` in every `summary.json` written before it was kept;
+    /// those notes name no length rather than guess one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<SummaryStyle>,
 }
 
 /// Formats a segment's start time as `mm:ss` for the transcript rendered
@@ -777,6 +782,7 @@ fn raw_to_summary_doc(parsed: RawSummary) -> SummaryDoc {
         decisions: parsed.decisions,
         action_items,
         speaker_mentions: Vec::new(),
+        style: None,
     }
 }
 
@@ -3046,6 +3052,7 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     // Issue #41: carry the fitting loop's verdict onto the persisted doc
     // so the panel can say "this covers only part of the recording".
     summary.truncated = transcript_truncated;
+    summary.style = Some(summary_style);
     lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary, &transcript)?;
 
     // Issue #12: a note the user never named takes the title the model

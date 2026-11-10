@@ -80,11 +80,18 @@ describe('NoteSummary', () => {
       expect(container.querySelectorAll('.note-topic p')).toHaveLength(0)
     })
 
-    it('names the Detailed style only for a summary that has topics', () => {
-      const { rerender } = render(<NoteSummary {...baseProps()} />)
-      expect(screen.getByText('Made on this Mac')).toBeInTheDocument()
-      rerender(<NoteSummary {...baseProps({ summary: summaryFixture({ topics: [{ title: 'Pricing', summary: 'Locked.' }] }) })} />)
+    it('names the length the summary was made at', () => {
+      const { rerender } = render(<NoteSummary {...baseProps({ summary: summaryFixture({ style: 'short' }) })} />)
+      expect(screen.getByText('Short · made on this Mac')).toBeInTheDocument()
+      rerender(<NoteSummary {...baseProps({ summary: summaryFixture({ style: 'standard' }) })} />)
+      expect(screen.getByText('Standard · made on this Mac')).toBeInTheDocument()
+      rerender(<NoteSummary {...baseProps({ summary: summaryFixture({ style: 'detailed' }) })} />)
       expect(screen.getByText('Detailed · made on this Mac')).toBeInTheDocument()
+    })
+
+    it('names no length for an older summary that did not record one, even with topics', () => {
+      render(<NoteSummary {...baseProps({ summary: summaryFixture({ topics: [{ title: 'Pricing', summary: 'Locked.' }] }) })} />)
+      expect(screen.getByText('Made on this Mac')).toBeInTheDocument()
     })
 
     // Issue #41: a cut transcript must say so on the page.

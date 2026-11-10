@@ -250,6 +250,8 @@ export interface SummaryDoc {
   topics: SummaryTopic[]
   decisions: string[]
   actionItems: ActionItem[]
+  /** The length setting the summary was written at. Absent for summaries written before Minute kept it. */
+  style?: SummaryStyle
 }
 
 /** `store::StorageStats` — `#[serde(rename_all = "camelCase")]`. */

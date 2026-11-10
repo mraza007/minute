@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import type { SummaryDoc } from '../ipc/types'
 import type { SummaryStatus } from '../state/useAppState'
-import { summaryCoverageNotice } from '../state/adapters'
+import { SUMMARY_STYLE_NAMES, summaryCoverageNotice } from '../state/adapters'
 
 export interface NoteSummaryProps {
   /** The note's persisted summary, or `null` if it has none (yet, or ever). */
@@ -22,13 +22,9 @@ export interface NoteSummaryProps {
   onGoSettings: () => void
 }
 
-/**
- * The summary only records its topics when it was written under the
- * Detailed style, so that is the one style the page can name. Every summary
- * is written on this Mac.
- */
+/** Every summary is written on this Mac. Older ones did not record their length, so they name none. */
 function styleLabel(summary: SummaryDoc): string {
-  return summary.topics.length > 0 ? 'Detailed · made on this Mac' : 'Made on this Mac'
+  return summary.style ? `${SUMMARY_STYLE_NAMES[summary.style]} · made on this Mac` : 'Made on this Mac'
 }
 
 /**

@@ -4749,6 +4749,7 @@ mod tests {
     fn sample_summary() -> SummaryDoc {
         SummaryDoc {
             speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Discussed Q3 roadmap.".to_string(),
@@ -4824,6 +4825,27 @@ mod tests {
         assert_eq!(summary.decisions, vec!["Ship Friday"]);
         assert_eq!(summary.action_items.len(), 1);
         assert!(summary.topics.is_empty());
+        assert_eq!(summary.style, None);
+    }
+
+    #[test]
+    fn summary_style_round_trips_through_summary_json() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        let summary = SummaryDoc {
+            style: Some(crate::settings::SummaryStyle::Short),
+            ..sample_summary()
+        };
+        store.write_summary(&meta.id, &summary).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.summary_path(&meta.id)).unwrap())
+                .unwrap();
+        assert_eq!(raw["style"], "short");
+        let read = store.read_summary(&meta.id).unwrap().unwrap();
+        assert_eq!(read.style, Some(crate::settings::SummaryStyle::Short));
     }
 
     #[test]
@@ -5085,6 +5107,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Reviewed the roadmap and aligned on priorities.".to_string(),
@@ -5143,6 +5166,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Reviewed the roadmap.".to_string(),
@@ -5198,6 +5222,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Reviewed the roadmap.".to_string(),
@@ -5217,6 +5242,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Quick sync, nothing decided.".to_string(),
@@ -5251,6 +5277,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "x".to_string(),
