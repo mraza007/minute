@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import type { Hardware, ModelStatus, Recommendation } from '../ipc/types'
 import { assessModelSuitability } from '../state/modelSuitability'
-import { HardwareSummary, ModelSuitabilityLine } from './ModelSuitability'
+import { HardwareSummary, ModelFit } from './ModelSuitability'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-medium', llm: 'qwen3.5-4b' }
@@ -66,7 +66,7 @@ describe('model suitability', () => {
     render(
       <>
         <HardwareSummary hardware={hardware} />
-        <ModelSuitabilityLine result={result} />
+        <ModelFit result={result} />
       </>,
     )
     expect(screen.getByRole('region', { name: 'Detected Mac hardware' })).toHaveTextContent(

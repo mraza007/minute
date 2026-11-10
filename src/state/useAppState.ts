@@ -9,6 +9,9 @@ import type {
   DeletedNoteUndo,
   Hardware,
   LibraryInfo,
+  MeetingApp,
+  MeetingPolicies,
+  MeetingPolicy,
   MicrophonePermission,
   RecordingOrigin,
   NoteMarker,
@@ -32,7 +35,8 @@ import {
   type CaptureHealth,
 } from '../components/recordingDiagnostics'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
-import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
+import { ASK_FOR_EVERY_APP } from '../ipc/meetingPolicy'
+import { DEFAULT_OBSIDIAN_SETTINGS, latestObsidianSave } from './obsidian'
 import { useToday } from './useToday'
 import { useModelManager } from './useModelManager'
 import { useNoteDetail } from './useNoteDetail'
@@ -205,6 +209,7 @@ export function useAppState() {
   const [tAutoApplySpeakerNames, setTAutoApplySpeakerNames] = useState(true)
   const [tObsidian, setTObsidian] = useState<ObsidianSettings>(DEFAULT_OBSIDIAN_SETTINGS)
   const [obsidianSavingId, setObsidianSavingId] = useState<string | null>(null)
+  const [tMeetingPolicies, setTMeetingPolicies] = useState<MeetingPolicies>(ASK_FOR_EVERY_APP)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
   /** Issue #42: seconds of the current quiet run, from `recording-state` — the pre-arm "Quiet for M:SS" feedback. */
   const [quietSecs, setQuietSecs] = useState(0)
@@ -751,6 +756,7 @@ export function useAppState() {
           setTSpeakerProfiles(loadedSettings.speakerProfiles ?? false)
           setTAutoApplySpeakerNames(loadedSettings.autoApplySpeakerNames ?? true)
           setTObsidian({ ...DEFAULT_OBSIDIAN_SETTINGS, ...loadedSettings.obsidian })
+          setTMeetingPolicies({ ...ASK_FOR_EVERY_APP, ...loadedSettings.meetingPolicies })
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1462,6 +1468,31 @@ export function useAppState() {
     }
   }, [])
 
+  /** Changes one app's meeting policy: shown at once, saved in the background, and reset to the saved value if the save fails. */
+  const setMeetingPolicy = useCallback((app: MeetingApp, policy: MeetingPolicy) => {
+    setTMeetingPolicies(current => ({ ...current, [app]: policy }))
+    ipc.setSettings({ meetingPolicy: { app, policy } })
+      .then(updated => setTMeetingPolicies({ ...ASK_FOR_EVERY_APP, ...updated.meetingPolicies }))
+      .catch(error => {
+        reportError(error)
+        void ipc.getSettings().then(saved => setTMeetingPolicies({ ...ASK_FOR_EVERY_APP, ...saved.meetingPolicies }))
+      })
+  }, [reportError])
+
+  /** Opens the folder picker for the Obsidian vault. Resolves `null` when the picker is cancelled. */
+  const chooseObsidianVault = useCallback(async (): Promise<string | null> => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: 'Choose your Obsidian vault',
+      defaultPath: tObsidian.vaultPath || undefined,
+    })
+    return typeof picked === 'string' ? picked : null
+  }, [tObsidian.vaultPath])
+
+  const obsidianLastSave = useMemo(() => latestObsidianSave(notes), [notes])
+
   /**
    * "Save to Obsidian again" for one note. The export status lives in the
    * note's meta, so on return the cached detail and the list are refreshed
@@ -1641,7 +1672,7 @@ export function useAppState() {
   /**
    * Persists the recommended pair as the user's explicit selections for
    * whichever of the two actually finished installing during onboarding
-   * (the STT one always did, by construction — "Start using Minute" is
+   * (the STT one always did, by construction — "Open Minute" is
    * disabled otherwise; the LLM one is optional) — `modelManager.sttModel`/
    * `llmModel` are already set to these in-memory (via the re-gate effect
    * reacting to the download completing), but that reassignment doesn't
@@ -1657,7 +1688,7 @@ export function useAppState() {
   const { recommendation: modelRecommendation, models: modelCatalog, setSttModel: setSttModelOnComplete, setLlmModel: setLlmModelOnComplete } = modelManager
 
   /**
-   * "Start using Minute" — persists whichever of the recommended STT/LLM
+   * "Open Minute" — persists whichever of the recommended STT/LLM
    * pair actually finished installing (unchanged from before), and now also
    * `meetingDetectionOptIn`: the onboarding opt-in row's checked state (see
    * `OnboardingView`'s `onStart` prop). Only actually calls `set_settings`
@@ -1855,6 +1886,10 @@ export function useAppState() {
     tObsidian,
     saveObsidianSettings,
     checkObsidianVault,
+    chooseObsidianVault,
+    obsidianLastSave,
+    tMeetingPolicies,
+    setMeetingPolicy,
     saveNoteToObsidian,
     obsidianSavingId,
     selectedObsidian: noteDetail.selectedMeta?.obsidian ?? null,

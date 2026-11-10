@@ -36,6 +36,18 @@ const scenarios = [
   { name: 'popup-ask-light', url: 'screenshot-app.html?state=popup&kind=ask&theme=light', width: 486, height: 68 },
   { name: 'popup-started-light', url: 'screenshot-app.html?state=popup&kind=started&theme=light', width: 486, height: 68 },
   { name: 'settings-enlarged-text', url: 'screenshot-app.html?state=settings&theme=light', width: 720, height: 450 },
+  { name: 'settings-recording', url: 'screenshot-app.html?state=settings&section=recording&theme=light', width: 1440, height: 900 },
+  { name: 'settings-summaries', url: 'screenshot-app.html?state=settings&section=summaries&theme=light', width: 1440, height: 900 },
+  { name: 'settings-speakers', url: 'screenshot-app.html?state=settings&section=speakers&theme=light', width: 1440, height: 900 },
+  { name: 'settings-models', url: 'screenshot-app.html?state=settings&section=models&downloading=1&theme=light', width: 1440, height: 900 },
+  { name: 'settings-models-dark', url: 'screenshot-app.html?state=settings&section=models&theme=dark', width: 1440, height: 900 },
+  { name: 'settings-integrations', url: 'screenshot-app.html?state=settings&section=integrations&theme=light', width: 1440, height: 900 },
+  { name: 'settings-integrations-vault-missing', url: 'screenshot-app.html?state=settings&section=integrations&vault=missing&theme=light', width: 1440, height: 900 },
+  { name: 'settings-storage', url: 'screenshot-app.html?state=settings&section=storage&theme=light', width: 1440, height: 900 },
+  { name: 'settings-about', url: 'screenshot-app.html?state=settings&section=about&theme=light', width: 1440, height: 900 },
+  { name: 'onboarding', url: 'screenshot-app.html?state=onboarding&theme=light', width: 1440, height: 900 },
+  { name: 'onboarding-downloading', url: 'screenshot-app.html?state=onboarding&downloading=1&theme=light', width: 1440, height: 900 },
+  { name: 'search-palette', url: 'screenshot-app.html?state=palette&theme=light', width: 1440, height: 900 },
 ]
 
 await Promise.all([baselineDir, actualDir, diffDir].map(directory => mkdir(directory, { recursive: true })))

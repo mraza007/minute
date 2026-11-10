@@ -225,10 +225,44 @@ async function drivePopup(params: URLSearchParams): Promise<void> {
   }
 }
 
-async function driveSettings(): Promise<void> {
+const SETTINGS_SECTION_LABELS: Record<string, string> = {
+  recording: 'Recording',
+  summaries: 'Summaries',
+  speakers: 'Speakers',
+  models: 'Models',
+  integrations: 'Integrations',
+  storage: 'Storage',
+  about: 'About',
+}
+
+/** `?section=<id>` picks the Settings page; `&downloading=1` puts one model mid-download. */
+async function driveSettings(params: URLSearchParams): Promise<void> {
   const settingsButton = await waitForButtonByText('Settings')
   settingsButton?.click()
-  await waitFor(() => document.querySelector('[role="radiogroup"][aria-label="Transcription model"]') !== null)
+  await waitFor(() => document.querySelector('nav[aria-label="Settings sections"]') !== null)
+  const section = params.get('section') ?? 'recording'
+  const label = SETTINGS_SECTION_LABELS[section]
+  const navButton = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-nav-item')).find(b => b.textContent === label)
+  navButton?.click()
+  await waitFor(() => document.querySelector('.st-title')?.textContent?.startsWith(label) ?? false)
+
+  if (section === 'models' && params.get('downloading') === '1') {
+    await emit('model-download-progress', { modelId: 'gemma-4-e4b', downloaded: 3_300_000_000, total: 5_335_291_936 })
+    await waitFor(() => document.querySelector('[role="progressbar"]') !== null)
+  }
+  if (section === 'integrations') {
+    // The vault check runs on mount; wait for it so the capture shows its verdict.
+    await sleep(150)
+  }
+}
+
+/** `?downloading=1` starts the recommended transcription model's download part way. */
+async function driveOnboarding(params: URLSearchParams): Promise<void> {
+  await waitFor(() => document.body.textContent?.includes('Open Minute') ?? false)
+  if (params.get('downloading') === '1') {
+    await emit('model-download-progress', { modelId: 'whisper-large-v3-turbo', downloaded: 1_000_000_000, total: 1_624_555_275 })
+    await waitFor(() => document.querySelector('[role="progressbar"]') !== null)
+  }
 }
 
 async function driveEmpty(): Promise<void> {
@@ -361,9 +395,9 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
   } else if (state === 'palette') {
     await drivePalette()
   } else if (state === 'settings') {
-    await driveSettings()
+    await driveSettings(params)
   } else if (state === 'onboarding') {
-    await waitFor(() => document.body.textContent?.includes('Start using Minute') ?? false)
+    await driveOnboarding(params)
   } else if (state === 'popup') {
     await drivePopup(params)
   } else if (state === 'empty') {

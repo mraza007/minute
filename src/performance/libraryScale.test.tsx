@@ -40,7 +40,6 @@ describe('large synthetic library', () => {
         onReturnToRecording={noop}
         summaryStatus={{}}
         onTogglePinned={noop}
-        onOpenShortcuts={noop}
         onBulkExport={noopAsync}
         onBulkDelete={noopAsync}
         onRenameNote={noop}

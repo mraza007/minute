@@ -1,0 +1,92 @@
+.sp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 120px;
+  background: var(--scrim);
+}
+.sp-panel {
+  display: flex;
+  flex-direction: column;
+  width: 640px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 168px);
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: 0 24px 64px rgba(23, 32, 51, .24), 0 0 0 1px var(--line);
+}
+.sp-input-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  box-sizing: border-box;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+}
+.sp-input-row svg { flex: none; }
+.sp-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: 400 16px/20px var(--sans);
+}
+input.sp-input:not([type='checkbox']):not([type='radio']):focus-visible {
+  border: 0;
+  box-shadow: none;
+}
+.sp-input::placeholder { color: var(--ink-muted); }
+.sp-esc { flex: none; font: 400 12px/16px var(--sans); }
+.sp-results { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 6px; }
+.sp-empty { padding: 20px; color: var(--ink-muted); font: 400 14px/20px var(--sans); }
+.sp-group-label {
+  padding: 14px 20px 6px;
+  color: var(--ink-muted);
+  font: 500 12px/16px var(--sans);
+}
+.sp-hit {
+  display: flex;
+  gap: 16px;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+.sp-hit[data-kind='title'] { align-items: center; justify-content: space-between; }
+.sp-hit[data-active='true'] { background: var(--accent-tint); }
+.sp-hit-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font: 500 14px/18px var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-hit-meta { flex: none; color: var(--ink-muted); font: 400 12px/16px var(--sans); }
+.sp-hit-time {
+  flex: none;
+  width: 44px;
+  color: var(--accent-text);
+  font: 400 12px/22px var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+.sp-hit-body { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.sp-hit-snippet { color: var(--ink); font: 400 14px/22px var(--sans); overflow-wrap: anywhere; }
+.sp-hit-snippet strong { font-weight: 700; }
+.sp-hints {
+  display: flex;
+  flex: none;
+  gap: 16px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  font: 400 12px/16px var(--sans);
+}

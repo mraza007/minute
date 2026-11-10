@@ -146,7 +146,7 @@ describe('SearchPalette', () => {
     await typeAndFlush(input, 'acme')
 
     expect(screen.getByRole('option', { name: /client call — acme/i })).toBeInTheDocument()
-    expect(screen.getByText('July 22, 2026')).toBeInTheDocument()
+    expect(screen.getByText('Jul 22, 2026 · 21 min')).toBeInTheDocument()
   })
 
   it('renders a transcript hit with a [mm:ss] timestamp chip and bolds the matched text', async () => {

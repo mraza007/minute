@@ -1304,7 +1304,7 @@ describe('useAppState', () => {
       // to be). To exercise this branch's own logic (the actual "no model
       // -> navigate + honest error" behavior) independent of that guard,
       // this moves off onboarding first via `completeOnboarding` — the same
-      // "Start using Minute" bypass a real user could trigger without
+      // "Open Minute" bypass a real user could trigger without
       // actually finishing model setup, landing on 'notes' with no STT
       // model installed regardless.
       const calls: Array<{ cmd: string; args: unknown }> = []
@@ -2338,6 +2338,15 @@ describe('useAppState: Obsidian export (issue #47)', () => {
     expect(result.current.lastError).toBeNull()
   })
 
+  it('obsidianLastSave is the newest saved note, and null before any save', async () => {
+    setupIPC({ notes: [noteFixture()] })
+    expect((await loaded()).current.obsidianLastSave).toBeNull()
+
+    const saved = (id: string, title: string, savedAt: string) => noteFixture({ id, title, obsidian: { savedAt } })
+    setupIPC({ notes: [saved('a', 'Older', '2026-07-20T09:00:00Z'), saved('b', 'Newer', '2026-07-22T09:00:00Z')] })
+    expect((await loaded()).current.obsidianLastSave).toEqual({ title: 'Newer', savedAt: '2026-07-22T09:00:00Z' })
+  })
+
   it('checkObsidianVault resolves null for a folder and the reason otherwise', async () => {
     setupIPC()
     expect(await (await loaded()).current.checkObsidianVault('/ok')).toBeNull()
@@ -2392,5 +2401,52 @@ describe('useAppState: Obsidian export (issue #47)', () => {
 
     act(() => result.current.selectNoteById(note.id))
     await waitFor(() => expect(result.current.selectedObsidian).toEqual(exported))
+  })
+})
+
+describe('useAppState: per-app meeting policies (issue #46)', () => {
+  const everyAppAsks = { zoom: 'ask', teams: 'ask', webex: 'ask', slack: 'ask', faceTime: 'ask', discord: 'ask', browser: 'ask' } as const
+
+  it('asks for every app until the backend says otherwise', async () => {
+    setupIPC()
+    expect((await loaded()).current.tMeetingPolicies).toEqual(everyAppAsks)
+
+    setupIPC({ settings: settingsFixture({ meetingPolicies: { ...everyAppAsks, teams: 'record' } }) })
+    expect((await loaded()).current.tMeetingPolicies.teams).toBe('record')
+  })
+
+  it('shows a change at once and saves only that app', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+      setSettings: patch => {
+        const change = (patch as { meetingPolicy?: { app: 'zoom'; policy: 'ignore' } }).meetingPolicy
+        return settingsFixture({ meetingPolicies: { ...everyAppAsks, ...(change ? { [change.app]: change.policy } : {}) } })
+      },
+    })
+    const result = await loaded()
+
+    act(() => result.current.setMeetingPolicy('zoom', 'ignore'))
+
+    expect(result.current.tMeetingPolicies.zoom).toBe('ignore')
+    await waitFor(() =>
+      expect(calls.find(c => c.cmd === 'set_settings')?.args).toEqual({ patch: { meetingPolicy: { app: 'zoom', policy: 'ignore' } } }),
+    )
+    expect(result.current.tMeetingPolicies.teams).toBe('ask')
+  })
+
+  it('goes back to the saved policy and reports the error when the save fails', async () => {
+    setupIPC({
+      settings: settingsFixture({ meetingPolicies: { ...everyAppAsks, slack: 'record' } }),
+      setSettings: () => {
+        throw 'could not write settings'
+      },
+    })
+    const result = await loaded()
+
+    act(() => result.current.setMeetingPolicy('slack', 'ignore'))
+
+    await waitFor(() => expect(result.current.lastError).toContain('could not write settings'))
+    await waitFor(() => expect(result.current.tMeetingPolicies.slack).toBe('record'))
   })
 })

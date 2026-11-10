@@ -8,9 +8,10 @@ import { NoteView } from './components/NoteView'
 import { OnboardingView } from './components/OnboardingView'
 import { RecordingView } from './components/RecordingView'
 import { RecordingPreflight } from './components/RecordingPreflight'
-import { SettingsView } from './components/SettingsView'
+import { SettingsNav } from './components/settings/SettingsNav'
+import { SettingsView } from './components/settings/SettingsView'
+import type { SettingsSectionId } from './components/settings/sections'
 import { SearchPalette } from './components/SearchPalette'
-import { ShortcutReference } from './components/ShortcutReference'
 import { transcriptionModeOptions } from './components/transcriptionModes'
 
 export default function App() {
@@ -23,18 +24,9 @@ export default function App() {
     startRec,
   } = s
   const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = useSidebarCollapsed()
-  const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const shortcutReturnFocusRef = useRef<HTMLElement | null>(null)
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('recording')
   const searchReturnFocusRef = useRef<HTMLElement | null>(null)
   const preflightReturnFocusRef = useRef<HTMLElement | null>(null)
-  const openShortcuts = useCallback(() => {
-    shortcutReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    setShortcutsOpen(true)
-  }, [])
-  const closeShortcuts = useCallback(() => {
-    setShortcutsOpen(false)
-    requestAnimationFrame(() => shortcutReturnFocusRef.current?.focus())
-  }, [])
   const openSearch = useCallback(() => {
     searchReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     openSearchState()
@@ -112,17 +104,19 @@ export default function App() {
     return () => document.removeEventListener('contextmenu', handleContextMenu)
   }, [])
 
+  // ⌘/ opens the shortcut list, which lives under Settings > About.
+  const { goSettings } = s
   useEffect(() => {
-    function handleShortcutReference(event: KeyboardEvent) {
+    function handleShortcutList(event: KeyboardEvent) {
       if (!event.metaKey || event.key !== '/') return
       event.preventDefault()
       if (s.recordingPreflightOpen || s.searchOpen) return
-      if (shortcutsOpen) closeShortcuts()
-      else openShortcuts()
+      setSettingsSection('about')
+      goSettings()
     }
-    window.addEventListener('keydown', handleShortcutReference)
-    return () => window.removeEventListener('keydown', handleShortcutReference)
-  }, [closeShortcuts, openShortcuts, s.recordingPreflightOpen, s.searchOpen, shortcutsOpen])
+    window.addEventListener('keydown', handleShortcutList)
+    return () => window.removeEventListener('keydown', handleShortcutList)
+  }, [goSettings, s.recordingPreflightOpen, s.searchOpen])
 
   // The selected note's list-level metadata — the same "notes[sel], falling
   // back to notes[0]" rule NoteView used to apply internally before its
@@ -156,6 +150,12 @@ export default function App() {
   // `every` alone would be vacuously true on a catalog without them.
   const diarModels = s.models.filter(m => m.kind === 'diarization')
   const canDetectSpeakers = diarModels.length > 0 && diarModels.every(m => m.state === 'installed')
+
+  // The Obsidian file name preview uses the newest note, so it shows a name the user recognizes.
+  const obsidianPreviewNote = s.notes.reduce<(typeof s.notes)[number] | null>(
+    (newest, note) => (newest === null || note.createdAt > newest.createdAt ? note : newest),
+    null,
+  )
 
   // While the sidebar is hidden (a narrow window, or the manual collapse),
   // the toolbar carries the way back to it and the record button it held.
@@ -224,16 +224,24 @@ export default function App() {
           onReturnToRecording={s.goRecording}
           summaryStatus={s.summaryStatus}
           onTogglePinned={s.setNotePinned}
-          onOpenShortcuts={openShortcuts}
           onBulkExport={s.exportNotes}
           onBulkDelete={s.deleteNotes}
           onRenameNote={s.renameNote}
           onRevealNote={s.revealNote}
-          collapsed={sidebarCollapsed}
+          collapsed={sidebarCollapsed || s.view === 'settings'}
           onSetCollapsed={setSidebarCollapsed}
         />
+        {s.view === 'settings' && (
+          <SettingsNav
+            section={settingsSection}
+            onSelect={setSettingsSection}
+            onBack={s.goNotes}
+            recordingTime={s.isRecording ? s.recTime : null}
+            onReturnToRecording={s.goRecording}
+          />
+        )}
         <div className="app-main">
-          {s.view === 'settings' && <AppToolbar lead={toolbarLead} />}
+          {s.view === 'settings' && <AppToolbar />}
           {s.view === 'notes' && (
             <NoteView
               meta={selectedNoteMeta}
@@ -328,6 +336,15 @@ export default function App() {
           )}
           {s.view === 'settings' && (
             <SettingsView
+              section={settingsSection}
+              meetingPolicies={s.tMeetingPolicies}
+              onSetMeetingPolicy={s.setMeetingPolicy}
+              obsidian={s.tObsidian}
+              onSaveObsidian={s.saveObsidianSettings}
+              onCheckObsidianVault={s.checkObsidianVault}
+              onChooseObsidianVault={s.chooseObsidianVault}
+              obsidianLastSave={s.obsidianLastSave}
+              obsidianPreviewNote={obsidianPreviewNote}
               models={s.models}
               hardware={s.hardware}
               recommendation={s.recommendation}
@@ -423,7 +440,6 @@ export default function App() {
           onStart={startRecording}
         />
       )}
-      {shortcutsOpen && <ShortcutReference onClose={closeShortcuts} />}
       {s.deletedNoteUndo && (
         <div className="action-toast" role="status">
           <span>

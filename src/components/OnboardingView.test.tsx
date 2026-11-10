@@ -51,19 +51,19 @@ const base = {
 describe('OnboardingView', () => {
   it('exposes the model section as a heading for screen-reader navigation', () => {
     render(<OnboardingView {...base} />)
-    expect(screen.getByRole('heading', { level: 2, name: 'Models' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Models for this Mac' })).toBeInTheDocument()
   })
 
   it('shows the privacy hero and the recommended STT + LLM pair', () => {
     render(<OnboardingView {...base} />)
-    expect(screen.getByText('Minute runs entirely on this Mac.')).toBeInTheDocument()
+    expect(screen.getByText('Meeting notes that never leave your Mac')).toBeInTheDocument()
     expect(screen.getByText(/Whisper small/)).toBeInTheDocument()
     expect(screen.getByText(/Qwen3.5-4B/)).toBeInTheDocument()
   })
 
   it('shows a "not downloaded" sub-line with size for a not-yet-installed model', () => {
     render(<OnboardingView {...base} />)
-    expect(screen.getByText('Not downloaded · 466 MB')).toBeInTheDocument()
+    expect(screen.getByText(/Not downloaded · 466 MB/)).toBeInTheDocument()
   })
 
   it('notes the LLM card is optional and can be added later', () => {
@@ -86,7 +86,6 @@ describe('OnboardingView', () => {
         downloads={{ 'whisper-small': { downloaded: 233_000_000, total: 466_000_000 } }}
       />,
     )
-    expect(screen.getByText('Downloading 50%')).toBeInTheDocument()
     expect(screen.getByText('50%')).toBeInTheDocument()
     expect(screen.getByText('233 MB / 466 MB')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
@@ -106,27 +105,27 @@ describe('OnboardingView', () => {
     expect(onCancel).toHaveBeenCalledWith('whisper-small')
   })
 
-  it('disables "Start using Minute" until an STT model is installed', () => {
+  it('disables "Open Minute" until an STT model is installed', () => {
     render(<OnboardingView {...base} />)
-    expect(screen.getByRole('button', { name: /start using minute/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /open minute/i })).toBeDisabled()
   })
 
-  it('enables "Start using Minute" once an STT model is installed', () => {
+  it('enables "Open Minute" once an STT model is installed', () => {
     render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} />)
-    expect(screen.getByRole('button', { name: /start using minute/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /open minute/i })).toBeEnabled()
   })
 
   it('calls onStart with false when the enabled Start button is clicked without opting in', () => {
     const onStart = vi.fn()
     render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} onStart={onStart} />)
-    fireEvent.click(screen.getByRole('button', { name: /start using minute/i }))
+    fireEvent.click(screen.getByRole('button', { name: /open minute/i }))
     expect(onStart).toHaveBeenCalledTimes(1)
     expect(onStart).toHaveBeenCalledWith(false)
   })
 
   it('shows an in-use sub-line once the recommended STT model is installed', () => {
     render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} />)
-    expect(screen.getByText('Installed · in use')).toBeInTheDocument()
+    expect(screen.getByText(/Installed · in use/)).toBeInTheDocument()
   })
 
   it('shows the meeting detection opt-in row unchecked by default', () => {
@@ -140,7 +139,7 @@ describe('OnboardingView', () => {
     render(<OnboardingView {...base} models={[sttModel({ state: 'installed' }), llmModel()]} onStart={onStart} />)
 
     fireEvent.click(screen.getByRole('switch', { name: /offer to record when a meeting starts/i }))
-    fireEvent.click(screen.getByRole('button', { name: /start using minute/i }))
+    fireEvent.click(screen.getByRole('button', { name: /open minute/i }))
 
     expect(onStart).toHaveBeenCalledWith(true)
   })

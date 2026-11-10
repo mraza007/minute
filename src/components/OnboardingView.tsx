@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import type { Hardware, ModelStatus, Recommendation } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
+import { assessModelSuitability, hardwareSpecs } from '../state/modelSuitability'
 import { DownloadProgressBar } from './DownloadProgressBar'
-import { assessModelSuitability } from '../state/modelSuitability'
-import { HardwareSummary, ModelSuitabilityLine } from './ModelSuitability'
-import { Toggle } from './Toggle'
+import { ModelFit } from './ModelSuitability'
+import { SettingSwitch } from './settings/controls'
+import './onboarding.css'
 
 export interface OnboardingViewProps {
   models: ModelStatus[]
@@ -14,24 +15,29 @@ export interface OnboardingViewProps {
   onDownload: (id: string) => void
   onCancel: (id: string) => void
   /**
-   * "Start using Minute" — receives the opt-in row's checked state (see
-   * `meetingDetectionOptIn` below) so `useAppState`'s `completeOnboarding`
-   * can persist it in the same call that finalizes onboarding, rather than
-   * this view needing its own separate `set_settings` call.
+   * "Open Minute" receives the meeting-detection opt-in so
+   * `completeOnboarding` can save it in the same call that ends onboarding.
    */
   onStart: (meetingDetectionOptIn: boolean) => void
 }
 
-function ModelCard({
-  entry,
-  hardware,
-  recommendation,
-  downloads,
-  inUseId,
-  onDownload,
-  onCancel,
-  footnote,
-}: {
+type StepState = 'done' | 'current' | 'todo'
+
+function Badge({ number, state }: { number: number; state: StepState }) {
+  return (
+    <span className="ob-badge" data-state={state} aria-hidden="true">
+      {state === 'done' ? (
+        <svg width="12" height="12" viewBox="0 0 24 24">
+          <path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        number
+      )}
+    </span>
+  )
+}
+
+interface ModelLineProps {
   entry: ModelStatus
   hardware: Hardware | null
   recommendation: Recommendation | null
@@ -40,36 +46,38 @@ function ModelCard({
   onDownload: (id: string) => void
   onCancel: (id: string) => void
   footnote?: string
-}) {
+}
+
+function ModelLine({ entry, hardware, recommendation, downloads, inUseId, onDownload, onCancel, footnote }: ModelLineProps) {
   const info = modelStatusToSttInfo(entry, inUseId, downloads)
   const progress = downloads[entry.id]
   const suitability = assessModelSuitability(entry, hardware, recommendation)
 
   return (
-    <div style={{ padding: '16px 0', borderTop: '1px solid var(--rule)' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14 }}>
-        <div style={{ fontFamily: 'var(--serif)', fontSize: 13.5, lineHeight: 1.5 }}>
-          <b style={{ fontWeight: 700 }}>{info.displayName}</b> — {info.desc}
-          <br />
-          <span style={{ fontFamily: 'var(--sans)', fontSize: 11, color: 'var(--ink-faint)' }}>{info.sub}</span>
-          <ModelSuitabilityLine result={suitability} />
+    <li className="ob-model">
+      <div className="ob-model-row">
+        <div className="ob-model-text">
+          <span className="ob-model-name">{info.displayName}</span>
+          <span className="ob-sub">{info.desc}</span>
+          <span className="ob-sub">
+            {info.state !== 'downloading' && <>{info.sub} · </>}
+            <ModelFit result={suitability} />
+          </span>
         </div>
         {info.state === 'notInstalled' && (
-          <button className="btn-solid" onClick={() => onDownload(entry.id)} style={{ flex: 'none', whiteSpace: 'nowrap' }}>
-            Download ({formatBytes(entry.sizeBytes)})
+          <button type="button" className="st-btn" aria-label={`Download (${formatBytes(entry.sizeBytes)})`} onClick={() => onDownload(entry.id)}>
+            Download
           </button>
         )}
         {info.state === 'downloading' && (
-          <button className="btn-outline" onClick={() => onCancel(entry.id)} style={{ flex: 'none' }}>
+          <button type="button" className="st-btn" onClick={() => onCancel(entry.id)}>
             Cancel
           </button>
         )}
       </div>
       {info.state === 'downloading' && progress && <DownloadProgressBar downloaded={progress.downloaded} total={progress.total} />}
-      {footnote && (
-        <div style={{ marginTop: 9, fontFamily: 'var(--serif)', fontSize: 12.5, color: 'var(--ink-faint)' }}>{footnote}</div>
-      )}
-    </div>
+      {footnote && <p className="ob-sub ob-footnote">{footnote}</p>}
+    </li>
   )
 }
 
@@ -77,99 +85,100 @@ export function OnboardingView({ models, hardware, recommendation, downloads, on
   const sttEntry = recommendation ? models.find(m => m.id === recommendation.stt) : undefined
   const llmEntry = recommendation ? models.find(m => m.id === recommendation.llm) : undefined
   const hasInstalledStt = models.some(m => m.kind === 'stt' && m.state === 'installed')
+  const downloading = Object.keys(downloads).length > 0
 
-  // Quiet, opt-in meeting-detection row — default unchecked. Notion's own
-  // opt-out backlash (turning a similar feature on by default) is the
-  // lesson the plan explicitly calls out: onboarding must never pre-check
-  // this. Local to this view (not yet a real setting) until "Start using
-  // Minute" is actually clicked — see `onStart`'s docs for why the write
-  // happens on completion rather than immediately on toggle.
+  // Off until the user turns it on. Turning a similar feature on by default
+  // drew a backlash for another app, so this must never start checked. It
+  // stays local until "Open Minute", which saves it with the rest.
   const [meetingDetectionOptIn, setMeetingDetectionOptIn] = useState(false)
 
   return (
-    <div className="app-paper onboarding-page">
-      <div className="onboarding-sheet">
-        {/* The trust statement is the first thing on the page and reads as a
-            title page, not a banner in a box: the promise is the product, so
-            it's set at document scale in the serif rather than boxed off as
-            a notice the eye learns to skip. */}
-        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontWeight: 400, fontSize: 30, lineHeight: 1.16, letterSpacing: '-.015em' }}>
-          Minute runs entirely on this Mac.
-        </h1>
-        <p style={{ margin: '12px 0 26px', fontFamily: 'var(--serif)', fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink-muted)', maxWidth: '52ch' }}>
-          No account and no cloud processing. Minute connects only when you choose to download a model; recordings,
-          transcripts, summaries, and questions stay on this Mac.
-        </p>
+    <div className="app-paper ob-page">
+      <div className="ob-top" data-tauri-drag-region="" />
+      <main className="ob-main">
+        <div className="ob-sheet">
+          <header className="ob-head">
+            <h1 className="ob-title">Meeting notes that never leave your Mac</h1>
+            <p className="ob-lede">
+              Minute records, transcribes, and summarizes on this Mac, with no account and no cloud. Three steps and you
+              are ready.
+            </p>
+          </header>
 
-        <div className="onboarding-privacy-facts" aria-label="Privacy and permissions">
-          <div>
-            <span className="mlab">Microphone</span>
-            <p>Requested when you start your first recording. Minute captures only while the recording indicator is visible.</p>
+          <ol className="ob-steps" aria-label="Setup steps">
+            <li className="ob-step">
+              <Badge number={1} state="todo" />
+              <div className="ob-body">
+                <h2 className="ob-step-title">Microphone</h2>
+                <p className="ob-sub">Minute asks when you start your first recording. It captures only while the recording indicator is on.</p>
+              </div>
+            </li>
+
+            <li className="ob-step" data-tall="true">
+              <Badge number={2} state={hasInstalledStt ? 'done' : 'current'} />
+              <div className="ob-body">
+                <h2 className="ob-step-title">Models for this Mac</h2>
+                <p className="ob-sub">{hardwareSpecs(hardware)}</p>
+                <ul className="ob-models">
+                  {sttEntry && (
+                    <ModelLine
+                      entry={sttEntry}
+                      hardware={hardware}
+                      recommendation={recommendation}
+                      downloads={downloads}
+                      inUseId={recommendation?.stt ?? ''}
+                      onDownload={onDownload}
+                      onCancel={onCancel}
+                    />
+                  )}
+                  {llmEntry && (
+                    <ModelLine
+                      entry={llmEntry}
+                      hardware={hardware}
+                      recommendation={recommendation}
+                      downloads={downloads}
+                      inUseId={recommendation?.llm ?? ''}
+                      onDownload={onDownload}
+                      onCancel={onCancel}
+                      footnote="Optional. Add it now or later for local summaries, decisions, action items, and questions."
+                    />
+                  )}
+                </ul>
+              </div>
+            </li>
+
+            <li className="ob-step">
+              <Badge number={3} state="todo" />
+              <div className="ob-body">
+                <h2 className="ob-step-title">System audio · optional</h2>
+                <p className="ob-sub">Records the other people on a call. macOS asks for Screen Recording only when you choose to include call audio.</p>
+              </div>
+            </li>
+          </ol>
+
+          <div className="ob-optin">
+            <SettingSwitch
+              title="Offer to record when a meeting starts"
+              description="You can change this anytime in Settings."
+              on={meetingDetectionOptIn}
+              onToggle={() => setMeetingDetectionOptIn(v => !v)}
+            />
           </div>
-          <div>
-            <span className="mlab">System audio</span>
-            <p>Optional. macOS Screen Recording permission is requested only when you choose to include call audio.</p>
-          </div>
-          <div>
-            <span className="mlab">Storage</span>
-            <p>Notes and audio are ordinary local files covered by your Mac’s FileVault settings.</p>
+
+          <div className="ob-actions">
+            <button type="button" className="ob-start" disabled={!hasInstalledStt} onClick={() => onStart(meetingDetectionOptIn)}>
+              Open Minute
+            </button>
+            <span className="ob-sub">
+              {!hasInstalledStt
+                ? 'Download the transcription model to continue.'
+                : downloading
+                  ? 'The download continues in the background.'
+                  : ''}
+            </span>
           </div>
         </div>
-
-        <HardwareSummary hardware={hardware} />
-
-        <div className="sec-head" style={{ marginBottom: 2 }}>
-          <h2 className="mlab" style={{ margin: 0 }}>Models</h2>
-        </div>
-
-        {sttEntry && (
-          <ModelCard
-            entry={sttEntry}
-            hardware={hardware}
-            recommendation={recommendation}
-            downloads={downloads}
-            inUseId={recommendation?.stt ?? ''}
-            onDownload={onDownload}
-            onCancel={onCancel}
-          />
-        )}
-
-        {llmEntry && (
-          <ModelCard
-            entry={llmEntry}
-            hardware={hardware}
-            recommendation={recommendation}
-            downloads={downloads}
-            inUseId={recommendation?.llm ?? ''}
-            onDownload={onDownload}
-            onCancel={onCancel}
-            footnote="Optional. Add it now or later for local summaries, decisions, action items, and questions."
-          />
-        )}
-
-        <div style={{ padding: '18px 0 24px', borderTop: '1px solid var(--rule)' }}>
-          <Toggle
-            on={meetingDetectionOptIn}
-            onToggle={() => setMeetingDetectionOptIn(v => !v)}
-            label="Offer to record when a meeting starts — you can change this anytime in Settings."
-          />
-        </div>
-
-        <button
-          disabled={!hasInstalledStt}
-          onClick={() => onStart(meetingDetectionOptIn)}
-          className="btn-solid"
-          style={{
-            padding: '12px 22px',
-            background: hasInstalledStt ? 'var(--accent-solid)' : 'var(--control-track)',
-            color: hasInstalledStt ? 'var(--text-on-accent)' : 'var(--ink-muted)',
-            cursor: hasInstalledStt ? 'pointer' : 'not-allowed',
-            opacity: 1,
-          }}
-        >
-          Start using Minute
-        </button>
-      </div>
+      </main>
     </div>
   )
 }

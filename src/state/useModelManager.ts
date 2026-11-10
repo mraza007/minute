@@ -57,7 +57,7 @@ export interface UseModelManagerOptions {
  * bounces the view back to onboarding and reassigns `sttModel` off the
  * now-uninstalled pick, via the same `pickInitialSttModel` rule used on
  * initial load. One-directional: it only ever forces *into* onboarding,
- * never out of it — "Start using Minute" is what clears the gate.
+ * never out of it — "Open Minute" is what clears the gate.
  */
 export function useModelManager({ view, setView, loaded }: UseModelManagerOptions) {
   const [models, setModels] = useState<ModelStatus[]>([])
@@ -109,7 +109,7 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   // `view`/`setView`/`sttModel`/`recommendation` read through a ref so the
   // effect below triggers *only* off genuine `models` changes (a download
   // finishing, a delete's refetch, ...) — not off `view` changing for
-  // unrelated reasons (e.g. the user clicking "Start using Minute", or the
+  // unrelated reasons (e.g. the user clicking "Open Minute", or the
   // initial-load error fallback setting `view` to 'notes' with nothing
   // installed). Those are legitimate view transitions this effect must not
   // immediately re-fight; re-gating is specifically about the model catalog

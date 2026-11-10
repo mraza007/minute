@@ -85,6 +85,8 @@
   --warn-tint: #fff6e5;
   --shadow-sheet: 0 24px 64px rgba(23, 32, 51, .24);
   --shadow-tile: 0 1px 2px rgba(23, 32, 51, .12);
+  --line: #dee5ef;
+  --warn-text: #9a6700;
   --shadow-popover: 0 16px 48px rgba(23, 32, 51, .18), 0 0 0 1px var(--rule);
 
   /* One colour per speaker: 1 is always "You", the rest go in order of first appearance. */
@@ -171,6 +173,8 @@
     --warn-tint: #33281a;
     --shadow-sheet: 0 24px 64px rgba(0, 0, 0, .6), 0 0 0 1px var(--rule-strong);
     --shadow-tile: 0 1px 2px rgba(0, 0, 0, .4);
+    --line: #263041;
+    --warn-text: #e5a54b;
     --shadow-popover: 0 16px 48px rgba(0, 0, 0, .5), 0 0 0 1px var(--rule-strong);
 
     --speaker-1: #6ba4ff;
@@ -997,103 +1001,83 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   background: var(--rule);
 }
 
-.shortcut-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: grid;
-  place-items: center;
-  padding: 28px;
-  background: rgba(19, 18, 16, .32);
-  backdrop-filter: blur(4px);
-  animation: shortcut-scrim-in 140ms ease-out both;
-}
-
-.shortcut-sheet {
-  width: min(560px, calc(100vw - 56px));
-  max-height: calc(100vh - 56px);
+/* ══════════════════════════════════════════════════════════════════════
+   THE MANUSCRIPT MARGIN
+   The transcript's signature: timestamps set in a right-aligned gutter
+   behind one continuous vertical rule. The rule is a background gradient
+   on the scroll container rather than a border on each row, so it stays
+   unbroken across row gaps — and, since backgrounds on a scroll container
+   are painted against its padding box (not its scrolled content), it reads
+   as one uninterrupted line no matter how far the transcript is scrolled.
+   ══════════════════════════════════════════════════════════════════════ */
+.script {
+  --gutter: 74px;
+  --gutter-gap: 34px;
+  flex: 1;
   overflow: auto;
-  padding: 26px 28px 28px;
-  border: 1px solid var(--rule-strong);
-  background: var(--panel);
-  box-shadow: 0 22px 60px rgba(18, 17, 15, .18);
-  animation: shortcut-sheet-in 180ms cubic-bezier(.2, .8, .2, 1) both;
+  padding: 26px 34px;
+  min-height: 0;
+  background-image: linear-gradient(
+    to right,
+    transparent 0 calc(34px + var(--gutter) + (var(--gutter-gap) / 2)),
+    var(--rule) calc(34px + var(--gutter) + (var(--gutter-gap) / 2)) calc(35px + var(--gutter) + (var(--gutter-gap) / 2)),
+    transparent calc(35px + var(--gutter) + (var(--gutter-gap) / 2))
+  );
+  background-repeat: no-repeat;
 }
-
-.shortcut-sheet-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--rule);
-}
-
-.shortcut-sheet-head h2 {
-  margin: 6px 0 0;
-  font-family: var(--serif);
-  font-size: 26px;
-  font-weight: 400;
-  line-height: 1.12;
-  letter-spacing: -.014em;
-}
-
-.shortcut-sheet-intro {
-  max-width: 450px;
-  margin: 18px 0 24px;
-  color: var(--ink-muted);
-  font-family: var(--serif);
-  font-size: 13.5px;
-  line-height: 1.55;
-}
-
-.shortcut-groups {
+.script-line {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 30px;
+  grid-template-columns: var(--gutter) 1fr;
+  column-gap: var(--gutter-gap);
+  max-width: 760px;
 }
-
-.shortcut-groups h3 {
-  margin: 0 0 8px;
-}
-
-.shortcut-groups dl {
-  margin: 0;
-  border-top: 1px solid var(--rule);
-}
-
-.shortcut-groups dl > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 42px;
-  border-bottom: 1px solid var(--rule);
-}
-
-.shortcut-groups dt {
-  color: var(--ink-muted);
-  font-size: 12px;
-}
-
-.shortcut-groups dd {
-  margin: 0;
-}
-
-.shortcut-groups kbd {
-  display: inline-block;
-  min-width: 52px;
-  padding: 3px 7px;
-  border: 1px solid var(--rule-strong);
-  border-bottom-color: var(--ink-faint);
-  background: var(--control-bg);
-  color: var(--ink);
+/* Timestamps double as seek buttons — styled as margin marginalia, not as
+   links: no underline, no accent, tabular so the column stays flush. */
+.script-ts {
+  justify-self: end;
+  /* Without this the button stretches to the full grid-row height and
+     centres its own label, so a three-line segment's timestamp floats
+     opposite the middle of the paragraph instead of its first line. The
+     margin reference has to sit on the line it refers to. */
+  align-self: start;
+  padding: 3px 0 0;
+  border: none;
+  background: none;
   font-family: var(--sans);
   font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1.4;
-  text-align: center;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+  color: var(--ink-faint);
+  text-align: right;
+}
+.script-ts[data-seekable='true'] { cursor: pointer; }
+.script-ts[data-seekable='true']:hover { color: var(--accent-text); }
+.script-who {
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.script-said {
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.62;
+  letter-spacing: .003em;
+  color: var(--ink-body);
+  text-wrap: pretty;
+  user-select: text;
+  cursor: auto;
+  margin: 0;
+}
+/* Playback position. A margin rule in the gutter — the manuscript
+   equivalent of a highlighted row, and far quieter than a filled block. */
+.script-line[data-active='true'] .script-ts { color: var(--accent-text); font-weight: 600; }
+.script-line[data-active='true'] .script-said { color: var(--ink); }
+.script-line[data-active='true'] {
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), .055), transparent 78%);
 }
 
 .side-row-wrap {
@@ -1197,134 +1181,19 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 
 
 
-.onboarding-privacy-facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-  margin: 0 0 26px;
-  padding: 16px 0;
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
-}
 
-.onboarding-privacy-facts p {
-  margin: 7px 0 0;
-  color: var(--ink-muted);
-  font-family: var(--serif);
-  font-size: 11.8px;
-  line-height: 1.5;
-}
 
-.onboarding-page {
-  height: 100vh;
-  overflow: auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  background: var(--panel);
-}
 
-.onboarding-sheet {
-  width: 560px;
-  max-width: calc(100vw - 48px);
-  box-sizing: border-box;
-  margin-block: auto;
-  padding-block: 48px;
-}
 
-.hardware-summary {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  column-gap: 16px;
-  row-gap: 4px;
-  align-items: baseline;
-  margin: 0 0 28px;
-  padding: 12px 0;
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
-}
 
-.hardware-summary-specs {
-  min-width: 0;
-  margin: 0;
-  color: var(--ink);
-  font: 650 13px/1.4 var(--sans);
-}
 
-.hardware-summary-detail {
-  grid-column: 2;
-  margin: 0;
-  max-width: 60ch;
-  color: var(--ink-muted);
-  font: 12.5px/1.5 var(--serif);
-}
 
-.model-suitability {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 2px 6px;
-  margin-top: 4px;
-  color: var(--ink-muted);
-  font: 11px/1.4 var(--sans);
-}
 
-.model-suitability-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  align-self: center;
-  border-radius: 50%;
-  background: var(--ink-faint);
-}
 
-.model-suitability strong {
-  color: var(--ink);
-  font-weight: 700;
-}
 
-.model-suitability[data-tone='recommended'] .model-suitability-dot,
-.model-suitability[data-tone='comfortable'] .model-suitability-dot {
-  background: var(--ok-text);
-}
 
-.model-suitability[data-tone='recommended'] strong {
-  color: var(--ok-text);
-}
 
-.model-suitability[data-tone='constrained'] .model-suitability-dot,
-.model-suitability[data-tone='unsupported'] .model-suitability-dot {
-  background: var(--red-text);
-}
 
-.model-suitability[data-tone='constrained'] strong,
-.model-suitability[data-tone='unsupported'] strong {
-  color: var(--red-text);
-}
-
-@media (max-width: 720px) {
-  .onboarding-privacy-facts {
-    grid-template-columns: 1fr;
-    gap: 14px;
-  }
-
-  .onboarding-sheet {
-    max-width: calc(100vw - 36px);
-    padding-block: 32px;
-  }
-
-  .hardware-summary {
-    grid-template-columns: 1fr;
-  }
-
-  .hardware-summary-detail {
-    grid-column: 1;
-  }
-}
-
-@keyframes shortcut-scrim-in {
-  from { opacity: 0; }
-}
 
 @keyframes shortcut-sheet-in {
   from {
@@ -1334,11 +1203,6 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shortcut-scrim,
-  .shortcut-sheet {
-    animation: none;
-  }
-
   .action-toast {
     animation: none;
   }
@@ -1392,13 +1256,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 .btn-outline:disabled { cursor: default; opacity: .5; }
 
 /* pseudo-state classes replacing the mock's style-hover/focus/active */
-.btn-rec { transition: background .12s; }
-.btn-rec:hover { background: var(--accent-solid-hover) !important; }
-.btn-rec:active { background: var(--accent-solid-active) !important; }
 .icon-btn:hover { background: var(--hover-overlay-strong) !important; color: var(--ink) !important; }
-.icon-btn-danger:hover { background: var(--red-tint) !important; color: var(--red-text) !important; }
-.btn-light:hover { background: var(--btn-light-hover) !important; }
-.model-card:hover { background: var(--surface-softer) !important; }
 
 .library-sidebar {
   position: relative;
@@ -1755,25 +1613,12 @@ html[data-reduced-motion='true'] .filter-menu { animation: none; }
   cursor: pointer;
 }
 .sidebar-settings[aria-current='page'] { color: var(--accent-text); }
-.sidebar-footer-end { display: flex; align-items: center; gap: 8px; }
 .sidebar-stats {
   color: var(--ink-muted);
   font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
 }
-.sidebar-shortcuts {
-  width: 24px;
-  height: 24px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  display: grid;
-  place-items: center;
-  background: transparent;
-  color: var(--ink-faint);
-  cursor: pointer;
-}
-.sidebar-shortcuts:hover { color: var(--ink); }
 
 .library-sidebar[hidden] { display: none; }
 /* Empty library and "pick a note" states in the note area. */

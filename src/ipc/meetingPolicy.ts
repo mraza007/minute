@@ -12,7 +12,7 @@ export const MEETING_APPS: ReadonlyArray<{ id: MeetingApp; label: string }> = [
 ]
 
 export const MEETING_POLICY_LABELS: Record<MeetingPolicy, string> = {
-  ask: 'Ask',
+  ask: 'Ask me',
   record: 'Record automatically',
   ignore: 'Do nothing',
 }
