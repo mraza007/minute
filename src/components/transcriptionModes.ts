@@ -14,8 +14,8 @@ export const MODE_LABEL: Record<TranscriptionMode, string> = {
 /** The speed tier a Whisper model belongs to, read from its name. */
 export function transcriptionModeOf(modelName: string): TranscriptionMode {
   const normalized = modelName.toLowerCase()
-  if (normalized.includes('small')) return 'fast'
-  if (normalized.includes('medium')) return 'balanced'
+  if (/\b(tiny|base|small)\b/.test(normalized)) return 'fast'
+  if (/\bmedium\b/.test(normalized)) return 'balanced'
   return 'accurate'
 }
 

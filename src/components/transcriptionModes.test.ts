@@ -20,6 +20,13 @@ describe('transcriptionModeOf', () => {
     expect(transcriptionModeOf('Whisper medium')).toBe('balanced')
     expect(transcriptionModeOf('Whisper large-v3-turbo')).toBe('accurate')
   })
+
+  it('counts tiny and base models as fast, whatever their suffix', () => {
+    expect(transcriptionModeOf('Whisper tiny, English (q5_1)')).toBe('fast')
+    expect(transcriptionModeOf('Whisper base, compressed (q5_1)')).toBe('fast')
+    expect(transcriptionModeOf('Whisper medium, compact')).toBe('balanced')
+    expect(transcriptionModeOf('Whisper large-v3, compact')).toBe('accurate')
+  })
 })
 
 describe('transcriptionModeOptions', () => {
