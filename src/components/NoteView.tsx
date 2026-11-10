@@ -23,7 +23,7 @@ import { NoteSummary } from './NoteSummary'
 import { PlayerBar } from './PlayerBar'
 import { ProcessingStepList } from './ProcessingStepList'
 import { noteProcessingSteps } from './processingSteps'
-import { SpeakerPopover } from './SpeakerPopover'
+import { SpeakerPopover, UnknownSpeakerPopover } from './SpeakerPopover'
 import { TranscriptList } from './TranscriptList'
 import type { SettingsSectionId } from './settings/sections'
 import { useFocusAfterCommit } from './useFocusAfterCommit'
@@ -111,6 +111,8 @@ export interface NoteViewProps {
   onMergeSpeakers: (id: string, from: string, into: string) => Promise<SpeakerMergeUndo>
   /** "Mark these turns as unknown" (issue #49). Undone through `onUndoSpeakerMerge`. */
   onMarkSpeakerUnknown: (id: string, speaker: string) => Promise<SpeakerMergeUndo>
+  /** Gives the note's unknown turns to `to`, a speaker it has or a new name (issue #49). Undone through `onUndoSpeakerMerge`. */
+  onAssignUnknownTurns: (id: string, to: string) => Promise<SpeakerMergeUndo>
   onUndoSpeakerMerge: (id: string, undo: SpeakerMergeUndo) => Promise<void>
   onDeleteAudio: () => Promise<void>
   onStartRecording: () => void
@@ -132,6 +134,7 @@ type Overlay =
   | { kind: 'menu' }
   | { kind: 'markdown' }
   | { kind: 'speaker'; speaker: string; offsetLeft: number }
+  | { kind: 'unknownSpeaker'; offsetLeft: number }
 
 /** The one inline form the transcript section can have open. */
 type Composer = { kind: 'none' } | { kind: 'marker'; seconds: number } | { kind: 'detect' }
@@ -610,6 +613,7 @@ export function NoteView({
   onDismissSpeakerSuggestion,
   onMergeSpeakers,
   onMarkSpeakerUnknown,
+  onAssignUnknownTurns,
   onUndoSpeakerMerge,
   diarStatus,
   diarError,
@@ -979,7 +983,7 @@ export function NoteView({
               </div>
             </div>
 
-            {speakers.length > 0 && (
+            {(speakers.length > 0 || roster.unknownTurns > 0) && (
               <div className="speaker-chips">
                 {speakers.map(speaker => (
                   <button
@@ -997,21 +1001,47 @@ export function NoteView({
                     {speaker}
                   </button>
                 ))}
-                <button
-                  ref={renameSpeakersRef}
-                  type="button"
-                  className="note-link"
-                  onClick={event => {
-                    // Opens on the first speaker that still has a generic
-                    // label, since that is the one most likely to need a name.
-                    const target = speakers.find(speaker => /^Speaker \d+$/.test(speaker)) ?? speakers[0]
-                    const chips = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('.speaker-chip') ?? [])
-                    const chip = chips.find(element => element.dataset.speaker === target)
-                    openOverlay({ kind: 'speaker', speaker: target, offsetLeft: chip?.offsetLeft ?? 0 }, event.currentTarget)
-                  }}
-                >
-                  Rename speakers
-                </button>
+                {roster.unknownTurns > 0 && (
+                  <button
+                    type="button"
+                    className="speaker-chip"
+                    style={speakerColorStyle(speakerColors, null)}
+                    aria-label="Assign unknown turns"
+                    aria-haspopup="dialog"
+                    aria-expanded={overlay.kind === 'unknownSpeaker'}
+                    onClick={event => openOverlay({ kind: 'unknownSpeaker', offsetLeft: event.currentTarget.offsetLeft }, event.currentTarget)}
+                  >
+                    <span className="speaker-dot" aria-hidden="true" />
+                    {UNKNOWN_SPEAKER_LABEL}
+                  </button>
+                )}
+                {speakers.length > 0 && (
+                  <button
+                    ref={renameSpeakersRef}
+                    type="button"
+                    className="note-link"
+                    onClick={event => {
+                      // Opens on the first speaker that still has a generic
+                      // label, since that is the one most likely to need a name.
+                      const target = speakers.find(speaker => /^Speaker \d+$/.test(speaker)) ?? speakers[0]
+                      const chips = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('.speaker-chip') ?? [])
+                      const chip = chips.find(element => element.dataset.speaker === target)
+                      openOverlay({ kind: 'speaker', speaker: target, offsetLeft: chip?.offsetLeft ?? 0 }, event.currentTarget)
+                    }}
+                  >
+                    Rename speakers
+                  </button>
+                )}
+                {overlay.kind === 'unknownSpeaker' && roster.unknownTurns > 0 && (
+                  <UnknownSpeakerPopover
+                    turns={roster.unknownTurns}
+                    speakers={speakers}
+                    colorStyle={speakerColorStyle(speakerColors, null)}
+                    offsetLeft={overlay.offsetLeft}
+                    onAssign={to => onAssignUnknownTurns(meta.id, to).then(showSpeakerMergeUndo)}
+                    onClose={closeOverlay}
+                  />
+                )}
                 {overlay.kind === 'speaker' && overlayEntry && (
                   <SpeakerPopover
                     key={overlayEntry.speaker}
@@ -1081,9 +1111,11 @@ export function NoteView({
             {speakerMergeUndo && (
               <div className="note-notice">
                 <span role="status">
-                  {speakerMergeUndo.into === null
-                    ? <>Turns from <strong>{speakerMergeUndo.from}</strong> marked as unknown.</>
-                    : <><strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into}</strong>.</>}
+                  {speakerMergeUndo.from === null
+                    ? <>Unknown turns assigned to <strong>{speakerMergeUndo.into}</strong>.</>
+                    : speakerMergeUndo.into === null
+                      ? <>Turns from <strong>{speakerMergeUndo.from}</strong> marked as unknown.</>
+                      : <><strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into}</strong>.</>}
                 </span>
                 <span className="note-notice-actions">
                   <button

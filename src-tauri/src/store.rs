@@ -11,6 +11,7 @@ use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
 use crate::llm::SummaryDoc;
+use crate::local_time::{system_offset_at, OffsetAt};
 use crate::obsidian::ObsidianExport;
 
 /// Lifecycle status of a note.
@@ -2522,18 +2523,19 @@ fn format_mm_ss(total_seconds: f64) -> String {
     format!("{mm:02}:{ss:02}")
 }
 
-/// Formats `created_at` (an RFC3339 string) as `Month D, YYYY` — matching
-/// the frontend's `formatDateLabel`
-/// (`new Date(createdAt).toLocaleDateString('en-US', { month: 'long', day:
-/// 'numeric', year: 'numeric' })`). `time::Month`'s `Display` impl prints
-/// the full English month name, which is exactly what `month: 'long'`
-/// produces. Falls back to the raw string, unformatted, if it doesn't parse
-/// as RFC3339 — deliberately tolerant rather than panicking, since this
-/// feeds a rendered document rather than being load-bearing data.
-fn format_date_label(created_at: &str) -> String {
+/// Formats `created_at` (an RFC3339 string) as `Month D, YYYY` on the local
+/// calendar day, the day the app and the Obsidian file name show.
+/// `meta.json` stores UTC, so an evening meeting west of UTC would otherwise
+/// be dated the next day. Uses the UTC day when the local offset is not
+/// known, and the raw string when it does not parse: this feeds a rendered
+/// document, so it tolerates bad input.
+fn format_date_label(created_at: &str, offset_at: OffsetAt) -> String {
     let rfc3339 = &time::format_description::well_known::Rfc3339;
     match OffsetDateTime::parse(created_at, rfc3339) {
-        Ok(dt) => format!("{} {}, {}", dt.month(), dt.day(), dt.year()),
+        Ok(utc) => {
+            let dt = utc.to_offset(offset_at(utc).unwrap_or(UtcOffset::UTC));
+            format!("{} {}, {}", dt.month(), dt.day(), dt.year())
+        }
         Err(_) => created_at.to_string(),
     }
 }
@@ -2581,22 +2583,24 @@ pub fn render_note_md(
     summary: Option<&SummaryDoc>,
     transcript: &Transcript,
 ) -> String {
-    render_note_md_with(meta, summary, transcript, true)
+    render_note_md_with(meta, summary, transcript, true, system_offset_at)
 }
 
 /// [`render_note_md`] with the `## Transcript` section optional — the
-/// Obsidian export (`obsidian.rs`) leaves it out unless the user asked for it.
+/// Obsidian export (`obsidian.rs`) leaves it out unless the user asked for
+/// it — and the time zone of the `**Date:**` line given by the caller.
 pub fn render_note_md_with(
     meta: &NoteMeta,
     summary: Option<&SummaryDoc>,
     transcript: &Transcript,
     include_transcript: bool,
+    offset_at: OffsetAt,
 ) -> String {
     let minutes = (meta.duration_sec / 60.0).round() as i64;
     let mut out = format!(
         "# {}\n\n**Date:** {} · **Duration:** {} min · **Speakers:** {}",
         meta.title,
-        format_date_label(&meta.created_at),
+        format_date_label(&meta.created_at, offset_at),
         minutes,
         meta.speakers,
     );
@@ -5048,6 +5052,16 @@ mod tests {
 
     // --- render_note_md: golden strings -----------------------------------------
 
+    /// Shadows the real `render_note_md` so these tests date the note in
+    /// UTC whatever zone the machine is in.
+    fn render_note_md(
+        meta: &NoteMeta,
+        summary: Option<&SummaryDoc>,
+        transcript: &Transcript,
+    ) -> String {
+        render_note_md_with(meta, summary, transcript, true, |_| Some(UtcOffset::UTC))
+    }
+
     fn md_meta(overrides: impl FnOnce(&mut NoteMeta)) -> NoteMeta {
         let mut meta = NoteMeta {
             id: "20260521-140000".to_string(),
@@ -5136,6 +5150,21 @@ mod tests {
         let meta = md_meta(|m| m.created_at = "2026-01-03T09:00:00.000Z".to_string());
         let markdown = render_note_md(&meta, None, &Transcript::default());
         assert!(markdown.contains("**Date:** January 3, 2026"));
+    }
+
+    #[test]
+    fn render_note_md_dates_an_evening_meeting_west_of_utc_on_the_local_day() {
+        let meta = md_meta(|m| m.created_at = "2026-07-24T02:15:30Z".to_string());
+        let pacific: OffsetAt = |_| UtcOffset::from_hms(-7, 0, 0).ok();
+        let markdown = render_note_md_with(&meta, None, &Transcript::default(), true, pacific);
+        assert!(markdown.contains("**Date:** July 23, 2026"), "{markdown}");
+    }
+
+    #[test]
+    fn render_note_md_date_falls_back_to_utc_when_the_local_offset_is_unknown() {
+        let meta = md_meta(|m| m.created_at = "2026-07-24T02:15:30Z".to_string());
+        let markdown = render_note_md_with(&meta, None, &Transcript::default(), true, |_| None);
+        assert!(markdown.contains("**Date:** July 24, 2026"), "{markdown}");
     }
 
     #[test]

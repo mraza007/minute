@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:dev:sandbox": "tauri dev --config '{\"identifier\":\"dev.minute.app.sandbox\",\"bundle\":{\"macOS\":{\"frameworks\":[]}}}'",
     "test": "vitest run --passWithNoTests",
     "test:accessibility": "vitest run src/accessibility.test.tsx",
     "test:soak": "vitest run src/reliability/recordingSoak.test.ts",

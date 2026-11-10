@@ -320,6 +320,7 @@ export default function App() {
               onDismissSpeakerSuggestion={s.dismissSpeakerSuggestion}
               onMergeSpeakers={s.mergeSpeakers}
               onMarkSpeakerUnknown={s.markSpeakerUnknown}
+              onAssignUnknownTurns={s.assignUnknownTurns}
               onUndoSpeakerMerge={s.undoSpeakerMerge}
               onDeleteAudio={s.deleteSelectedNoteAudio}
               onStartRecording={openRecordingPreflight}

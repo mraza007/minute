@@ -5,6 +5,7 @@ mod diar;
 mod download;
 mod error;
 mod llm;
+mod local_time;
 mod obsidian;
 mod mentions;
 mod popup;

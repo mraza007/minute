@@ -2380,6 +2380,144 @@ struct RunningMeetingApp {
     capturing: Option<bool>,
 }
 
+/// The call-ended-inside-the-app check for one recording (issue #43). It
+/// follows the app that is using the microphone, never one that is only
+/// open, and reports `true` once that app has stopped capturing for
+/// [`CAPTURE_GONE_DEBOUNCE`].
+///
+/// | This poll | Followed app |
+/// |---|---|
+/// | The followed app is capturing | Unchanged |
+/// | It is not, and another app is capturing | The first such app, tracked from scratch |
+/// | No app is capturing | Unchanged, so its silence runs the debounce |
+///
+/// Until some app is seen capturing, nothing is followed and the check
+/// cannot fire. A followed app that quit, or whose capture cannot be read,
+/// never advances the debounce: quit detection owns the first case.
+#[derive(Debug, Default)]
+struct CaptureWatch {
+    /// The name of the app being followed.
+    app: Option<String>,
+    ever_seen: bool,
+    gone_since: Option<Instant>,
+}
+
+impl CaptureWatch {
+    fn tick(&mut self, recording: bool, running: &[RunningMeetingApp], now: Instant) -> bool {
+        if !recording {
+            *self = Self::default();
+            return false;
+        }
+        let state_of = |name: &str| {
+            let mut states = running
+                .iter()
+                .filter(|app| app.name == name)
+                .map(|app| app.capturing);
+            let first = states.next()?;
+            // Both Teams bundles share one name. Either one capturing counts.
+            if first == Some(true) || states.any(|state| state == Some(true)) {
+                Some(true)
+            } else {
+                first
+            }
+        };
+        let mut capture_now = self.app.as_deref().and_then(state_of);
+        if capture_now != Some(true) {
+            if let Some(on_the_mic) = running.iter().find(|app| app.capturing == Some(true)) {
+                *self = Self {
+                    app: Some(on_the_mic.name.clone()),
+                    ..Self::default()
+                };
+                capture_now = Some(true);
+            }
+        }
+        meeting_capture_gone_tick(
+            recording,
+            capture_now,
+            &mut self.ever_seen,
+            &mut self.gone_since,
+            now,
+        )
+    }
+}
+
+#[cfg(test)]
+mod capture_watch_tests {
+    use super::*;
+
+    fn app(name: &str, capturing: Option<bool>) -> RunningMeetingApp {
+        RunningMeetingApp {
+            name: name.to_string(),
+            capturing,
+        }
+    }
+
+    #[test]
+    fn a_call_ending_in_a_later_app_fires_while_an_earlier_app_sits_idle() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        let in_call = [app("Zoom", Some(false)), app("Microsoft Teams", Some(true))];
+        let call_over = [app("Zoom", Some(false)), app("Microsoft Teams", Some(false))];
+        assert!(!watch.tick(true, &in_call, base));
+        assert!(!watch.tick(true, &call_over, base));
+        assert!(watch.tick(true, &call_over, base + CAPTURE_GONE_DEBOUNCE));
+    }
+
+    #[test]
+    fn a_second_app_still_on_the_microphone_keeps_the_call_open() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        let both = [app("Zoom", Some(true)), app("Chrome", Some(true))];
+        let one_left = [app("Zoom", Some(false)), app("Chrome", Some(true))];
+        let none_left = [app("Zoom", Some(false)), app("Chrome", Some(false))];
+        assert!(!watch.tick(true, &both, base));
+        assert!(!watch.tick(true, &one_left, base));
+        assert!(!watch.tick(true, &one_left, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(!watch.tick(true, &none_left, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(watch.tick(true, &none_left, base + CAPTURE_GONE_DEBOUNCE * 3));
+    }
+
+    #[test]
+    fn an_app_that_quit_does_not_arm_the_check_through_another_app_that_is_joining() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
+        let joining = [app("Microsoft Teams", Some(false))];
+        assert!(!watch.tick(true, &joining, base));
+        assert!(!watch.tick(true, &joining, base + CAPTURE_GONE_DEBOUNCE * 2));
+    }
+
+    #[test]
+    fn unknown_capture_never_fires() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        let unknown = [app("Zoom", None), app("Microsoft Teams", None)];
+        assert!(!watch.tick(true, &unknown, base));
+        assert!(!watch.tick(true, &unknown, base + CAPTURE_GONE_DEBOUNCE * 2));
+    }
+
+    #[test]
+    fn capture_turning_unknown_after_it_was_seen_does_not_fire() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
+        assert!(!watch.tick(true, &[app("Zoom", None)], base));
+        assert!(!watch.tick(true, &[app("Zoom", None)], base + CAPTURE_GONE_DEBOUNCE * 2));
+    }
+
+    #[test]
+    fn a_new_recording_starts_from_scratch() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        let idle = [app("Zoom", Some(false))];
+        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
+        assert!(!watch.tick(true, &idle, base));
+        assert!(!watch.tick(false, &idle, base + CAPTURE_GONE_DEBOUNCE));
+        assert!(!watch.tick(true, &idle, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(!watch.tick(true, &idle, base + CAPTURE_GONE_DEBOUNCE * 4));
+    }
+}
+
 /// What a detection does once the debounce passes. "Do nothing" is not a
 /// mode: an app set to [`MeetingPolicy::Ignore`] is never selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2618,14 +2756,8 @@ fn run_detector_thread(
     // Issue #40's meeting-ended debounce state — see meeting_app_closed_tick.
     let mut meeting_app_ever_seen = false;
     let mut meeting_app_closed_since: Option<Instant> = None;
-    // Issue #43's call-ended-inside-the-app state — see meeting_capture_gone_tick.
-    // `meeting_capture_bundle` pins the state to ONE app: switching apps
-    // mid-recording (Zoom quits, Teams opens) must not let Zoom's
-    // capture-was-seen flag count Teams's still-joining state as "capture
-    // gone" and false-arm the countdown while the meeting continues.
-    let mut meeting_capture_ever_seen = false;
-    let mut meeting_capture_gone_since: Option<Instant> = None;
-    let mut meeting_capture_bundle: Option<String> = None;
+    // Issue #43's call-ended-inside-the-app state.
+    let mut capture_watch = CaptureWatch::default();
     // The app the last poll selected. The core hands its name back in
     // `Action::ShowPrompt`, and the mode decided with it applies.
     let mut selection: Option<MeetingSelection> = None;
@@ -2649,9 +2781,7 @@ fn run_detector_thread(
         if !recording {
             meeting_app_ever_seen = false;
             meeting_app_closed_since = None;
-            meeting_capture_ever_seen = false;
-            meeting_capture_gone_since = None;
-            meeting_capture_bundle = None;
+            capture_watch = CaptureWatch::default();
         }
 
         // Same every-iteration polling shape as the recording-state check
@@ -2680,14 +2810,12 @@ fn run_detector_thread(
                 if mic_active {
                     let running = macos::running_meeting_apps();
                     let capturing = macos::input_capturing_bundles();
-                    let app_detail = running.first();
                     // Issue #40: a meeting app seen during this recording
                     // that has now been gone for the debounce window means
                     // the meeting ended. Issue #43: so does the app still
                     // RUNNING but no longer capturing the mic (a Teams/
-                    // Slack call ends without the app quitting) — checked
-                    // per-process via CoreAudio, bundle-prefix matched so
-                    // Electron helper processes count. Either level is
+                    // Slack call ends without the app quitting) — see
+                    // `CaptureWatch`. Either level is
                     // pushed into the active recording's shared state,
                     // where the auto-stop ticker reads it. Poll-and-push
                     // every tick, same shape as the SetMinuteRecording
@@ -2695,36 +2823,11 @@ fn run_detector_thread(
                     // recording ending pushes `false` right back.
                     let quit_closed = meeting_app_closed_tick(
                         recording,
-                        app_detail.is_some(),
+                        !running.is_empty(),
                         &mut meeting_app_ever_seen,
                         &mut meeting_app_closed_since,
                         Instant::now(),
                     );
-                    // The capture state belongs to one app — a different
-                    // allowlisted app taking over mid-recording starts the
-                    // seen/gone tracking from scratch.
-                    let current_bundle = app_detail.map(|(_, bundle)| bundle.clone());
-                    if current_bundle.is_some() && current_bundle != meeting_capture_bundle {
-                        meeting_capture_ever_seen = false;
-                        meeting_capture_gone_since = None;
-                        meeting_capture_bundle = current_bundle;
-                    }
-                    let capture_now = if recording {
-                        app_detail.and_then(|(_, bundle)| {
-                            macos::app_is_capturing(capturing.as_deref(), bundle)
-                        })
-                    } else {
-                        None
-                    };
-                    let capture_gone = meeting_capture_gone_tick(
-                        recording,
-                        capture_now,
-                        &mut meeting_capture_ever_seen,
-                        &mut meeting_capture_gone_since,
-                        Instant::now(),
-                    );
-                    crate::audio::set_meeting_app_closed(&recorder, quit_closed || capture_gone);
-                    let policies = settings::lock_settings(&settings).meeting_policies;
                     let observed: Vec<RunningMeetingApp> = running
                         .iter()
                         .map(|(name, bundle)| RunningMeetingApp {
@@ -2732,6 +2835,9 @@ fn run_detector_thread(
                             capturing: macos::app_is_capturing(capturing.as_deref(), bundle),
                         })
                         .collect();
+                    let capture_gone = capture_watch.tick(recording, &observed, Instant::now());
+                    crate::audio::set_meeting_app_closed(&recorder, quit_closed || capture_gone);
+                    let policies = settings::lock_settings(&settings).meeting_policies;
                     selection = select_meeting_app(&policies, &observed);
                     core.process(
                         DetectorEvent::Tick {

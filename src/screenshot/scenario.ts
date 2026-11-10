@@ -353,7 +353,8 @@ async function driveNote(params: URLSearchParams): Promise<void> {
 
   // `?rename=<speaker>` opens that speaker's popover; `&mergeInto=<speaker>`
   // goes on to merge, and `&speakerMerge=done` confirms it. `&markUnknown=done`
-  // marks that speaker's turns as unknown instead.
+  // marks that speaker's turns as unknown instead, and `&assignUnknown=open`
+  // then opens the Unknown speaker chip's popover.
   const rename = params.get('rename')
   if (rename) {
     const chip = await waitForSelector<HTMLButtonElement>(`.speaker-chip[data-speaker="${rename}"]`)
@@ -375,6 +376,11 @@ async function driveNote(params: URLSearchParams): Promise<void> {
     if (params.get('markUnknown') === 'done') {
       findButtonByText('Mark these turns as unknown')?.click()
       await waitFor(() => findButtonByText('Undo') !== undefined)
+      if (params.get('assignUnknown') === 'open') {
+        const unknownChip = await waitForSelector<HTMLButtonElement>('.speaker-chip[aria-label="Assign unknown turns"]')
+        unknownChip?.click()
+        await waitFor(() => document.querySelector('.speaker-popover') !== null)
+      }
     }
   }
 

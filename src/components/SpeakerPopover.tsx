@@ -1,5 +1,5 @@
-import { useRef, useState, type CSSProperties } from 'react'
-import type { SpeakerRosterEntry } from '../state/adapters'
+import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { UNKNOWN_SPEAKER_LABEL, type SpeakerRosterEntry } from '../state/adapters'
 
 export interface SpeakerPopoverProps {
   /** The speaker being edited: its label as the transcript shows it now, its turn count, and any unconfirmed voice-profile match. */
@@ -59,26 +59,7 @@ export function SpeakerPopover({
   }
 
   return (
-    <>
-      <div className="context-menu-backdrop" onMouseDown={pending ? undefined : onClose} />
-      <div
-        className="speaker-popover"
-        role="dialog"
-        aria-label={`Rename ${speaker}`}
-        style={{ left: offsetLeft }}
-        onKeyDown={event => {
-          if (event.key === 'Escape' && !pending) {
-            event.preventDefault()
-            onClose()
-          }
-        }}
-      >
-        <form
-          onSubmit={event => {
-            event.preventDefault()
-            submitRename()
-          }}
-        >
+    <PopoverFrame label={`Rename ${speaker}`} offsetLeft={offsetLeft} pending={pending} onSubmit={submitRename} onClose={onClose}>
           <div className="speaker-popover-body">
             <div className="speaker-popover-who">
               <span className="speaker-dot" style={colorStyle} aria-hidden="true" />
@@ -162,6 +143,119 @@ export function SpeakerPopover({
             <button type="button" className="toolbar-btn" disabled={pending} onClick={onClose}>Cancel</button>
             <button type="submit" className="toolbar-btn" data-variant="primary" disabled={!trimmed || pending}>Rename</button>
           </div>
+    </PopoverFrame>
+  )
+}
+
+export interface UnknownSpeakerPopoverProps {
+  /** How many turns have no speaker. */
+  turns: number
+  /** The note's named speakers: the turns can go to any of them. */
+  speakers: string[]
+  colorStyle: CSSProperties
+  offsetLeft: number
+  /** Resolves once the turns are saved under `to`. A rejection keeps the popover open for a retry. */
+  onAssign: (to: string) => Promise<void>
+  onClose: () => void
+}
+
+/** The select option for "a new name". A speaker label is never empty, so it cannot collide with one. */
+const NEW_NAME = ''
+
+/**
+ * Gives a note's unknown turns to one of its speakers or to a new name.
+ * Unknown is nobody, so it has no rename, merge, or mark-unknown rows.
+ */
+export function UnknownSpeakerPopover({ turns, speakers, colorStyle, offsetLeft, onAssign, onClose }: UnknownSpeakerPopoverProps) {
+  const [existing, setExisting] = useState(speakers[0] ?? NEW_NAME)
+  const [name, setName] = useState('')
+  const [pending, setPending] = useState(false)
+  const to = existing === NEW_NAME ? name.trim() : existing
+
+  function assign() {
+    if (pending || !to) return
+    setPending(true)
+    onAssign(to)
+      .then(onClose)
+      .catch(() => {
+        // The shared error banner owns the message.
+      })
+      .finally(() => setPending(false))
+  }
+
+  return (
+    <PopoverFrame label="Assign unknown turns" offsetLeft={offsetLeft} pending={pending} onSubmit={assign} onClose={onClose}>
+      <div className="speaker-popover-body">
+        <div className="speaker-popover-who">
+          <span className="speaker-dot" style={colorStyle} aria-hidden="true" />
+          <span>{UNKNOWN_SPEAKER_LABEL} · {turns} {turns === 1 ? 'turn' : 'turns'}</span>
+        </div>
+        {speakers.length > 0 && (
+          <select
+            autoFocus
+            aria-label="Assign unknown turns to"
+            value={existing}
+            disabled={pending}
+            onChange={event => setExisting(event.target.value)}
+          >
+            {speakers.map(speaker => <option key={speaker} value={speaker}>{speaker}</option>)}
+            <option value={NEW_NAME}>A new name…</option>
+          </select>
+        )}
+        {existing === NEW_NAME && (
+          <input
+            autoFocus
+            className="speaker-popover-input"
+            aria-label="New speaker name"
+            placeholder="Name"
+            value={name}
+            disabled={pending}
+            onChange={event => setName(event.target.value)}
+          />
+        )}
+        <p>The name replaces {UNKNOWN_SPEAKER_LABEL} on these turns in the transcript.</p>
+      </div>
+      <div className="speaker-popover-foot">
+        <button type="button" className="toolbar-btn" disabled={pending} onClick={onClose}>Cancel</button>
+        <button type="submit" className="toolbar-btn" data-variant="primary" disabled={!to || pending}>
+          {pending ? 'Assigning…' : 'Assign'}
+        </button>
+      </div>
+    </PopoverFrame>
+  )
+}
+
+/** The shell both popovers share. Escape or a press outside closes it, unless a save is pending. */
+function PopoverFrame({ label, offsetLeft, pending, onSubmit, onClose, children }: {
+  label: string
+  offsetLeft: number
+  pending: boolean
+  onSubmit: () => void
+  onClose: () => void
+  children: ReactNode
+}) {
+  return (
+    <>
+      <div className="context-menu-backdrop" onMouseDown={pending ? undefined : onClose} />
+      <div
+        className="speaker-popover"
+        role="dialog"
+        aria-label={label}
+        style={{ left: offsetLeft }}
+        onKeyDown={event => {
+          if (event.key === 'Escape' && !pending) {
+            event.preventDefault()
+            onClose()
+          }
+        }}
+      >
+        <form
+          onSubmit={event => {
+            event.preventDefault()
+            onSubmit()
+          }}
+        >
+          {children}
         </form>
       </div>
     </>

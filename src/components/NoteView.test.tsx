@@ -92,6 +92,14 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
       summaryFingerprint: null,
       checksum: 'unknown-checksum',
     }),
+    onAssignUnknownTurns: vi.fn().mockResolvedValue({
+      from: null,
+      into: 'Speaker 1',
+      segmentIndices: [0],
+      summaryMentions: [],
+      summaryFingerprint: null,
+      checksum: 'assign-checksum',
+    }),
     onUndoSpeakerMerge: vi.fn().mockResolvedValue(undefined),
     onDeleteAudio: vi.fn().mockResolvedValue(undefined),
     onStartRecording: vi.fn(),
@@ -394,6 +402,88 @@ describe('NoteView', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename Speaker 2' })).not.toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
     await waitFor(() => expect(onUndoSpeakerMerge).toHaveBeenCalledWith(meta.id, undo))
+  })
+
+  it('shows a grey Unknown speaker chip only when the note has unknown turns', () => {
+    const meta = noteFixture()
+    const { rerender } = render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: twoSpeakers })} />)
+    expect(screen.queryByRole('button', { name: 'Assign unknown turns' })).not.toBeInTheDocument()
+
+    const onlyUnknown: StoredSegment[] = [{ speaker: null, start: 8, end: 9, text: 'Mystery voice.' }]
+    rerender(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: onlyUnknown })} />)
+    const chip = screen.getByRole('button', { name: 'Assign unknown turns' })
+    expect(chip).toHaveTextContent('Unknown speaker')
+    expect(chip.style.getPropertyValue('--speaker-color')).toBe('var(--ink-muted)')
+    expect(screen.queryByRole('button', { name: 'Rename speakers' })).not.toBeInTheDocument()
+  })
+
+  it('assigns the unknown turns to one of the note\'s speakers and undoes it', async () => {
+    const undo = {
+      from: null,
+      into: 'Speaker 2',
+      segmentIndices: [2],
+      pinnedUnknown: [],
+      summaryMentions: [],
+      summaryFingerprint: null,
+      checksum: 'assign-checksum',
+    }
+    const onAssignUnknownTurns = vi.fn().mockResolvedValue(undo)
+    const onUndoSpeakerMerge = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture()
+    const withUnknown: StoredSegment[] = [...twoSpeakers, { speaker: null, start: 8, end: 9, text: 'Mystery voice.' }]
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: withUnknown, onAssignUnknownTurns, onUndoSpeakerMerge })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Assign unknown turns' }))
+    const popover = within(screen.getByRole('dialog', { name: 'Assign unknown turns' }))
+    expect(popover.getByText('Unknown speaker · 1 turn')).toBeInTheDocument()
+    expect(popover.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument()
+    expect(popover.queryByRole('button', { name: 'Mark these turns as unknown' })).not.toBeInTheDocument()
+    fireEvent.change(popover.getByRole('combobox', { name: 'Assign unknown turns to' }), { target: { value: 'Speaker 2' } })
+    fireEvent.click(popover.getByRole('button', { name: 'Assign' }))
+
+    await waitFor(() => expect(onAssignUnknownTurns).toHaveBeenCalledWith(meta.id, 'Speaker 2'))
+    expect(await screen.findByText(/Unknown turns assigned/)).toHaveTextContent('Unknown turns assigned to Speaker 2.')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Assign unknown turns' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(onUndoSpeakerMerge).toHaveBeenCalledWith(meta.id, undo))
+  })
+
+  it('gives the unknown turns a new name', async () => {
+    const onAssignUnknownTurns = vi.fn().mockResolvedValue({
+      from: null,
+      into: 'Priya Shah',
+      segmentIndices: [0],
+      pinnedUnknown: [],
+      summaryMentions: [],
+      summaryFingerprint: null,
+      checksum: 'assign-checksum',
+    })
+    const meta = noteFixture()
+    const onlyUnknown: StoredSegment[] = [{ speaker: null, start: 8, end: 9, text: 'Mystery voice.' }]
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: onlyUnknown, onAssignUnknownTurns })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Assign unknown turns' }))
+    const popover = within(screen.getByRole('dialog', { name: 'Assign unknown turns' }))
+    expect(popover.getByRole('button', { name: 'Assign' })).toBeDisabled()
+    fireEvent.change(popover.getByRole('textbox', { name: 'New speaker name' }), { target: { value: ' Priya Shah ' } })
+    fireEvent.click(popover.getByRole('button', { name: 'Assign' }))
+
+    await waitFor(() => expect(onAssignUnknownTurns).toHaveBeenCalledWith(meta.id, 'Priya Shah'))
+    expect(await screen.findByText(/Unknown turns assigned/)).toHaveTextContent('Unknown turns assigned to Priya Shah.')
+  })
+
+  it('keeps the unknown popover open for a retry when the assignment fails', async () => {
+    const onAssignUnknownTurns = vi.fn().mockRejectedValue(new Error('disk full'))
+    const meta = noteFixture()
+    const withUnknown: StoredSegment[] = [...twoSpeakers, { speaker: null, start: 8, end: 9, text: 'Mystery voice.' }]
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: withUnknown, onAssignUnknownTurns })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Assign unknown turns' }))
+    const popover = within(screen.getByRole('dialog', { name: 'Assign unknown turns' }))
+    fireEvent.click(popover.getByRole('button', { name: 'Assign' }))
+
+    await waitFor(() => expect(onAssignUnknownTurns).toHaveBeenCalledWith(meta.id, 'Speaker 1'))
+    await waitFor(() => expect(popover.getByRole('button', { name: 'Assign' })).toBeEnabled())
   })
 
   it('keeps the popover open for a retry when marking turns unknown fails', async () => {

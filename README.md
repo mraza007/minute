@@ -379,7 +379,8 @@ npm run tauri build
 
 ```bash
 npm install
-npm run tauri dev   # run the app with hot reload
+npm run tauri dev   # run the app with hot reload, on your real library
+npm run tauri:dev:sandbox   # same, with a separate empty library and settings
 npm test            # frontend tests (vitest)
 npm run test:rust   # Rust backend tests (cargo test)
 npm run lint        # oxlint

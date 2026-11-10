@@ -25,6 +25,7 @@ const scenarios = [
   { name: 'note-markdown-dark', url: 'screenshot-app.html?state=note&theme=dark&menu=markdown', width: 1440, height: 900 },
   { name: 'note-speaker-rename', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&suggest=1', width: 1440, height: 900 },
   { name: 'note-speaker-unknown', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&markUnknown=done&scroll=transcript', width: 1440, height: 900 },
+  { name: 'note-unknown-assign', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&markUnknown=done&assignUnknown=open', width: 1440, height: 900 },
   { name: 'note-summary-queued', url: 'screenshot-app.html?state=note&theme=light&summary=queued', width: 1440, height: 900 },
   { name: 'note-summary-queued-dark', url: 'screenshot-app.html?state=note&theme=dark&summary=queued', width: 1440, height: 900 },
   { name: 'recording-reduced-motion', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced', width: 1440, height: 900 },

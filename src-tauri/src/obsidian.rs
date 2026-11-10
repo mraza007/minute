@@ -24,6 +24,7 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::error::Result;
 use crate::llm::SummaryDoc;
 use crate::settings::{lock_settings, ObsidianSettings, SharedSettings};
+use crate::local_time::{system_offset_at, OffsetAt};
 use crate::store::{lock_store, render_note_md_with, NoteMeta, SharedStore, Transcript};
 
 pub const DEFAULT_FOLDER: &str = "Meetings";
@@ -90,30 +91,6 @@ pub fn sanitize_file_name(raw: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-/// The UTC offset in force at an instant, or `None` when it is not known.
-pub type OffsetAt = fn(OffsetDateTime) -> Option<UtcOffset>;
-
-/// The system time zone's offset at `at`, daylight time included. This is
-/// the zone the app's own date labels use.
-///
-/// It asks Foundation because `time`'s local-offset lookup refuses to run in
-/// a process with more than one thread on Unix, so it would fail here every
-/// time.
-#[cfg(target_os = "macos")]
-pub fn system_offset_at(at: OffsetDateTime) -> Option<UtcOffset> {
-    use objc2_foundation::{NSDate, NSTimeZone};
-    objc2::rc::autoreleasepool(|_| {
-        let date = NSDate::dateWithTimeIntervalSince1970(at.unix_timestamp() as f64);
-        let seconds = NSTimeZone::localTimeZone().secondsFromGMTForDate(&date);
-        UtcOffset::from_whole_seconds(i32::try_from(seconds).ok()?).ok()
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn system_offset_at(_at: OffsetDateTime) -> Option<UtcOffset> {
-    None
 }
 
 /// `YYYY-MM-DD` of the note's creation as a local calendar day, the day the
@@ -216,7 +193,7 @@ pub fn render_obsidian_md(
     transcript: &Transcript,
     offset_at: OffsetAt,
 ) -> String {
-    let body = render_note_md_with(meta, summary, transcript, cfg.include_transcript);
+    let body = render_note_md_with(meta, summary, transcript, cfg.include_transcript, offset_at);
     let mut out = if cfg.add_properties {
         render_frontmatter(meta, transcript, offset_at)
     } else {
@@ -597,6 +574,14 @@ mod tests {
         assert_eq!(render_file_stem("{date}", &meta, pacific), "2026-07-23");
         assert!(render_frontmatter(&meta, &Transcript::default(), pacific)
             .starts_with("---\ndate: 2026-07-23\n"));
+        let cfg = ObsidianSettings {
+            add_properties: false,
+            ..ObsidianSettings::default()
+        };
+        assert!(
+            render_obsidian_md(&cfg, &meta, None, &Transcript::default(), pacific)
+                .contains("**Date:** July 23, 2026")
+        );
     }
 
     #[test]
@@ -605,17 +590,6 @@ mod tests {
         let mut meta = meta_of(&f);
         meta.created_at = "2026-07-24T02:15:30Z".to_string();
         assert_eq!(render_file_stem("{date}", &meta, |_| None), "2026-07-24");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_system_offset_is_known_in_a_process_with_many_threads() {
-        let others: Vec<_> = (0..4)
-            .map(|_| std::thread::spawn(|| system_offset_at(OffsetDateTime::now_utc())))
-            .collect();
-        for other in others {
-            assert!(other.join().unwrap().is_some());
-        }
     }
 
     #[test]
