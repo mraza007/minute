@@ -2570,10 +2570,14 @@ pub fn stop_recording(
     }
 
     // Capture is factually over at this point (stream dropped, writer
-    // joined) no matter how the store writes below go — so the badge
-    // comes off *before* the fallible `finalize_note`, or a full-disk
-    // error would leave "REC" showing with nothing recording.
+    // joined) no matter how the store writes below go — so the badge and
+    // the "Recording <app>" pill come off *before* the fallible
+    // `finalize_note`, or a full-disk error would leave them showing with
+    // nothing recording.
     set_dock_recording_indicator(&app, false);
+    if matches!(origin, RecordingOrigin::Automatic { .. }) {
+        crate::popup::hide_auto_started(&app);
+    }
 
     let meta = match lock_store(&store).finalize_note(&note_id, duration_sec, 1) {
         Ok(meta) => meta,
@@ -2641,9 +2645,6 @@ pub fn stop_recording(
         final_input,
         0,
     );
-    if matches!(origin, RecordingOrigin::Automatic { .. }) {
-        crate::popup::hide_auto_started(&app);
-    }
 
     // Issue #35: with the transcript complete and the note finalized,
     // start whatever deferred itself behind this recording — first, so
