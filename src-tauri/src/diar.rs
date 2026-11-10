@@ -688,7 +688,10 @@ fn apply_and_suggest_speaker_names(
     auto_apply: bool,
 ) -> crate::error::Result<()> {
     let guard = lock_store(store);
-    let saved = crate::profiles::load(&guard.voice_profiles_path());
+    let saved: Vec<_> = crate::profiles::load(&guard.voice_profiles_path())
+        .into_iter()
+        .filter(|profile| !crate::store::is_reserved_speaker_name(&profile.name))
+        .collect();
     let mut best_label_for_name: BTreeMap<String, (String, f32)> = BTreeMap::new();
     if !saved.is_empty() {
         for (label, embedding) in embeddings {
@@ -927,6 +930,19 @@ mod tests {
         let suggestion = &meta.speaker_suggestions["Speaker 1"];
         assert_eq!(suggestion.name, "Sarah");
         assert!(suggestion.similarity > 0.9);
+    }
+
+    #[test]
+    fn a_voice_saved_as_unknown_speaker_is_never_offered_as_a_name() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("unknown speaker", &unit(&[1.0, 0.0, 0.0]))]);
+
+        let embeddings = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.0, 0.0]))]);
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, true).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert!(meta.speaker_suggestions.is_empty());
+        assert!(meta.speaker_aliases.is_empty());
     }
 
     #[test]

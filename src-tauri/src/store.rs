@@ -141,6 +141,13 @@ fn default_sources() -> Vec<String> {
 /// refuses it as a name, so it never stands for a real person.
 pub const UNKNOWN_SPEAKER_LABEL: &str = "Unknown speaker";
 
+/// Whether `name` is [`UNKNOWN_SPEAKER_LABEL`], in any case. Minute 1.12.1
+/// let a user give that name to a speaker or a saved voice; here it never
+/// names a person.
+pub fn is_reserved_speaker_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL)
+}
+
 /// Who a transcript turn is attributed to (issue #49). `Unknown` is speech
 /// Minute could not place, kept apart from every name so rename, merge,
 /// re-runs, and voice-profile naming can never turn it into one. The app
@@ -162,6 +169,15 @@ impl Speaker {
 
     pub fn display(&self) -> &str {
         self.name().unwrap_or(UNKNOWN_SPEAKER_LABEL)
+    }
+
+    /// A name read from stored data: a transcript turn, or an alias.
+    pub fn from_stored(name: String) -> Self {
+        if is_reserved_speaker_name(&name) {
+            Speaker::Unknown
+        } else {
+            Speaker::Named(name)
+        }
     }
 }
 
@@ -263,12 +279,7 @@ impl From<&Transcript> for TranscriptFile {
 impl From<TranscriptFile> for Transcript {
     fn from(file: TranscriptFile) -> Self {
         let segments = file.segments.into_iter().map(|segment| StoredSegment {
-            speaker: match segment.speaker {
-                Some(name) if !name.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL) => {
-                    Speaker::Named(name)
-                }
-                _ => Speaker::Unknown,
-            },
+            speaker: segment.speaker.map_or(Speaker::Unknown, Speaker::from_stored),
             start: segment.start,
             end: segment.end,
             text: segment.text,
@@ -908,7 +919,7 @@ impl Store {
     pub fn append_segment(&self, id: &str, mut segment: StoredSegment) -> Result<()> {
         if let (Ok(meta), Some(raw)) = (self.read_meta(id), segment.speaker.name()) {
             if let Some(alias) = meta.speaker_aliases.get(raw) {
-                segment.speaker = Speaker::Named(alias.clone());
+                segment.speaker = Speaker::from_stored(alias.clone());
             }
         }
         let mut transcript = self.read_transcript(id)?;
@@ -1400,7 +1411,7 @@ impl Store {
                 "speaker name cannot be empty".to_string(),
             ));
         }
-        if to.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL) {
+        if is_reserved_speaker_name(to) {
             return Err(MinuteError::Other(format!(
                 "\"{UNKNOWN_SPEAKER_LABEL}\" is reserved; mark the turns as unknown instead"
             )));
@@ -1498,7 +1509,7 @@ impl Store {
                 "speaker name cannot be empty".to_string(),
             ));
         }
-        if to.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL) {
+        if is_reserved_speaker_name(to) {
             return Err(MinuteError::Other(format!(
                 "\"{UNKNOWN_SPEAKER_LABEL}\" is reserved; choose a speaker name"
             )));
@@ -1705,7 +1716,7 @@ impl Store {
             segment.speaker = match label {
                 _ if meta.unknown_turns.contains(&index) => Speaker::Unknown,
                 Speaker::Named(raw) => {
-                    Speaker::Named(meta.speaker_aliases.get(raw).unwrap_or(raw).clone())
+                    Speaker::from_stored(meta.speaker_aliases.get(raw).unwrap_or(raw).clone())
                 }
                 Speaker::Unknown => Speaker::Unknown,
             };
@@ -5996,6 +6007,41 @@ mod tests {
 
         let wire = serde_json::to_value(&store.read_transcript(&id).unwrap()).unwrap();
         assert!(wire["segments"][0]["speaker"].is_null(), "the app still gets null");
+    }
+
+    #[test]
+    fn an_alias_to_the_unknown_label_from_1_12_1_makes_unknown_turns() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = store.create_note_now("Sync", "whisper-small").unwrap().id;
+        let turn = |speaker: &str, start: f64| StoredSegment {
+            speaker: speaker.into(),
+            start,
+            end: start + 1.0,
+            text: "Hi.".into(),
+        };
+        store
+            .write_transcript(
+                &id,
+                &Transcript {
+                    segments: vec![turn("Speaker 1", 0.0), turn("Speaker 2", 1.0)],
+                },
+            )
+            .unwrap();
+        let mut meta = store.read_meta(&id).unwrap();
+        meta.speaker_aliases
+            .insert("Speaker 2".into(), "Unknown Speaker".into());
+        store.write_meta(&meta).unwrap();
+
+        let meta = store
+            .update_segment_speakers(&id, &[Speaker::from("Speaker 1"), Speaker::from("Speaker 2")])
+            .unwrap();
+
+        assert_eq!(meta.speakers, 1);
+        assert_eq!(
+            speakers_in(&store, &id),
+            vec![Speaker::from("Speaker 1"), Speaker::Unknown]
+        );
     }
 
     #[test]
