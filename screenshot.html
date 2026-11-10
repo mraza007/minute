@@ -19,22 +19,22 @@
          that fixed it. -->
     <title>Minute — marketing capture frame</title>
     <style>
-      /* Kept in step with src/index.css's ramp — the backdrop is one shade
+      /* Kept in step with src/index.css's ramp. The backdrop is one shade
          off the app's own --canvas so the window still separates from it,
-         and the accent blob matches --accent exactly. */
+         and the accent blob matches --accent. */
       :root {
-        --backdrop-base: #e3dac6;
-        --blob-accent: rgba(200, 65, 42, 0.2);
-        --blob-cream: rgba(250, 244, 230, 0.7);
-        --blob-gray: rgba(150, 138, 112, 0.16);
-        --window-border: rgba(33, 29, 24, 0.12);
+        --backdrop-base: #dbe4f1;
+        --blob-accent: rgba(23, 105, 246, 0.2);
+        --blob-tint: rgba(232, 240, 255, 0.75);
+        --blob-gray: rgba(120, 140, 172, 0.18);
+        --window-border: rgba(23, 32, 51, 0.12);
       }
       html[data-theme='dark'] {
-        --backdrop-base: #100e09;
-        --blob-accent: rgba(224, 90, 66, 0.16);
-        --blob-cream: rgba(90, 76, 54, 0.28);
-        --blob-gray: rgba(70, 62, 50, 0.22);
-        --window-border: rgba(240, 233, 219, 0.09);
+        --backdrop-base: #070a10;
+        --blob-accent: rgba(23, 105, 246, 0.2);
+        --blob-tint: rgba(27, 42, 69, 0.5);
+        --blob-gray: rgba(38, 48, 65, 0.4);
+        --window-border: rgba(223, 232, 247, 0.1);
       }
 
       * {
@@ -50,11 +50,9 @@
         background: var(--backdrop-base);
       }
 
-      /* Soft blurred-blob backdrop — warm paper light, not a SaaS gradient:
-         see .impeccable.md's "paper, not glass" and the anti-references
-         list (no purple/cyan glassmorphism). Blobs are plain absolutely-
-         positioned divs, heavily blurred, well outside the window chrome so
-         nothing sharp-edged shows through. */
+      /* Soft blurred-blob backdrop in the app's cool blue-and-white palette.
+         Blobs are plain absolutely-positioned divs, heavily blurred, well
+         outside the window chrome so nothing sharp-edged shows through. */
       .blob {
         position: absolute;
         border-radius: 50%;
@@ -68,12 +66,12 @@
         left: -220px;
         background: var(--blob-accent);
       }
-      .blob-cream {
+      .blob-tint {
         width: 1000px;
         height: 1000px;
         bottom: -420px;
         right: -280px;
-        background: var(--blob-cream);
+        background: var(--blob-tint);
       }
       .blob-gray {
         width: 760px;
@@ -127,12 +125,12 @@
         border: none;
       }
 
-      /* Fake traffic lights — the real app reserves 76px of left padding in
-         its title bar (see TitleBar.tsx's `padding: '0 16px 0 76px'`) for
-         native macOS traffic lights, which only exist in the real windowed
-         app (Tauri's overlay title bar draws them, not any DOM the harness
-         can render). This overlay reproduces them at the same position so
-         the capture looks like a real app window instead of a browser tab. */
+      /* Fake traffic lights. The real app uses an overlay title bar, so macOS
+         draws them over the sidebar's top strip (.sidebar-top reserves it).
+         They exist only in the windowed app, not in any DOM the harness can
+         render. This overlay reproduces them at the position set in
+         tauri.conf.json so the capture looks like a real app window instead
+         of a browser tab. */
       .traffic-lights {
         position: absolute;
         top: 20px;
@@ -162,7 +160,7 @@
          a panel that floats over *whatever* the user's looking at (per
          popup.rs: top-center of the active display, non-activating). There's
          no real "app window" to depict behind it honestly, so this reuses
-         the same paper-warm backdrop as the other six shots (keeps the set
+         the same cool backdrop as the other shots (keeps the set
          visually one family) plus a plain, unbranded glassy rectangle
          standing in for "some call window behind it" — no logos, no invented
          chrome. The pill is the subject of this shot, not the rectangle: it
@@ -216,11 +214,13 @@
          keeps the scale expanding downward from a fixed top anchor instead
          of also pushing the top edge upward, which made the vertical
          placement fiddly to reason about. */
+      /* The pill is about 343px wide and sits at the left of its 486px frame,
+         so the 127px shift centres the pill itself, not the frame. */
       .pill-frame-wrap {
         position: absolute;
         top: 150px;
         left: 50%;
-        transform: translateX(-50%) scale(2);
+        transform: translateX(calc(-50% + 127px)) scale(2);
         transform-origin: top center;
         width: 486px;
         height: 88px;
@@ -237,7 +237,7 @@
   </head>
   <body>
     <div class="blob blob-accent"></div>
-    <div class="blob blob-cream"></div>
+    <div class="blob blob-tint"></div>
     <div class="blob blob-gray"></div>
     <div class="grain"></div>
     <div class="stage">

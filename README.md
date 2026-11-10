@@ -5,11 +5,11 @@
 **Meeting notes that never leave your Mac.**
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
-![version](https://img.shields.io/badge/version-1.12.1-c8412a)
+![version](https://img.shields.io/badge/version-1.12.1-1769f6)
 
 <a href="https://www.producthunt.com/products/minute-4?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-minute-4" target="_blank" rel="noopener noreferrer"><img alt="Minute - Meeting notes that never leave your Mac | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1213983&amp;theme=light&amp;t=1785901198362"></a>
 
-![Minute — meeting overview with summary, decisions, action items, markers, and local ask](screenshots/hero.png)
+![Minute — a note with its summary, decisions, action items, and transcript on one page](screenshots/hero.png)
 
 **[⬇ Download Minute 1.12.1 for Apple Silicon](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-arm64.zip)**
 
@@ -40,14 +40,18 @@ the first place.
 When another app starts using your microphone — Zoom, Teams, Webex, Slack,
 FaceTime, Discord, or a browser call — Minute notices and offers a quiet
 pill above whatever you're looking at: one click starts recording, one
-click (or 12 seconds of silence) dismisses it. It's off by default; turn
-it on in Settings.
+click dismisses it, and it goes away on its own after 12 seconds. It's off
+by default; turn it on in Settings → Recording.
 
-Each app has its own policy: ask (the pill), record automatically, or do
-nothing. Everything starts as ask. With "record automatically" Minute
-starts the recording the moment the meeting is detected and shows a small
-"Recording Teams" pill with a Stop button. Auto-stop still ends it when
-the meeting ends.
+Each app has its own policy. Pick **Ask me**, **Record automatically**, or
+**Do nothing** for Zoom, Microsoft Teams, Webex, Slack, FaceTime, Discord,
+and calls in a browser. Everything starts as Ask me. With Record
+automatically, Minute starts the recording the moment it detects the
+meeting and shows a small "Recording Teams" pill with a Stop button. The
+recording view says it started automatically and links to the setting. Auto-stop
+still ends the recording when the meeting ends.
+
+![Minute — Settings → Recording, with a policy for each meeting app](screenshots/automatic.png)
 
 This is the honest version of what that pill is doing: it checks whether
 the default microphone is in use and which apps are currently running —
@@ -66,17 +70,17 @@ process state, never audio.
 
 ## Recording, transcribed as it happens
 
-Before recording, Minute shows exactly what it will capture: the real current
-microphone, a live input meter, system-audio availability, and a transcription
-mode with an honest fit label for this Mac. Capture sources stay visible
-throughout the meeting, so there is never any ambiguity about where the input
-is coming from.
+Before recording, Minute shows exactly what it will capture: the microphone
+you pick, a live input meter, system-audio availability, and a transcription
+mode with an honest fit label for this Mac. The recording view names the
+sources for the whole meeting, so there is never any ambiguity about where
+the input is coming from.
 
 ![Minute — recording preflight with microphone, input level, system audio, and model fit](screenshots/preflight.png)
 
-Once recording starts, Whisper transcribes in real time, grouped by speaker
-and scrolling live as the meeting runs. Rename the working title, pause and
-resume, or add timestamped markers with `⌘⇧M`. Minute calls out prolonged
+Once recording starts, Whisper transcribes in real time and scrolls live as
+the meeting runs. Rename the working title, pause and resume with Space,
+add timestamped markers with `⌘⇧M`, or stop with `⌘↵`. Minute calls out prolonged
 silence, clipping, a disconnected input, or transcription lag without hiding
 the audio capture that is still safe.
 
@@ -118,7 +122,7 @@ words doesn't fool the quiet timer either.
 
 ## Who said what
 
-Turn on **Detect speakers** (Settings → Recording) and every recording's
+Turn on **Detect speakers** (Settings → Speakers) and every recording's
 turns get labeled by voice — Speaker 1, Speaker 2, and so on — ready for
 the rename and merge tools below. Detection runs entirely on-device
 through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): pyannote
@@ -129,16 +133,18 @@ so summaries refer to real speakers.
 
 It works on existing notes too — a "Detect speakers" button in the
 transcript toolbar runs the same pass on any note that still has its
-audio. Automatic speaker counting is strongest on clear call audio; when
+audio. (You can also find it in the note's "…" menu.) Automatic speaker counting is strongest on clear call audio; when
 it gets the count wrong, re-run it with the exact number of speakers and
 it's very accurate. Names you've confirmed stick: a speaker you renamed
 keeps that name across re-runs. A turn the detector heard no voice in is
 labeled "Unknown speaker" instead of being handed to the nearest speaker.
+You can also choose **Mark these turns as unknown** in a speaker's popover
+when a label is wrong and no other name fits. Undo is one click.
 
 Renaming a speaker renames them in the summary, decisions, and action
-items too, and renaming them back restores the notes exactly. Minute
-changes only the places where the summary used that speaker's name, never
-other text.
+items too, and renaming them back restores the notes exactly. The same
+holds for merging two speakers or marking one unknown. Minute changes only
+the places where the summary used that speaker's name, never other text.
 
 Minute can also remember the people you meet with. Turn on **Remember
 named speakers** (Settings → Speakers) and renaming a speaker saves that
@@ -158,15 +164,18 @@ each, and — like everything else — never leave your Mac.
 
 Once a note is transcribed, a local LLM turns it into a short summary,
 a list of decisions, and action items you can check off without leaving the
-note. The post-recording overview keeps source, duration, speakers, transcript
-turns, and markers together. Every generated field comes from the local
+note. A note is one page. The summary, decisions, and action items sit above
+the transcript, with speaker chips under the title and a player bar along
+the bottom. Every generated field comes from the local
 transcript and can be regenerated without uploading the meeting.
 
 Summaries are yours to shape: pick a length (short / standard / detailed),
 add standing custom instructions ("write it in German", "focus on
 engineering decisions"), and let the context window size itself to this
-Mac's memory — or pin it yourself. All of it in Settings, all applied to
-the next summary you generate. **Detailed** adds a section-by-section
+Mac's memory, or pin it yourself. All of it lives in Settings → Summaries,
+and all of it applies to the next summary you generate. Each summary names
+the length it was made at, as in "Detailed · made on this Mac". Summaries
+from before this label existed show only "Made on this Mac". **Detailed** adds a section-by-section
 breakdown of every topic discussed, on top of the usual decisions and
 follow-ups.
 
@@ -174,32 +183,46 @@ A note you never named takes its title from the meeting itself once the
 summary lands — no more libraries of "New recording". Asking for a
 second summary while one is already running queues it instead of turning
 you away; it starts on its own when the engine frees up, honoring
-whatever style you've picked by then, not a stale snapshot. A running or
-queued summary can be cancelled with one click, generations stop
-themselves rather than run forever, and when a meeting is too long for
-the model's context window, the summary says it covers only part of the
-recording instead of silently coming out thin.
+whatever style you've picked by then, not a stale snapshot. A live
+recording holds the queue, so a summary asked for during a meeting waits
+for it to end. The note then shows a card with how long the summary has
+waited and why, plus **Cancel** and **Summarize now**. Summarize now starts
+it without waiting for the recording. If another summary is running, the
+queued one goes first in line instead.
+
+A running or queued summary can be cancelled with one click, generations
+stop themselves rather than run forever, and when a meeting is too long
+for the model's context window, the summary says it covers only part of
+the recording instead of silently coming out thin. When the model runs
+out of room mid-answer, Minute keeps the items it finished and says the
+last ones are missing, rather than throwing the summary away. A larger
+context window in Settings → Summaries gives it more room.
 
 ## Save summaries to Obsidian
 
 Turn on Obsidian in Settings, pick your vault folder, and Minute writes a
 Markdown file into it each time a summary finishes, including a regenerated one.
-The default folder is `Meetings` and the default file name is
+You find it in Settings → Integrations. The vault must be an existing folder. The default folder is `Meetings` and the default file name is
 `{date} - {title}`. The file name template accepts `{date}` and `{title}`.
 Minute removes characters that are not safe in a file name.
 
 - **Properties.** The file starts with YAML frontmatter: `date`, `title`,
-  `duration` (minutes) and `speakers`. You can turn this off.
+  `duration` (minutes) and `speakers`. Unknown turns are not listed as
+  speakers. You can turn this off.
 - **Transcript.** Off by default. Turn it on to add the full transcript.
 - **One file per note.** Minute remembers the path it saved. A later save
   writes to the same file, even after you rename the note. A file that was
   not written by Minute is never overwritten. Minute adds a number to the
   name instead.
 - **Edits in Obsidian.** If you edit the file, Minute leaves it alone when a
-  summary finishes and shows a warning on the note. "Save to Obsidian again"
+  summary finishes and the note's toolbar says "Not saved to Obsidian".
+  Hover it to read why. "Save to Obsidian again" in the note's "…" menu
   replaces your edits. If you delete the file, the next save creates it again.
 - **Errors.** A missing vault or a folder that cannot be written never stops
-  the summary. The note shows the error instead.
+  the summary. The toolbar shows the same "Not saved to Obsidian" status,
+  and a successful save shows "Saved to Obsidian".
+
+![Minute — Settings → Integrations, with the Obsidian vault, folder, and file name](screenshots/obsidian.png)
 
 ## Ask your notes, with receipts
 
@@ -213,14 +236,20 @@ from a summary.
 
 ## Find anything, instantly
 
-⌘K searches titles and full transcript text across your whole library,
-with matches highlighted and playback ready to seek straight to the moment
-someone said the thing you're looking for.
+⌘K (or ⌘F) opens a palette that searches titles and full transcript text
+across your whole library. A transcript hit opens the note and plays from
+the moment someone said the thing you're looking for. The Search field at
+the top of the sidebar opens the same palette. `⌘/` opens the list of keyboard
+shortcuts under Settings → About.
 
-For larger libraries, notes can be pinned, filtered by recording status,
-source, or date, and sorted by newest, oldest, duration, or title. Multi-select
-supports bulk export and recoverable deletion, while per-note storage details
-make audio retention visible instead of mysterious. Recordings don't have to
+For larger libraries, the button beside Search opens one menu. It sorts by
+newest, oldest, longest, or title, and shows all notes, pinned, summarized,
+needing a summary, or recording. It also filters by source (microphone or
+system audio) and by date (past 24 hours or last 7 days), and it starts
+select mode for bulk export and recoverable deletion. Right-click a note
+for rename, pin, reveal, export, and delete. The sidebar groups notes by
+day. Per-note storage size shows in the note's "…" menu, which also offers
+**Delete audio only**, so audio retention is visible instead of mysterious. Recordings don't have to
 stay heavyweight either: an optional storage setting converts audio older
 than 7, 14, or 30 days from WAV to compact AAC — still playable, still
 seekable from the transcript, at a fraction of the disk space.
@@ -229,17 +258,17 @@ seekable from the transcript, at a fraction of the disk space.
 
 ## Clean up without losing work
 
-Rename speakers, filter the transcript by speaker, or merge duplicate speaker
-identities with an exact undo path — the manual half of the speaker story,
-for when detection gets a label wrong or you'd rather see "Sam" than
-"Speaker 2". Markers remain editable after recording, deleted notes move
+Rename speakers, filter the transcript by speaker, merge duplicate speaker
+identities, or mark a speaker's turns unknown, each with an exact undo path.
+This is the manual half of the speaker story, for when detection gets a
+label wrong or you'd rather see "Sam" than "Speaker 2". Markers remain editable after recording, deleted notes move
 into local recovery, and destructive cleanup always offers Undo.
 
-## Dark mode that still feels like paper
+## Light and dark, in blue and white
 
-Minute follows macOS's appearance setting. The dark theme isn't an inverted
-light theme — it's its own warm, ink-on-dark-paper palette, built to the
-same calm, analog feel as the light one.
+Minute uses one cool white-and-blue design set in Inter. It follows macOS's
+appearance setting. The dark theme isn't an inverted light theme. It has
+its own deep navy surfaces and the same blue accent.
 
 ![Minute — note view in dark mode](screenshots/dark.png)
 
@@ -298,7 +327,7 @@ requirements shown up front.
   styles, `data:` images, or the local Tauri asset protocol that serves
   your own note audio back to the player. No remote host appears anywhere
   in the policy.
-- Fonts (Instrument Sans) ship bundled in the app, not fetched from Google
+- Fonts (Inter) ship bundled in the app, not fetched from Google
   Fonts or any other CDN.
 - Transcription and summarization run as linked libraries in the same
   process as the app itself — there is no local server, no localhost port,

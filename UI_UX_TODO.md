@@ -155,6 +155,26 @@ installed copies self-update release to release. A physical Intel launch and
 a clean-Mac previous-version update/rollback run remain manual
 release-validation items.
 
+## Milestone 11 — Redesign
+
+Goal: one cool white-and-blue interface in Inter, with the new features from
+issues #44 to #49, and no existing feature lost.
+
+- [x] Rebuild the app shell, sidebar, note view, recording flow, settings,
+      onboarding, and search to the new design, in light and dark.
+- [x] Replace the Overview, Transcript, and Markdown tabs with one note page.
+- [x] Fold sort, filter, and select into one sidebar menu; keep ⌘K search.
+- [x] Move the shortcut list to Settings → About (⌘/).
+- [x] Record meetings automatically, per app: ask, record, or do nothing (#46).
+- [x] Save summaries to Obsidian as Markdown, with edit detection (#47).
+- [x] Show unknown speaker turns, and carry renames, merges, and unknown
+      marks into the summary (#49).
+- [x] Show how long a queued summary has waited, with Summarize now (#44).
+- [x] Keep a cut-off summary's finished items and name the length each
+      summary was made at (#45).
+- [x] Add screenshot-regression scenarios for each new screen, on a fixed clock.
+- [x] Refresh the README and its screenshots for the new interface.
+
 ## Definition of done for each milestone
 
 - Behavior has focused component tests.
