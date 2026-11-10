@@ -19,8 +19,6 @@ const healthy: RecordingStatusInput = {
   pace: CURRENT,
   sttError: null,
   microphoneName: 'MacBook Pro Microphone',
-  systemAudioActive: true,
-  canRestartWithSystemAudio: true,
 }
 
 /** The smallest change to a healthy recording that raises each message. */
@@ -31,7 +29,6 @@ const TRIGGER: Record<RecordingMessageKind, Partial<RecordingStatusInput>> = {
   silence: { captureHealth: 'silent' },
   transcriptFailed: { pace: { pace: 'unavailable', lagSeconds: 0 }, sttError: 'model not installed' },
   lag: { pace: { pace: 'delayed', lagSeconds: 34.4 } },
-  micOnly: { systemAudioActive: false },
 }
 
 describe('recordingMessage', () => {
@@ -55,7 +52,7 @@ describe('recordingMessage', () => {
     },
   )
 
-  it('orders the kinds: failed stop, pending stop, lost audio, lost transcript, advice', () => {
+  it('orders the kinds: failed stop, pending stop, lost audio, lost transcript', () => {
     expect(MESSAGE_PRIORITY).toEqual([
       'saveFailed',
       'autoStop',
@@ -63,7 +60,6 @@ describe('recordingMessage', () => {
       'silence',
       'transcriptFailed',
       'lag',
-      'micOnly',
     ])
   })
 
@@ -90,9 +86,6 @@ describe('recordingMessage', () => {
     expect(recordingMessage({ ...healthy, pace: { pace: 'behind', lagSeconds: 20 } })).toBeNull()
   })
 
-  it('offers the restart only when this Mac can capture system audio', () => {
-    expect(recordingMessage({ ...healthy, systemAudioActive: false, canRestartWithSystemAudio: false })).toBeNull()
-  })
 })
 
 describe('messageCopy', () => {
@@ -119,7 +112,6 @@ describe('messageCopy', () => {
     expect(messageCopy({ kind: 'saveFailed', detail: 'Disk full.' }).tone).toBe('danger')
     expect(messageCopy({ kind: 'autoStop', quietSecs: 120, secondsRemaining: 60 }).tone).toBe('warn')
     expect(messageCopy({ kind: 'lag', lagSeconds: 34 }).tone).toBe('info')
-    expect(messageCopy({ kind: 'micOnly' }).tone).toBe('info')
   })
 })
 

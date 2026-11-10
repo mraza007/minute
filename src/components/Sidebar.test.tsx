@@ -303,6 +303,16 @@ describe('Sidebar', () => {
   })
 
   describe('select mode', () => {
+    // "Select notes…" replaces the row that held the filter button, and
+    // Done puts it back. Focus follows each time instead of falling to <body>.
+    it('lands focus on Done, and back on the filter button after Done', () => {
+      render(<Sidebar {...base} />)
+      enterSelectMode()
+      expect(screen.getByRole('button', { name: 'Done' })).toHaveFocus()
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+      expect(screen.getByRole('button', { name: 'Sort and filter notes' })).toHaveFocus()
+    })
+
     it('shows the count with Done, and leaves select mode on Done', () => {
       render(<Sidebar {...base} />)
       enterSelectMode()

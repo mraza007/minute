@@ -396,7 +396,6 @@ input.st-input:not([type='checkbox']):not([type='radio']):focus-visible,
 .st-status[data-tone='ok'] { color: var(--ok-text); }
 .st-status svg { flex: none; }
 .st-status-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.st-keys-title { padding-bottom: 10px; }
 .st-key-line {
   display: flex;
   align-items: center;

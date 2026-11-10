@@ -71,7 +71,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     summaryWait: null,
     onSummarizeNow: vi.fn().mockResolvedValue('started'),
     onAsk: vi.fn(),
-    onGoSettings: vi.fn(),
+    onOpenSettings: vi.fn(),
     onSetPinned: vi.fn(),
     onAddMarker: vi.fn().mockResolvedValue(undefined),
     onUpdateMarker: vi.fn().mockResolvedValue(undefined),
@@ -459,6 +459,25 @@ describe('NoteView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Rename Speaker 2' }))
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
     expect(onRenameSpeaker).not.toHaveBeenCalled()
+  })
+
+  // The suggestion row unmounts once the dismissal saves. Focus on its
+  // button would fall to <body>, outside the popover's Escape handling.
+  it('keeps focus inside the popover when a suggestion is dismissed', () => {
+    const meta = { ...noteFixture(), speakerSuggestions: { 'Speaker 2': { name: 'Sarah', similarity: 0.82 } } }
+    const props = makeProps({ meta, selectedMeta: meta, selectedTranscript: twoSpeakers })
+    const { rerender } = render(<NoteView {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Speaker 2' }))
+    const dialog = screen.getByRole('dialog', { name: 'Rename Speaker 2' })
+    const dismiss = within(dialog).getByRole('button', { name: 'Dismiss suggestion' })
+    dismiss.focus()
+    fireEvent.click(dismiss)
+
+    const dismissed = { ...meta, speakerSuggestions: {} }
+    rerender(<NoteView {...props} meta={dismissed} selectedMeta={dismissed} />)
+    expect(within(dialog).queryByText('Sounds like Sarah')).not.toBeInTheDocument()
+    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+    expect(within(dialog).getByRole('textbox', { name: 'Speaker name' })).toHaveFocus()
   })
 
   it('offers the voice-profile match inside the popover', () => {
@@ -1118,6 +1137,74 @@ describe('NoteView', () => {
       await waitFor(() => expect(screen.getByRole('button', { name: 'More note actions' })).toHaveFocus())
     })
 
+    describe('View Markdown', () => {
+      const markdown = '# Client call — Acme\n\n## Transcript\n\nThanks for making time.'
+
+      function openMarkdown(overrides: Partial<NoteViewProps> = {}) {
+        const meta = noteFixture()
+        render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedMarkdown: markdown, ...overrides })} />)
+        openMenu()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'View Markdown' }))
+        return { meta, panel: screen.getByRole('dialog', { name: 'Markdown' }) }
+      }
+
+      it('shows note.md read-only, with its size, in place of the menu', () => {
+        const { panel } = openMarkdown()
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+        expect(within(panel).getByRole('heading', { name: /note\.md/ })).toHaveTextContent(`${new TextEncoder().encode(markdown).length} B`)
+        expect(within(panel).getByLabelText('note.md contents').textContent).toBe(markdown)
+        expect(within(panel).queryByRole('textbox')).not.toBeInTheDocument()
+        expect(panel).toContainElement(document.activeElement as HTMLElement)
+      })
+
+      it('copies the Markdown and says so', async () => {
+        const { panel } = openMarkdown()
+        fireEvent.click(within(panel).getByRole('button', { name: 'Copy' }))
+        expect(writeText).toHaveBeenCalledWith(markdown)
+        expect(await within(panel).findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+        expect(within(panel).getByRole('status')).toHaveTextContent('Copied')
+      })
+
+      it('reports a failed copy and does not claim it copied', async () => {
+        const onCopyError = vi.fn()
+        writeText.mockRejectedValue(new Error('denied'))
+        const { panel } = openMarkdown({ onCopyError })
+        fireEvent.click(within(panel).getByRole('button', { name: 'Copy' }))
+        await waitFor(() => expect(onCopyError).toHaveBeenCalled())
+        expect(within(panel).queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument()
+      })
+
+      it('shows the note in Finder', () => {
+        const onReveal = vi.fn()
+        const { meta, panel } = openMarkdown({ onReveal })
+        fireEvent.click(within(panel).getByRole('button', { name: 'Show in Finder' }))
+        expect(onReveal).toHaveBeenCalledWith(meta.id)
+      })
+
+      it('closes on Escape or the close button, returning focus to the menu button', async () => {
+        const { panel } = openMarkdown()
+        fireEvent.keyDown(within(panel).getByRole('button', { name: 'Copy' }), { key: 'Escape' })
+        expect(screen.queryByRole('dialog', { name: 'Markdown' })).not.toBeInTheDocument()
+        await waitFor(() => expect(screen.getByRole('button', { name: 'More note actions' })).toHaveFocus())
+
+        openMenu()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'View Markdown' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Close Markdown' }))
+        expect(screen.queryByRole('dialog', { name: 'Markdown' })).not.toBeInTheDocument()
+      })
+
+      it('does not show another note\'s Markdown while this one loads', () => {
+        const meta = noteFixture({ id: 'note-1' })
+        const staleMeta = noteFixture({ id: 'note-0' })
+        render(<NoteView {...makeProps({ meta, selectedMeta: staleMeta, selectedMarkdown: '# stale note', transcriptLoading: true })} />)
+        openMenu()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'View Markdown' }))
+        const panel = screen.getByRole('dialog', { name: 'Markdown' })
+        expect(panel).not.toHaveTextContent('stale note')
+        expect(within(panel).getByRole('button', { name: 'Copy' })).toBeDisabled()
+      })
+    })
+
     it('copies the backend-provided Markdown', () => {
       const meta = noteFixture()
       const markdown = '# Client call — Acme\n\n## Transcript\n\nThanks for making time.'
@@ -1313,12 +1400,13 @@ describe('NoteView', () => {
       expect(screen.getByRole('button', { name: 'Generate summary' })).toBeInTheDocument()
     })
 
-    it('shows the no-LLM placeholder and calls onGoSettings when no summary yet and no LLM installed', () => {
-      const onGoSettings = vi.fn()
+    it('shows the no-LLM placeholder and calls onOpenSettings when no summary yet and no LLM installed', () => {
+      const onOpenSettings = vi.fn()
       const meta = noteFixture()
-      render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedSummary: null, llmInstalled: false, onGoSettings })} />)
+      render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedSummary: null, llmInstalled: false, onOpenSettings })} />)
       fireEvent.click(screen.getByRole('button', { name: 'Download a summary model' }))
-      expect(onGoSettings).toHaveBeenCalledTimes(1)
+      expect(onOpenSettings).toHaveBeenCalledTimes(1)
+      expect(onOpenSettings).toHaveBeenCalledWith('models')
     })
 
     it('shows the ask history in the Ask panel once it is opened', () => {

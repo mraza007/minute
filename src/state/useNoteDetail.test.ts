@@ -75,6 +75,81 @@ function withoutIds(entries: AskHistoryEntry[]) {
 }
 
 describe('useNoteDetail', () => {
+  describe('switching notes while a load is in flight', () => {
+    function noteFor(id: string): NoteWithTranscript {
+      const base = noteWithTranscriptFixture()
+      return { ...base, meta: { ...base.meta, id, title: id }, markdown: `# ${id}` }
+    }
+
+    /** `get_note` resolves at once, except for ids in `held`, which wait for `release(id)`. */
+    function setupHeldNotes(held: string[]) {
+      const releases = new Map<string, () => void>()
+      mockIPC(
+        (cmd, args) => {
+          if (cmd !== 'get_note') return cmd === 'list_notes' ? [] : null
+          const { id } = args as { id: string }
+          if (!held.includes(id)) return noteFor(id)
+          return new Promise<NoteWithTranscript>(resolve => releases.set(id, () => resolve(noteFor(id))))
+        },
+        { shouldMockEvents: true },
+      )
+      return (id: string) => releases.get(id)?.()
+    }
+
+    function renderSelected(initial: string | null) {
+      const reportError = vi.fn()
+      const refreshNotes = vi.fn()
+      return renderHook(
+        ({ selectedNoteId }: { selectedNoteId: string | null }) => useNoteDetail({ selectedNoteId, reportError, refreshNotes }),
+        { initialProps: { selectedNoteId: initial } },
+      )
+    }
+
+    it('keeps a cached note on screen when a slow load for the note before it lands', async () => {
+      const release = setupHeldNotes(['note-a'])
+      const { result, rerender } = renderSelected('note-b')
+      await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-b'))
+
+      // A is slow and not cached. B is cached, so going back to it is instant.
+      rerender({ selectedNoteId: 'note-a' })
+      rerender({ selectedNoteId: 'note-b' })
+      expect(result.current.selectedMeta?.id).toBe('note-b')
+
+      await act(async () => {
+        release('note-a')
+      })
+      expect(result.current.selectedMeta?.id).toBe('note-b')
+      expect(result.current.selectedMarkdown).toBe('# note-b')
+      expect(result.current.transcriptLoading).toBe(false)
+    })
+
+    it('reloadNote fetches a changed note only when it is the one on screen now', async () => {
+      const calls: string[] = []
+      mockIPC(
+        (cmd, args) => {
+          if (cmd !== 'get_note') return null
+          calls.push((args as { id: string }).id)
+          return noteFor((args as { id: string }).id)
+        },
+        { shouldMockEvents: true },
+      )
+      const { result, rerender } = renderSelected('note-a')
+      await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-a'))
+      // A callback from the render where A was selected, run after B was opened.
+      const staleReload = result.current.reloadNote
+      rerender({ selectedNoteId: 'note-b' })
+      await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-b'))
+      calls.length = 0
+
+      act(() => staleReload('note-a'))
+      expect(calls).toEqual([])
+      expect(result.current.selectedMeta?.id).toBe('note-b')
+
+      act(() => staleReload('note-b'))
+      await waitFor(() => expect(calls).toEqual(['note-b']))
+    })
+  })
+
   describe('loading a note whose stored summary is empty (issue #13)', () => {
     it('surfaces a fully-empty stored SummaryDoc as no summary at all', async () => {
       // The exact on-disk state issue #13 reported: status `ready` (the
@@ -394,6 +469,35 @@ describe('useNoteDetail', () => {
 
       expect(outcome).toBe('next')
       expect(calls).toContainEqual({ cmd: 'summarize_now', args: { id: 'note-a' } })
+    })
+
+    it('remembers per note that a summary starts next, until that summary starts', async () => {
+      mockIPC(cmd => (cmd === 'summarize_now' ? 'next' : null), { shouldMockEvents: true })
+      // Another note is on screen, so no component holds this state.
+      const { result } = setup('note-b')
+      await act(async () => {
+        await emit('summary-status', { noteId: 'note-a', state: 'queued', error: null })
+      })
+      expect(result.current.summaryStartsNext).toEqual({})
+
+      await act(async () => {
+        await result.current.summarizeNow('note-a')
+      })
+      expect(result.current.summaryStartsNext).toEqual({ 'note-a': true })
+
+      await act(async () => {
+        await emit('summary-status', { noteId: 'note-a', state: 'running', error: null })
+      })
+      expect(result.current.summaryStartsNext).toEqual({})
+    })
+
+    it('does not mark a summary that started at once as starting next', async () => {
+      mockIPC(cmd => (cmd === 'summarize_now' ? 'started' : null), { shouldMockEvents: true })
+      const { result } = setup()
+      await act(async () => {
+        await result.current.summarizeNow('note-a')
+      })
+      expect(result.current.summaryStartsNext).toEqual({})
     })
 
     it('summarizeNow surfaces a backend failure as the note error', async () => {

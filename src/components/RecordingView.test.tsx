@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { RecordingOrigin } from '../ipc/types'
 import type { LiveTranscriptGroup } from '../state/adapters'
 import { RecordingView } from './RecordingView'
@@ -62,6 +62,14 @@ describe('RecordingView', () => {
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
     expect(screen.getByRole('status', { name: 'Recording health updates' })).toHaveTextContent('Paused')
+  })
+
+  it('sends "Change" on the automatic-start notice to the Recording settings', () => {
+    const onOpenSettings = vi.fn()
+    render(<RecordingView {...base} origin={{ kind: 'automatic', appName: 'Zoom' }} onOpenSettings={onOpenSettings} />)
+    expect(screen.getByText('Started automatically when Zoom began a call.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }))
+    expect(onOpenSettings).toHaveBeenCalledWith('recording')
   })
 
   describe('sources line', () => {
@@ -186,7 +194,6 @@ describe('RecordingView', () => {
       )
       expect(shownMessages(container)).toHaveLength(1)
       expect(screen.getByRole('button', { name: 'Keep recording' })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Restart with system audio' })).not.toBeInTheDocument()
       expect(screen.getByRole('status', { name: 'Recording status' })).toHaveTextContent(
         'Quiet for 2:10. Minute stops in 1:50.',
       )
@@ -194,80 +201,66 @@ describe('RecordingView', () => {
   })
 
   // Issue #26: sources are fixed at start, so the mid-recording gesture is
-  // an explicit stop-and-restart behind a confirm step.
-  describe('restart with system audio', () => {
-    it('offers the restart when system audio is off but available', () => {
+  // an explicit stop-and-restart behind a confirm step. Microphone-only is
+  // a standing condition, so the offer sits on the sources line.
+  describe('add system audio', () => {
+    it('offers it on the sources line when system audio is off but available', () => {
       render(<RecordingView {...base} canRestartWithSystemAudio={true} />)
-      expect(screen.getByText('This recording has only your microphone')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Restart with system audio' })).toBeInTheDocument()
+      const sources = screen.getByText(/MacBook Pro Microphone only/)
+      expect(within(sources).getByRole('button', { name: 'Add system audio' })).toBeInTheDocument()
+      expect(sources).toHaveTextContent('MacBook Pro Microphone only · Add system audio · Fast transcription · Whisper small')
     })
 
     it('offers nothing when system audio is already part of the recording', () => {
       render(<RecordingView {...base} systemAudioActive={true} canRestartWithSystemAudio={true} />)
-      expect(screen.queryByRole('button', { name: 'Restart with system audio' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Add system audio' })).not.toBeInTheDocument()
     })
 
     it('offers nothing when this Mac cannot capture system audio', () => {
       render(<RecordingView {...base} canRestartWithSystemAudio={false} />)
-      expect(screen.queryByRole('button', { name: 'Restart with system audio' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Add system audio' })).not.toBeInTheDocument()
+    })
+
+    it('offers nothing once the recording is stopping', () => {
+      render(<RecordingView {...base} canRestartWithSystemAudio={true} stopping={true} processingStage="saving" />)
+      expect(screen.queryByRole('button', { name: 'Add system audio' })).not.toBeInTheDocument()
     })
 
     it('requires a confirm step that names the two-notes consequence before restarting', () => {
       const onRestartWithSystemAudio = vi.fn()
       render(<RecordingView {...base} canRestartWithSystemAudio={true} onRestartWithSystemAudio={onRestartWithSystemAudio} />)
 
-      fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Add system audio' }))
       expect(onRestartWithSystemAudio).not.toHaveBeenCalled()
       expect(screen.getByRole('group', { name: 'Confirm restart with system audio' })).toHaveTextContent(/two notes/)
+      expect(screen.getByRole('button', { name: 'Save & restart' })).toHaveFocus()
 
       fireEvent.click(screen.getByRole('button', { name: 'Save & restart' }))
       expect(onRestartWithSystemAudio).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('group', { name: 'Confirm restart with system audio' })).not.toBeInTheDocument()
     })
 
-    it('"Go back" backs out of the confirm step without restarting', () => {
+    it('"Go back" backs out of the confirm step without restarting, and returns focus to the offer', () => {
       const onRestartWithSystemAudio = vi.fn()
       render(<RecordingView {...base} canRestartWithSystemAudio={true} onRestartWithSystemAudio={onRestartWithSystemAudio} />)
 
-      fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Add system audio' }))
       fireEvent.click(screen.getByRole('button', { name: 'Go back' }))
 
       expect(onRestartWithSystemAudio).not.toHaveBeenCalled()
       expect(screen.queryByRole('group', { name: 'Confirm restart with system audio' })).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Restart with system audio' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Add system audio' })).toHaveFocus()
     })
 
-    it('drops an open confirm step when a more urgent message takes over', () => {
-      const { rerender } = render(<RecordingView {...base} canRestartWithSystemAudio={true} />)
-      fireEvent.click(screen.getByRole('button', { name: 'Restart with system audio' }))
+    it('keeps the offer and an open confirm step while a status message shows', () => {
+      const { rerender } = render(<RecordingView {...base} canRestartWithSystemAudio={true} captureHealth="silent" quietSecs={40} />)
+      expect(screen.getByText('Quiet for 0:40')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Add system audio' }))
 
       rerender(<RecordingView {...base} canRestartWithSystemAudio={true} quietSecs={120} autoStopSeconds={90} />)
-      expect(screen.queryByRole('button', { name: 'Save & restart' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Keep recording' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Save & restart' })).toBeInTheDocument()
 
-      rerender(<RecordingView {...base} canRestartWithSystemAudio={true} />)
-      expect(screen.getByRole('button', { name: 'Restart with system audio' })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Save & restart' })).not.toBeInTheDocument()
-    })
-  })
-
-  // Issue #46.
-  describe('automatic start', () => {
-    it('says which app started the recording and links to Settings', () => {
-      const onOpenSettings = vi.fn()
-      render(
-        <RecordingView
-          {...base}
-          origin={{ kind: 'automatic', appName: 'Microsoft Teams' }}
-          onOpenSettings={onOpenSettings}
-        />,
-      )
-      expect(screen.getByText('Started automatically when Microsoft Teams began a call.')).toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: 'Change' }))
-      expect(onOpenSettings).toHaveBeenCalledTimes(1)
-    })
-
-    it('says nothing for a recording the user started', () => {
-      render(<RecordingView {...base} />)
-      expect(screen.queryByText(/Started automatically/)).not.toBeInTheDocument()
     })
   })
 
@@ -461,6 +454,24 @@ describe('RecordingView', () => {
 
       await waitFor(() => expect(addMarker).toHaveBeenCalledWith('Pricing decision'))
       expect(screen.queryByRole('textbox', { name: 'Marker label' })).not.toBeInTheDocument()
+    })
+
+    it('returns focus to Add marker when the composer closes, by Escape or by saving', async () => {
+      render(<RecordingView {...base} />)
+      const addMarker = screen.getByRole('button', { name: 'Add marker' })
+
+      fireEvent.click(addMarker)
+      const label = screen.getByRole('textbox', { name: 'Marker label' })
+      expect(label).toHaveFocus()
+      fireEvent.keyDown(label, { key: 'Escape' })
+      expect(screen.queryByRole('textbox', { name: 'Marker label' })).not.toBeInTheDocument()
+      expect(addMarker).toHaveFocus()
+
+      fireEvent.click(addMarker)
+      fireEvent.change(screen.getByRole('textbox', { name: 'Marker label' }), { target: { value: 'Decision' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save marker' }))
+      await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Marker label' })).not.toBeInTheDocument())
+      expect(addMarker).toHaveFocus()
     })
 
     it('opens the marker composer with the visible ⌘⇧M shortcut', () => {

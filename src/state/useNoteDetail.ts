@@ -9,6 +9,14 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/** `record` without `key`. Returns `record` itself when the key is absent, so a state setter bails out. */
+function without<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record
+  const next = { ...record }
+  delete next[key]
+  return next
+}
+
 /**
  * Per-note summarization lifecycle as tracked in `summaryStatus`/
  * `summaryError` below — mirrors the wire event's `state` field
@@ -127,6 +135,10 @@ export function useNoteDetail(params: {
   // request — guards against an out-of-order resolution (e.g. quickly
   // selecting note A then B) clobbering newer state with a stale response.
   const transcriptRequestId = useRef(0)
+  // What a callback that resolves later reads, so it reloads a note only if
+  // it is the one on screen then, not the one that was when it started.
+  const selectedNoteIdRef = useRef(selectedNoteId)
+  selectedNoteIdRef.current = selectedNoteId
 
   /**
    * Reads a cache entry, marking it most-recently-used (moves it to the end
@@ -175,6 +187,9 @@ export function useNoteDetail(params: {
    */
   const loadNoteTranscript = useCallback(
     (id: string, opts: { force?: boolean } = {}) => {
+      // Every load takes a new id, a cached one too: a slow fetch for the
+      // note opened before this one must not land on top of it.
+      const requestId = ++transcriptRequestId.current
       if (!opts.force) {
         const cached = cacheGet(id)
         if (cached) {
@@ -187,7 +202,6 @@ export function useNoteDetail(params: {
           return
         }
       }
-      const requestId = ++transcriptRequestId.current
       setTranscriptLoading(true)
       ipc
         .getNote(id)
@@ -219,8 +233,23 @@ export function useNoteDetail(params: {
     [cacheGet, cacheSet, reportError],
   )
 
+  /**
+   * For a note whose content just changed on disk: drops its cache entry
+   * and, if it is the note on screen now, fetches it again. A caller that
+   * awaited a command first may be many renders old, so the check reads the
+   * current selection, never the one the caller closed over.
+   */
+  const reloadNote = useCallback(
+    (id: string) => {
+      invalidateNoteCache(id)
+      if (id === selectedNoteIdRef.current) loadNoteTranscript(id, { force: true })
+    },
+    [invalidateNoteCache, loadNoteTranscript],
+  )
+
   useEffect(() => {
     if (!selectedNoteId) {
+      transcriptRequestId.current++
       setSelectedMeta(null)
       setSelectedTranscript([])
       setSelectedSummary(null)
@@ -248,12 +277,17 @@ export function useNoteDetail(params: {
   // while that note's status is `'queued'`, so the note view can say how
   // long a summary has waited (issue #44).
   const [summaryQueuedAt, setSummaryQueuedAt] = useState<Record<string, number>>({})
+  // The waiting notes that "Summarize now" moved to the front of the queue.
+  // Kept here, per note, so the queued card still says so after the user
+  // opens another note and comes back.
+  const [summaryStartsNext, setSummaryStartsNext] = useState<Record<string, true>>({})
 
   useTauriEvent(
     onSummaryStatus,
     payload => {
       setSummaryStatus(prev => ({ ...prev, [payload.noteId]: payload.state }))
       setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, payload, Date.now()))
+      if (payload.state !== 'queued') setSummaryStartsNext(prev => without(prev, payload.noteId))
 
       if (payload.state === 'error') {
         setSummaryError(prev => ({ ...prev, [payload.noteId]: payload.error ?? 'Summarization failed' }))
@@ -273,10 +307,7 @@ export function useNoteDetail(params: {
         // on screen (so the note page picks up the real summary
         // without a manual reselect), and refresh the notes list so its
         // status flips transcribed -> ready in the sidebar/header pill.
-        invalidateNoteCache(payload.noteId)
-        if (payload.noteId === selectedNoteId) {
-          loadNoteTranscript(payload.noteId, { force: true })
-        }
+        reloadNote(payload.noteId)
         refreshNotes()
       }
     },
@@ -311,10 +342,7 @@ export function useNoteDetail(params: {
       })
 
       if (payload.state === 'done') {
-        invalidateNoteCache(payload.noteId)
-        if (payload.noteId === selectedNoteId) {
-          loadNoteTranscript(payload.noteId, { force: true })
-        }
+        reloadNote(payload.noteId)
         refreshNotes()
       }
     },
@@ -380,7 +408,9 @@ export function useNoteDetail(params: {
    */
   const summarizeNow = useCallback(async (id: string): Promise<SummarizeNowOutcome | null> => {
     try {
-      return await ipc.summarizeNow(id)
+      const outcome = await ipc.summarizeNow(id)
+      if (outcome === 'next') setSummaryStartsNext(prev => ({ ...prev, [id]: true }))
+      return outcome
     } catch (err) {
       setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
       setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
@@ -400,11 +430,6 @@ export function useNoteDetail(params: {
    * server-side, so a full refetch is what keeps the copied Markdown honest.
    * On failure, reverts the optimistic edit and reports the error.
    *
-   * `useCallback` (deps: `selectedNoteId`, `cacheGet`, `cacheSet`,
-   * `loadNoteTranscript`, `reportError`) — `cacheGet`/`cacheSet`/
-   * `loadNoteTranscript` are each independently stable (see their own docs
-   * above), so this only actually gets a fresh identity when the selected
-   * note changes.
    */
   const toggleActionItem = useCallback(
     (id: string, index: number, done: boolean) => {
@@ -416,15 +441,12 @@ export function useNoteDetail(params: {
           actionItems: before.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
         }
         cacheSet(id, { ...before, summary: optimisticSummary })
-        if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
+        if (id === selectedNoteIdRef.current) setSelectedSummary(optimisticSummary)
       }
 
       ipc
         .toggleActionItem(id, index, done)
-        .then(() => {
-          invalidateNoteCache(id)
-          if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
-        })
+        .then(() => reloadNote(id))
         .catch(err => {
           // Scoped revert: flip only *this* toggle's field back, applied
           // against whatever the cache holds right now — not the
@@ -444,14 +466,14 @@ export function useNoteDetail(params: {
               actionItems: current.summary.actionItems.map((item, i) => (i === index ? { ...item, done: previousDone } : item)),
             }
             cacheSet(id, { ...current, summary: revertedSummary })
-            if (id === selectedNoteId) setSelectedSummary(revertedSummary)
-          } else if (id === selectedNoteId) {
-            loadNoteTranscript(id, { force: true })
+            if (id === selectedNoteIdRef.current) setSelectedSummary(revertedSummary)
+          } else {
+            reloadNote(id)
           }
           reportError(err)
         })
     },
-    [selectedNoteId, cacheGet, cacheSet, invalidateNoteCache, loadNoteTranscript, reportError],
+    [cacheGet, cacheSet, reloadNote, reportError],
   )
 
   // --- ask-your-notes -------------------------------------------------------
@@ -611,6 +633,7 @@ export function useNoteDetail(params: {
       return next
     })
     setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, { noteId: id, state: 'error', error: null }, Date.now()))
+    setSummaryStartsNext(prev => without(prev, id))
     setDiarStatus(prev => {
       if (!(id in prev)) return prev
       const next = { ...prev }
@@ -644,12 +667,13 @@ export function useNoteDetail(params: {
     selectedMarkdown,
     selectedAudioPath,
     transcriptLoading,
-    loadNoteTranscript,
     invalidateNoteCache,
+    reloadNote,
     pruneNoteDetail,
     summaryStatus,
     summaryError,
     summaryQueuedAt,
+    summaryStartsNext,
     regenerateSummary,
     cancelSummary,
     summarizeNow,

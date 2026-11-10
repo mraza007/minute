@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, RefObject } from 'react'
 
 interface AppToolbarProps {
   /** Controls at the left edge. Present only while the sidebar is hidden. */
@@ -23,6 +23,8 @@ export function AppToolbar({ lead, children }: AppToolbarProps) {
 
 interface SidebarReopenProps {
   isRecording: boolean
+  /** The "Notes" button. Focus lands on it when the sidebar is collapsed from inside. */
+  showNotesButtonRef?: RefObject<HTMLButtonElement | null>
   onShowNotes: () => void
   onStartRecording: () => void
   onReturnToRecording: () => void
@@ -33,10 +35,10 @@ interface SidebarReopenProps {
  * brings the sidebar back, and a compact record button so a recording can
  * still be started (or returned to) without it.
  */
-export function SidebarReopen({ isRecording, onShowNotes, onStartRecording, onReturnToRecording }: SidebarReopenProps) {
+export function SidebarReopen({ isRecording, showNotesButtonRef, onShowNotes, onStartRecording, onReturnToRecording }: SidebarReopenProps) {
   return (
     <>
-      <button type="button" className="toolbar-btn" aria-label="Show notes" title="Show the notes list" onClick={onShowNotes}>
+      <button ref={showNotesButtonRef} type="button" className="toolbar-btn" aria-label="Show notes" title="Show the notes list" onClick={onShowNotes}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
           <path d="M4 7h16M4 12h16M4 17h16" />
         </svg>

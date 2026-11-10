@@ -60,6 +60,7 @@ function recordingTick(params: URLSearchParams, elapsed: number, overrides: Reco
  * - `sysaudio=1`: system audio is part of the recording.
  * - `origin=auto`: the recording was started by a detected call.
  * - `message=silent|autostop|disconnected|lag|failed`: the condition behind one status message.
+ * - `restart=confirm`: press "Add system audio" and hold on its confirm step.
  * - `title=`, `marker=`: rename the recording, add a marker.
  * - `processing=saving|finalizing`: press Stop and hold on that stage.
  * - `processing=note`: press Stop and land on the note while speakers are found.
@@ -102,6 +103,11 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
     await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'error', error: 'The transcription model stopped.' })
   }
   if (message) await waitFor(() => document.querySelector('.recording-message') !== null)
+
+  if (params.get('restart') === 'confirm') {
+    findButtonByText('Add system audio')?.click()
+    await waitFor(() => document.querySelector('[aria-label="Confirm restart with system audio"]') !== null)
+  }
 
   const title = params.get('title')
   if (title) {
@@ -376,9 +382,14 @@ async function driveNote(params: URLSearchParams): Promise<void> {
     document.querySelector('.note-transcript')?.scrollIntoView({ block: 'start' })
   }
 
-  if (params.get('menu') === 'note') {
+  const menu = params.get('menu')
+  if (menu === 'note' || menu === 'markdown') {
     document.querySelector<HTMLButtonElement>('button[aria-label="More note actions"]')?.click()
     await waitFor(() => document.querySelector('.note-menu') !== null)
+  }
+  if (menu === 'markdown') {
+    findButtonByText('View Markdown')?.click()
+    await waitFor(() => document.querySelector('.markdown-panel') !== null)
   }
 
   if (params.get('ask') === 'open') {

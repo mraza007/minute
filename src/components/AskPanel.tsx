@@ -9,7 +9,7 @@ export interface AskPanelProps {
   askHistory: AskHistoryEntry[]
   /** This note's own ask lifecycle. */
   askStatus: AskStatus
-  /** Whether any generation (a summary or an ask, for any note) holds the one app-wide slot. A submit would be rejected, so the input is disabled. */
+  /** Whether any generation (a summary or an ask, for any note) holds the one app-wide slot. A submit would be rejected, so the input is read-only and nothing sends. */
   llmBusy: boolean
   /** Whether this note's audio can be seeked into. False renders citations inert instead of as links that do nothing. */
   seekable: boolean
@@ -116,10 +116,18 @@ export const AskPanel = memo(function AskPanel({
     if (history) history.scrollTop = history.scrollHeight
   }, [askHistory.length, running])
 
+  // Sending disables the button that was pressed (Send, or a Retry), which
+  // would drop focus on <body>, where Escape no longer reaches the panel.
+  // The input never disables, so it holds focus instead.
+  function ask(question: string) {
+    onAsk(question)
+    inputRef.current?.focus()
+  }
+
   function submit() {
     const trimmed = draft.trim()
     if (!trimmed || disabled) return
-    onAsk(trimmed)
+    ask(trimmed)
     setDraft('')
   }
 
@@ -163,7 +171,7 @@ export const AskPanel = memo(function AskPanel({
                   disabled={disabled}
                   seekable={seekable}
                   onSeekCitation={onSeekCitation}
-                  onRetry={() => onAsk(entry.question)}
+                  onRetry={() => ask(entry.question)}
                 />
               ))}
               {running && (
@@ -183,7 +191,8 @@ export const AskPanel = memo(function AskPanel({
                 onKeyDown={handleInputKeyDown}
                 placeholder="Ask a question"
                 aria-label="Ask a question"
-                disabled={disabled}
+                readOnly={disabled}
+                aria-busy={disabled}
               />
               <button type="button" className="ask-send" aria-label="Send question" disabled={disabled || !draft.trim()} onClick={submit}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -11,7 +11,6 @@ export type RecordingMessage =
   | { kind: 'silence'; quietSecs: number | null; microphoneSilent: boolean; microphoneName: string }
   | { kind: 'transcriptFailed'; detail: string | null }
   | { kind: 'lag'; lagSeconds: number }
-  | { kind: 'micOnly' }
 
 export type RecordingMessageKind = RecordingMessage['kind']
 
@@ -27,9 +26,6 @@ export interface RecordingStatusInput {
   pace: TranscriptPaceResult
   sttError: string | null
   microphoneName: string
-  systemAudioActive: boolean
-  /** Whether a restart could capture system audio on this Mac. */
-  canRestartWithSystemAudio: boolean
 }
 
 /** The quiet run is worth a message from here on (issue #42). */
@@ -38,7 +34,9 @@ const QUIET_MESSAGE_SECONDS = 30
 /**
  * Highest priority first. What the user must act on soonest wins: a failed
  * Stop, then a stop that is about to happen without them, then lost audio,
- * then a lost or late transcript, then advice.
+ * then a lost or late transcript. A microphone-only recording is not here:
+ * it is a standing condition, so its offer sits on the sources line, where
+ * no message can hide it.
  */
 export const MESSAGE_PRIORITY: readonly RecordingMessageKind[] = [
   'saveFailed',
@@ -47,7 +45,6 @@ export const MESSAGE_PRIORITY: readonly RecordingMessageKind[] = [
   'silence',
   'transcriptFailed',
   'lag',
-  'micOnly',
 ]
 
 const DETECTORS: { [K in RecordingMessageKind]: (input: RecordingStatusInput) => Extract<RecordingMessage, { kind: K }> | null } = {
@@ -73,7 +70,6 @@ const DETECTORS: { [K in RecordingMessageKind]: (input: RecordingStatusInput) =>
   transcriptFailed: input =>
     input.pace.pace === 'unavailable' ? { kind: 'transcriptFailed', detail: input.sttError } : null,
   lag: input => (input.pace.pace === 'delayed' ? { kind: 'lag', lagSeconds: Math.round(input.pace.lagSeconds) } : null),
-  micOnly: input => (!input.systemAudioActive && input.canRestartWithSystemAudio ? { kind: 'micOnly' } : null),
 }
 
 /** Picks the single message to show, or `null` for a healthy recording. */
@@ -141,12 +137,6 @@ export function messageCopy(message: RecordingMessage): MessageCopy {
         tone: 'info',
         title: `The transcript is ${message.lagSeconds} seconds behind`,
         detail: 'Audio is still recording. The transcript catches up when you stop.',
-      }
-    case 'micOnly':
-      return {
-        tone: 'info',
-        title: 'This recording has only your microphone',
-        detail: 'To record the other people, restart. The meeting becomes two notes.',
       }
   }
 }

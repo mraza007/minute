@@ -51,10 +51,59 @@ describe('AskPanel', () => {
     expect(onAsk).toHaveBeenCalledWith('Who owns the FAQ?')
   })
 
-  it('disables the input and shows the answering line while askStatus is running', () => {
+  it('makes the input read-only and shows the answering line while askStatus is running', () => {
     render(<AskPanel {...baseProps({ askStatus: 'running' })} />)
-    expect(screen.getByPlaceholderText('Ask a question')).toBeDisabled()
+    const input = screen.getByPlaceholderText('Ask a question')
+    expect(input).toHaveAttribute('readonly')
+    expect(input).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByText('Answering on this Mac…')).toBeInTheDocument()
+  })
+
+  // A disabled input drops focus on <body>, where Escape no longer reaches
+  // the panel. Focus has to stay inside for the whole answer.
+  it('keeps focus in the panel while it answers, so Escape still closes it', () => {
+    const onClose = vi.fn()
+    const onAsk = vi.fn()
+    const { rerender } = render(<AskPanel {...baseProps({ onAsk, onClose })} />)
+    const input = screen.getByPlaceholderText('Ask a question')
+    fireEvent.change(input, { target: { value: 'Who owns the FAQ?' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onAsk).toHaveBeenCalledWith('Who owns the FAQ?')
+
+    rerender(<AskPanel {...baseProps({ onAsk, onClose, askStatus: 'running', llmBusy: true })} />)
+    expect(input).toHaveFocus()
+    fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send a second question while one is being answered', () => {
+    const onAsk = vi.fn()
+    render(<AskPanel {...baseProps({ onAsk, askStatus: 'running', llmBusy: true })} />)
+    const input = screen.getByPlaceholderText('Ask a question')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onAsk).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Send question' })).toBeDisabled()
+  })
+
+  it('moves focus to the input when Send or Retry is pressed, since both disable while answering', () => {
+    const onAsk = vi.fn()
+    render(
+      <AskPanel
+        {...baseProps({ onAsk, askHistory: [{ id: 1, question: 'Who owns the FAQ?', error: 'The model stopped.' }] })}
+      />,
+    )
+    const input = screen.getByPlaceholderText('Ask a question')
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    retry.focus()
+    fireEvent.click(retry)
+    expect(onAsk).toHaveBeenCalledWith('Who owns the FAQ?')
+    expect(input).toHaveFocus()
+
+    fireEvent.change(input, { target: { value: 'And the rollout?' } })
+    const send = screen.getByRole('button', { name: 'Send question' })
+    send.focus()
+    fireEvent.click(send)
+    expect(input).toHaveFocus()
   })
 
   // `askHistory` arrives newest-first. The panel reads as a conversation,
@@ -100,9 +149,9 @@ describe('AskPanel', () => {
       expect(onAsk).not.toHaveBeenCalled()
     })
 
-    it('disables the input (without the "answering" spinner) while llmBusy is true for a different flow', () => {
+    it('makes the input read-only (without the "answering" spinner) while llmBusy is true for a different flow', () => {
       render(<AskPanel {...baseProps({ askStatus: 'idle', llmBusy: true })} />)
-      expect(screen.getByPlaceholderText('Ask a question')).toBeDisabled()
+      expect(screen.getByPlaceholderText('Ask a question')).toHaveAttribute('readonly')
       expect(screen.getByText('Waiting for the current generation…')).toBeInTheDocument()
     })
 
@@ -113,7 +162,7 @@ describe('AskPanel', () => {
 
     it('leaves the input enabled and shows no hint when idle and nothing is busy', () => {
       render(<AskPanel {...baseProps({ askStatus: 'idle', llmBusy: false })} />)
-      expect(screen.getByPlaceholderText('Ask a question')).not.toBeDisabled()
+      expect(screen.getByPlaceholderText('Ask a question')).not.toHaveAttribute('readonly')
       expect(screen.queryByText('Waiting for the current generation…')).not.toBeInTheDocument()
     })
 

@@ -121,7 +121,7 @@ interface SetupOpts {
   /** `set_settings(patch)`'s response — defaults to the `get_settings` fixture. Throw to simulate a rejected patch. */
   setSettings?: (patch: Partial<Settings>) => Settings
   /** `save_note_to_obsidian(id)`'s response; a string rejects with that message. */
-  saveToObsidian?: ObsidianExport | string
+  saveToObsidian?: ObsidianExport | string | Promise<ObsidianExport>
   /** `check_obsidian_vault(path)` rejects with this message when set. */
   checkVaultReject?: string
   /** `toggle_action_item(id, index, done)`'s response — defaults to rejecting (tests that need it must supply this). */
@@ -452,13 +452,12 @@ describe('useAppState', () => {
     act(() => result.current.selectNoteById('note-1'))
     expect(result.current.selectedNoteId).toBe('note-1')
     act(() => result.current.goNotes())
-    expect(result.current.sel).toBeNull()
     expect(result.current.selectedNoteId).toBeNull()
     act(() => result.current.selectNoteById('note-0'))
     expect(result.current.selectedNoteId).toBe('note-0')
   })
 
-  it('selectNoteById updates sel/selectedNoteId to the matching note', async () => {
+  it('selectNoteById selects the matching note, and ignores an id that is not in the list', async () => {
     const notes = [
       noteFixture({ id: 'note-0' }),
       noteFixture({ id: 'note-1' }),
@@ -468,7 +467,9 @@ describe('useAppState', () => {
     setupIPC({ notes })
     const result = await loaded()
     act(() => result.current.selectNoteById('note-3'))
-    expect(result.current.sel).toBe(3)
+    expect(result.current.selectedNoteId).toBe('note-3')
+    expect(result.current.selectedNoteMeta).toEqual(notes[3])
+    act(() => result.current.selectNoteById('gone'))
     expect(result.current.selectedNoteId).toBe('note-3')
   })
 
@@ -1131,7 +1132,7 @@ describe('useAppState', () => {
       await waitFor(() => expect(result.current.view).toBe('notes'))
       expect(result.current.stopping).toBe(false)
       expect(result.current.notes).toEqual([newNote, otherNote])
-      expect(result.current.sel).toBe(0)
+      expect(result.current.selectedNoteId).toBe(noteId)
       expect(result.current.liveSegments).toEqual([])
       expect(result.current.processingStage).toBe('idle')
       expect(result.current.processingFailure).toBeNull()
@@ -1165,6 +1166,31 @@ describe('useAppState', () => {
       expect((startCalls[1].args as { includeSystemAudio: boolean }).includeSystemAudio).toBe(true)
     })
 
+    it('restartWithSystemAudio keeps an automatic recording automatic', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const automatic = { kind: 'automatic', appName: 'Zoom' } as const
+      const newNote = noteFixture({ id: noteId, title: 'New recording' })
+      setupIPC({
+        startRecordingId: noteId,
+        notes: [newNote],
+        stopRecording: { result: newNote },
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: automatic })
+      })
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
+
+      act(() => result.current.restartWithSystemAudio())
+      await waitFor(() => expect(calls.filter(c => c.cmd === 'start_recording')).toHaveLength(2))
+      await waitFor(() => expect(result.current.stopping).toBe(false))
+
+      const restart = calls.filter(c => c.cmd === 'start_recording')[1]
+      expect((restart.args as { origin: unknown }).origin).toEqual(automatic)
+      expect(result.current.recOrigin).toEqual(automatic)
+    })
+
     it('stopRec exposes saving and finalizing phases before preparing the completed note', async () => {
       let releaseStop!: () => void
       const wait = new Promise<void>(resolve => {
@@ -1191,7 +1217,7 @@ describe('useAppState', () => {
       expect(result.current.processingStage).toBe('idle')
     })
 
-    it('stopRec selects the correct index when the new note is not first in the refreshed list', async () => {
+    it('stopRec selects the new note when it is not first in the refreshed list', async () => {
       const newNote = noteFixture({ id: noteId, title: 'New recording' })
       const olderNote = noteFixture({ id: 'older-note', title: 'Older note' })
       const result = await loadedAndRecording({
@@ -1201,7 +1227,7 @@ describe('useAppState', () => {
 
       act(() => result.current.stopRec())
       await waitFor(() => expect(result.current.view).toBe('notes'))
-      expect(result.current.sel).toBe(1)
+      expect(result.current.selectedNoteId).toBe(noteId)
     })
 
     it('stopRec rejecting reports lastError, clears stopping, and stays on the recording view', async () => {
@@ -1283,7 +1309,7 @@ describe('useAppState', () => {
         await emit('meeting-popup-start', { origin: { kind: 'automatic', appName: 'Microsoft Teams' } })
       })
 
-      await waitFor(() => expect(result.current.view).toBe('recording'))
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
       const start = calls.find(c => c.cmd === 'start_recording')
       expect(start).toBeDefined()
       expect((start!.args as { origin: unknown }).origin).toEqual({
@@ -1291,6 +1317,44 @@ describe('useAppState', () => {
         appName: 'Microsoft Teams',
       })
       expect(result.current.recOrigin).toEqual({ kind: 'automatic', appName: 'Microsoft Teams' })
+    })
+
+    it('an automatic start leaves the window where the user is', async () => {
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+      })
+      const result = await loaded()
+      act(() => result.current.goSettings())
+
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: { kind: 'automatic', appName: 'Zoom' } })
+      })
+
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
+      expect(result.current.view).toBe('settings')
+    })
+
+    // A re-subscribe leaves a gap, between the old listener going and the
+    // new one arriving over IPC, in which a start is lost. The mock bridge
+    // has no such delay, so this counts subscriptions instead.
+    it('subscribes once, so no start can fall between two subscriptions', async () => {
+      setupIPC({ models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })] })
+      const invoke = vi.spyOn(
+        (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: { event?: string }) => Promise<unknown> } }).__TAURI_INTERNALS__,
+        'invoke',
+      )
+      const subscriptions = () =>
+        invoke.mock.calls.filter(([cmd, args]) => cmd === 'plugin:event|listen' && args?.event === 'meeting-popup-start').length
+      const result = await loaded()
+      await waitFor(() => expect(subscriptions()).toBe(1))
+
+      act(() => result.current.goSettings())
+      act(() => result.current.backToNotes())
+      act(() => result.current.openRecordingPreflight())
+      await waitFor(() => expect(result.current.preflightMicrophoneDevices).toHaveLength(1))
+
+      expect(subscriptions()).toBe(1)
     })
 
     it('a plain start has the manual origin', async () => {
@@ -1678,7 +1742,7 @@ describe('useAppState', () => {
     })
 
     describe('deleteNote', () => {
-      it('invokes delete_note, refreshes notes, and keeps the same index (selecting the next note)', async () => {
+      it('invokes delete_note, refreshes notes, and selects the next note', async () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         setupIPC({
           notes: [noteA, noteB],
@@ -1694,7 +1758,7 @@ describe('useAppState', () => {
 
         expect(calls.some(c => c.cmd === 'delete_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
         await waitFor(() => expect(result.current.notes).toEqual([noteB]))
-        expect(result.current.sel).toBe(0)
+        expect(result.current.selectedNoteId).toBe('note-b')
         expect(result.current.deletedNoteUndo).toEqual([
           {
             id: 'note-a',
@@ -1705,7 +1769,7 @@ describe('useAppState', () => {
         ])
       })
 
-      it('clamps the selection index when the deleted note was last in the list', async () => {
+      it('selects the new last note when the deleted note was last in the list', async () => {
         setupIPC({
           notes: [noteA, noteB],
           getNote: getNoteFixture,
@@ -1717,10 +1781,36 @@ describe('useAppState', () => {
 
         act(() => result.current.deleteNote('note-b'))
         await waitFor(() => expect(result.current.notes).toEqual([noteA]))
-        expect(result.current.sel).toBe(0)
+        expect(result.current.selectedNoteId).toBe('note-a')
       })
 
-      it('clamps to 0 when deleting the last remaining note (empty library)', async () => {
+      it('keeps the open note when another note is deleted', async () => {
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteB],
+        })
+        const result = await loaded()
+        act(() => result.current.selectNoteById('note-b'))
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.notes).toEqual([noteB]))
+        expect(result.current.selectedNoteId).toBe('note-b')
+      })
+
+      it('keeps a deselected library deselected', async () => {
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteB],
+        })
+        const result = await loaded()
+        act(() => result.current.goNotes())
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.notes).toEqual([noteB]))
+        expect(result.current.selectedNoteId).toBeNull()
+      })
+
+      it('selects nothing when deleting the last remaining note (empty library)', async () => {
         setupIPC({
           notes: [noteA],
           getNote: getNoteFixture,
@@ -1729,7 +1819,7 @@ describe('useAppState', () => {
         const result = await loaded()
         act(() => result.current.deleteNote('note-a'))
         await waitFor(() => expect(result.current.notes).toEqual([]))
-        expect(result.current.sel).toBe(0)
+        expect(result.current.selectedNoteId).toBeNull()
       })
 
       it('reports lastError when delete_note rejects', async () => {
@@ -2417,6 +2507,43 @@ describe('useAppState: Obsidian export (issue #47)', () => {
     expect(result.current.obsidianSavingId).toBeNull()
   })
 
+  it('saveNoteToObsidian does not reload its note over the one opened while it saved', async () => {
+    const noteA = noteFixture({ id: 'note-a', title: 'A' })
+    const noteB = noteFixture({ id: 'note-b', title: 'B' })
+    const getNoteIds: string[] = []
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>(resolve => {
+      releaseSave = resolve
+    })
+    setupIPC({
+      notes: [noteA, noteB],
+      getNote: id => {
+        getNoteIds.push(id)
+        const meta = id === 'note-a' ? noteA : noteB
+        return { meta, transcript: { segments: [] }, summary: null, markdown: '', audioPath: null }
+      },
+      saveToObsidian: saveGate.then(() => ({})),
+    })
+    const result = await loaded()
+    await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-a'))
+
+    let save!: Promise<unknown>
+    act(() => {
+      save = result.current.saveNoteToObsidian('note-a')
+    })
+    act(() => result.current.selectNoteById('note-b'))
+    await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-b'))
+    getNoteIds.length = 0
+
+    await act(async () => {
+      releaseSave()
+      await save
+    })
+
+    expect(getNoteIds).not.toContain('note-a')
+    expect(result.current.selectedMeta?.id).toBe('note-b')
+  })
+
   it('saveNoteToObsidian reports an IPC failure on the error banner and resolves null', async () => {
     const note = noteFixture()
     setupIPC({ notes: [note], saveToObsidian: 'note vanished' })
@@ -2487,5 +2614,33 @@ describe('useAppState: per-app meeting policies (issue #46)', () => {
 
     await waitFor(() => expect(result.current.lastError).toContain('could not write settings'))
     await waitFor(() => expect(result.current.tMeetingPolicies.slack).toBe('record'))
+  })
+
+  it('reports it when the saved policy cannot be read back either', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    let getSettingsCalls = 0
+    const settings = settingsFixture()
+    mockIPC(
+      cmd => {
+        if (cmd === 'get_settings') {
+          getSettingsCalls += 1
+          if (getSettingsCalls > 1) throw 'could not read settings'
+          return settings
+        }
+        if (cmd === 'set_settings') throw 'could not write settings'
+        if (cmd === 'list_models' || cmd === 'list_notes') return []
+        return null
+      },
+      { shouldMockEvents: true },
+    )
+    const result = await loaded()
+
+    act(() => result.current.setMeetingPolicy('slack', 'ignore'))
+
+    await waitFor(() => expect(result.current.lastError).toContain('could not read settings'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    process.off('unhandledRejection', unhandled)
+    expect(unhandled).not.toHaveBeenCalled()
   })
 })

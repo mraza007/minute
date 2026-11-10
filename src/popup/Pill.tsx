@@ -32,8 +32,8 @@ function formatElapsed(totalSeconds: number): string {
  * ## Keyboard caveat
  * Enter and Escape work only when AppKit made the panel key, which a
  * non-activating panel does after a click. Before that, the first key press
- * may reach nothing. Enter only ever starts a recording from the `ask`
- * state. It never stops one.
+ * may reach nothing. Enter with no button focused starts a recording from
+ * the `ask` state. It never stops one.
  */
 export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
   const [payload, setPayload] = useState<MeetingPopupPayloadEvent | null>(null)
@@ -117,6 +117,8 @@ export function Pill({ autoDismissMs = DEFAULT_AUTO_DISMISS_MS }: PillProps) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Enter' && kind === 'ask') {
+        // Enter on a focused button presses that button. Dismiss must not record.
+        if (e.target instanceof HTMLButtonElement) return
         e.preventDefault()
         start()
       } else if (e.key === 'Escape') {

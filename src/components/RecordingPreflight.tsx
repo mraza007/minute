@@ -103,7 +103,8 @@ export function RecordingPreflight({
     if (focusable.length === 0) return
     const first = focusable[0]
     const last = focusable[focusable.length - 1]
-    if (e.shiftKey && document.activeElement === first) {
+    // The sheet itself holds focus when it opens, before the first control.
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === panelRef.current)) {
       e.preventDefault()
       last.focus()
     } else if (!e.shiftKey && document.activeElement === last) {

@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 import type { SpeakerRosterEntry } from '../state/adapters'
 
 export interface SpeakerPopoverProps {
@@ -39,6 +39,7 @@ export function SpeakerPopover({
   const [saving, setSaving] = useState<'merge' | 'unknown' | null>(null)
   const pending = saving !== null
   const trimmed = draft.trim()
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   function submitRename() {
     if (trimmed && trimmed !== speaker) onRename(trimmed)
@@ -84,6 +85,7 @@ export function SpeakerPopover({
               <span>{speaker} · {turns} {turns === 1 ? 'turn' : 'turns'}</span>
             </div>
             <input
+              ref={nameInputRef}
               autoFocus
               className="speaker-popover-input"
               aria-label="Speaker name"
@@ -112,7 +114,12 @@ export function SpeakerPopover({
                   className="icon-btn speaker-popover-dismiss"
                   aria-label="Dismiss suggestion"
                   title="Dismiss suggestion"
-                  onClick={onDismissSuggestion}
+                  onClick={() => {
+                    // The suggestion row unmounts once the dismissal saves.
+                    // Focus moves off it first, and stays in the popover.
+                    nameInputRef.current?.focus()
+                    onDismissSuggestion()
+                  }}
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
                     <path d="M6 6l12 12M18 6L6 18" />

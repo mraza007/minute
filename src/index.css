@@ -9,12 +9,10 @@
   --canvas: #eff3f9;
   --panel: #ffffff;
   --panel-warm: #eff3f9;
-  --surface-soft: #ffffff;
   --surface-softer: #f5f7fb;
   --card: #ffffff;
   --control-track: #c5cedb;
   --player-track: #dee5ef;
-  --selected-tint: #e8f0ff;
 
   --ink: #172033;
   --ink-body: #172033;
@@ -39,7 +37,6 @@
   --error-text-strong: #9b1c31;
 
   --ok-text: #237a50;
-  --ok-tint: #eaf4ee;
 
   /* A wait that needs a look, not a failure: the queued-summary card and its sidebar row. */
   --warn-text: #9a6700;
@@ -48,10 +45,7 @@
 
   --rule: rgba(23, 32, 51, .10);
   --rule-strong: rgba(23, 32, 51, .20);
-  --border-soft: rgba(23, 32, 51, .07);
-  --border: rgba(23, 32, 51, .12);
   --border-strong: rgba(23, 32, 51, .18);
-  --border-heavy: rgba(23, 32, 51, .26);
   --control-border: #7c8799;
 
   --scrim: rgba(23, 32, 51, .32);
@@ -59,7 +53,6 @@
   --hover-overlay: rgba(23, 32, 51, .04);
   --hover-overlay-strong: rgba(23, 32, 51, .07);
   --btn-light-hover: #f5f7fb;
-  --btn-dark-hover: #2a3550;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -115,13 +108,11 @@
     --canvas: #0c1017;
     --panel: #10151d;
     --panel-warm: #151b25;
-    --surface-soft: #10151d;
     --surface-softer: #151b25;
     --card: #1a212d;
 
     --control-track: #364153;
     --player-track: #263041;
-    --selected-tint: #1b2a45;
 
     --ink: #e8ecf3;
     --ink-body: #d9dfe9;
@@ -144,7 +135,6 @@
     --error-text-strong: #ffb3bf;
 
     --ok-text: #5cc796;
-    --ok-tint: #17302a;
 
     --warn-text: #e5a54b;
     --warn-tint: #2b2416;
@@ -152,16 +142,12 @@
 
     --rule: rgba(232, 236, 243, .10);
     --rule-strong: rgba(232, 236, 243, .20);
-    --border-soft: rgba(232, 236, 243, .07);
-    --border: rgba(232, 236, 243, .11);
     --border-strong: rgba(232, 236, 243, .17);
-    --border-heavy: rgba(232, 236, 243, .24);
     --control-border: #8793a6;
     --scrim: rgba(0, 0, 0, .55);
     --hover-overlay: rgba(232, 236, 243, .06);
     --hover-overlay-strong: rgba(232, 236, 243, .09);
     --btn-light-hover: #222b3a;
-    --btn-dark-hover: #364153;
 
     --shadow-pill: 0 12px 32px rgba(0, 0, 0, .5), 0 0 0 1px rgba(232, 236, 243, .1);
 
@@ -418,23 +404,6 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   min-width: 0;
 }
 ::selection { background: var(--accent-selection); }
-
-/* ══════════════════════════════════════════════════════════════════════
-   TYPOGRAPHIC DEVICES
-   Three repeated forms carry nearly all hierarchy in the reworked UI.
-   ══════════════════════════════════════════════════════════════════════ */
-
-/* 1. The micro label. Replaces every eyebrow, group header, tab and status
-      caption. Uppercase, tightly-weighted, widely letterspaced sans —
-      unmistakably chrome, so it never competes with serif document text. */
-.mlab {
-  font-family: var(--sans);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: .11em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
 
 /* Recording view: a fixed head (title, sources, at most one message), the
    live transcript, and a bottom bar. The head does not scroll, because the
@@ -995,100 +964,6 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   .recording-bar { padding-left: 24px; }
 }
 
-/* 2. The ruled section head. A micro label followed by a hairline that
-      runs out to the edge of its column — the editorial device that
-      replaces the app's stacked cards. Set on a flex container. */
-.sec-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.sec-head::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--rule);
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   THE MANUSCRIPT MARGIN
-   The transcript's signature: timestamps set in a right-aligned gutter
-   behind one continuous vertical rule. The rule is a background gradient
-   on the scroll container rather than a border on each row, so it stays
-   unbroken across row gaps — and, since backgrounds on a scroll container
-   are painted against its padding box (not its scrolled content), it reads
-   as one uninterrupted line no matter how far the transcript is scrolled.
-   ══════════════════════════════════════════════════════════════════════ */
-.script {
-  --gutter: 74px;
-  --gutter-gap: 34px;
-  flex: 1;
-  overflow: auto;
-  padding: 26px 34px;
-  min-height: 0;
-  background-image: linear-gradient(
-    to right,
-    transparent 0 calc(34px + var(--gutter) + (var(--gutter-gap) / 2)),
-    var(--rule) calc(34px + var(--gutter) + (var(--gutter-gap) / 2)) calc(35px + var(--gutter) + (var(--gutter-gap) / 2)),
-    transparent calc(35px + var(--gutter) + (var(--gutter-gap) / 2))
-  );
-  background-repeat: no-repeat;
-}
-.script-line {
-  display: grid;
-  grid-template-columns: var(--gutter) 1fr;
-  column-gap: var(--gutter-gap);
-  max-width: 760px;
-}
-/* Timestamps double as seek buttons — styled as margin marginalia, not as
-   links: no underline, no accent, tabular so the column stays flush. */
-.script-ts {
-  justify-self: end;
-  /* Without this the button stretches to the full grid-row height and
-     centres its own label, so a three-line segment's timestamp floats
-     opposite the middle of the paragraph instead of its first line. The
-     margin reference has to sit on the line it refers to. */
-  align-self: start;
-  padding: 3px 0 0;
-  border: none;
-  background: none;
-  font-family: var(--sans);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: .02em;
-  color: var(--ink-faint);
-  text-align: right;
-}
-.script-ts[data-seekable='true'] { cursor: pointer; }
-.script-ts[data-seekable='true']:hover { color: var(--accent-text); }
-.script-who {
-  font-family: var(--sans);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: .11em;
-  text-transform: uppercase;
-  color: var(--ink);
-  margin-bottom: 4px;
-}
-.script-said {
-  font-family: var(--serif);
-  font-size: 15.5px;
-  line-height: 1.62;
-  letter-spacing: .003em;
-  color: var(--ink-body);
-  text-wrap: pretty;
-  user-select: text;
-  cursor: auto;
-  margin: 0;
-}
-/* Playback position. A margin rule in the gutter — the manuscript
-   equivalent of a highlighted row, and far quieter than a filled block. */
-.script-line[data-active='true'] .script-ts { color: var(--accent-text); font-weight: 600; }
-.script-line[data-active='true'] .script-said { color: var(--ink); }
-.script-line[data-active='true'] {
-  background: linear-gradient(90deg, rgba(var(--accent-rgb), .055), transparent 78%);
-}
-
 .side-row-wrap {
   content-visibility: auto;
   contain-intrinsic-size: auto 52px;
@@ -1113,7 +988,6 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   animation: shortcut-sheet-in 120ms cubic-bezier(.2, .8, .2, 1) both;
 }
 
-html[data-reduced-motion="true"] .context-menu { animation: none; }
 
 .context-menu-item {
   display: block;
@@ -1220,49 +1094,6 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 /* ══════════════════════════════════════════════════════════════════════
    CONTROLS
    ══════════════════════════════════════════════════════════════════════ */
-
-/* The one loud control in the app. */
-.btn-solid {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: var(--control-height);
-  box-sizing: border-box;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--accent-solid);
-  color: var(--text-on-accent);
-  font-family: var(--sans);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 10px 17px;
-  cursor: pointer;
-  transition: background var(--motion-fast), transform var(--motion-fast);
-}
-.btn-solid:hover:not(:disabled) { background: var(--accent-solid-hover); }
-.btn-solid:active:not(:disabled) { background: var(--accent-solid-active); transform: translateY(1px); }
-.btn-solid:disabled { cursor: default; opacity: .7; }
-
-.btn-outline {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: var(--control-height);
-  box-sizing: border-box;
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--ink);
-  font-family: var(--sans);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 10px 17px;
-  cursor: pointer;
-  transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast);
-}
-.btn-outline:hover:not(:disabled) { background: var(--hover-overlay); }
-.btn-outline:active:not(:disabled) { background: var(--hover-overlay-strong); transform: translateY(1px); }
-.btn-outline:disabled { cursor: default; opacity: .5; }
 
 /* pseudo-state classes replacing the mock's style-hover/focus/active */
 .icon-btn:hover { background: var(--hover-overlay-strong) !important; color: var(--ink) !important; }
@@ -1400,7 +1231,6 @@ html[data-reduced-motion='true'] .sidebar-record-dot.blink-dot { animation: none
   box-shadow: 0 16px 48px rgba(23, 32, 51, .18), 0 0 0 1px var(--rule);
   animation: shortcut-sheet-in 120ms cubic-bezier(.2, .8, .2, 1) both;
 }
-html[data-reduced-motion='true'] .filter-menu { animation: none; }
 .filter-menu-section + .filter-menu-section {
   margin-top: 4px;
   padding-top: 4px;
@@ -1936,6 +1766,7 @@ html[data-reduced-motion='true'] .filter-menu { animation: none; }
   cursor: pointer;
 }
 .speaker-chips > .note-link { padding-left: 4px; font-weight: 400; }
+.note-meta .note-link { font-size: inherit; line-height: inherit; }
 .note-link:hover:not(:disabled) { text-decoration: underline; }
 .note-link:disabled { color: var(--ink-faint); cursor: default; }
 .note-link[data-tone='muted'] { color: var(--ink-muted); }
@@ -2381,9 +2212,10 @@ html[data-reduced-motion='true'] .filter-menu { animation: none; }
 .player-bar[data-disabled='true'] button,
 .player-bar[data-disabled='true'] .player-track { cursor: default; opacity: .45; }
 
-/* Floating surfaces over the note: the Ask panel, the "…" menu, and the
-   speaker popover share one raised-card treatment. */
+/* Floating surfaces over the note: the Ask panel, the Markdown panel, the
+   "…" menu, and the speaker popover share one raised-card treatment. */
 .ask-panel,
+.markdown-panel,
 .note-menu,
 .speaker-popover {
   position: absolute;
@@ -2394,9 +2226,6 @@ html[data-reduced-motion='true'] .filter-menu { animation: none; }
   box-shadow: var(--shadow-popover);
   animation: shortcut-sheet-in 120ms cubic-bezier(.2, .8, .2, 1) both;
 }
-html[data-reduced-motion='true'] .ask-panel,
-html[data-reduced-motion='true'] .note-menu,
-html[data-reduced-motion='true'] .speaker-popover { animation: none; }
 
 .ask-panel {
   top: 60px;
@@ -2561,6 +2390,43 @@ html[data-reduced-motion='true'] .speaker-popover { animation: none; }
   font: 400 12px/16px var(--sans);
 }
 
+.markdown-panel {
+  top: 60px;
+  right: 24px;
+  z-index: 40;
+  width: 560px;
+  max-width: calc(100% - 48px);
+  max-height: calc(100% - 136px);
+  display: flex;
+  flex-direction: column;
+}
+.markdown-panel-size {
+  margin-left: 8px;
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.markdown-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  color: var(--ink);
+  font: 400 12.5px/20px ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  user-select: text;
+  cursor: auto;
+}
+.markdown-panel-foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--rule);
+}
+
 .note-menu {
   top: 60px;
   right: 24px;
@@ -2705,6 +2571,7 @@ html[data-reduced-motion='true'] .speaker-popover { animation: none; }
   .note-column { max-width: 764px; gap: 28px; }
   .player-bar { padding: 0 20px 0 48px; }
   .ask-panel,
+  .markdown-panel,
   .note-menu { right: 20px; }
 }
 @media (max-width: 900px) {
@@ -2741,6 +2608,12 @@ html[data-reduced-motion='true'] .speaker-popover { animation: none; }
   .spin { animation: none !important; }
   .live-turn { animation: none !important; }
   .preflight-sheet { animation: none !important; }
+  .context-menu,
+  .filter-menu,
+  .ask-panel,
+  .markdown-panel,
+  .note-menu,
+  .speaker-popover { animation: none !important; }
   .input-level-fill { transition: none !important; }
   .toggle-track,
   .toggle-thumb { transition: none !important; }
@@ -2752,16 +2625,20 @@ html[data-reduced-motion="true"] .wf-bar { animation: none !important; transform
 html[data-reduced-motion="true"] .blink-dot,
 html[data-reduced-motion="true"] .spin,
 html[data-reduced-motion="true"] .live-turn,
-html[data-reduced-motion="true"] .preflight-sheet {
+html[data-reduced-motion="true"] .preflight-sheet,
+html[data-reduced-motion="true"] .context-menu,
+html[data-reduced-motion="true"] .filter-menu,
+html[data-reduced-motion="true"] .ask-panel,
+html[data-reduced-motion="true"] .markdown-panel,
+html[data-reduced-motion="true"] .note-menu,
+html[data-reduced-motion="true"] .speaker-popover {
   animation: none !important;
 }
 html[data-reduced-motion="true"] .input-level-fill { transition: none !important; }
 html[data-reduced-motion="true"] .toggle-track,
 html[data-reduced-motion="true"] .toggle-thumb { transition: none !important; }
 
-/* Visible keyboard focus on every interactive control (WCAG 2.4.7) — text
-   inputs keep their existing box-shadow via .input-focus instead so the two
-   treatments don't double up. */
+/* Visible keyboard focus on every interactive control (WCAG 2.4.7). */
 button:focus-visible,
 [role="radio"]:focus-visible,
 [role="tab"]:focus-visible,

@@ -26,9 +26,9 @@ export function SettingsNav({ section, onSelect, onBack, recordingTime = null, o
           <button type="button" className="sidebar-record" data-recording="true" aria-label="Return to recording" onClick={onReturnToRecording}>
             <span className="sidebar-record-lead">
               <span className="sidebar-record-dot blink-dot" />
-              <span className="sidebar-nav-label">Recording</span>
+              <span>Recording</span>
             </span>
-            <span className="sidebar-nav-label sidebar-record-time">{recordingTime}</span>
+            <span className="sidebar-record-time">{recordingTime}</span>
           </button>
         </div>
       )}

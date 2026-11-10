@@ -1,8 +1,9 @@
-import { memo, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import type { NoteListItem, View } from '../types'
 import { NoteContextMenu } from './NoteContextMenu'
 import { LibraryFilterMenu } from './LibraryFilterMenu'
 import { DEFAULT_FILTERS, isFiltering, type LibraryFilters } from './libraryFilters'
+import { useFocusAfterCommit } from './useFocusAfterCommit'
 
 interface SidebarProps {
   notes: NoteListItem[]
@@ -32,6 +33,8 @@ interface SidebarProps {
   /** Hidden entirely while collapsed; the toolbar's "Notes" button brings it back (see `useSidebarCollapsed`). */
   collapsed: boolean
   onSetCollapsed: (collapsed: boolean) => void
+  /** The collapse control. Focus lands on it when the toolbar's "Notes" button brings the sidebar back. */
+  collapseButtonRef?: RefObject<HTMLButtonElement | null>
 }
 
 function applyFilters(notes: NoteListItem[], filters: LibraryFilters): NoteListItem[] {
@@ -124,6 +127,7 @@ export const Sidebar = memo(function Sidebar({
   onRevealNote,
   collapsed,
   onSetCollapsed,
+  collapseButtonRef,
 }: SidebarProps) {
   const [filters, setFilters] = useState<LibraryFilters>(DEFAULT_FILTERS)
   const [menuAnchor, setMenuAnchor] = useState<number | null>(null)
@@ -136,6 +140,15 @@ export const Sidebar = memo(function Sidebar({
   /** The row currently renaming inline (context menu's Rename). */
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const filterButtonRef = useRef<HTMLButtonElement>(null)
+  const doneButtonRef = useRef<HTMLButtonElement>(null)
+  const requestFocus = useFocusAfterCommit()
+
+  // Selection mode replaces the row that held the filter button, so focus
+  // moves to the way out of it.
+  function enterSelectionMode() {
+    requestFocus(() => doneButtonRef.current)
+    setSelectionMode(true)
+  }
 
   /** Commits an inline rename the same way NoteView's title edit does: only a non-blank, actually-changed draft calls out. */
   function commitRename(note: NoteListItem, draft: string) {
@@ -160,6 +173,7 @@ export const Sidebar = memo(function Sidebar({
   }
 
   function leaveSelectionMode() {
+    requestFocus(() => filterButtonRef.current)
     setSelectionMode(false)
     setSelectedIds(new Set())
     setBulkDeleteArmed(false)
@@ -197,6 +211,7 @@ export const Sidebar = memo(function Sidebar({
       <div className="sidebar-top" data-tauri-drag-region="" />
       <div className="sidebar-orientation">
         <button
+          ref={collapseButtonRef}
           type="button"
           className="icon-btn sidebar-collapse"
           aria-label="Collapse library sidebar"
@@ -214,7 +229,7 @@ export const Sidebar = memo(function Sidebar({
       {showSelect ? (
         <div className="sidebar-select-head">
           <span role="status">{selectCount} selected</span>
-          <button type="button" disabled={bulkPending} onClick={leaveSelectionMode}>Done</button>
+          <button ref={doneButtonRef} type="button" disabled={bulkPending} onClick={leaveSelectionMode}>Done</button>
         </div>
       ) : (
         <div className="sidebar-tools">
@@ -222,14 +237,14 @@ export const Sidebar = memo(function Sidebar({
             <button type="button" className="sidebar-record" data-recording="true" aria-label="Return to recording" onClick={onReturnToRecording}>
               <span className="sidebar-record-lead">
                 <span className={stopping ? 'sidebar-record-dot' : 'sidebar-record-dot blink-dot'} />
-                <span className="sidebar-nav-label">{stopping ? 'Finishing…' : 'Recording'}</span>
+                <span>{stopping ? 'Finishing…' : 'Recording'}</span>
               </span>
-              {!stopping && <span className="sidebar-nav-label sidebar-record-time">{recTime}</span>}
+              {!stopping && <span className="sidebar-record-time">{recTime}</span>}
             </button>
           ) : (
             <button type="button" className="sidebar-record" aria-label="New recording" onClick={onStartRecording}>
               <span className="sidebar-record-dot" />
-              <span className="sidebar-nav-label">New recording</span>
+              <span>New recording</span>
             </button>
           )}
           <div className="sidebar-search-row">
@@ -266,7 +281,7 @@ export const Sidebar = memo(function Sidebar({
           anchorBottom={menuAnchor}
           filters={filters}
           onChange={setFilter}
-          onSelectNotes={() => setSelectionMode(true)}
+          onSelectNotes={enterSelectionMode}
           onClose={closeFilterMenu}
         />
       )}
@@ -400,7 +415,7 @@ export const Sidebar = memo(function Sidebar({
               <circle cx="12" cy="12" r="3" />
               <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1" />
             </Icon>
-            <span className="sidebar-nav-label">Settings</span>
+            <span>Settings</span>
           </button>
           <span className="sidebar-stats">{statsLine}</span>
         </div>

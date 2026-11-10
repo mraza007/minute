@@ -37,6 +37,12 @@ function folderSegments(folder: string): string[] | null {
   return out
 }
 
+/** The local calendar day of `at` as `YYYY-MM-DD`: the `{date}` Minute writes into a saved file's name. */
+export function localDay(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+}
+
 /** Where a note called `title`, made on `date` (`YYYY-MM-DD`), would land inside the vault. `null` for an unusable folder. */
 export function previewObsidianPath(settings: Pick<ObsidianSettings, 'folder' | 'fileNameTemplate'>, title: string, date: string): string | null {
   const segments = folderSegments(settings.folder)

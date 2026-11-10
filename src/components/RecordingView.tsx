@@ -12,7 +12,9 @@ import { processingSteps } from './processingSteps'
 import { transcriptPace, type CaptureHealth } from './recordingDiagnostics'
 import { messageCopy, recordingHealthLine, recordingMessage, type RecordingMessage } from './recordingStatus'
 import { assignSpeakerColors, speakerColorStyle, type SpeakerColors } from './speakerColors'
+import type { SettingsSectionId } from './settings/sections'
 import { MODE_LABEL, transcriptionModeOf } from './transcriptionModes'
+import { useFocusAfterCommit } from './useFocusAfterCommit'
 
 /** Within this many px of the bottom still counts as "stuck". It absorbs sub-pixel scrollHeight rounding. */
 const STICK_THRESHOLD_PX = 48
@@ -66,7 +68,8 @@ interface RecordingViewProps {
   onRestartWithSystemAudio: () => void
   /** Issue #46: why this recording started. */
   origin: RecordingOrigin
-  onOpenSettings: () => void
+  /** Opens Settings on the section a link names. */
+  onOpenSettings: (section: SettingsSectionId) => void
   /** Whether speaker detection runs after this recording stops. */
   speakersExpected: boolean
   /** Whether a summary is written after this recording stops. */
@@ -313,38 +316,16 @@ interface MessageActions {
   onStop: () => void
   onRetrySave: () => void
   onDismissSaveFailure: () => void
-  onRestartWithSystemAudio: () => void
 }
 
 /**
- * The restart offer and its confirm step (issue #26). The restart splits
- * the meeting into two notes, so one stray click must not trigger it. The
- * armed state lives here so it resets whenever another message takes over.
+ * The confirm step of "Add system audio" (issue #26). The restart splits the
+ * meeting into two notes, so one stray click on the offer must not run it.
+ * An inline confirm, not a modal: no dialog role, since nothing traps focus.
  */
-function MicOnlyMessage({ onRestart }: { onRestart: () => void }) {
-  const [armed, setArmed] = useState(false)
-  // "Go back" returns focus here. Backing out unmounts the focused button,
-  // which would otherwise drop focus on the body.
-  const offerRef = useRef<HTMLButtonElement>(null)
-  const copy = messageCopy({ kind: 'micOnly' })
-
-  if (!armed) {
-    return (
-      <div className="recording-message" data-tone={copy.tone}>
-        <div className="recording-message-copy">
-          <strong>{copy.title}</strong>
-          <span>{copy.detail}</span>
-        </div>
-        <button type="button" ref={offerRef} className="message-action" onClick={() => setArmed(true)}>
-          Restart with system audio
-        </button>
-      </div>
-    )
-  }
-
-  // An inline confirm, not a modal: no dialog role, since nothing traps focus.
+function RestartConfirm({ onRestart, onBack }: { onRestart: () => void; onBack: () => void }) {
   return (
-    <div className="recording-message" data-tone={copy.tone} role="group" aria-label="Confirm restart with system audio">
+    <div className="recording-message" data-tone="info" role="group" aria-label="Confirm restart with system audio">
       <div className="recording-message-copy">
         <strong>Save this note and start a new one?</strong>
         <span>
@@ -352,27 +333,10 @@ function MicOnlyMessage({ onRestart }: { onRestart: () => void }) {
           becomes two notes.
         </span>
       </div>
-      <button
-        type="button"
-        // Arming unmounts the focused offer, so focus moves to the primary action.
-        autoFocus
-        className="message-action"
-        onClick={() => {
-          setArmed(false)
-          onRestart()
-        }}
-      >
+      <button type="button" autoFocus className="message-action" onClick={onRestart}>
         Save &amp; restart
       </button>
-      <button
-        type="button"
-        className="message-action"
-        data-tone="muted"
-        onClick={() => {
-          setArmed(false)
-          requestAnimationFrame(() => offerRef.current?.focus())
-        }}
-      >
+      <button type="button" className="message-action" data-tone="muted" onClick={onBack}>
         Go back
       </button>
     </div>
@@ -380,8 +344,6 @@ function MicOnlyMessage({ onRestart }: { onRestart: () => void }) {
 }
 
 export function StatusMessage({ message, actions }: { message: RecordingMessage; actions: MessageActions }) {
-  if (message.kind === 'micOnly') return <MicOnlyMessage onRestart={actions.onRestartWithSystemAudio} />
-
   const copy = messageCopy(message)
   return (
     <div className="recording-message" data-tone={copy.tone}>
@@ -451,6 +413,22 @@ export const RecordingView = memo(function RecordingView({
   const [markerOpen, setMarkerOpen] = useState(false)
   const [markerLabel, setMarkerLabel] = useState('')
   const [markerSaving, setMarkerSaving] = useState(false)
+  const addMarkerButtonRef = useRef<HTMLButtonElement>(null)
+  const addSystemAudioRef = useRef<HTMLButtonElement>(null)
+  const requestFocus = useFocusAfterCommit()
+  // Microphone-only is a standing condition of this recording, so the way
+  // out of it stays on the sources line for as long as it is true.
+  const canAddSystemAudio = !processing && !stopping && !systemAudioActive && canRestartWithSystemAudio
+  const [restartArmed, setRestartArmed] = useState(false)
+  const confirmingRestart = restartArmed && canAddSystemAudio
+
+  // Closing the composer unmounts the focused field, so focus returns to
+  // the button that opens it.
+  function closeMarkerComposer() {
+    requestFocus(() => addMarkerButtonRef.current)
+    setMarkerOpen(false)
+    setMarkerLabel('')
+  }
 
   const message = processing
     ? null
@@ -463,8 +441,6 @@ export const RecordingView = memo(function RecordingView({
         pace,
         sttError,
         microphoneName,
-        systemAudioActive,
-        canRestartWithSystemAudio,
       })
   const messageText = message ? messageCopy(message) : null
   const health = recordingHealthLine(captureHealth, pace)
@@ -483,8 +459,7 @@ export const RecordingView = memo(function RecordingView({
     setMarkerSaving(true)
     try {
       await addMarker(label)
-      setMarkerLabel('')
-      setMarkerOpen(false)
+      closeMarkerComposer()
     } catch {
       // useAppState already reports the failed write. The draft stays so
       // the user can retry without retyping it.
@@ -523,6 +498,7 @@ export const RecordingView = memo(function RecordingView({
       <AppToolbar lead={toolbarLead}>
         {!processing && (
           <button
+            ref={addMarkerButtonRef}
             type="button"
             className="toolbar-btn"
             aria-keyshortcuts="Meta+Shift+M"
@@ -540,28 +516,58 @@ export const RecordingView = memo(function RecordingView({
         <header className="note-head-title">
           <RecordingTitle title={title} disabled={processing || stopping} onRename={renameTitle} />
           <div className="note-meta">
-            {processing ? `${formatMmSs(elapsed)} · ` : ''}
-            {sources} · {MODE_LABEL[transcriptionModeOf(modelName)]} transcription · {modelName}
+            {/* One inline run, so the offer sits in the sentence like its neighbours. */}
+            <span>
+              {processing ? `${formatMmSs(elapsed)} · ` : ''}
+              {sources}
+              {canAddSystemAudio && (
+                <>
+                  {' · '}
+                  <button
+                    ref={addSystemAudioRef}
+                    type="button"
+                    className="note-link"
+                    aria-expanded={confirmingRestart}
+                    title="Record the other people on the call too"
+                    onClick={() => setRestartArmed(true)}
+                  >
+                    Add system audio
+                  </button>
+                </>
+              )}
+              {' · '}{MODE_LABEL[transcriptionModeOf(modelName)]} transcription · {modelName}
+            </span>
           </div>
         </header>
 
         {!processing && origin.kind === 'automatic' && (
           <div className="recording-notice">
             <span>Started automatically when {origin.appName} began a call.</span>
-            <button type="button" className="message-action" onClick={onOpenSettings}>Change</button>
+            <button type="button" className="message-action" onClick={() => onOpenSettings('recording')}>Change</button>
           </div>
+        )}
+
+        {confirmingRestart && (
+          <RestartConfirm
+            onRestart={() => {
+              setRestartArmed(false)
+              onRestartWithSystemAudio()
+            }}
+            onBack={() => {
+              setRestartArmed(false)
+              addSystemAudioRef.current?.focus()
+            }}
+          />
         )}
 
         {message && (
           <StatusMessage
-            key={message.kind}
             message={message}
             actions={{
               onKeepRecording,
               onStop: stopRec,
               onRetrySave: onRetryProcessing,
               onDismissSaveFailure: onDismissProcessingFailure,
-              onRestartWithSystemAudio,
             }}
           />
         )}
@@ -603,8 +609,7 @@ export const RecordingView = memo(function RecordingView({
             onKeyDown={event => {
               if (event.key === 'Escape') {
                 event.preventDefault()
-                setMarkerOpen(false)
-                setMarkerLabel('')
+                closeMarkerComposer()
               }
             }}
           />

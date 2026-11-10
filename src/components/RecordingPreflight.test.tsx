@@ -150,6 +150,25 @@ describe('RecordingPreflight', () => {
     expect(onRequestSysAudioPermission).toHaveBeenCalledTimes(1)
   })
 
+  // The sheet itself holds focus when it opens. Shift+Tab from there used
+  // to leave the dialog for the page behind it.
+  it('keeps Tab and Shift+Tab inside the sheet, from the sheet itself too', () => {
+    render(<RecordingPreflight {...base} />)
+    const sheet = screen.getByRole('dialog')
+    const first = screen.getByRole('combobox', { name: 'Microphone' })
+    const last = screen.getByRole('button', { name: 'Start recording' })
+    expect(sheet).toHaveFocus()
+
+    expect(fireEvent.keyDown(sheet, { key: 'Tab', shiftKey: true })).toBe(false)
+    expect(last).toHaveFocus()
+
+    expect(fireEvent.keyDown(last, { key: 'Tab' })).toBe(false)
+    expect(first).toHaveFocus()
+
+    expect(fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })).toBe(false)
+    expect(last).toHaveFocus()
+  })
+
   it('closes with Escape or Cancel while idle but not while starting', () => {
     const onClose = vi.fn()
     const { rerender } = render(<RecordingPreflight {...base} onClose={onClose} />)

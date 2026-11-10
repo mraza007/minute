@@ -584,8 +584,29 @@ describe('SettingsView', () => {
       expect(onCheckObsidianVault).not.toHaveBeenCalled()
     })
 
+    it('shows why the folder picker did not open under the Vault field', async () => {
+      const onSaveObsidian = vi.fn().mockResolvedValue(null)
+      const onChooseObsidianVault = vi.fn().mockRejectedValue(new Error('dialog plugin unavailable'))
+      renderSection('integrations', { onSaveObsidian, onChooseObsidianVault })
+      fireEvent.click(screen.getByRole('button', { name: 'Choose…' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('The folder picker did not open. dialog plugin unavailable')
+      expect(screen.getByLabelText('Vault')).toHaveAccessibleDescription(/did not open/)
+      expect(onSaveObsidian).not.toHaveBeenCalled()
+    })
+
+    // The saved file is named for the local day. A UTC date is a day off
+    // for a recording made late in the evening west of Greenwich, or early
+    // in the morning east of it, so this covers both ends of one local day.
+    it.each([
+      ['just after local midnight', new Date(2026, 10, 9, 0, 20)],
+      ['just before local midnight', new Date(2026, 10, 9, 23, 40)],
+    ])('dates the preview by the local day for a note made %s', (_when, createdAt) => {
+      renderSection('integrations', { obsidianPreviewNote: { title: 'Aurora launch sync', createdAt: createdAt.toISOString() } })
+      expect(screen.getByTestId('obsidian-preview')).toHaveTextContent('Meetings/2026-11-09 - Aurora launch sync.md')
+    })
+
     it('previews the file name live from the folder and template as they are typed', () => {
-      renderSection('integrations', { obsidianPreviewNote: { title: 'Aurora launch sync', createdAt: '2026-11-09T10:02:00Z' } })
+      renderSection('integrations', { obsidianPreviewNote: { title: 'Aurora launch sync', createdAt: new Date(2026, 10, 9, 10, 2).toISOString() } })
       const preview = screen.getByTestId('obsidian-preview')
       expect(preview).toHaveTextContent('Meetings/2026-11-09 - Aurora launch sync.md')
 

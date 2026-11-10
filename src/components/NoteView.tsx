@@ -17,6 +17,7 @@ import type { ProcessingFailure, SummaryStatus } from '../state/useAppState'
 import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
 import { AppToolbar } from './AppToolbar'
 import { AskPanel } from './AskPanel'
+import { MarkdownPanel } from './MarkdownPanel'
 import { NoteMenu, type NoteMenuAction } from './NoteMenu'
 import { NoteSummary } from './NoteSummary'
 import { PlayerBar } from './PlayerBar'
@@ -24,6 +25,7 @@ import { ProcessingStepList } from './ProcessingStepList'
 import { noteProcessingSteps } from './processingSteps'
 import { SpeakerPopover } from './SpeakerPopover'
 import { TranscriptList } from './TranscriptList'
+import type { SettingsSectionId } from './settings/sections'
 import { useFocusAfterCommit } from './useFocusAfterCommit'
 import { assignSpeakerColors, speakerColorStyle } from './speakerColors'
 
@@ -97,7 +99,8 @@ export interface NoteViewProps {
   /** Starts a queued summary without waiting its turn (issue #44). */
   onSummarizeNow: (id: string) => Promise<SummarizeNowOutcome | null>
   onAsk: (id: string, question: string) => void
-  onGoSettings: () => void
+  /** Opens Settings on the section a link names. */
+  onOpenSettings: (section: SettingsSectionId) => void
   onSetPinned: (id: string, pinned: boolean) => void
   onAddMarker: (id: string, seconds: number, label: string) => Promise<void>
   onUpdateMarker: (id: string, index: number, label: string) => Promise<void>
@@ -127,6 +130,7 @@ type Overlay =
   | { kind: 'none' }
   | { kind: 'ask' }
   | { kind: 'menu' }
+  | { kind: 'markdown' }
   | { kind: 'speaker'; speaker: string; offsetLeft: number }
 
 /** The one inline form the transcript section can have open. */
@@ -597,7 +601,7 @@ export function NoteView({
   onCancelSummary,
   onSummarizeNow,
   onAsk,
-  onGoSettings,
+  onOpenSettings,
   onSetPinned,
   onAddMarker,
   onUpdateMarker,
@@ -718,6 +722,18 @@ export function NoteView({
     })
   }, [])
 
+  // The menu closes itself after an item runs. An item that opened another
+  // surface must keep it.
+  const closeMenu = useCallback(() => {
+    setOverlay(current => (current.kind === 'menu' ? NO_OVERLAY : current))
+    const trigger = overlayReturnRef.current
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      trigger?.focus()
+    })
+  }, [])
+
   const closeMarkerComposer = useCallback(() => {
     requestFocus(() => addMarkerButtonRef.current)
     setComposer(NO_COMPOSER)
@@ -784,13 +800,18 @@ export function NoteView({
     },
     [noteId, onAsk],
   )
-  const handleCopy = useCallback(() => {
-    if (!navigator.clipboard) {
-      onCopyError(new Error('Clipboard unavailable'))
-      return
+  /** Resolves whether the Markdown reached the clipboard. A failure is already reported. */
+  const handleCopy = useCallback(async (): Promise<boolean> => {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(markdown)
+      return true
+    } catch (err) {
+      onCopyError(err)
+      return false
     }
-    navigator.clipboard.writeText(markdown).catch(err => onCopyError(err))
   }, [markdown, onCopyError])
+  const openModelSettings = useCallback(() => onOpenSettings('models'), [onOpenSettings])
 
   if (!meta) {
     return (
@@ -799,7 +820,7 @@ export function NoteView({
         {hasNotes ? (
           <PickNoteArea onStartRecording={onStartRecording} />
         ) : (
-          <EmptyNotesArea onStartRecording={onStartRecording} onGoSettings={onGoSettings} />
+          <EmptyNotesArea onStartRecording={onStartRecording} onGoSettings={() => onOpenSettings('recording')} />
         )}
       </main>
     )
@@ -855,7 +876,8 @@ export function NoteView({
           onSelect: () => setComposer({ kind: 'detect' }),
         }]
       : []),
-    { id: 'copy', label: 'Copy as Markdown', startsGroup: true, onSelect: handleCopy },
+    { id: 'markdown', label: 'View Markdown', startsGroup: true, onSelect: () => setOverlay({ kind: 'markdown' }) },
+    { id: 'copy', label: 'Copy as Markdown', onSelect: () => void handleCopy() },
     ...(obsidianEnabled
       ? [{
           id: 'obsidian',
@@ -1128,7 +1150,7 @@ export function NoteView({
               wait={summaryWait}
               onSummarizeNow={handleSummarizeNow}
               onToggleAction={handleToggleAction}
-              onGoSettings={onGoSettings}
+              onGoSettings={openModelSettings}
             />
           )}
 
@@ -1297,12 +1319,20 @@ export function NoteView({
           seekable={seekable}
           onAsk={handleAsk}
           onSeekCitation={handleSeek}
-          onGoSettings={onGoSettings}
+          onGoSettings={openModelSettings}
           onClose={closeOverlay}
         />
       )}
       {overlay.kind === 'menu' && (
-        <NoteMenu label={`Actions for “${meta.title}”`} actions={menuActions} onClose={closeOverlay} />
+        <NoteMenu label={`Actions for “${meta.title}”`} actions={menuActions} onClose={closeMenu} />
+      )}
+      {overlay.kind === 'markdown' && (
+        <MarkdownPanel
+          markdown={transcriptReady ? markdown : null}
+          onCopy={handleCopy}
+          onReveal={() => onReveal(meta.id)}
+          onClose={closeOverlay}
+        />
       )}
     </main>
   )

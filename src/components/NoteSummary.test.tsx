@@ -220,15 +220,14 @@ describe('NoteSummary', () => {
       await waitFor(() => expect(screen.getByRole('button', { name: 'Summarize now' })).toBeEnabled())
     })
 
-    it('says the summary starts next when another one is still running', async () => {
-      const onSummarizeNow = vi.fn().mockResolvedValue('next')
+    // The app state owns "starts next" per note, so a card that mounts
+    // again (the user left the note and came back) still says so.
+    it('says the summary starts next from its first render, with nothing pressed', () => {
       render(<NoteSummary {...baseProps({
         status: 'queued',
-        wait: { queuedAt: Date.now(), style: 'standard', cause: 'otherNote' },
-        onSummarizeNow,
+        wait: { queuedAt: Date.now(), style: 'standard', cause: 'startsNext' },
       })} />)
-      fireEvent.click(screen.getByRole('button', { name: 'Summarize now' }))
-      expect(await screen.findByRole('button', { name: 'Starts next' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Starts next' })).toBeDisabled()
       expect(screen.getByText(/It starts next, when the summary that is running ends/)).toBeInTheDocument()
     })
 

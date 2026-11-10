@@ -96,8 +96,8 @@ your Mac plays doesn't land in the recording a second time as speaker
 bleed through the mic.
 
 Started mic-only by mistake? Sources are fixed once a recording starts —
-that's a hard constraint of the capture pipeline — but the recording view
-offers **Restart with system audio**: it saves the recording so far as
+that's a hard constraint of the capture pipeline — but the sources line
+under the title offers **Add system audio**: it saves the recording so far as
 its own note and immediately starts a new one with system audio on,
 behind a confirm step that says the meeting ends up as two notes.
 

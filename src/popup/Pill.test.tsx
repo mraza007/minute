@@ -1,6 +1,7 @@
 import { emit } from '@tauri-apps/api/event'
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Pill } from './Pill'
 
@@ -93,6 +94,18 @@ describe('popup/Pill', () => {
     fireEvent.keyDown(window, { key: 'Enter' })
 
     expect(calls.some(c => c.cmd === 'popup_start')).toBe(true)
+  })
+
+  it('Enter on the focused Dismiss button dismisses, and does not start a recording', async () => {
+    const calls = captureIPC()
+    render(<Pill autoDismissMs={NO_TIMEOUT_MS} />)
+    await showPill({ kind: 'ask', appName: 'Zoom' })
+    const user = userEvent.setup()
+
+    screen.getByRole('button', { name: 'Dismiss' }).focus()
+    await user.keyboard('{Enter}')
+
+    expect(calls.map(c => c.cmd)).toEqual(['popup_dismiss'])
   })
 
   it('pressing Escape invokes popup_dismiss with { timedOut: false }', () => {

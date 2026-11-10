@@ -9,7 +9,6 @@ const MESSAGES: RecordingMessage[] = [
   { kind: 'silence', quietSecs: 40, microphoneSilent: true, microphoneName: 'MacBook Pro Microphone' },
   { kind: 'transcriptFailed', detail: 'The transcription model stopped.' },
   { kind: 'lag', lagSeconds: 34 },
-  { kind: 'micOnly' },
 ]
 
 const NO_ACTIONS = {
@@ -17,7 +16,6 @@ const NO_ACTIONS = {
   onStop: () => {},
   onRetrySave: () => {},
   onDismissSaveFailure: () => {},
-  onRestartWithSystemAudio: () => {},
 }
 
 /**

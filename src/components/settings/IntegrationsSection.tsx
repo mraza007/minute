@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import type { ObsidianPatch, ObsidianSettings } from '../../ipc/types'
-import { describeSavedAt, previewObsidianPath } from '../../state/obsidian'
+import { describeSavedAt, localDay, previewObsidianPath } from '../../state/obsidian'
 import { SettingSwitch, SettingsHeading } from './controls'
 
 type SettingKey = keyof ObsidianSettings
@@ -11,7 +11,7 @@ export interface IntegrationsSectionProps {
   onSaveObsidian: (patch: ObsidianPatch) => Promise<string | null>
   /** Resolves `null` when the path is an existing folder, else the reason. */
   onCheckObsidianVault: (path: string) => Promise<string | null>
-  /** Opens the folder picker. Resolves `null` when cancelled. */
+  /** Opens the folder picker. Resolves `null` when cancelled. A rejection shows under the Vault field. */
   onChooseObsidianVault: () => Promise<string | null>
   /** The newest saved note, for the "Last saved" line. */
   obsidianLastSave: { title: string; savedAt: string } | null
@@ -94,11 +94,19 @@ export function IntegrationsSection({
   }
 
   async function chooseVault() {
-    const picked = await onChooseObsidianVault()
+    let picked: string | null
+    try {
+      picked = await onChooseObsidianVault()
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      setErrors(current => ({ ...current, vaultPath: `The folder picker did not open. ${reason}` }))
+      return
+    }
     if (picked !== null) await save('vaultPath', { vaultPath: picked })
   }
 
-  const previewDate = obsidianPreviewNote ? obsidianPreviewNote.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10)
+  // The saved file is named for the local day of the recording, so the preview is too.
+  const previewDate = localDay(obsidianPreviewNote ? new Date(obsidianPreviewNote.createdAt) : new Date())
   const preview = previewObsidianPath(
     { folder: folderDraft, fileNameTemplate: templateDraft },
     obsidianPreviewNote?.title ?? SAMPLE_TITLE,

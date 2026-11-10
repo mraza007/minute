@@ -319,7 +319,7 @@ export const SUMMARY_STYLE_NAMES: Record<SummaryStyle, string> = {
 }
 
 /** What holds a queued summary back, as far as the app can see. */
-export type SummaryWaitCause = 'recording' | 'otherNote' | 'unknown'
+export type SummaryWaitCause = 'startsNext' | 'recording' | 'otherNote' | 'unknown'
 
 /** A queued summary as the "This summary has waited …" card shows it (issue #44). */
 export interface SummaryWait {
@@ -331,15 +331,19 @@ export interface SummaryWait {
 }
 
 /**
- * Why `noteId`'s queued summary has not started. A live recording holds
- * the whole queue, so it wins over another note's running summary.
- * Anything else (an Ask, a stuck queue) is `'unknown'`.
+ * Why `noteId`'s queued summary has not started. "Summarize now" moves a
+ * note to the front of the queue, where not even a recording holds it, so
+ * `startsNext` wins. A live recording holds the rest of the queue, so it
+ * wins over another note's running summary. Anything else (an Ask, a stuck
+ * queue) is `'unknown'`.
  */
 export function summaryWaitCause(
   noteId: string,
   isRecording: boolean,
   summaryStatus: Readonly<Record<string, SummaryStatusEvent['state']>>,
+  startsNext = false,
 ): SummaryWaitCause {
+  if (startsNext) return 'startsNext'
   if (isRecording) return 'recording'
   const otherRunning = Object.entries(summaryStatus).some(([id, state]) => id !== noteId && state === 'running')
   return otherRunning ? 'otherNote' : 'unknown'
@@ -347,6 +351,9 @@ export function summaryWaitCause(
 
 /** The queued-summary card's reason line. */
 export function summaryWaitReason({ style, cause }: SummaryWait): string {
+  if (cause === 'startsNext') {
+    return 'It starts next, when the summary that is running ends. Your recording and transcript are safe.'
+  }
   const queued = `It was queued as ${SUMMARY_STYLE_NAMES[style]}`
   const why = {
     otherNote: `${queued} behind another note and did not start.`,

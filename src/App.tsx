@@ -13,6 +13,7 @@ import { SettingsNav } from './components/settings/SettingsNav'
 import { SettingsView } from './components/settings/SettingsView'
 import type { SettingsSectionId } from './components/settings/sections'
 import { SearchPalette } from './components/SearchPalette'
+import { useFocusAfterCommit } from './components/useFocusAfterCommit'
 import { transcriptionModeOptions } from './components/transcriptionModes'
 
 export default function App() {
@@ -26,6 +27,21 @@ export default function App() {
   } = s
   const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = useSidebarCollapsed()
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('recording')
+  const { goSettings } = s
+  /** Opens Settings on `section`. Every link that names a setting goes to the section that holds it. */
+  const openSettings = useCallback((section: SettingsSectionId) => {
+    setSettingsSection(section)
+    goSettings()
+  }, [goSettings])
+  // Hiding or showing the sidebar unmounts the control that was pressed, so
+  // focus moves to the control that undoes it.
+  const showNotesButtonRef = useRef<HTMLButtonElement>(null)
+  const collapseSidebarButtonRef = useRef<HTMLButtonElement>(null)
+  const requestFocus = useFocusAfterCommit()
+  const setSidebarCollapsedByUser = useCallback((collapsed: boolean) => {
+    requestFocus(() => (collapsed ? showNotesButtonRef.current : collapseSidebarButtonRef.current))
+    setSidebarCollapsed(collapsed)
+  }, [requestFocus, setSidebarCollapsed])
   const searchReturnFocusRef = useRef<HTMLElement | null>(null)
   const preflightReturnFocusRef = useRef<HTMLElement | null>(null)
   const openSearch = useCallback(() => {
@@ -105,27 +121,24 @@ export default function App() {
     return () => document.removeEventListener('contextmenu', handleContextMenu)
   }, [])
 
-  // ⌘/ opens the shortcut list, which lives under Settings > About.
-  const { goSettings } = s
+  // ⌘/ opens the shortcut list, which lives under Settings > About. Not
+  // before the app is open: Settings from onboarding would lead into an app
+  // with no transcription model.
+  const appOpen = s.view !== 'loading' && s.view !== 'onboarding'
   useEffect(() => {
     function handleShortcutList(event: KeyboardEvent) {
       if (!event.metaKey || event.key !== '/') return
       event.preventDefault()
-      if (s.recordingPreflightOpen || s.searchOpen) return
-      setSettingsSection('about')
-      goSettings()
+      if (!appOpen || s.recordingPreflightOpen || s.searchOpen) return
+      openSettings('about')
     }
     window.addEventListener('keydown', handleShortcutList)
     return () => window.removeEventListener('keydown', handleShortcutList)
-  }, [goSettings, s.recordingPreflightOpen, s.searchOpen])
+  }, [appOpen, openSettings, s.recordingPreflightOpen, s.searchOpen])
 
-  // The selected note's list-level metadata — the same "notes[sel], falling
-  // back to notes[0]" rule NoteView used to apply internally before its
-  // narrow-props refactor (Stage 3 Task 5); computed once here since
-  // several of the props below (summaryStatus/summaryError) key off its id.
-  // `sel === null` is an *explicit* deselect ("All notes", issue #24) — no
-  // newest-note fallback there, that's the pick-a-note state.
-  const selectedNoteMeta = s.sel === null ? null : (s.notes[s.sel] ?? s.notes[0] ?? null)
+  // `null` is the pick-a-note state: an empty library, or an explicit
+  // deselect ("All notes", issue #24).
+  const selectedNoteMeta = s.selectedNoteMeta
 
   // NoteView distinguishes 'idle' | 'queued' | 'running' |
   // 'error' — `summaryStatus`'s `'done'` (and "no event seen this session")
@@ -143,7 +156,12 @@ export default function App() {
     ? {
         queuedAt: s.summaryQueuedAt[selectedNoteMeta.id] ?? null,
         style: s.tSummaryStyle,
-        cause: summaryWaitCause(selectedNoteMeta.id, s.isRecording, s.summaryStatus),
+        cause: summaryWaitCause(
+          selectedNoteMeta.id,
+          s.isRecording,
+          s.summaryStatus,
+          s.summaryStartsNext[selectedNoteMeta.id] === true,
+        ),
       }
     : null
 
@@ -170,7 +188,8 @@ export default function App() {
   const toolbarLead = sidebarCollapsed ? (
     <SidebarReopen
       isRecording={s.isRecording}
-      onShowNotes={() => setSidebarCollapsed(false)}
+      showNotesButtonRef={showNotesButtonRef}
+      onShowNotes={() => setSidebarCollapsedByUser(false)}
       onStartRecording={openRecordingPreflight}
       onReturnToRecording={s.goRecording}
     />
@@ -237,13 +256,14 @@ export default function App() {
           onRenameNote={s.renameNote}
           onRevealNote={s.revealNote}
           collapsed={sidebarCollapsed || s.view === 'settings'}
-          onSetCollapsed={setSidebarCollapsed}
+          onSetCollapsed={setSidebarCollapsedByUser}
+          collapseButtonRef={collapseSidebarButtonRef}
         />
         {s.view === 'settings' && (
           <SettingsNav
             section={settingsSection}
             onSelect={setSettingsSection}
-            onBack={s.goNotes}
+            onBack={s.backToNotes}
             recordingTime={s.isRecording ? s.recTime : null}
             onReturnToRecording={s.goRecording}
           />
@@ -291,7 +311,7 @@ export default function App() {
               onCancelSummary={s.cancelSummary}
               onSummarizeNow={s.summarizeNow}
               onAsk={s.askQuestion}
-              onGoSettings={s.goSettings}
+              onOpenSettings={openSettings}
               onSetPinned={s.setNotePinned}
               onAddMarker={s.addNoteMarker}
               onUpdateMarker={s.updateNoteMarker}
@@ -338,7 +358,7 @@ export default function App() {
               canRestartWithSystemAudio={s.sysAudioAvailability === 'ready'}
               onRestartWithSystemAudio={s.restartWithSystemAudio}
               origin={s.recOrigin}
-              onOpenSettings={s.goSettings}
+              onOpenSettings={openSettings}
               speakersExpected={s.tDetectSpeakers && canDetectSpeakers}
               summaryExpected={s.llmInstalled}
               summaryStyle={s.tSummaryStyle}
@@ -443,7 +463,7 @@ export default function App() {
           onSelectTranscriptionModel={s.setSttModel}
           onOpenSettings={() => {
             closeRecordingPreflightState()
-            s.goSettings()
+            openSettings('models')
           }}
           onToggleSystemAudio={s.toggleCaptureSystemAudio}
           onRequestSysAudioPermission={s.requestSysAudioPermission}

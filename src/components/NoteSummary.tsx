@@ -62,18 +62,15 @@ function QueuedSummaryCard({
   const queuedAt = wait?.queuedAt ?? null
   const now = useMinuteClock(queuedAt)
   const [starting, setStarting] = useState(false)
-  const [startsNext, setStartsNext] = useState(false)
+  // Owned by the app state, per note, so it survives leaving this note.
+  const startsNext = wait?.cause === 'startsNext'
 
   function summarizeNow() {
     setStarting(true)
-    void onSummarizeNow()
-      .then(outcome => setStartsNext(outcome === 'next'))
-      .finally(() => setStarting(false))
+    void onSummarizeNow().finally(() => setStarting(false))
   }
 
-  const reason = startsNext
-    ? 'It starts next, when the summary that is running ends. Your recording and transcript are safe.'
-    : wait ? summaryWaitReason(wait) : 'It has not started yet. Your recording and transcript are safe.'
+  const reason = wait ? summaryWaitReason(wait) : 'It has not started yet. Your recording and transcript are safe.'
 
   return (
     <div className="summary-wait">
