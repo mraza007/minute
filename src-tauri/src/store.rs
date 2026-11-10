@@ -929,19 +929,28 @@ impl Store {
     /// Called from `llm::run_summarize`'s success path, on the summarize
     /// worker thread.
     ///
-    /// Issue #49: records where the summary names the transcript's current
-    /// speakers, so later speaker edits can rewrite exactly those spans.
-    /// Names the transcript stopped using while the model ran (a rename
-    /// mid-generation) are left as plain text.
-    pub fn write_summary_and_finalize(&self, id: &str, summary: &SummaryDoc) -> Result<NoteMeta> {
-        let mut speakers: Vec<Speaker> = Vec::new();
-        for segment in self.read_transcript(id)?.segments {
-            if !speakers.contains(&segment.speaker) {
-                speakers.push(segment.speaker);
+    /// Issue #49: records where the summary names the speakers of
+    /// `summarized`, the transcript the model read, so later speaker edits
+    /// can rewrite exactly those spans. Speaker edits made while the model
+    /// ran are then applied to the summary through the turns
+    /// (`mentions::follow_turns`).
+    pub fn write_summary_and_finalize(
+        &self,
+        id: &str,
+        summary: &SummaryDoc,
+        summarized: &Transcript,
+    ) -> Result<NoteMeta> {
+        let read = speakers_of(summarized);
+        let mut names: Vec<Speaker> = Vec::new();
+        for speaker in &read {
+            if !names.contains(speaker) {
+                names.push(speaker.clone());
             }
         }
         let mut summary = summary.clone();
-        summary.speaker_mentions = crate::mentions::find(&summary, &speakers);
+        summary.speaker_mentions = crate::mentions::find(&summary, &names);
+        let now = speakers_of(&self.read_transcript(id)?);
+        crate::mentions::follow_turns(&mut summary, &read, &now);
         self.write_summary(id, &summary)?;
         let mut meta = self.read_meta(id)?;
         meta.status = NoteStatus::Ready;
@@ -1565,9 +1574,11 @@ impl Store {
     /// the transcript changed under the diarization pass, and relabeling
     /// anyway would attribute turns to the wrong people.
     ///
-    /// Issue #49: the summary's speaker mentions are dropped. They name the
-    /// previous pass's speakers, and a rename of this pass's "Speaker 2"
-    /// must not rewrite a sentence about someone else.
+    /// Issue #49: the summary's speaker mentions follow the turns
+    /// (`mentions::follow_turns`). A mention names the previous pass's
+    /// speaker, so it moves to the new pass's speaker only when that
+    /// speaker took over all of the old one's turns; otherwise a rename of
+    /// the new "Speaker 2" could rewrite a sentence about someone else.
     pub fn update_segment_speakers(&self, id: &str, labels: &[Speaker]) -> Result<NoteMeta> {
         let mut transcript = self.read_transcript(id)?;
         if transcript.segments.len() != labels.len() {
@@ -1577,6 +1588,7 @@ impl Store {
                 transcript.segments.len()
             )));
         }
+        let before = speakers_of(&transcript);
         let meta = self.read_meta(id)?;
         for (index, (segment, label)) in transcript.segments.iter_mut().zip(labels).enumerate() {
             segment.speaker = match label {
@@ -1591,7 +1603,7 @@ impl Store {
             .read_summary(id)?
             .filter(|summary| !summary.speaker_mentions.is_empty())
             .map(|mut summary| {
-                summary.speaker_mentions.clear();
+                crate::mentions::follow_turns(&mut summary, &before, &speakers_of(&transcript));
                 summary
             });
         self.persist_speaker_edit(id, &transcript, summary.as_ref())
@@ -2043,6 +2055,14 @@ fn safe_export_name(title: &str) -> String {
     } else {
         trimmed.chars().take(80).collect()
     }
+}
+
+fn speakers_of(transcript: &Transcript) -> Vec<Speaker> {
+    transcript
+        .segments
+        .iter()
+        .map(|segment| segment.speaker.clone())
+        .collect()
 }
 
 fn speaker_merge_undo_checksum(
@@ -4452,6 +4472,7 @@ mod tests {
                     summary: "They decided things.".to_string(),
                     ..Default::default()
                 },
+                &Transcript::default(),
             )
             .unwrap();
 
@@ -4795,7 +4816,7 @@ mod tests {
         store.finalize_note(&meta.id, 42.0, 1).unwrap();
 
         let updated = store
-            .write_summary_and_finalize(&meta.id, &sample_summary())
+            .write_summary_and_finalize(&meta.id, &sample_summary(), &Transcript::default())
             .unwrap();
 
         assert_eq!(updated.status, NoteStatus::Ready);
@@ -4813,7 +4834,7 @@ mod tests {
         let meta = store.create_note("Standup", "whisper-small", now).unwrap();
 
         store
-            .write_summary_and_finalize(&meta.id, &sample_summary())
+            .write_summary_and_finalize(&meta.id, &sample_summary(), &Transcript::default())
             .unwrap();
 
         let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
@@ -5737,6 +5758,7 @@ mod tests {
                     }],
                     ..Default::default()
                 },
+                &store.read_transcript(&id).unwrap(),
             )
             .unwrap();
         id
@@ -5947,7 +5969,9 @@ mod tests {
             summary: "Speaker 1 set the date.".into(),
             ..Default::default()
         };
-        store.write_summary_and_finalize(&id, &regenerated).unwrap();
+        store
+            .write_summary_and_finalize(&id, &regenerated, &store.read_transcript(&id).unwrap())
+            .unwrap();
         let undone = store.undo_speaker_merge(&id, &merged.undo).unwrap();
         assert_eq!(undone.transcript.segments[2].speaker, "Speaker 3");
         assert_eq!(
@@ -5957,10 +5981,13 @@ mod tests {
     }
 
     #[test]
-    fn a_rerun_stops_renames_from_rewriting_the_older_summary() {
+    fn a_rerun_moves_summary_mentions_with_the_turns_they_named() {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let id = note_with_summary(&store);
+        // Old Speaker 2 and Speaker 3 spoke turns 1 and 2; the re-run calls
+        // both of those turns Speaker 1 and gives old Speaker 1's turns to
+        // a new Speaker 2.
         store
             .update_segment_speakers(
                 &id,
@@ -5972,10 +5999,56 @@ mod tests {
                 ],
             )
             .unwrap();
-        store.rename_speaker(&id, "Speaker 2", "Priya").unwrap();
         assert_eq!(
             store.read_summary(&id).unwrap().unwrap().summary,
-            "Speaker 2 walked Speaker 22 through the plan."
+            "Speaker 1 walked Speaker 22 through the plan."
+        );
+
+        store.rename_speaker(&id, "Speaker 2", "Priya").unwrap();
+        store.rename_speaker(&id, "Speaker 1", "Ann").unwrap();
+        let summary = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(summary.summary, "Ann walked Speaker 22 through the plan.");
+        assert_eq!(summary.action_items[0].text, "Ann sends the deck to Ann.");
+    }
+
+    /// The model reads the transcript, then speaker edits land before the
+    /// summary does: the summary must end up naming who spoke those turns
+    /// now, and must forget a name whose turns were split up.
+    #[test]
+    fn speaker_edits_made_while_the_summary_generates_reach_it() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let read = store.read_transcript(&id).unwrap();
+        store.rename_speaker(&id, "Speaker 2", "Sarah").unwrap();
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    "Speaker 2".into(),
+                    "Speaker 3".into(),
+                    "Speaker 4".into(),
+                ],
+            )
+            .unwrap();
+
+        let generated = SummaryDoc {
+            summary: "Speaker 1 decided; Speaker 2 agreed.".into(),
+            ..Default::default()
+        };
+        store
+            .write_summary_and_finalize(&id, &generated, &read)
+            .unwrap();
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().summary,
+            "Speaker 1 decided; Sarah agreed."
+        );
+
+        store.rename_speaker(&id, "Speaker 1", "Ann").unwrap();
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().summary,
+            "Speaker 1 decided; Sarah agreed."
         );
     }
 }

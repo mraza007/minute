@@ -339,6 +339,21 @@ pub fn build_summary_prompt(
     // on. Deliberately NOT wrapped in the transcript's data-not-
     // instructions guard: these come from the app's owner, not from
     // whatever was said in the room.
+    // Issue #49: ask for owners only when the transcript tells speakers
+    // apart. With one label (the placeholder every undiarized recording
+    // carries) the rule would have the model credit every task to it.
+    let mut named = segments.iter().filter_map(|seg| seg.speaker.name());
+    let first_named = named.next();
+    let attribution_rule = if named.any(|name| Some(name) != first_named) {
+        format!(
+            "- When the transcript shows who decided something or owns a task, name that \
+             speaker exactly as the transcript writes the name. Lines from \
+             \"{UNKNOWN_SPEAKER_LABEL}\" could not be attributed: never credit them to a \
+             named speaker.\n"
+        )
+    } else {
+        String::new()
+    };
     let user_rules = if custom_instructions.trim().is_empty() {
         String::new()
     } else {
@@ -360,9 +375,7 @@ pub fn build_summary_prompt(
          {topics_rule}\
          - \"decisions\": things that were agreed or resolved during the meeting.\n\
          - \"action_items\": concrete follow-up tasks that came out of the meeting.\n\
-         - When the transcript shows who decided something or owns a task, name that \
-         speaker exactly as the transcript writes the name. Lines from \"{UNKNOWN_SPEAKER_LABEL}\" \
-         could not be attributed: never credit them to a named speaker.\n\
+         {attribution_rule}\
          {coverage_rule}\
          {user_rules}\
          Respond with the JSON object only — no prose, no markdown fences, no reasoning.\n\
@@ -2812,7 +2825,7 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     // Issue #41: carry the fitting loop's verdict onto the persisted doc
     // so the panel can say "this covers only part of the recording".
     summary.truncated = transcript_truncated;
-    lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary)?;
+    lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary, &transcript)?;
 
     // Issue #12: a note the user never named takes the title the model
     // suggested. Deliberately after the summary is safely on disk, and
@@ -3247,6 +3260,20 @@ mod tests {
         let prompt =
             build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
         assert!(prompt.contains("[00:00] Speaker 1: Hello.\n[01:05] Unknown speaker: I can get it"));
+    }
+
+    /// Issue #49: an undiarized transcript says "Speaker 1" for everyone,
+    /// so the prompt must not ask the model to credit tasks to speakers.
+    #[test]
+    fn summary_prompt_asks_for_owners_only_when_speakers_differ() {
+        let rule = "name that speaker exactly as the transcript writes the name";
+        let prompt = |segments: &[StoredSegment]| {
+            build_summary_prompt("Standup", segments, usize::MAX, SummaryStyle::Standard, "")
+        };
+        let one = vec![seg("Speaker 1", 0.0, "Hi."), seg("Speaker 1", 4.0, "Bye.")];
+        let two = vec![seg("Speaker 1", 0.0, "Hi."), seg("Sarah", 4.0, "Bye.")];
+        assert!(!prompt(&one).contains(rule));
+        assert!(prompt(&two).contains(rule));
     }
 
     #[test]
