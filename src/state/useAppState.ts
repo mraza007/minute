@@ -28,6 +28,7 @@ import {
   type CaptureHealth,
 } from '../components/recordingDiagnostics'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
+import { useToday } from './useToday'
 import { useModelManager } from './useModelManager'
 import { useNoteDetail } from './useNoteDetail'
 import { useTauriEvent } from './useTauriEvent'
@@ -899,7 +900,8 @@ export function useAppState() {
     [],
   )
 
-  const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
+  const today = useToday()
+  const sidebarNotes = useMemo(() => notesToSidebarItems(notes, today), [notes, today])
 
   const statsLine = useMemo(() => {
     const totalBytes = storage ? storage.modelsBytes + storage.audioBytes + storage.notesBytes : 0

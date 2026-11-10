@@ -25,27 +25,44 @@ export interface ModelCardInfo {
   progressPercent?: number
 }
 
-function startOfUTCDay(d: Date): number {
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+const dayFormatters = new Map<string, Intl.DateTimeFormat>()
+
+/** The calendar date `d` falls on in `timeZone`, as whole days since the epoch. */
+function calendarDay(d: Date, timeZone: string): number {
+  let formatter = dayFormatters.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' })
+    dayFormatters.set(timeZone, formatter)
+  }
+  const parts: Record<string, number> = {}
+  for (const part of formatter.formatToParts(d)) parts[part.type] = Number(part.value)
+  return Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000
+}
+
+function systemTimeZone(): string {
+  return new Intl.DateTimeFormat().resolvedOptions().timeZone
 }
 
 /**
- * Today / Yesterday / Last week / <Month name> — bucketed off whole UTC
- * calendar days (not wall-clock 24h windows) so a note from 11pm yesterday
- * and one from 1am today both land correctly regardless of what time "now"
- * is. UTC (rather than local) keeps the boundary deterministic in tests
- * independent of the machine's timezone.
+ * Today / Yesterday / Last week / <Month name> — bucketed off whole
+ * calendar days in the reader's time zone, not wall-clock 24h windows and
+ * not UTC days: a meeting at 5:30 pm in Los Angeles is already "tomorrow"
+ * in UTC, so UTC buckets showed it under Today for the whole next day
+ * (issue #44).
  */
-function noteGroup(createdAt: Date, now: Date): string {
-  const diffDays = Math.round((startOfUTCDay(now) - startOfUTCDay(createdAt)) / 86_400_000)
+function noteGroup(createdAt: Date, now: Date, timeZone: string): string {
+  // `formatToParts` throws on an invalid date; keep the label the sidebar
+  // showed for one before.
+  if (Number.isNaN(createdAt.getTime())) return 'Invalid Date'
+  const diffDays = calendarDay(now, timeZone) - calendarDay(createdAt, timeZone)
   if (diffDays <= 0) return 'Today'
   if (diffDays === 1) return 'Yesterday'
   if (diffDays < 7) return 'Last week'
-  return createdAt.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })
+  return createdAt.toLocaleString('en-US', { month: 'long', timeZone })
 }
 
-/** Maps one stored note's metadata to the sidebar row shape. */
-export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
+/** Maps one stored note's metadata to the sidebar row shape. `timeZone` defaults to the system zone. */
+export function noteMetaToListItem(meta: NoteMeta, now: Date, timeZone: string = systemTimeZone()): NoteListItem {
   const createdAt = new Date(meta.createdAt)
   const minutes = Math.round(meta.durationSec / 60)
   const speakersPart = meta.speakers > 1 ? ` · ${meta.speakers} speakers` : ''
@@ -53,7 +70,7 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
     id: meta.id,
     title: meta.title,
     meta: `${minutes} min${speakersPart}`,
-    group: noteGroup(createdAt, now),
+    group: noteGroup(createdAt, now, timeZone),
     status: meta.status,
     sources: meta.sources,
     createdAt: meta.createdAt,
@@ -70,10 +87,10 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
  * Notes are expected pre-sorted newest-first (as `list_notes` returns them),
  * so consecutive same-group notes are always adjacent.
  */
-export function notesToSidebarItems(notes: NoteMeta[], now: Date): NoteListItem[] {
+export function notesToSidebarItems(notes: NoteMeta[], now: Date, timeZone: string = systemTimeZone()): NoteListItem[] {
   let prevGroup: string | undefined
   return notes.map(meta => {
-    const item = noteMetaToListItem(meta, now)
+    const item = noteMetaToListItem(meta, now, timeZone)
     if (item.group === prevGroup) {
       return { ...item, group: undefined }
     }

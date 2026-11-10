@@ -53,22 +53,22 @@ describe('noteMetaToListItem', () => {
   const now = new Date('2026-07-23T15:00:00.000Z')
 
   it('groups a note created earlier today as Today', () => {
-    const item = noteMetaToListItem(meta({ createdAt: '2026-07-23T09:00:00.000Z' }), now)
+    const item = noteMetaToListItem(meta({ createdAt: '2026-07-23T09:00:00.000Z' }), now, 'UTC')
     expect(item.group).toBe('Today')
   })
 
   it('groups a note created one calendar day ago as Yesterday', () => {
-    const item = noteMetaToListItem(meta({ createdAt: '2026-07-22T23:00:00.000Z' }), now)
+    const item = noteMetaToListItem(meta({ createdAt: '2026-07-22T23:00:00.000Z' }), now, 'UTC')
     expect(item.group).toBe('Yesterday')
   })
 
   it('groups a note 2-6 calendar days ago as Last week', () => {
-    expect(noteMetaToListItem(meta({ createdAt: '2026-07-21T09:00:00.000Z' }), now).group).toBe('Last week')
-    expect(noteMetaToListItem(meta({ createdAt: '2026-07-17T09:00:00.000Z' }), now).group).toBe('Last week')
+    expect(noteMetaToListItem(meta({ createdAt: '2026-07-21T09:00:00.000Z' }), now, 'UTC').group).toBe('Last week')
+    expect(noteMetaToListItem(meta({ createdAt: '2026-07-17T09:00:00.000Z' }), now, 'UTC').group).toBe('Last week')
   })
 
   it('groups a note 7+ calendar days ago by month name', () => {
-    const item = noteMetaToListItem(meta({ createdAt: '2026-06-30T09:00:00.000Z' }), now)
+    const item = noteMetaToListItem(meta({ createdAt: '2026-06-30T09:00:00.000Z' }), now, 'UTC')
     expect(item.group).toBe('June')
   })
 
@@ -113,7 +113,7 @@ describe('notesToSidebarItems', () => {
       meta({ id: 'b', createdAt: '2026-07-23T08:00:00.000Z' }), // Today
       meta({ id: 'c', createdAt: '2026-07-22T09:00:00.000Z' }), // Yesterday
     ]
-    const items = notesToSidebarItems(notes, now)
+    const items = notesToSidebarItems(notes, now, 'UTC')
     expect(items[0].group).toBe('Today')
     expect(items[1].group).toBeUndefined()
     expect(items[2].group).toBe('Yesterday')
