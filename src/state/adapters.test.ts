@@ -72,6 +72,26 @@ describe('noteMetaToListItem', () => {
     expect(item.group).toBe('June')
   })
 
+  it('groups by the calendar day of the reader, not the UTC day (issue #44)', () => {
+    // 5:30 pm on August 13 in Los Angeles is already August 14 in UTC.
+    const recordedYesterdayEvening = meta({ createdAt: '2026-08-14T00:30:00.000Z' })
+    const nextMorning = new Date('2026-08-14T15:40:00.000Z')
+    expect(noteMetaToListItem(recordedYesterdayEvening, nextMorning, 'America/Los_Angeles').group).toBe('Yesterday')
+  })
+
+  it('groups a note from just after local midnight as Today even when UTC is a day behind (issue #44)', () => {
+    // 00:30 on August 14 in Tokyo is still August 13 in UTC.
+    const recordedAfterMidnight = meta({ createdAt: '2026-08-13T15:30:00.000Z' })
+    const laterThatMorning = new Date('2026-08-14T00:10:00.000Z')
+    expect(noteMetaToListItem(recordedAfterMidnight, laterThatMorning, 'Asia/Tokyo').group).toBe('Today')
+  })
+
+  it('names the month in the reader time zone', () => {
+    // 9 pm on June 30 in Los Angeles is July 1 in UTC.
+    const lateJune = meta({ createdAt: '2026-07-01T04:00:00.000Z' })
+    expect(noteMetaToListItem(lateJune, now, 'America/Los_Angeles').group).toBe('June')
+  })
+
   it('rounds duration to the nearest minute', () => {
     expect(noteMetaToListItem(meta({ durationSec: 90 }), now).meta).toBe('2 min')
     expect(noteMetaToListItem(meta({ durationSec: 65 }), now).meta).toBe('1 min')
