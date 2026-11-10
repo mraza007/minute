@@ -93,7 +93,7 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
 describe('NoteView', () => {
   it('shows an empty-library message when there is no selected note', () => {
     render(<NoteView {...makeProps({ meta: null, selectedMeta: null })} />)
-    expect(screen.getByRole('heading', { level: 1, name: /no notes yet/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: /record your first meeting/i })).toBeInTheDocument()
   })
 
   // Issue #24: "All notes" deselects — with notes in the library, the
@@ -102,7 +102,7 @@ describe('NoteView', () => {
     render(<NoteView {...makeProps({ meta: null, selectedMeta: null, hasNotes: true })} />)
     expect(screen.getByRole('heading', { level: 1, name: 'All notes' })).toBeInTheDocument()
     expect(screen.getByText(/pick a note from the library list/i)).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { level: 1, name: /no notes yet/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: /record your first meeting/i })).not.toBeInTheDocument()
   })
 
   it('renders the selected note title from real note metadata', () => {

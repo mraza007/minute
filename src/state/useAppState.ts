@@ -54,9 +54,6 @@ function mergeNoteUpdate(current: NoteMeta, updated: NoteMeta): NoteMeta {
 
 const LAST_ERROR_TIMEOUT_MS = 5000
 
-/** Debounce window (ms) between a keystroke in the sidebar search input and the `search_notes` call it triggers — same value the ⌘K palette (`SearchPalette`) debounces its own input at. */
-const SIDEBAR_SEARCH_DEBOUNCE_MS = 150
-
 export interface ProcessingFailure {
   stage: 'saving' | 'preparing'
   message: string
@@ -230,23 +227,6 @@ export function useAppState() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [pendingSeek, setPendingSeek] = useState<{ noteId: string; seconds: number } | null>(null)
 
-  // Sidebar filter input: `sidebarQuery` is the raw text box value (kept
-  // even while empty, for the input's own display); `sidebarMatchedIds` is
-  // `null` when no filter is active (Sidebar renders every note, grouped as
-  // normal) or a `Set` of matching note ids once a debounced `search_notes`
-  // call has resolved for the current (non-blank) query — see
-  // `setSidebarQuery` below.
-  const [sidebarQuery, setSidebarQueryState] = useState('')
-  const [sidebarMatchedIds, setSidebarMatchedIds] = useState<Set<string> | null>(null)
-  const sidebarSearchTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // Bumped on every debounced sidebar search call and captured per in-flight
-  // request — same stale-response guard as `transcriptRequestId` above, so
-  // a slow response to an abandoned query can never clobber a newer one's
-  // result.
-  const sidebarSearchSeq = useRef(0)
-
-  useEffect(() => () => clearTimeout(sidebarSearchTimeout.current), [])
-
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Stable identity (only refs/setState in its closure) — required so that
@@ -409,53 +389,6 @@ export function useAppState() {
    * `useCallback` with no deps — permanently stable.
    */
   const searchNotes = useCallback((query: string) => ipc.searchNotes(query), [])
-
-  /**
-   * Sidebar search input's `onChange` handler: updates the raw text value
-   * immediately, then (re)starts a debounced `search_notes` call — cleared
-   * and restarted on every keystroke, same debounce shape as
-   * `SearchPalette`'s own input. A blank (or whitespace-only) query clears
-   * `sidebarMatchedIds` back to `null` (no filter — every note shows,
-   * grouped as normal) synchronously, without ever hitting the backend, so
-   * clearing the search box restores the full list instantly rather than
-   * waiting out a debounce window. `useCallback` with no deps (only touches
-   * stable setters/refs) — permanently stable, so Sidebar's memo isn't
-   * defeated by this prop.
-   */
-  const setSidebarQuery = useCallback((query: string) => {
-    setSidebarQueryState(query)
-    clearTimeout(sidebarSearchTimeout.current)
-    // Bumped unconditionally — including the blank-query clear branch below
-    // — so a response for whatever query was previously in flight can never
-    // land after this call, even though the clear branch itself doesn't
-    // start a new debounced search. Without this, clearing the box while a
-    // search is still in flight would leave that stale request's id
-    // current, and its eventual `.then`/`.catch` would repopulate
-    // `sidebarMatchedIds` right after this call just set it back to `null`.
-    const requestId = ++sidebarSearchSeq.current
-
-    const trimmed = query.trim()
-    if (trimmed === '') {
-      setSidebarMatchedIds(null)
-      return
-    }
-
-    sidebarSearchTimeout.current = setTimeout(() => {
-      ipc
-        .searchNotes(trimmed)
-        .then(hits => {
-          if (sidebarSearchSeq.current !== requestId) return
-          setSidebarMatchedIds(new Set(hits.map(h => h.noteId)))
-        })
-        .catch(() => {
-          if (sidebarSearchSeq.current !== requestId) return
-          // Honest degrade: a failed search shows "no matches" rather than
-          // silently falling back to the unfiltered list (which would look
-          // like the search box has no effect) or a stale result set.
-          setSidebarMatchedIds(new Set())
-        })
-    }, SIDEBAR_SEARCH_DEBOUNCE_MS)
-  }, [])
 
   /**
    * Header pencil → inline-edit commit: renames on disk, refreshes the notes
@@ -903,7 +836,7 @@ export function useAppState() {
 
   const statsLine = useMemo(() => {
     const totalBytes = storage ? storage.modelsBytes + storage.audioBytes + storage.notesBytes : 0
-    return `${notes.length} notes · ${formatBytes(totalBytes)} local · nothing synced`
+    return `${notes.length} notes · ${formatBytes(totalBytes)}`
   }, [notes, storage])
 
   const liveSegments = useMemo(() => groupLiveSegments(liveSegmentsRaw), [liveSegmentsRaw])
@@ -1811,9 +1744,6 @@ export function useAppState() {
     clearPendingSeek,
     selectNoteById,
     searchNotes,
-    sidebarQuery,
-    setSidebarQuery,
-    sidebarMatchedIds,
     selectedNoteId,
     recTime: formatMmSs(recElapsed),
     goNotes,

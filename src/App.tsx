@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppState } from './state/useAppState'
 import { ErrorBanner } from './components/ErrorBanner'
-import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { NoteView } from './components/NoteView'
 import { OnboardingView } from './components/OnboardingView'
@@ -175,40 +174,36 @@ export default function App() {
       {/* The native window still enforces its 1180px minimum. Capping the
           document minimum at 100vw lets browser zoom and enlarged-text
           layouts reflow instead of creating a second horizontal canvas. */}
-      <div className="app-paper" style={{ height: '100vh', minWidth: 'min(1180px, 100vw)', display: 'flex', flexDirection: 'column', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
+      <div className="app-paper" style={{ height: '100vh', minWidth: 'min(1180px, 100vw)', display: 'flex', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
         {/* "Quiet by default, loud when recording" (.impeccable.md), spent in
             one place: a single accent hairline along the very top edge of the
             window. It's visible from the corner of the eye no matter which
             view is open or where the window sits, and it costs no layout —
             which is what lets the rest of the recording UI stay calm. */}
         {s.isRecording && <div className="rec-edge" aria-hidden="true" />}
-        <TitleBar
+        <Sidebar
+          notes={s.sidebarNotes}
+          selectedNoteId={s.selectedNoteId}
+          onSelect={s.selectNoteById}
+          view={s.view}
+          onGoNotes={s.goNotes}
+          onGoSettings={s.goSettings}
+          statsLine={s.statsLine}
+          onOpenPalette={openSearch}
+          onStartRecording={openRecordingPreflight}
           isRecording={s.isRecording}
           recTime={s.recTime}
-          onStartRec={openRecordingPreflight}
           onReturnToRecording={s.goRecording}
+          summaryStatus={s.summaryStatus}
+          onTogglePinned={s.setNotePinned}
+          onOpenShortcuts={openShortcuts}
+          onBulkExport={s.exportNotes}
+          onBulkDelete={s.deleteNotes}
+          onRenameNote={s.renameNote}
+          onRevealNote={s.revealNote}
         />
-        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <Sidebar
-            notes={s.sidebarNotes}
-            selectedNoteId={s.selectedNoteId}
-            onSelect={s.selectNoteById}
-            view={s.view}
-            onGoNotes={s.goNotes}
-            onGoSettings={s.goSettings}
-            statsLine={s.statsLine}
-            searchQuery={s.sidebarQuery}
-            onSearchQueryChange={s.setSidebarQuery}
-            matchedNoteIds={s.sidebarMatchedIds}
-            onOpenPalette={openSearch}
-            onStartRecording={openRecordingPreflight}
-            onTogglePinned={s.setNotePinned}
-            onOpenShortcuts={openShortcuts}
-            onBulkExport={s.exportNotes}
-            onBulkDelete={s.deleteNotes}
-            onRenameNote={s.renameNote}
-            onRevealNote={s.revealNote}
-          />
+        <div className="app-main">
+          <div className="app-toolbar" data-tauri-drag-region="" />
           {s.view === 'notes' && (
             <NoteView
               meta={selectedNoteMeta}

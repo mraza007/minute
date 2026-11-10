@@ -356,7 +356,7 @@ describe('useAppState', () => {
     const result = await loaded()
     expect(result.current.sidebarNotes).toHaveLength(2)
     expect(result.current.sidebarNotes[0].title).toBe('Client call — Acme')
-    expect(result.current.statsLine).toBe('2 notes · 800 MB local · nothing synced')
+    expect(result.current.statsLine).toBe('2 notes · 800 MB')
   })
 
   it('handles an empty note library', async () => {
@@ -364,7 +364,7 @@ describe('useAppState', () => {
     const result = await loaded()
     expect(result.current.notes).toEqual([])
     expect(result.current.sidebarNotes).toEqual([])
-    expect(result.current.statsLine).toBe('0 notes · 800 MB local · nothing synced')
+    expect(result.current.statsLine).toBe('0 notes · 800 MB')
   })
 
   it('initializes sttModel to the recommendation when it is installed', async () => {
@@ -2186,111 +2186,6 @@ describe('useAppState', () => {
         expect(result.current.selectedNoteId).toBe('note-a')
         expect(result.current.pendingSeek).toBeNull()
       })
-    })
-  })
-
-  describe('sidebar search filter', () => {
-    afterEach(() => vi.useRealTimers())
-
-    it('setSidebarQuery debounces a search_notes call and populates sidebarMatchedIds with the matched ids', async () => {
-      const notes = [noteFixture({ id: 'note-a', title: 'Roadmap review' }), noteFixture({ id: 'note-b', title: 'Standup' })]
-      const calls: Array<{ cmd: string; args: unknown }> = []
-      setupIPC({
-        notes,
-        onCmd: (cmd, args) => calls.push({ cmd, args }),
-        searchNotes: () => [{ noteId: 'note-a', title: 'Roadmap review', snippet: 'Roadmap review', segmentStart: null, kind: 'title' }],
-      })
-      const result = await loaded()
-      vi.useFakeTimers()
-      expect(result.current.sidebarMatchedIds).toBeNull()
-
-      act(() => result.current.setSidebarQuery('roadmap'))
-      expect(result.current.sidebarQuery).toBe('roadmap')
-      // Not yet called — still inside the debounce window.
-      expect(calls.some(c => c.cmd === 'search_notes')).toBe(false)
-
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-
-      expect(result.current.sidebarMatchedIds).toEqual(new Set(['note-a']))
-    })
-
-    it('clearing the query resets sidebarMatchedIds to null synchronously, without a backend call', async () => {
-      const notes = [noteFixture({ id: 'note-a' })]
-      const calls: Array<{ cmd: string; args: unknown }> = []
-      setupIPC({ notes, onCmd: (cmd, args) => calls.push({ cmd, args }), searchNotes: () => [] })
-      const result = await loaded()
-      vi.useFakeTimers()
-
-      act(() => result.current.setSidebarQuery('roadmap'))
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-      })
-      const searchCallsAfterFirstQuery = calls.filter(c => c.cmd === 'search_notes').length
-
-      act(() => result.current.setSidebarQuery(''))
-
-      expect(result.current.sidebarMatchedIds).toBeNull()
-      expect(calls.filter(c => c.cmd === 'search_notes').length).toBe(searchCallsAfterFirstQuery)
-    })
-
-    it('restarts the debounce on every keystroke rather than firing per keystroke', async () => {
-      const notes = [noteFixture({ id: 'note-a' })]
-      const calls: Array<{ cmd: string; args: unknown }> = []
-      setupIPC({ notes, onCmd: (cmd, args) => calls.push({ cmd, args }), searchNotes: () => [] })
-      const result = await loaded()
-      vi.useFakeTimers()
-
-      act(() => result.current.setSidebarQuery('r'))
-      act(() => {
-        vi.advanceTimersByTime(100)
-      })
-      act(() => result.current.setSidebarQuery('ro'))
-      act(() => {
-        vi.advanceTimersByTime(100)
-      })
-      expect(calls.some(c => c.cmd === 'search_notes')).toBe(false)
-
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-      })
-      expect(calls.filter(c => c.cmd === 'search_notes')).toHaveLength(1)
-    })
-
-    it('clearing the query while a search is still in flight discards the stale response instead of repopulating sidebarMatchedIds', async () => {
-      const notes = [noteFixture({ id: 'note-a' })]
-      let resolveSearch: (hits: SearchHit[]) => void = () => {}
-      const pending = new Promise<SearchHit[]>(resolve => {
-        resolveSearch = resolve
-      })
-      setupIPC({ notes, searchNotes: () => pending })
-      const result = await loaded()
-      vi.useFakeTimers()
-
-      act(() => result.current.setSidebarQuery('roadmap'))
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-      })
-      // The debounced call has fired (the promise is pending, unresolved) —
-      // clear the query before it settles.
-      act(() => result.current.setSidebarQuery(''))
-      expect(result.current.sidebarMatchedIds).toBeNull()
-
-      // The stale "roadmap" response resolves only now, after the clear —
-      // it must not repopulate sidebarMatchedIds.
-      await act(async () => {
-        resolveSearch([{ noteId: 'note-a', title: 'note-a', snippet: 'note-a', segmentStart: null, kind: 'title' }])
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-
-      expect(result.current.sidebarMatchedIds).toBeNull()
     })
   })
 })

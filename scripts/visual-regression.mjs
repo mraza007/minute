@@ -17,6 +17,9 @@ const scenarios = [
   { name: 'note-dark', url: 'screenshot-app.html?state=note&tab=overview&theme=dark', width: 1440, height: 900 },
   { name: 'recording-reduced-motion', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced', width: 1440, height: 900 },
   { name: 'note-minimum-width', url: 'screenshot-app.html?state=note&theme=light&sidebar=collapsed', width: 1180, height: 820 },
+  { name: 'library-empty', url: 'screenshot-app.html?state=empty&theme=light', width: 1440, height: 900 },
+  { name: 'sidebar-select-mode', url: 'screenshot-app.html?state=note&theme=light&select=3&summarizing=1', width: 1440, height: 900 },
+  { name: 'sidebar-filter-menu', url: 'screenshot-app.html?state=note&theme=light&menu=open&summarizing=1', width: 1440, height: 900 },
   { name: 'settings-enlarged-text', url: 'screenshot-app.html?state=settings&theme=light', width: 720, height: 450 },
 ]
 

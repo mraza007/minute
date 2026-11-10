@@ -23,7 +23,7 @@ import {
   STORAGE,
 } from './demoData'
 
-export type ScreenshotState = 'note' | 'recording' | 'preflight' | 'palette' | 'settings' | 'onboarding' | 'popup'
+export type ScreenshotState = 'note' | 'recording' | 'preflight' | 'palette' | 'settings' | 'onboarding' | 'popup' | 'empty'
 
 function buildModels(state: ScreenshotState): ModelStatus[] {
   const onboarding = state === 'onboarding'
@@ -61,7 +61,7 @@ function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[]
 /** Installs the mocked Tauri IPC surface for `state` — call once, before mounting `<App/>`. */
 export function installMockIpc(state: ScreenshotState, params = new URLSearchParams()): void {
   const models = buildModels(state)
-  const notes = [...NOTES]
+  const notes = state === 'empty' ? [] : [...NOTES]
   const transcriptOverrides = new Map<string, StoredSegment[]>()
 
   mockIPC(

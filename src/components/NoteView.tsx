@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type {
   NoteMarker,
   NoteMeta,
@@ -111,40 +111,64 @@ const DELETE_CONFIRM_TIMEOUT_MS = 4000
 // (and its own exhaustive-deps lint) despite being value-equal every time.
 const EMPTY_SEGMENTS: StoredSegment[] = []
 
+const emptyAreaStyle: CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+  padding: '0 24px 80px 96px',
+  background: 'var(--panel)',
+}
+
+function NewRecordingButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="empty-record" onClick={onClick}>
+      <span className="empty-record-dot" aria-hidden="true" />
+      New recording
+    </button>
+  )
+}
+
 /**
  * The notes view with notes in the library but none selected — the state
- * behind the sidebar's "All notes" (issue #24). Distinct from
+ * behind choosing "All notes" from another screen (issue #24). Distinct from
  * `EmptyNotesArea` below: that one's "no notes yet" copy is wrong the
  * moment the library has notes to pick from.
  */
 function PickNoteArea({ onStartRecording }: { onStartRecording: () => void }) {
   return (
-    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
-      <div style={{ textAlign: 'center', maxWidth: 360 }}>
-        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 400, letterSpacing: '-.01em' }}>All notes</h1>
-        <div style={{ marginTop: 8, fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
-          Pick a note from the library list to open it.
+    <main style={emptyAreaStyle}>
+      <div style={{ width: 520, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <h1 className="empty-title">All notes</h1>
+          <p className="empty-body">Pick a note from the library list to open it.</p>
         </div>
-        <button type="button" className="btn-solid" style={{ marginTop: 18 }} onClick={onStartRecording}>
-          New recording
-        </button>
+        <div>
+          <NewRecordingButton onClick={onStartRecording} />
+        </div>
       </div>
     </main>
   )
 }
 
-function EmptyNotesArea({ onStartRecording }: { onStartRecording: () => void }) {
+function EmptyNotesArea({ onStartRecording, onGoSettings }: { onStartRecording: () => void; onGoSettings: () => void }) {
   return (
-    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--panel)' }}>
-      <div style={{ textAlign: 'center', maxWidth: 360 }}>
-        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 400, letterSpacing: '-.01em' }}>No notes yet</h1>
-        <div style={{ marginTop: 8, fontFamily: 'var(--serif)', fontSize: 14, color: 'var(--ink-muted)', lineHeight: 1.6 }}>
-          Hit "New recording" in the title bar to capture your first meeting — transcription happens entirely on this
-          Mac.
+    <main style={emptyAreaStyle}>
+      <div style={{ width: 520, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <h1 className="empty-title">Record your first meeting</h1>
+          <p className="empty-body">
+            Minute writes the transcript while you talk. When you stop, it writes a summary, the decisions, and the action
+            items. Everything stays on this Mac.
+          </p>
         </div>
-        <button type="button" className="btn-solid" style={{ marginTop: 18 }} onClick={onStartRecording}>
-          Start a recording
-        </button>
+        <div>
+          <NewRecordingButton onClick={onStartRecording} />
+        </div>
+        <div className="empty-aside">
+          <span>Want Minute to notice meetings for you?</span>
+          <button type="button" className="empty-link" onClick={onGoSettings}>Meeting detection settings</button>
+        </div>
       </div>
     </main>
   )
@@ -1123,7 +1147,7 @@ export function NoteView({
     return hasNotes ? (
       <PickNoteArea onStartRecording={onStartRecording} />
     ) : (
-      <EmptyNotesArea onStartRecording={onStartRecording} />
+      <EmptyNotesArea onStartRecording={onStartRecording} onGoSettings={onGoSettings} />
     )
   }
 

@@ -166,6 +166,11 @@ function setupIPC(opts: SetupOpts = {}) {
   )
 }
 
+function chooseAllNotes() {
+  fireEvent.click(screen.getByRole('button', { name: 'Sort and filter notes' }))
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'All notes' }))
+}
+
 async function startRecordingFromTitle() {
   await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
   fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
@@ -211,7 +216,9 @@ describe('App', () => {
     expect(screen.queryByText('Live transcript — audio never leaves this machine')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
     await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
-    expect(screen.getByText('REC 00:00')).toBeInTheDocument()
+    const recordingRow = screen.getByRole('button', { name: 'Return to recording' })
+    expect(recordingRow).toHaveTextContent('Recording')
+    expect(recordingRow).toHaveTextContent('00:00')
   })
 
   it('keeps Start clickable with the previous devices while a reopened preflight re-checks', async () => {
@@ -308,7 +315,7 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
   })
 
-  it('shows SettingsView when Settings is clicked in the sidebar, and returns to notes via "All notes"', async () => {
+  it('shows SettingsView when Settings is clicked in the sidebar, and returns to notes via the Show menu\'s "All notes"', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
@@ -317,7 +324,7 @@ describe('App', () => {
 
     // "All notes" leaves Settings *and* deselects (issue #24) — the main
     // pane shows the pick-a-note state, not the last-open note.
-    fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
+    chooseAllNotes()
     expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Client call — Acme' })).not.toBeInTheDocument()
@@ -389,9 +396,10 @@ describe('App', () => {
       setupIPC()
       render(<App />)
       await screen.findByRole('button', { name: /new recording/i })
-      const onHeading = fireEvent.contextMenu(screen.getByRole('button', { name: /new recording/i }))
-      expect(onHeading).toBe(false)
-      const onInput = fireEvent.contextMenu(screen.getByLabelText('Search notes'))
+      const onButton = fireEvent.contextMenu(screen.getByRole('button', { name: /new recording/i }))
+      expect(onButton).toBe(false)
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+      const onInput = fireEvent.contextMenu(await screen.findByPlaceholderText(/search/i))
       expect(onInput).toBe(true)
     })
   })
@@ -399,13 +407,14 @@ describe('App', () => {
   it('shows the sidebar and NoteView empty states when the note library is empty', async () => {
     setupIPC({ notes: [] })
     render(<App />)
-    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
-    expect(screen.getAllByText(/no notes yet/i).length).toBeGreaterThan(0)
+    await screen.findByText('Your notes appear here.')
+    expect(screen.getByText('Your notes appear here.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Record your first meeting' })).toBeInTheDocument()
   })
 
   it('clears the "Finalizing transcript…" pill once stop resolves, showing the Transcribed pill instead', async () => {
     // Deliberately not titled "New recording" — that text collides with
-    // the title bar's own "New recording" button, which would make the
+    // the sidebar's own "New recording" button, which would make the
     // `/new recording/i` role query below ambiguous.
     const finishedNote = noteFixture({ id: '20260722-130000', title: 'Finished smoke test note', status: 'transcribed' })
     setupIPC({
@@ -459,7 +468,7 @@ describe('App', () => {
     // Also navigate through Notes mid-recording — allowed, and still
     // doesn't lose the recording. "All notes" lands on the deselected
     // pick-a-note state (issue #24), REC pill intact.
-    fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
+    chooseAllNotes()
     expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
 
@@ -551,7 +560,7 @@ describe('App', () => {
     await act(async () => {
       await emit('summary-status', { noteId, state: 'running', error: null })
     })
-    expect(screen.getByText('Summarizing…')).toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Notes' })).getByText('Summarizing…')).toBeInTheDocument()
 
     summarized = true
     await act(async () => {

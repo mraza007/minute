@@ -6,7 +6,7 @@
 // honest: if a capture looks right, the real app produces that screen too.
 
 import { emit } from '@tauri-apps/api/event'
-import { AURORA_ASK_ENTRIES, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID } from './demoData'
+import { AURORA_ASK_ENTRIES, PRICING_NOTE_ID, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID } from './demoData'
 import type { ScreenshotState } from './mockIpc'
 
 function sleep(ms: number): Promise<void> {
@@ -224,6 +224,36 @@ async function driveSettings(): Promise<void> {
   await waitFor(() => document.querySelector('[role="radiogroup"][aria-label="Transcription model"]') !== null)
 }
 
+async function driveEmpty(): Promise<void> {
+  await waitFor(() => document.body.textContent?.includes('Record your first meeting') ?? false)
+}
+
+async function openFilterMenu(): Promise<void> {
+  document.querySelector<HTMLButtonElement>('button[aria-label="Sort and filter notes"]')?.click()
+  await waitFor(() => document.querySelector('[role="menu"][aria-label="Sort and filter notes"]') !== null)
+}
+
+async function driveSidebar(params: URLSearchParams): Promise<void> {
+  if (params.get('summarizing') === '1') {
+    await emit('summary-status', { noteId: PRICING_NOTE_ID, state: 'running', error: null })
+    await waitFor(() => document.querySelector('.side-row-status[data-tone="blue"]') !== null)
+  }
+
+  if (params.get('menu') === 'open') {
+    await openFilterMenu()
+  }
+
+  const selected = Number(params.get('select') ?? 0)
+  if (selected > 0) {
+    await openFilterMenu()
+    findButtonByText('Select notes')?.click()
+    await waitFor(() => document.querySelector('.side-row-check') !== null)
+    const boxes = Array.from(document.querySelectorAll<HTMLInputElement>('.side-row-check')).slice(0, selected)
+    for (const box of boxes) box.click()
+    await waitFor(() => document.querySelectorAll('.side-row-check:checked').length === selected)
+  }
+}
+
 async function driveNote(params: URLSearchParams): Promise<void> {
   await waitFor(() => document.querySelector('[role="tablist"][aria-label="Note content"]') !== null)
 
@@ -245,13 +275,16 @@ async function driveNote(params: URLSearchParams): Promise<void> {
     await waitFor(() => document.querySelector('input[aria-label^="New marker label at"]') !== null)
   }
 
+  await driveSidebar(params)
+
   const filter = params.get('filter')
   if (filter) {
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Filter by status"]')
-    if (select) {
-      select.value = filter
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    }
+    await openFilterMenu()
+    document.querySelector<HTMLElement>('[role="group"][aria-label="Show"]')
+      ?.querySelectorAll<HTMLElement>('[role="menuitemradio"]')
+      .forEach(item => {
+        if (item.textContent === filter) item.click()
+      })
   }
 
   if (params.get('sidebar') === 'collapsed') {
@@ -328,6 +361,8 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
     await waitFor(() => document.body.textContent?.includes('Start using Minute') ?? false)
   } else if (state === 'popup') {
     await drivePopup()
+  } else if (state === 'empty') {
+    await driveEmpty()
   } else {
     await driveNote(params)
   }

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { demoNotes } from '../data/demo'
 import { Sidebar } from './Sidebar'
 
@@ -9,18 +9,31 @@ const base = {
   view: 'notes' as const,
   onGoNotes: vi.fn(),
   onGoSettings: vi.fn(),
-  statsLine: '6 notes · 3.2 GB local · nothing synced',
-  searchQuery: '',
-  onSearchQueryChange: vi.fn(),
-  matchedNoteIds: null,
+  statsLine: '6 notes · 3.2 GB',
   onOpenPalette: vi.fn(),
   onStartRecording: vi.fn(),
+  isRecording: false,
+  recTime: '00:00',
+  onReturnToRecording: vi.fn(),
+  summaryStatus: {},
   onTogglePinned: vi.fn(),
   onOpenShortcuts: vi.fn(),
   onBulkExport: vi.fn().mockResolvedValue(undefined),
   onBulkDelete: vi.fn().mockResolvedValue(undefined),
   onRenameNote: vi.fn(),
   onRevealNote: vi.fn(),
+}
+
+function chooseFilter(group: string, option: string) {
+  if (!screen.queryByRole('menu', { name: 'Sort and filter notes' })) {
+    fireEvent.click(screen.getByRole('button', { name: 'Sort and filter notes' }))
+  }
+  fireEvent.click(within(screen.getByRole('group', { name: group })).getByRole('menuitemradio', { name: option }))
+}
+
+function enterSelectMode() {
+  fireEvent.click(screen.getByRole('button', { name: 'Sort and filter notes' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Select notes…' }))
 }
 
 describe('Sidebar', () => {
@@ -61,10 +74,9 @@ describe('Sidebar', () => {
     expect(row).toHaveAttribute('aria-current', 'true')
   })
 
-  it('marks the selected note row and current nav item with aria-current', () => {
+  it('marks the selected note row with aria-current', () => {
     render(<Sidebar {...base} selectedNoteId="demo-3" view="notes" />)
     expect(screen.getByRole('button', { name: /client call — acme/i })).toHaveAttribute('aria-current', 'true')
-    expect(screen.getByRole('button', { name: /all notes/i })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('button', { name: /settings/i })).not.toHaveAttribute('aria-current')
   })
 
@@ -73,11 +85,16 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: /board prep sync/i })).toHaveAttribute('title', 'Board prep sync')
   })
 
-  it('calls onGoNotes when "All notes" is clicked', () => {
+  it('"All notes" in the Show menu returns to the notes view from another screen', () => {
     const onGoNotes = vi.fn()
-    render(<Sidebar {...base} onGoNotes={onGoNotes} />)
-    fireEvent.click(screen.getByRole('button', { name: /all notes/i }))
+    const { rerender } = render(<Sidebar {...base} view="settings" onGoNotes={onGoNotes} />)
+    chooseFilter('Show', 'All notes')
     expect(onGoNotes).toHaveBeenCalledTimes(1)
+
+    onGoNotes.mockClear()
+    rerender(<Sidebar {...base} view="notes" onGoNotes={onGoNotes} />)
+    chooseFilter('Show', 'All notes')
+    expect(onGoNotes).not.toHaveBeenCalled()
   })
 
   it('calls onGoSettings when "Settings" is clicked', () => {
@@ -91,9 +108,7 @@ describe('Sidebar', () => {
     const onOpenShortcuts = vi.fn()
     render(<Sidebar {...base} onOpenShortcuts={onOpenShortcuts} />)
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Sort notes' }), {
-      target: { value: 'title' },
-    })
+    chooseFilter('Sort', 'Title A–Z')
     const noteRows = screen.getAllByRole('button').filter(button => button.classList.contains('side-row'))
     expect(noteRows.map(row => row.querySelector('.side-row-title')?.textContent)).toEqual(
       demoNotes.map(note => note.title).toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
@@ -110,40 +125,36 @@ describe('Sidebar', () => {
       <Sidebar {...base} onBulkExport={onBulkExport} onBulkDelete={onBulkDelete} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select notes' }))
+    enterSelectMode()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Board prep sync' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+    expect(screen.getByRole('status')).toHaveTextContent('1 selected')
+    fireEvent.click(screen.getByRole('button', { name: 'Export 1' }))
     await vi.waitFor(() => expect(onBulkExport).toHaveBeenCalledWith(['demo-1']))
 
     rerender(<Sidebar {...base} onBulkExport={onBulkExport} onBulkDelete={onBulkDelete} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Select notes' }))
+    enterSelectMode()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Board prep sync' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 1' }))
     expect(onBulkDelete).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete 1' }))
     await vi.waitFor(() => expect(onBulkDelete).toHaveBeenCalledWith(['demo-1']))
   })
 
   it('renders the given stats line', () => {
-    render(<Sidebar {...base} statsLine="0 notes · 0 MB local · nothing synced" />)
-    expect(screen.getByText('0 notes · 0 MB local · nothing synced')).toBeInTheDocument()
+    render(<Sidebar {...base} statsLine="0 notes · 0 MB" />)
+    expect(screen.getByText('0 notes · 0 MB')).toBeInTheDocument()
   })
 
   it('shows an empty-library message and no note rows when notes is empty', () => {
-    const onStartRecording = vi.fn()
-    render(<Sidebar {...base} notes={[]} onStartRecording={onStartRecording} />)
-    expect(screen.getByText(/no notes yet/i)).toBeInTheDocument()
+    render(<Sidebar {...base} notes={[]} />)
+    expect(screen.getByText('Your notes appear here.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /board prep sync/i })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /start your first recording/i }))
-    expect(onStartRecording).toHaveBeenCalledTimes(1)
   })
 
   it('filters the library by pinned state', () => {
     const notes = demoNotes.map((note, index) => ({ ...note, pinned: index === 1 }))
     render(<Sidebar {...base} notes={notes} />)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
-      target: { value: 'pinned' },
-    })
+    chooseFilter('Show', 'Pinned')
     expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
     expect(screen.queryByText('Board prep sync')).not.toBeInTheDocument()
   })
@@ -155,12 +166,8 @@ describe('Sidebar', () => {
       sources: index === 0 ? ['mic', 'system'] : ['mic'],
     }))
     render(<Sidebar {...base} notes={notes} />)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
-      target: { value: 'recording' },
-    })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by source' }), {
-      target: { value: 'system' },
-    })
+    chooseFilter('Show', 'Recording')
+    chooseFilter('Source', 'System audio')
     expect(screen.getByText('Board prep sync')).toBeInTheDocument()
     expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
   })
@@ -179,9 +186,7 @@ describe('Sidebar', () => {
       hasSummary: index !== 0,
     }))
     render(<Sidebar {...base} notes={notes} />)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
-      target: { value: 'ready' },
-    })
+    chooseFilter('Show', 'Summarized')
     expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
     expect(screen.queryByText('Board prep sync')).not.toBeInTheDocument()
   })
@@ -193,9 +198,7 @@ describe('Sidebar', () => {
       hasSummary: false,
     }))
     render(<Sidebar {...base} notes={notes} />)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by status' }), {
-      target: { value: 'transcribed' },
-    })
+    chooseFilter('Show', 'Needs summary')
     expect(screen.getByText('Board prep sync')).toBeInTheDocument()
     expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
   })
@@ -209,7 +212,6 @@ describe('Sidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
     expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'true')
     expect(screen.getByRole('button', { name: 'Expand library sidebar' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
   })
@@ -237,77 +239,105 @@ describe('Sidebar', () => {
     })
   })
 
-  describe('search input', () => {
-    it('is a controlled input reflecting searchQuery', () => {
-      render(<Sidebar {...base} searchQuery="acme" />)
-      expect(screen.getByRole('textbox', { name: 'Search notes' })).toHaveValue('acme')
-    })
-
-    it('calls onSearchQueryChange as the user types', () => {
-      const onSearchQueryChange = vi.fn()
-      render(<Sidebar {...base} onSearchQueryChange={onSearchQueryChange} />)
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search notes' }), { target: { value: 'acme' } })
-      expect(onSearchQueryChange).toHaveBeenCalledWith('acme')
-    })
-
-    it('clicking the ⌘K badge calls onOpenPalette', () => {
+  describe('search field', () => {
+    it('opens the search palette', () => {
       const onOpenPalette = vi.fn()
       render(<Sidebar {...base} onOpenPalette={onOpenPalette} />)
-      fireEvent.click(screen.getByRole('button', { name: /open search palette/i }))
+      fireEvent.click(screen.getByRole('button', { name: 'Search notes' }))
       expect(onOpenPalette).toHaveBeenCalledTimes(1)
-    })
-
-    it('shows no clear button while the query is empty', () => {
-      render(<Sidebar {...base} searchQuery="" />)
-      expect(screen.queryByRole('button', { name: 'Clear search' })).not.toBeInTheDocument()
-    })
-
-    it('clicking the clear button empties the query and refocuses the input', () => {
-      const onSearchQueryChange = vi.fn()
-      render(<Sidebar {...base} searchQuery="acme" onSearchQueryChange={onSearchQueryChange} />)
-      fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
-      expect(onSearchQueryChange).toHaveBeenCalledWith('')
-      expect(screen.getByRole('textbox', { name: 'Search notes' })).toHaveFocus()
-    })
-
-    it('Escape clears a non-empty query but leaves an empty one alone', () => {
-      const onSearchQueryChange = vi.fn()
-      const { rerender } = render(<Sidebar {...base} searchQuery="acme" onSearchQueryChange={onSearchQueryChange} />)
-      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search notes' }), { key: 'Escape' })
-      expect(onSearchQueryChange).toHaveBeenCalledWith('')
-
-      onSearchQueryChange.mockClear()
-      rerender(<Sidebar {...base} searchQuery="" onSearchQueryChange={onSearchQueryChange} />)
-      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search notes' }), { key: 'Escape' })
-      expect(onSearchQueryChange).not.toHaveBeenCalled()
     })
   })
 
-  describe('matchedNoteIds filtering', () => {
-    it('shows only the matching notes, without group headers, when a filter is active', () => {
-      const matchedNoteIds = new Set(['demo-1', 'demo-3'])
-      render(<Sidebar {...base} searchQuery="a" matchedNoteIds={matchedNoteIds} />)
+  describe('recording row', () => {
+    it('starts a recording when idle', () => {
+      const onStartRecording = vi.fn()
+      render(<Sidebar {...base} onStartRecording={onStartRecording} />)
+      fireEvent.click(screen.getByRole('button', { name: 'New recording' }))
+      expect(onStartRecording).toHaveBeenCalledTimes(1)
+    })
 
+    it('shows the elapsed time and returns to the recording while one is running', () => {
+      const onReturnToRecording = vi.fn()
+      const onStartRecording = vi.fn()
+      render(
+        <Sidebar
+          {...base}
+          isRecording
+          recTime="12:47"
+          onReturnToRecording={onReturnToRecording}
+          onStartRecording={onStartRecording}
+        />,
+      )
+      const row = screen.getByRole('button', { name: 'Return to recording' })
+      expect(row).toHaveTextContent('Recording')
+      expect(row).toHaveTextContent('12:47')
+      fireEvent.click(row)
+      expect(onReturnToRecording).toHaveBeenCalledTimes(1)
+      expect(onStartRecording).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('filter menu', () => {
+    it('keeps every sort, status, source and date option reachable', () => {
+      render(<Sidebar {...base} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Sort and filter notes' }))
+      const labels = (group: string) =>
+        within(screen.getByRole('group', { name: group }))
+          .getAllByRole('menuitemradio')
+          .map(item => item.textContent)
+      expect(labels('Sort')).toEqual(['Newest first', 'Oldest first', 'Longest first', 'Title A–Z'])
+      expect(labels('Show')).toEqual(['All notes', 'Pinned', 'Summarized', 'Needs summary', 'Recording'])
+      expect(labels('Source')).toEqual(['Any source', 'Microphone', 'System audio'])
+      expect(labels('Date')).toEqual(['Any date', 'Past 24 hours', 'Last 7 days'])
+      expect(screen.getByRole('menuitem', { name: 'Select notes…' })).toBeInTheDocument()
+    })
+
+    it('marks the current choice and closes on Escape', () => {
+      render(<Sidebar {...base} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Sort and filter notes' }))
+      chooseFilter('Sort', 'Oldest first')
+      expect(screen.getByRole('menuitemradio', { name: 'Oldest first' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByRole('menuitemradio', { name: 'Newest first' })).toHaveAttribute('aria-checked', 'false')
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    })
+
+    it('offers a way back from a filter that matches nothing', () => {
+      render(<Sidebar {...base} />)
+      chooseFilter('Show', 'Pinned')
+      expect(screen.getByText('No notes match these filters.')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
       expect(screen.getByText('Board prep sync')).toBeInTheDocument()
-      expect(screen.getByText('Client call — Acme')).toBeInTheDocument()
-      expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
-      expect(screen.queryByText('Today')).not.toBeInTheDocument()
-      expect(screen.queryByText('Yesterday')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('select mode', () => {
+    it('shows the count with Done, and leaves select mode on Done', () => {
+      render(<Sidebar {...base} />)
+      enterSelectMode()
+      expect(screen.getByRole('status')).toHaveTextContent('0 selected')
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select Board prep sync' }))
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select 1:1 — Sarah' }))
+      expect(screen.getByRole('status')).toHaveTextContent('2 selected')
+      expect(screen.getByRole('button', { name: 'Export 2' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+      expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'New recording' })).toBeInTheDocument()
+    })
+  })
+
+  describe('row status', () => {
+    it('shows "Summarizing…" instead of the metadata while a summary is queued or running', () => {
+      render(<Sidebar {...base} summaryStatus={{ 'demo-1': 'running', 'demo-2': 'queued', 'demo-3': 'done' }} />)
+      expect(screen.getAllByText('Summarizing…')).toHaveLength(2)
+      expect(screen.getByRole('button', { name: /board prep sync/i })).not.toHaveTextContent(demoNotes[0].meta)
+      expect(screen.getByRole('button', { name: /client call — acme/i })).toHaveTextContent(demoNotes[2].meta)
     })
 
-    it('shows an honest "no matches" message when the filter matches nothing', () => {
-      render(<Sidebar {...base} searchQuery="nonexistent" matchedNoteIds={new Set()} />)
-      expect(screen.getByText('No matches for “nonexistent”')).toBeInTheDocument()
-      expect(screen.queryByText('Board prep sync')).not.toBeInTheDocument()
-    })
-
-    it('restores the full grouped list once matchedNoteIds goes back to null', () => {
-      const { rerender } = render(<Sidebar {...base} searchQuery="a" matchedNoteIds={new Set(['demo-1'])} />)
-      expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
-
-      rerender(<Sidebar {...base} searchQuery="" matchedNoteIds={null} />)
-      expect(screen.getByText('1:1 — Sarah')).toBeInTheDocument()
-      expect(screen.getByText('Today')).toBeInTheDocument()
+    it('keeps a pinned note visibly marked', () => {
+      const notes = demoNotes.map((note, index) => ({ ...note, pinned: index === 0 }))
+      render(<Sidebar {...base} notes={notes} />)
+      expect(screen.getByRole('button', { name: 'Unpin note' })).toHaveAttribute('data-active', 'true')
     })
   })
 
