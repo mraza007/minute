@@ -136,17 +136,15 @@ fn default_sources() -> Vec<String> {
     vec!["mic".to_string()]
 }
 
-/// What every surface prints for [`Speaker::Unknown`]. Only a display
-/// string: the data never encodes unknown as text, and
-/// [`Store::rename_speaker`] refuses it as a name so the two can't be
-/// confused on screen.
+/// What every surface prints for [`Speaker::Unknown`], and how
+/// `transcript.json` stores it (see [`SegmentFile`]). [`Store::rename_speaker`]
+/// refuses it as a name, so it never stands for a real person.
 pub const UNKNOWN_SPEAKER_LABEL: &str = "Unknown speaker";
 
 /// Who a transcript turn is attributed to (issue #49). `Unknown` is speech
 /// Minute could not place, kept apart from every name so rename, merge,
-/// re-runs, and voice-profile naming can never turn it into one. On disk
-/// it is `"speaker": null`; named turns stay plain strings, so every
-/// transcript written before this type parses unchanged.
+/// re-runs, and voice-profile naming can never turn it into one. The app
+/// receives it as `"speaker": null`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "Option<String>", into = "Option<String>")]
 pub enum Speaker {
@@ -229,6 +227,56 @@ pub struct StoredSegment {
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub segments: Vec<StoredSegment>,
+}
+
+/// One segment as `transcript.json` holds it. Minute 1.12.1 and earlier
+/// read `speaker` as a string and fail on `null`, so an unknown speaker is
+/// written as [`UNKNOWN_SPEAKER_LABEL`] and a downgrade still opens every
+/// note. `null`, from builds before this, still reads as unknown.
+#[derive(Serialize, Deserialize)]
+struct SegmentFile {
+    speaker: Option<String>,
+    start: f64,
+    end: f64,
+    text: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TranscriptFile {
+    segments: Vec<SegmentFile>,
+}
+
+impl From<&Transcript> for TranscriptFile {
+    fn from(transcript: &Transcript) -> Self {
+        let segments = transcript.segments.iter().map(|segment| SegmentFile {
+            speaker: Some(segment.speaker.display().to_string()),
+            start: segment.start,
+            end: segment.end,
+            text: segment.text.clone(),
+        });
+        TranscriptFile {
+            segments: segments.collect(),
+        }
+    }
+}
+
+impl From<TranscriptFile> for Transcript {
+    fn from(file: TranscriptFile) -> Self {
+        let segments = file.segments.into_iter().map(|segment| StoredSegment {
+            speaker: match segment.speaker {
+                Some(name) if !name.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL) => {
+                    Speaker::Named(name)
+                }
+                _ => Speaker::Unknown,
+            },
+            start: segment.start,
+            end: segment.end,
+            text: segment.text,
+        });
+        Transcript {
+            segments: segments.collect(),
+        }
+    }
 }
 
 /// Exact information required to reverse one speaker merge without
@@ -832,7 +880,7 @@ impl Store {
     /// Atomically writes a note's full transcript (write to `.tmp`, then
     /// rename over the final path so readers never see a partial file).
     pub fn write_transcript(&self, id: &str, transcript: &Transcript) -> Result<()> {
-        let json = serde_json::to_string_pretty(transcript)
+        let json = serde_json::to_string_pretty(&TranscriptFile::from(transcript))
             .map_err(|e| MinuteError::Other(format!("failed to serialize transcript.json: {e}")))?;
         let tmp_path = self.transcript_tmp_path(id);
         fs::write(&tmp_path, json)?;
@@ -847,9 +895,11 @@ impl Store {
             return Ok(Transcript::default());
         }
         let raw = fs::read_to_string(&path)?;
-        serde_json::from_str(&raw).map_err(|e| {
-            MinuteError::Other(format!("failed to parse transcript.json for {id}: {e}"))
-        })
+        serde_json::from_str::<TranscriptFile>(&raw)
+            .map(Transcript::from)
+            .map_err(|e| {
+                MinuteError::Other(format!("failed to parse transcript.json for {id}: {e}"))
+            })
     }
 
     /// Appends one segment to a note's transcript (read-modify-write, atomic
@@ -5904,34 +5954,67 @@ mod tests {
         id
     }
 
+    /// `StoredSegment` exactly as 1.12.1 declares it.
+    #[derive(Debug, Deserialize)]
+    struct SegmentIn1_12_1 {
+        #[allow(dead_code)]
+        speaker: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TranscriptIn1_12_1 {
+        segments: Vec<SegmentIn1_12_1>,
+    }
+
     #[test]
-    fn unknown_turns_store_as_null_and_older_transcripts_still_parse() {
+    fn a_transcript_with_unknown_turns_still_opens_in_1_12_1() {
         let dir = tempdir().unwrap();
         let store = store_at(dir.path());
         let id = store.create_note_now("Sync", "whisper-small").unwrap().id;
-        let unknown = StoredSegment {
-            speaker: Speaker::Unknown,
-            start: 0.0,
-            end: 1.0,
-            text: "Hm.".into(),
-        };
+        let segments = vec![
+            StoredSegment {
+                speaker: Speaker::Unknown,
+                start: 0.0,
+                end: 1.0,
+                text: "Hm.".into(),
+            },
+            StoredSegment {
+                speaker: "Speaker 1".into(),
+                start: 1.0,
+                end: 2.0,
+                text: "Hi.".into(),
+            },
+        ];
         store
-            .write_transcript(
-                &id,
-                &Transcript {
-                    segments: vec![unknown.clone()],
-                },
-            )
+            .write_transcript(&id, &Transcript { segments: segments.clone() })
             .unwrap();
-        let raw = fs::read_to_string(store.transcript_path(&id)).unwrap();
-        assert!(raw.contains("\"speaker\": null"), "{raw}");
-        assert_eq!(store.read_transcript(&id).unwrap().segments, vec![unknown]);
 
-        let legacy: Transcript = serde_json::from_str(
-            r#"{"segments":[{"speaker":"Speaker 1","start":0,"end":1,"text":"Hi."}]}"#,
+        let raw = fs::read_to_string(store.transcript_path(&id)).unwrap();
+        let old: TranscriptIn1_12_1 = serde_json::from_str(&raw).expect("1.12.1 reads it");
+        assert_eq!(old.segments[0].speaker, UNKNOWN_SPEAKER_LABEL);
+        assert_eq!(store.read_transcript(&id).unwrap().segments, segments);
+
+        let wire = serde_json::to_value(&store.read_transcript(&id).unwrap()).unwrap();
+        assert!(wire["segments"][0]["speaker"].is_null(), "the app still gets null");
+    }
+
+    #[test]
+    fn null_and_the_unknown_label_on_disk_both_read_as_unknown() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = store.create_note_now("Sync", "whisper-small").unwrap().id;
+        fs::write(
+            store.transcript_path(&id),
+            r#"{"segments":[
+                {"speaker":null,"start":0,"end":1,"text":"Hm."},
+                {"speaker":"unknown speaker","start":1,"end":2,"text":"Yes."},
+                {"speaker":"Speaker 1","start":2,"end":3,"text":"Hi."}]}"#,
         )
         .unwrap();
-        assert_eq!(legacy.segments[0].speaker, Speaker::from("Speaker 1"));
+        assert_eq!(
+            speakers_in(&store, &id),
+            vec![Speaker::Unknown, Speaker::Unknown, Speaker::from("Speaker 1")]
+        );
     }
 
     #[test]
