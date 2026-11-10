@@ -387,6 +387,10 @@ async function driveNote(params: URLSearchParams): Promise<void> {
     if (params.get('markUnknown') === 'done') {
       findButtonByText('Mark these turns as unknown')?.click()
       await waitFor(() => findButtonByText('Undo') !== undefined)
+      // Closing the popover returns focus to "Rename speakers", which scrolls
+      // it into view. Let that land first: on a slower machine it otherwise
+      // arrives after the transcript scroll below and undoes it.
+      await waitFor(() => document.activeElement === findButtonByText('Rename speakers'))
       if (params.get('assignUnknown') === 'open') {
         const unknownChip = await waitForSelector<HTMLButtonElement>('.speaker-chip[aria-label="Assign unknown turns"]')
         unknownChip?.click()
