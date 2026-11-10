@@ -312,6 +312,109 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     minRamGb: 16,
     requiresAppleSilicon: false,
   },
+  {
+    id: 'lfm2-2.6b-transcript',
+    kind: 'llm',
+    displayName: 'LFM2-2.6B-Transcript',
+    traits: ['Fast', 'Tuned for meeting notes'],
+    origin: { kind: 'tested' },
+    url: 'https://huggingface.co/LiquidAI/LFM2-2.6B-Transcript-GGUF/resolve/main/LFM2-2.6B-Transcript-Q4_K_M.gguf',
+    sha256: '',
+    sizeBytes: 1_563_669_248,
+    minRamGb: 8,
+    requiresAppleSilicon: false,
+  },
+]
+
+type HuggingFaceOrigin = Extract<ModelStatus['origin'], { kind: 'huggingFace' }>
+
+/** One Hugging Face file as `browse_models` returns it, before install state is set. */
+function huggingFaceFile(
+  displayName: string,
+  repo: string,
+  file: string,
+  facts: Pick<HuggingFaceOrigin, 'trusted' | 'parameters' | 'quantization' | 'updatedAt'>,
+  entry: Pick<ModelStatus, 'kind' | 'sizeBytes' | 'minRamGb'> & { traits?: string[] },
+): Omit<ModelStatus, 'state'> {
+  const publisher = repo.split('/')[0]
+  return {
+    id: `hf:${repo}/${file}`,
+    kind: entry.kind,
+    displayName,
+    traits: entry.traits ?? [],
+    origin: { kind: 'huggingFace', repo, file, publisher, architecture: null, downloads: null, ...facts },
+    url: `https://huggingface.co/${repo}/resolve/main/${file}`,
+    sha256: '',
+    sizeBytes: entry.sizeBytes,
+    minRamGb: entry.minRamGb,
+    requiresAppleSilicon: false,
+  }
+}
+
+/** A Hugging Face model the demo user already downloaded: `list_models` returns it on "On this Mac". */
+export const HF_INSTALLED = huggingFaceFile(
+  'Granite 4.0 Micro',
+  'ibm-granite/granite-4.0-micro-GGUF',
+  'granite-4.0-micro-Q4_K_M.gguf',
+  { trusted: true, parameters: 3_400_000_000, quantization: 'Q4_K_M', updatedAt: '2026-10-02T09:00:00Z' },
+  { kind: 'llm', sizeBytes: 2_100_000_000, minRamGb: 8 },
+)
+
+/** `browse_models` for summaries: two trusted publishers, one unknown, and two too big for a 36 GB Mac. */
+export const HF_LLM = [
+  huggingFaceFile(
+    'Granite 4.0 H Tiny',
+    'ibm-granite/granite-4.0-h-tiny-GGUF',
+    'granite-4.0-h-tiny-Q4_K_M.gguf',
+    { trusted: true, parameters: 6_940_000_000, quantization: 'Q4_K_M', updatedAt: '2026-10-02T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 4_230_000_000, minRamGb: 8 },
+  ),
+  huggingFaceFile(
+    'SmolLM3 3B',
+    'ggml-org/SmolLM3-3B-GGUF',
+    'SmolLM3-Q4_K_M.gguf',
+    { trusted: true, parameters: 3_080_000_000, quantization: 'Q4_K_M', updatedAt: '2026-09-18T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 1_920_000_000, minRamGb: 4 },
+  ),
+  huggingFaceFile(
+    'Llama 3.1 8B Instruct',
+    'jdoe-quants/Llama-3.1-8B-Instruct-GGUF',
+    'Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    { trusted: false, parameters: 8_030_000_000, quantization: 'Q4_K_M', updatedAt: '2026-11-04T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 4_920_000_000, minRamGb: 8 },
+  ),
+  huggingFaceFile(
+    'Llama 3.3 70B Instruct',
+    'bartowski/Llama-3.3-70B-Instruct-GGUF',
+    'Llama-3.3-70B-Instruct-Q4_K_M.gguf',
+    { trusted: true, parameters: 70_550_000_000, quantization: 'Q4_K_M', updatedAt: '2026-08-21T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 42_520_000_000, minRamGb: 48 },
+  ),
+  huggingFaceFile(
+    'Qwen3 Next 80B A3B',
+    'unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF',
+    'Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf',
+    { trusted: true, parameters: 79_670_000_000, quantization: 'Q4_K_M', updatedAt: '2026-10-28T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 48_400_000_000, minRamGb: 64 },
+  ),
+]
+
+/** `browse_models` for transcription: official whisper.cpp files the tested list does not carry. */
+export const HF_STT = [
+  huggingFaceFile(
+    'Whisper large-v3 turbo, compact',
+    'ggerganov/whisper.cpp',
+    'ggml-large-v3-turbo-q5_0.bin',
+    { trusted: true, parameters: null, quantization: 'Q5_0', updatedAt: '2026-09-02T09:00:00Z' },
+    { kind: 'stt', sizeBytes: 574_041_195, minRamGb: 8, traits: ['Most accurate', '99 languages'] },
+  ),
+  huggingFaceFile(
+    'Whisper small, English',
+    'ggerganov/whisper.cpp',
+    'ggml-small.en.bin',
+    { trusted: true, parameters: null, quantization: null, updatedAt: '2026-09-02T09:00:00Z' },
+    { kind: 'stt', sizeBytes: 487_614_201, minRamGb: 0, traits: ['Fast', 'English only'] },
+  ),
 ]
 
 export const HARDWARE: Hardware = { totalRamGb: 36, appleSilicon: true, cores: 12 }

@@ -46,8 +46,11 @@ const scenarios = [
   { name: 'settings-recording', url: 'screenshot-app.html?state=settings&section=recording&theme=light', width: 1440, height: 900 },
   { name: 'settings-summaries', url: 'screenshot-app.html?state=settings&section=summaries&theme=light', width: 1440, height: 900 },
   { name: 'settings-speakers', url: 'screenshot-app.html?state=settings&section=speakers&theme=light', width: 1440, height: 900 },
-  { name: 'settings-models', url: 'screenshot-app.html?state=settings&section=models&downloading=1&theme=light', width: 1440, height: 900 },
-  { name: 'settings-models-dark', url: 'screenshot-app.html?state=settings&section=models&theme=dark', width: 1440, height: 900 },
+  // Tall enough for the whole Models page, like its 1440×1520 design artboard.
+  { name: 'settings-models', url: 'screenshot-app.html?state=settings&section=models&downloading=1&theme=light', width: 1440, height: 1640 },
+  { name: 'settings-models-confirm', url: 'screenshot-app.html?state=settings&section=models&consent=1&theme=light', width: 1440, height: 1640 },
+  { name: 'settings-models-offline', url: 'screenshot-app.html?state=settings&section=models&browse=offline&theme=light', width: 1440, height: 1640 },
+  { name: 'settings-models-dark', url: 'screenshot-app.html?state=settings&section=models&unsupported=2&theme=dark', width: 1440, height: 1640 },
   { name: 'settings-integrations', url: 'screenshot-app.html?state=settings&section=integrations&theme=light', width: 1440, height: 900 },
   { name: 'settings-integrations-vault-missing', url: 'screenshot-app.html?state=settings&section=integrations&vault=missing&theme=light', width: 1440, height: 900 },
   { name: 'settings-storage', url: 'screenshot-app.html?state=settings&section=storage&theme=light', width: 1440, height: 900 },

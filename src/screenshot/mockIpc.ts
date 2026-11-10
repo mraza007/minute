@@ -7,7 +7,7 @@
 // here is a single `state` string instead.
 
 import { mockIPC } from '@tauri-apps/api/mocks'
-import type { ModelStatus, NoteMeta, NoteWithTranscript, SpeakerMergeUndo, StoredSegment, SummaryDoc } from '../ipc/types'
+import type { BrowseKind, ModelBrowse, ModelStatus, NoteMeta, NoteWithTranscript, SpeakerMergeUndo, StoredSegment, SummaryDoc } from '../ipc/types'
 import {
   AURORA_MARKDOWN,
   AURORA_NOTE_ID,
@@ -16,6 +16,9 @@ import {
   CATALOG,
   fallbackTranscriptFor,
   HARDWARE,
+  HF_INSTALLED,
+  HF_LLM,
+  HF_STT,
   NOTES,
   PRICING_SEARCH_HITS,
   RECOMMENDATION,
@@ -29,17 +32,34 @@ import {
 export type ScreenshotState = 'note' | 'recording' | 'preflight' | 'messages' | 'palette' | 'settings' | 'onboarding' | 'popup' | 'empty'
 
 function buildModels(state: ScreenshotState): ModelStatus[] {
-  const onboarding = state === 'onboarding'
-  return CATALOG.map(entry => {
-    if (onboarding) return { ...entry, state: 'notInstalled' as const }
-    // Realistic mixed install state for the Settings/model-manager shot:
-    // recommended pair installed + in use, one extra STT tier installed,
-    // the rest available to download.
-    if (entry.id === 'whisper-small' || entry.id === 'whisper-medium' || entry.id === 'qwen3.5-4b') {
-      return { ...entry, state: 'installed' as const }
-    }
-    return { ...entry, state: 'notInstalled' as const }
-  })
+  if (state === 'onboarding') return CATALOG.map(entry => ({ ...entry, state: 'notInstalled' as const }))
+  // Realistic mixed install state for the Settings/model-manager shot:
+  // two transcription tiers and one tested summary model installed, plus one
+  // summary model downloaded from Hugging Face; the rest available.
+  const installed = new Set(['whisper-small', 'whisper-medium', 'qwen3.5-4b'])
+  return [
+    ...CATALOG.map(entry => ({ ...entry, state: installed.has(entry.id) ? ('installed' as const) : ('notInstalled' as const) })),
+    { ...HF_INSTALLED, state: 'installed' as const },
+  ]
+}
+
+/**
+ * `browse_models`: the fixtures for `kind`, filtered by the search text.
+ * `?browse=offline` answers as an unreachable Hugging Face does;
+ * `?unsupported=<n>` reports summary models this version cannot run.
+ */
+function browseModels(kind: BrowseKind, query: string | null, params: URLSearchParams, fetchedAt: string): ModelBrowse {
+  if (params.get('browse') === 'offline') {
+    return { entries: [], fetchedAt: null, unsupportedCount: 0, error: 'Hugging Face did not answer.' }
+  }
+  const files = kind === 'stt' ? HF_STT : HF_LLM
+  const needle = query?.toLowerCase() ?? ''
+  return {
+    entries: files.filter(file => file.displayName.toLowerCase().includes(needle)).map(file => ({ ...file, state: 'notInstalled' as const })),
+    fetchedAt,
+    unsupportedCount: kind === 'llm' ? Number(params.get('unsupported') ?? 0) : 0,
+    error: null,
+  }
 }
 
 function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[], summarized = true): NoteWithTranscript {
@@ -64,6 +84,8 @@ function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[]
 /** Installs the mocked Tauri IPC surface for `state` — call once, before mounting `<App/>`. */
 export function installMockIpc(state: ScreenshotState, params = new URLSearchParams()): void {
   const models = buildModels(state)
+  // "Updated 2 h ago" on the Models page.
+  const browseFetchedAt = new Date(Date.now() - 2 * 3_600_000).toISOString()
   const notes = state === 'empty' ? [] : [...NOTES]
   const transcriptOverrides = new Map<string, StoredSegment[]>()
   // `?turns=<n>` swaps in a long synthetic Aurora transcript, to exercise the
@@ -105,6 +127,10 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           return models
         case 'recommended_models':
           return RECOMMENDATION
+        case 'browse_models': {
+          const { kind, query } = args as { kind: BrowseKind; query: string | null }
+          return browseModels(kind, query, params, browseFetchedAt)
+        }
         case 'download_model':
         case 'cancel_download':
         case 'delete_model':
