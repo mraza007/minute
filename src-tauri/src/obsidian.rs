@@ -30,6 +30,8 @@ pub const DEFAULT_FOLDER: &str = "Meetings";
 pub const DEFAULT_FILE_NAME_TEMPLATE: &str = "{date} - {title}";
 
 const MAX_FILE_STEM_CHARS: usize = 100;
+/// File systems limit a name to 255 bytes, not characters. 240 leaves room
+/// for the ` 999` clash suffix and `.md`.
 const MAX_FILE_STEM_BYTES: usize = 240;
 const MAX_COLLISION_SUFFIX: u32 = 999;
 
@@ -78,7 +80,11 @@ pub fn sanitize_file_name(raw: &str) -> String {
         .collect();
     let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
     let capped: String = collapsed.chars().take(MAX_FILE_STEM_CHARS).collect();
-    let trimmed = capped.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    let mut end = capped.len().min(MAX_FILE_STEM_BYTES);
+    while !capped.is_char_boundary(end) {
+        end -= 1;
+    }
+    let trimmed = capped[..end].trim_matches(|c: char| c == '.' || c.is_whitespace());
     if trimmed.is_empty() {
         "Untitled".to_string()
     } else {
@@ -295,6 +301,20 @@ fn free_path(dir: &Path, stem: &str) -> std::result::Result<PathBuf, String> {
     ))
 }
 
+/// Whether `path` really sits in the vault, after symlinks and `..` are
+/// resolved. `vault` is already resolved. The export folder may itself be a
+/// symlink that leaves the vault, which Obsidian supports, so a file in that
+/// folder's real location counts too.
+fn resolves_inside(path: &Path, vault: &Path, export_dir: &Path) -> bool {
+    let Ok(real) = path.canonicalize() else {
+        return false;
+    };
+    real.starts_with(vault)
+        || export_dir
+            .canonicalize()
+            .is_ok_and(|dir| real.starts_with(dir))
+}
+
 /// Writes one note into the vault and returns the new status, or the error
 /// text. Does not touch the store.
 pub fn save_to_vault(
@@ -316,7 +336,7 @@ pub fn save_to_vault(
     let recorded = previous
         .and_then(|p| p.path.as_deref())
         .map(PathBuf::from)
-        .filter(|p| p.starts_with(&vault) && p.is_file());
+        .filter(|p| p.is_file() && resolves_inside(p, &vault, &dir));
 
     let target = match recorded {
         Some(path) => {
