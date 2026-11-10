@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ASK_FOR_EVERY_APP } from '../../ipc/meetingPolicy'
-import type { Hardware, ModelStatus, Recommendation, StorageStats } from '../../ipc/types'
+import type { Hardware, ModelBrowse, ModelOrigin, ModelStatus, Recommendation, StorageStats } from '../../ipc/types'
 import { DEFAULT_OBSIDIAN_SETTINGS } from '../../state/obsidian'
+import type { BrowseState, HuggingFaceBrowse } from '../../state/useModelManager'
 import { SettingsNav } from './SettingsNav'
 import { SettingsView, type SettingsViewProps } from './SettingsView'
 import type { SettingsSectionId } from './sections'
@@ -59,6 +60,49 @@ function diarModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   }
 }
 
+function hfModel(file: string, overrides: Partial<ModelStatus> = {}, origin: Partial<Extract<ModelOrigin, { kind: 'huggingFace' }>> = {}): ModelStatus {
+  const publisher = origin.publisher ?? 'ibm-granite'
+  return llmModel({
+    id: `hf:${publisher}/repo-GGUF/${file}`,
+    displayName: file,
+    traits: [],
+    origin: {
+      kind: 'huggingFace',
+      repo: `${publisher}/repo-GGUF`,
+      file,
+      publisher,
+      trusted: true,
+      architecture: 'llama',
+      parameters: 6_940_000_000,
+      quantization: 'Q4_K_M',
+      updatedAt: `${new Date().getFullYear()}-10-02T12:00:00Z`,
+      downloads: 1_000,
+      ...origin,
+    },
+    sizeBytes: 4_900_000_000,
+    ...overrides,
+  })
+}
+
+function answer(overrides: Partial<ModelBrowse> = {}): ModelBrowse {
+  return { entries: [], fetchedAt: null, unsupportedCount: 0, error: null, ...overrides }
+}
+
+/** A stand-in for the model manager's Hugging Face controller: `models` are the browsed rows, `stt`/`llm` the per-kind state. */
+function browse({ models = [], stt = {}, llm = {} }: { models?: ModelStatus[]; stt?: Partial<BrowseState>; llm?: Partial<BrowseState> } = {}): HuggingFaceBrowse {
+  return {
+    state: {
+      stt: { result: answer(), loading: false, query: '', ...stt },
+      llm: { result: answer(), loading: false, query: '', ...llm },
+    },
+    models,
+    open: vi.fn(),
+    setQuery: vi.fn(),
+    search: vi.fn(),
+    refresh: vi.fn(),
+  }
+}
+
 const models: ModelStatus[] = [
   sttModel({ id: 'whisper-small', state: 'installed' }),
   sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'notInstalled', sizeBytes: 1_500_000_000, minRamGb: 16 }),
@@ -84,6 +128,7 @@ const base: Omit<SettingsViewProps, 'section'> = {
   downloadModel: vi.fn(),
   cancelDownload: vi.fn(),
   deleteModel: vi.fn(),
+  huggingFace: browse(),
   storage,
   libraryPath: '~/Library/Application Support/dev.minute.app',
   libraryTitle: '/Users/test/Library/Application Support/dev.minute.app',
@@ -396,24 +441,37 @@ describe('SettingsView', () => {
   })
 
   describe('Models', () => {
-    it('explains this Mac and marks the backend-recommended model', () => {
+    it('explains this Mac, says when it asks Hugging Face, and marks the recommended model', () => {
       renderSection('models')
-      expect(screen.getByRole('region', { name: 'Detected Mac hardware' })).toHaveTextContent('Apple silicon · 16 GB memory · 8 CPU cores')
+      const lede = screen.getByRole('region', { name: 'Detected Mac hardware' })
+      expect(lede).toHaveTextContent('Apple silicon · 16 GB memory · 8 CPU cores')
+      expect(lede).toHaveTextContent('When this page opens, Minute asks Hugging Face for newer models; nothing about your notes is sent.')
       expect(screen.getByRole('radio', { name: /whisper small/i })).toHaveTextContent('Recommended. Minute’s default for this 16 GB Mac.')
-      expect(screen.getByRole('radio', { name: /whisper medium/i })).toHaveTextContent('Near memory limit')
     })
 
-    it('groups transcription models and summary models under their own radiogroups', () => {
+    it('asks Hugging Face once when the page opens', () => {
+      const huggingFace = browse()
+      renderSection('models', { huggingFace })
+      expect(huggingFace.open).toHaveBeenCalledTimes(1)
+    })
+
+    it('offers only downloaded models as choices, one radio group per kind', () => {
       renderSection('models', { models: [...models, diarModel()] })
       const stt = screen.getByRole('radiogroup', { name: 'Transcription model' })
       const llm = screen.getByRole('radiogroup', { name: 'Summary model' })
-      expect(within(stt).getAllByRole('radio')).toHaveLength(3)
-      expect(within(llm).getAllByRole('radio')).toHaveLength(3)
+      expect(within(stt).getAllByRole('radio').map(radio => radio.getAttribute('data-model-id'))).toEqual(['whisper-small'])
+      expect(within(llm).getAllByRole('radio').map(radio => radio.getAttribute('data-model-id'))).toEqual(['qwen3.5-4b'])
       expect(screen.queryByText('Speaker segmentation')).not.toBeInTheDocument()
-      expect(screen.getByText('Summaries and Ask')).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 2, name: 'Summaries and Ask' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 3, name: 'Tested by Minute' })).toBeInTheDocument()
     })
 
-    it('selects an installed model that is not the current one', () => {
+    it('describes each model by its traits and size', () => {
+      renderSection('models', { models: [sttModel({ state: 'installed', traits: ['Fast', '99 languages'] })] })
+      expect(screen.getByRole('radio', { name: /whisper small/i })).toHaveTextContent('Fast · 99 languages · 466 MB')
+    })
+
+    it('selects a downloaded model that is not the current one', () => {
       const setSttModel = vi.fn()
       const installed = [sttModel({ id: 'whisper-small', state: 'installed' }), sttModel({ id: 'whisper-medium', displayName: 'Whisper medium', state: 'installed' })]
       renderSection('models', { models: installed, setSttModel })
@@ -421,7 +479,7 @@ describe('SettingsView', () => {
       expect(setSttModel).toHaveBeenCalledWith('whisper-medium')
     })
 
-    it('moves the selection with the arrow keys among installed models only', () => {
+    it('moves focus and the selection with the arrow keys, with one tab stop', () => {
       const setSttModel = vi.fn()
       const installed = [
         sttModel({ id: 'whisper-small', state: 'installed' }),
@@ -429,58 +487,31 @@ describe('SettingsView', () => {
         sttModel({ id: 'whisper-large', displayName: 'Whisper large', state: 'installed' }),
       ]
       renderSection('models', { models: installed, setSttModel })
-      fireEvent.keyDown(screen.getByRole('radio', { name: /whisper small/i }), { key: 'ArrowDown' })
+      const small = screen.getByRole('radio', { name: /whisper small/i })
+      const large = screen.getByRole('radio', { name: /whisper large/i })
+      expect([small.tabIndex, large.tabIndex]).toEqual([0, -1])
+      fireEvent.keyDown(small, { key: 'ArrowDown' })
       expect(setSttModel).toHaveBeenCalledWith('whisper-large')
+      expect(large).toHaveFocus()
     })
 
-    it('keeps a model that is not installed inert and out of the tab order', () => {
-      const setSttModel = vi.fn()
-      renderSection('models', { setSttModel })
-      const row = screen.getByRole('radio', { name: /whisper medium/i })
-      fireEvent.click(row)
-      expect(setSttModel).not.toHaveBeenCalled()
-      expect(row).toHaveAttribute('aria-disabled', 'true')
-      expect(row).toHaveAttribute('tabindex', '-1')
-      fireEvent.click(screen.getByRole('radio', { name: /whisper large-v3-turbo/i }))
-      expect(setSttModel).not.toHaveBeenCalled()
+    it('marks the model in use and still lets it be removed', () => {
+      const deleteModel = vi.fn()
+      renderSection('models', { deleteModel })
+      const row = screen.getByRole('radio', { name: /qwen3\.5-4b/i }).parentElement as HTMLElement
+      expect(row).toHaveTextContent('In use')
+      fireEvent.click(within(row).getByRole('button', { name: 'Remove' }))
+      fireEvent.click(within(row).getByRole('button', { name: 'Confirm removal?' }))
+      expect(deleteModel).toHaveBeenCalledWith('qwen3.5-4b')
     })
 
-    it('keeps the installed, selected row selectable and checked', () => {
-      renderSection('models')
-      const row = screen.getByRole('radio', { name: /whisper small/i })
-      expect(row).toHaveAttribute('aria-disabled', 'false')
-      expect(row).toHaveAttribute('tabindex', '0')
-      expect(row).toHaveAttribute('aria-checked', 'true')
-    })
-
-    it('offers a Download action with the size for a model that is not installed, without selecting it', () => {
-      const setSttModel = vi.fn()
-      const downloadModel = vi.fn()
-      renderSection('models', { setSttModel, downloadModel })
-      fireEvent.click(screen.getByRole('button', { name: 'Download Whisper medium (1.5 GB)' }))
-      expect(downloadModel).toHaveBeenCalledWith('whisper-medium')
-      expect(setSttModel).not.toHaveBeenCalled()
-    })
-
-    it('shows progress and Cancel for a downloading model', () => {
-      const cancelDownload = vi.fn()
-      renderSection('models', { cancelDownload })
-      const progress = screen.getByRole('progressbar')
-      expect(progress).toHaveAttribute('aria-valuenow', '50')
-      expect(progress).toHaveAttribute('aria-valuetext', '800 MB of 1.6 GB')
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(cancelDownload).toHaveBeenCalledWith('whisper-large-v3-turbo')
-    })
-
-    it('needs a second click within 4 seconds to remove an installed model', () => {
+    it('needs a second click within 4 seconds to remove a downloaded model', () => {
       const deleteModel = vi.fn()
       const setSttModel = vi.fn()
       renderSection('models', { sttModel: 'whisper-medium', models: [sttModel({ id: 'whisper-small', state: 'installed' })], deleteModel, setSttModel })
 
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
       expect(deleteModel).not.toHaveBeenCalled()
-      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
-
       fireEvent.click(screen.getByRole('button', { name: 'Confirm removal?' }))
       expect(deleteModel).toHaveBeenCalledWith('whisper-small')
       expect(setSttModel).not.toHaveBeenCalled()
@@ -492,7 +523,6 @@ describe('SettingsView', () => {
       renderSection('models', { sttModel: 'whisper-medium', models: [sttModel({ id: 'whisper-small', state: 'installed' })], deleteModel })
 
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-      expect(screen.getByRole('button', { name: 'Confirm removal?' })).toBeInTheDocument()
       act(() => {
         vi.advanceTimersByTime(4000)
       })
@@ -500,29 +530,136 @@ describe('SettingsView', () => {
       expect(deleteModel).not.toHaveBeenCalled()
     })
 
-    it('still lets the in-use model be removed', () => {
-      const deleteModel = vi.fn()
-      renderSection('models', { deleteModel })
-      const row = screen.getByRole('radio', { name: /qwen3\.5-4b/i }).parentElement as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Remove' }))
-      fireEvent.click(within(row).getByRole('button', { name: 'Confirm removal?' }))
-      expect(deleteModel).toHaveBeenCalledWith('qwen3.5-4b')
+    it('downloads a tested model from its named Download button, without selecting it', () => {
+      const setSttModel = vi.fn()
+      const downloadModel = vi.fn()
+      renderSection('models', { setSttModel, downloadModel })
+      fireEvent.click(screen.getByRole('button', { name: 'Download Whisper medium, 1.5 GB' }))
+      expect(downloadModel).toHaveBeenCalledWith('whisper-medium')
+      expect(setSttModel).not.toHaveBeenCalled()
     })
 
-    it('selects an installed summary model and keeps a model that is not installed inert', () => {
-      const setLlmModel = vi.fn()
-      const installed = [
-        sttModel({ id: 'whisper-small', state: 'installed' }),
-        llmModel({ id: 'qwen3.5-4b', state: 'installed' }),
-        llmModel({ id: 'gemma-4-e4b', displayName: 'Gemma 4 E4B', state: 'installed' }),
-        llmModel({ id: 'qwen3.5-9b', displayName: 'Qwen3.5-9B', state: 'notInstalled' }),
+    it('shows progress and Cancel for a downloading model', () => {
+      const cancelDownload = vi.fn()
+      renderSection('models', { cancelDownload })
+      const progress = screen.getByRole('progressbar')
+      expect(progress).toHaveAttribute('aria-valuenow', '50')
+      expect(progress).toHaveAttribute('aria-valuetext', '800 MB of 1.6 GB')
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel downloading Whisper large-v3-turbo' }))
+      expect(cancelDownload).toHaveBeenCalledWith('whisper-large-v3-turbo')
+    })
+
+    it('lists official whisper.cpp files with the tested transcription models', () => {
+      const english = hfModel(
+        'ggml-small.en.bin',
+        { kind: 'stt', displayName: 'Whisper small, English', traits: ['Fast', 'English only'], sizeBytes: 466_000_000, minRamGb: 0 },
+        { publisher: 'ggerganov' },
+      )
+      renderSection('models', { huggingFace: browse({ models: [english] }) })
+      const available = screen.getByRole('heading', { level: 3, name: 'Available to download' }).parentElement?.nextElementSibling as HTMLElement
+      expect(within(available).getByText('Whisper small, English')).toBeInTheDocument()
+      expect(within(available).getByText('Fast · English only · 466 MB')).toBeInTheDocument()
+      expect(within(available).getByText('Whisper medium')).toBeInTheDocument()
+    })
+
+    it('downloads a trusted publisher’s file at once', () => {
+      const downloadModel = vi.fn()
+      const granite = hfModel('granite-4.0-h-tiny-Q4_K_M.gguf', { displayName: 'Granite 4.0 H Tiny', sizeBytes: 4_200_000_000 }, { publisher: 'ibm-granite' })
+      renderSection('models', { downloadModel, huggingFace: browse({ models: [granite] }) })
+      expect(screen.getByText('ibm-granite · 6.9B · Q4_K_M · 4.2 GB · Oct 2')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Download Granite 4.0 H Tiny, 4.2 GB' }))
+      expect(downloadModel).toHaveBeenCalledWith(granite.id)
+    })
+
+    it('asks before downloading from an unknown publisher, with focus in the question and back after', () => {
+      const downloadModel = vi.fn()
+      const llama = hfModel('llama-Q4_K_M.gguf', { displayName: 'Llama 3.1 8B Instruct' }, { publisher: 'jdoe-quants', trusted: false })
+      renderSection('models', { downloadModel, huggingFace: browse({ models: [llama] }) })
+      expect(screen.getByText('Unknown publisher')).toBeInTheDocument()
+
+      const download = screen.getByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' })
+      fireEvent.click(download)
+      expect(downloadModel).not.toHaveBeenCalled()
+      const question = screen.getByRole('group', { name: /Minute has not checked files from jdoe-quants\./ })
+      expect(question).toHaveTextContent('A damaged or hostile model file can crash the app. Download only if you trust this publisher.')
+      expect(within(question).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+      expect(screen.queryByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' })).not.toBeInTheDocument()
+
+      fireEvent.keyDown(question, { key: 'Escape' })
+      expect(screen.queryByRole('group', { name: /Minute has not checked/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' })).toHaveFocus()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Download anyway' }))
+      expect(downloadModel).toHaveBeenCalledWith(llama.id, true)
+      expect(screen.queryByRole('group', { name: /Minute has not checked/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' })).toHaveFocus()
+    })
+
+    it('folds away models that need more memory than this Mac has until asked', () => {
+      const big = [
+        hfModel('llama-70b.gguf', { displayName: 'Llama 3.3 70B', minRamGb: 48 }),
+        hfModel('qwen-32b.gguf', { displayName: 'Qwen3 32B', minRamGb: 24 }),
       ]
-      renderSection('models', { models: installed, setLlmModel })
-      fireEvent.click(screen.getByRole('radio', { name: /gemma 4 e4b/i }))
-      expect(setLlmModel).toHaveBeenCalledWith('gemma-4-e4b')
-      setLlmModel.mockClear()
-      fireEvent.click(screen.getByRole('radio', { name: /qwen3\.5-9b/i }))
-      expect(setLlmModel).not.toHaveBeenCalled()
+      renderSection('models', { huggingFace: browse({ models: big }) })
+      const fold = screen.getByRole('button', { name: /2 more need more memory than this Mac has/ })
+      expect(fold).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByText('Llama 3.3 70B')).not.toBeInTheDocument()
+
+      fireEvent.click(fold)
+      expect(fold).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('Llama 3.3 70B')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Download Qwen3 32B, 4.9 GB' })).toBeInTheDocument()
+    })
+
+    it('searches as the user types and at once on Enter', () => {
+      const huggingFace = browse({ llm: { query: 'gran' } })
+      renderSection('models', { huggingFace })
+      const field = screen.getByRole('searchbox', { name: 'Search any model on Hugging Face' })
+      expect(field).toHaveValue('gran')
+      fireEvent.change(field, { target: { value: 'granite' } })
+      expect(huggingFace.setQuery).toHaveBeenCalledWith('llm', 'granite')
+      fireEvent.keyDown(field, { key: 'Enter' })
+      expect(huggingFace.search).toHaveBeenCalledWith('llm')
+    })
+
+    it('says how fresh the list is and refreshes it', () => {
+      const huggingFace = browse({ llm: { result: answer({ fetchedAt: new Date(Date.now() - 2 * 3_600_000).toISOString() }) } })
+      renderSection('models', { huggingFace })
+      expect(screen.getByText(/Updated 2 h ago/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      expect(huggingFace.refresh).toHaveBeenCalledWith('llm')
+    })
+
+    it('says it is checking while the first answer is on its way', () => {
+      renderSection('models', { huggingFace: browse({ llm: { result: null, loading: true } }) })
+      expect(screen.getByText('Checking…')).toBeInTheDocument()
+      expect(screen.getByText('Checking Hugging Face for newer models…')).toBeInTheDocument()
+    })
+
+    it('keeps tested models downloadable when Hugging Face cannot be reached', () => {
+      const offline = answer({ fetchedAt: null, error: 'network is offline' })
+      const huggingFace = browse({ stt: { result: offline }, llm: { result: offline } })
+      renderSection('models', { huggingFace })
+      expect(screen.getByText(/Could not reach Hugging Face\. Models on this Mac keep working\./)).toBeInTheDocument()
+      expect(screen.getByText(/Could not reach Hugging Face for more transcription models\./)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Download Gemma 4 E4B, 5.3 GB' })).toBeInTheDocument()
+
+      const retries = screen.getAllByRole('button', { name: 'Try again' })
+      expect(retries).toHaveLength(2)
+      retries.forEach(button => fireEvent.click(button))
+      expect(huggingFace.refresh).toHaveBeenCalledWith('stt')
+      expect(huggingFace.refresh).toHaveBeenCalledWith('llm')
+    })
+
+    it('says when a search finds nothing', () => {
+      renderSection('models', { huggingFace: browse({ llm: { query: 'zzz' } }) })
+      expect(screen.getByText('No models match “zzz”.')).toBeInTheDocument()
+    })
+
+    it('counts newer models that need a Minute update in one quiet line', () => {
+      renderSection('models', { huggingFace: browse({ llm: { result: answer({ unsupportedCount: 3 }) } }) })
+      expect(screen.getByText('3 newer models need a Minute update.')).toBeInTheDocument()
     })
   })
 

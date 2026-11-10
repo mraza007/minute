@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Hardware, ModelOrigin, ModelStatus, Recommendation } from '../ipc/types'
-import { buildModelCatalog, formatParameters, modelDetail, type CatalogInput } from './modelCatalog'
+import { buildModelCatalog, formatAge, formatParameters, modelDetail, type CatalogInput } from './modelCatalog'
 
 const NOW = new Date('2026-11-10T12:00:00Z')
 const HARDWARE: Hardware = { totalRamGb: 18, appleSilicon: true, cores: 12 }
@@ -186,18 +186,28 @@ describe('buildModelCatalog', () => {
       browsed: [hf('jdoe/llama', { trusted: false, publisher: 'jdoe' }), hf('ibm-granite/granite')],
     })
     const [trusted, unknown] = result.llm.huggingFace
-    expect(unknown.needsConsent).toBe(true)
+    expect(unknown.unknownPublisher).toBe('jdoe')
     expect(unknown.fit).toMatchObject({ tone: 'unverified', label: 'Unknown publisher' })
-    expect(trusted.needsConsent).toBe(false)
+    expect(trusted.unknownPublisher).toBeNull()
     expect(trusted.fit.label).toBe('Good fit')
-    expect(result.llm.onThisMac[0].needsConsent).toBe(false)
+    expect(result.llm.onThisMac[0].unknownPublisher).toBeNull()
     expect(result.llm.onThisMac[0].fit.label).toBe('Good fit')
   })
 
   it('never asks consent for a tested model and keeps Recommended on the tested pick', () => {
     const result = catalog({ listed: [tested('whisper-large-v3-turbo', 'stt')] })
-    expect(result.stt.tested[0].needsConsent).toBe(false)
+    expect(result.stt.tested[0].unknownPublisher).toBeNull()
     expect(result.stt.tested[0].fit.label).toBe('Recommended')
+  })
+})
+
+describe('formatAge', () => {
+  it('says how long ago a list was fetched, in the largest whole unit', () => {
+    expect(formatAge('2026-11-10T11:59:40Z', NOW)).toBe('just now')
+    expect(formatAge('2026-11-10T11:48:00Z', NOW)).toBe('12 min ago')
+    expect(formatAge('2026-11-10T09:30:00Z', NOW)).toBe('2 h ago')
+    expect(formatAge('2026-11-07T12:00:00Z', NOW)).toBe('3 d ago')
+    expect(formatAge('not a date', NOW)).toBeNull()
   })
 })
 

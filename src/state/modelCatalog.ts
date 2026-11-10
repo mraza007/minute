@@ -11,8 +11,8 @@ export interface CatalogRow {
   selected: boolean
   fit: ModelSuitabilityResult
   detail: string
-  /** A Hugging Face file from a publisher Minute has not checked: Download asks first. */
-  needsConsent: boolean
+  /** Set for a Hugging Face file, not yet downloaded, from a publisher Minute has not checked: Download asks first. */
+  unknownPublisher: string | null
 }
 
 /** One kind's models, split the way the Models page shows them. */
@@ -60,6 +60,18 @@ export function formatShortDate(iso: string, now: Date): string | null {
   const options: Intl.DateTimeFormatOptions =
     date.getFullYear() === now.getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' }
   return date.toLocaleDateString('en-US', options)
+}
+
+/** How old a fetched list is: "just now", "12 min ago", "2 h ago", "3 d ago". Null for a time that does not parse. */
+export function formatAge(iso: string, now: Date): string | null {
+  const time = Date.parse(iso)
+  if (Number.isNaN(time)) return null
+  const minutes = Math.floor(Math.max(0, now.getTime() - time) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} h ago`
+  return `${Math.floor(hours / 24)} d ago`
 }
 
 /**
@@ -129,7 +141,7 @@ export function buildModelCatalog({ listed, browsed, hardware, recommendation, d
       selected: selected[model.kind] === model.id,
       fit: assessModelSuitability(model, hardware, recommendation),
       detail: modelDetail(model, now),
-      needsConsent: !isTrusted(model) && status !== 'installed',
+      unknownPublisher: model.origin.kind === 'huggingFace' && !model.origin.trusted && status !== 'installed' ? model.origin.publisher : null,
     }
     const group = groups[model.kind]
     if (status === 'installed') group.onThisMac.push(row)

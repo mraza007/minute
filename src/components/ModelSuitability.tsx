@@ -15,7 +15,8 @@ export function HardwareSummary({ hardware }: { hardware: Hardware | null }) {
   return (
     <section className="st-hardware" aria-label="Detected Mac hardware">
       This Mac: {hardwareSpecs(hardware)}. Models download once and run offline.
-      {!hardware && ' Compatibility will appear when detection finishes.'}
+      {!hardware && ' Compatibility will appear when detection finishes.'} When this page opens, Minute asks Hugging Face
+      for newer models; nothing about your notes is sent.
     </section>
   )
 }
