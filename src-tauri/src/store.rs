@@ -1429,6 +1429,13 @@ impl Store {
         self.reassign_speaker(id, speaker, Speaker::Unknown)
     }
 
+    /// Gives every unknown turn to `to` (issue #49).
+    pub fn assign_unknown_turns(&self, _id: &str, _to: &str) -> Result<SpeakerMergeResult> {
+        Err(MinuteError::Other(
+            "unknown turns cannot be assigned to a speaker".to_string(),
+        ))
+    }
+
     fn reassign_speaker(&self, id: &str, from: &str, into: Speaker) -> Result<SpeakerMergeResult> {
         let from = from.trim();
         if from.is_empty() {
@@ -5948,6 +5955,125 @@ mod tests {
         assert!(undone.meta.unknown_turns.is_empty());
         assert_eq!(undone.meta.speakers, 3);
         assert_eq!(store.read_summary(&id).unwrap().unwrap(), summary_before);
+    }
+
+    fn speakers_in(store: &Store, id: &str) -> Vec<Speaker> {
+        store
+            .read_transcript(id)
+            .unwrap()
+            .segments
+            .into_iter()
+            .map(|segment| segment.speaker)
+            .collect()
+    }
+
+    #[test]
+    fn unknown_turns_go_to_an_existing_speaker_once_the_undo_is_stale() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let marked = store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+        store.rename_speaker(&id, "Speaker 1", "Sam").unwrap();
+        assert!(store.undo_speaker_merge(&id, &marked.undo).is_err());
+        let transcript_before = store.read_transcript(&id).unwrap();
+        let summary_before = store.read_summary(&id).unwrap().unwrap();
+
+        let assigned = store.assign_unknown_turns(&id, " Sam ").unwrap();
+
+        assert_eq!(assigned.transcript.segments[2].speaker, "Sam");
+        assert!(assigned.meta.unknown_turns.is_empty());
+        assert_eq!(assigned.meta.speakers, 2);
+        let summary = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(summary.decisions[0], "Sam owns the launch date.");
+        assert_eq!(summary.action_items[0].text, "Speaker 2 sends the deck to Sam.");
+
+        // The turns are no longer pinned unknown, so a re-run labels them.
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    "Speaker 2".into(),
+                    "Speaker 3".into(),
+                    "Speaker 1".into(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(speakers_in(&store, &id)[2], "Speaker 3");
+        store.write_transcript(&id, &assigned.transcript).unwrap();
+
+        let undone = store.undo_speaker_merge(&id, &assigned.undo).unwrap();
+        assert_eq!(undone.transcript, transcript_before);
+        assert_eq!(undone.meta.unknown_turns, BTreeSet::from([2]));
+        assert_eq!(store.read_summary(&id).unwrap().unwrap(), summary_before);
+    }
+
+    #[test]
+    fn unknown_turns_go_to_a_new_name() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+
+        let assigned = store.assign_unknown_turns(&id, "Dana").unwrap();
+
+        let token = serde_json::to_value(&assigned.undo).unwrap();
+        assert!(token["from"].is_null(), "the token reads from: null on the wire");
+        assert_eq!(token["into"], "Dana");
+        assert_eq!(speakers_in(&store, &id)[2], "Dana");
+        assert_eq!(assigned.meta.speakers, 3);
+        assert!(assigned.meta.unknown_turns.is_empty());
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().decisions[0],
+            "Dana owns the launch date."
+        );
+        assert!(fs::read_to_string(store.note_md_path(&id))
+            .unwrap()
+            .contains("Dana owns the launch date."));
+    }
+
+    #[test]
+    fn assigning_unknown_turns_rejects_a_bad_name_and_a_note_without_any() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        assert!(store.assign_unknown_turns(&id, "Dana").is_err(), "no unknown turns");
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+        let before = store.read_transcript(&id).unwrap();
+
+        assert!(store.assign_unknown_turns(&id, "  ").is_err());
+        assert!(store.assign_unknown_turns(&id, "unknown speaker").is_err());
+        assert_eq!(store.read_transcript(&id).unwrap(), before);
+        assert_eq!(store.read_meta(&id).unwrap().unknown_turns, BTreeSet::from([2]));
+    }
+
+    #[test]
+    fn undoing_an_assignment_pins_only_the_turns_the_user_had_marked() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        // Turn 1 is unknown because the diarizer heard no one, turn 2
+        // because the user said so.
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    Speaker::Unknown,
+                    "Speaker 3".into(),
+                    "Speaker 1".into(),
+                ],
+            )
+            .unwrap();
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+
+        let assigned = store.assign_unknown_turns(&id, "Speaker 1").unwrap();
+        assert_eq!(assigned.undo.segment_indices, vec![1, 2]);
+        let undone = store.undo_speaker_merge(&id, &assigned.undo).unwrap();
+
+        assert_eq!(undone.transcript.segments[1].speaker, Speaker::Unknown);
+        assert_eq!(undone.transcript.segments[2].speaker, Speaker::Unknown);
+        assert_eq!(undone.meta.unknown_turns, BTreeSet::from([2]));
     }
 
     #[test]
