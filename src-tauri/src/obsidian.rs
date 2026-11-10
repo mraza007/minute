@@ -29,6 +29,7 @@ pub const DEFAULT_FOLDER: &str = "Meetings";
 pub const DEFAULT_FILE_NAME_TEMPLATE: &str = "{date} - {title}";
 
 const MAX_FILE_STEM_CHARS: usize = 100;
+const MAX_FILE_STEM_BYTES: usize = 240;
 const MAX_COLLISION_SUFFIX: u32 = 999;
 
 /// Per-note export status, stored in `meta.json` and sent to the frontend.
@@ -723,6 +724,91 @@ mod tests {
         assert_ne!(second.path, first.path);
         assert!(Path::new(second.path.as_ref().unwrap()).starts_with(other.path().canonicalize().unwrap()));
         assert!(Path::new(first.path.as_ref().unwrap()).is_file());
+    }
+
+    #[test]
+    fn concurrent_saves_of_one_file_all_succeed_and_leave_one_whole_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        let writers: Vec<_> = (0..8)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let content = format!("writer {writer}\n").repeat(2000);
+                    (0..100)
+                        .filter(|_| write_atomic(&path, &content).is_err())
+                        .count()
+                })
+            })
+            .collect();
+        let failures: usize = writers.into_iter().map(|w| w.join().unwrap()).sum();
+        assert_eq!(failures, 0, "a save lost its temp file to another save");
+
+        let text = fs::read_to_string(&path).unwrap();
+        let first = text.lines().next().unwrap();
+        assert_eq!(text.lines().count(), 2000);
+        assert!(text.lines().all(|line| line == first), "two saves were mixed");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
+    }
+
+    #[test]
+    fn a_long_cjk_title_still_fits_the_file_name_limit() {
+        let title = "会".repeat(100);
+        assert!(sanitize_file_name(&title).len() <= MAX_FILE_STEM_BYTES);
+
+        let f = fixture(true);
+        lock_store(&f.store).rename_note(&f.id, &title).unwrap();
+        let status = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
+        assert_eq!(status.error, None);
+        assert!(Path::new(status.path.as_ref().unwrap()).is_file());
+
+        // The worst case still fits: every clash suffix up to the last one.
+        let name = format!("{} {MAX_COLLISION_SUFFIX}.md", sanitize_file_name(&title));
+        fs::write(f.vault.path().join(name), "fits").unwrap();
+    }
+
+    #[test]
+    fn a_recorded_path_that_resolves_outside_the_vault_is_not_written() {
+        let f = fixture(true);
+        let outside = tempdir().unwrap();
+        let foreign = outside.path().canonicalize().unwrap().join("secret.md");
+        fs::write(&foreign, "not Minute's").unwrap();
+        let vault = f.vault.path().canonicalize().unwrap();
+        let escaping = vault.join("..").join(foreign.strip_prefix(vault.parent().unwrap()).unwrap());
+        assert!(escaping.starts_with(&vault) && escaping.is_file(), "fixture: lexically inside");
+        lock_store(&f.store)
+            .set_obsidian_export(
+                &f.id,
+                ObsidianExport {
+                    path: Some(escaping.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let status = export_note(&f.store, &f.settings, &f.id, Trigger::Manual).unwrap();
+
+        assert_eq!(status.error, None);
+        assert_eq!(fs::read_to_string(&foreign).unwrap(), "not Minute's");
+        assert!(Path::new(status.path.as_ref().unwrap())
+            .canonicalize()
+            .unwrap()
+            .starts_with(vault.join("Meetings")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_export_folder_keeps_one_file_across_saves() {
+        let f = fixture(true);
+        let real = tempdir().unwrap();
+        std::os::unix::fs::symlink(real.path(), f.vault.path().join("Meetings")).unwrap();
+
+        let first = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
+        let second = export_note(&f.store, &f.settings, &f.id, Trigger::Manual).unwrap();
+
+        assert_eq!(first.error, None);
+        assert_eq!(second.path, first.path);
+        assert_eq!(fs::read_dir(real.path()).unwrap().count(), 1);
     }
 
     #[test]
