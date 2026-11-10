@@ -38,6 +38,8 @@ const MAX_REPOS: usize = 16;
 const TREE_CONCURRENCY: usize = 4;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const CACHE_TTL: time::Duration = time::Duration::hours(24);
+/// The largest API reply read. A 200-repo trending list is about 3 MB.
+const MAX_API_BODY: usize = 16 * 1024 * 1024;
 
 /// GGUF `general.architecture` values proven to produce a valid summary
 /// through the app's prompt path, each run with `real_llm_eval_from_env` on
@@ -107,8 +109,9 @@ fn select_repos(repos: Vec<Repo>, scope: Scope) -> Selection {
         unsupported_count: 0,
     };
     for repo in repos {
-        let publisher = repo.id.split('/').next().unwrap_or_default();
-        if scope == Scope::TrustedOnly && !catalog::is_trusted_publisher(publisher) {
+        let (publisher, name) = repo.id.split_once('/').unwrap_or_default();
+        let trusted_author = named_author(name).is_none_or(catalog::is_trusted_publisher);
+        if scope == Scope::TrustedOnly && !(catalog::is_trusted_publisher(publisher) && trusted_author) {
             continue;
         }
         let open = matches!(
@@ -132,6 +135,15 @@ fn select_repos(repos: Vec<Repo>, scope: Scope) -> Selection {
         }
     }
     selection
+}
+
+/// The original author a quantizer names in a repo, as bartowski does:
+/// `TheDrummer_Orion-26B-GGUF` is TheDrummer's fine-tune. Trending shows a
+/// trusted quantizer's build only of a trusted author's model; search
+/// still finds the rest. `None` when the name names no author.
+fn named_author(repo_name: &str) -> Option<&str> {
+    let (author, rest) = repo_name.split_once('_')?;
+    (!author.is_empty() && !author.contains('-') && !rest.is_empty()).then_some(author)
 }
 
 /// The quantization a GGUF file name ends with, if it is one we offer.
@@ -505,7 +517,7 @@ async fn get_json<T: DeserializeOwned>(client: &reqwest::Client, url: &str) -> R
         log::warn!("Hugging Face request failed: {e}");
         MinuteError::Other("Could not reach Hugging Face. Check your connection.".to_string())
     };
-    let response = client
+    let mut response = client
         .get(url)
         .timeout(REQUEST_TIMEOUT)
         .send()
@@ -523,10 +535,19 @@ async fn get_json<T: DeserializeOwned>(client: &reqwest::Client, url: &str) -> R
             status.as_u16()
         )));
     }
-    let body = response.bytes().await.map_err(offline)?;
+    let unreadable =
+        || MinuteError::Other("Hugging Face sent a response Minute could not read.".to_string());
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(offline)? {
+        if body.len() + chunk.len() > MAX_API_BODY {
+            log::warn!("Hugging Face response from {url} passed {MAX_API_BODY} bytes");
+            return Err(unreadable());
+        }
+        body.extend_from_slice(&chunk);
+    }
     serde_json::from_slice(&body).map_err(|e| {
         log::warn!("unexpected Hugging Face response from {url}: {e}");
-        MinuteError::Other("Hugging Face sent a response Minute could not read.".to_string())
+        unreadable()
     })
 }
 
@@ -741,6 +762,27 @@ mod tests {
         // qwen4exp, lfm3, and the untested qwen35moe. The speech model has
         // no chat template, so it is not a hidden chat model.
         assert_eq!(selection.unsupported_count, 3);
+    }
+
+    #[test]
+    fn trending_skips_a_trusted_quantizers_build_of_an_unknown_authors_model() {
+        let renamed = |id: &str| {
+            let mut repo = repo("bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF");
+            repo.id = id.to_string();
+            repo
+        };
+        let candidates = || {
+            vec![
+                renamed("bartowski/TheDrummer_Orion-26B-A4B-v1.1-GGUF"),
+                renamed("bartowski/Qwen_Qwen3.5-4B-GGUF"),
+                renamed("bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF"),
+            ]
+        };
+        assert_eq!(
+            ids(&select_repos(candidates(), Scope::TrustedOnly)),
+            ["bartowski/Qwen_Qwen3.5-4B-GGUF", "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF"]
+        );
+        assert_eq!(select_repos(candidates(), Scope::AnyPublisher).repos.len(), 3);
     }
 
     #[test]

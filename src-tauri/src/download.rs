@@ -80,6 +80,13 @@ fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Whether writing `chunk_len` more bytes would pass the catalog's size.
+/// Stops an oversized body before it fills the disk; the sha256 check alone
+/// would only reject it at the end.
+fn overruns(downloaded: u64, chunk_len: usize, expected: u64) -> bool {
+    downloaded.saturating_add(chunk_len as u64) > expected
+}
+
 /// Verifies a completed download's digest against the catalog's pinned
 /// sha256 and either promotes the part file to its final path, or deletes
 /// it and reports a mismatch. Pure filesystem-only helper so the
@@ -334,6 +341,11 @@ pub async fn execute_download(
             return Err(MinuteError::Cancelled);
         }
         let chunk = chunk.map_err(|e| MinuteError::Other(format!("stream error: {e}")))?;
+        if overruns(downloaded, chunk.len(), entry.size_bytes) {
+            return Err(MinuteError::Other(
+                "download is larger than the model should be".to_string(),
+            ));
+        }
         file.write_all(&chunk).await?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
@@ -634,6 +646,14 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_body_larger_than_the_catalog_size_is_stopped() {
+        assert!(!overruns(0, 100, 100));
+        assert!(!overruns(60, 40, 100));
+        assert!(overruns(60, 41, 100));
+        assert!(overruns(u64::MAX, 1, 100));
+    }
 
     // --- Hugging Face entries: resolve, consent, save, forget ---------------
 
