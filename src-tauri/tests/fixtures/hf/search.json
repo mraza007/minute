@@ -1,0 +1,95 @@
+[
+ {
+  "id": "unsloth/Qwen3.5-4B-GGUF",
+  "gated": false,
+  "lastModified": "2026-03-02T14:08:17.000Z",
+  "sha": "e87f176479d0855a907a41277aca2f8ee7a09523",
+  "downloads": 1532682,
+  "gguf": {
+   "total": 4205751296,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 8424393632
+  },
+  "pipeline_tag": "image-text-to-text"
+ },
+ {
+  "id": "ccore/Qwen3.5-4B-3D-Coder",
+  "gated": false,
+  "lastModified": "2026-11-06T01:12:46.000Z",
+  "sha": "4b9f05f3a0382725b679c5e32a338b88acaf0064",
+  "downloads": 319405,
+  "gguf": {
+   "total": 4205751296,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 2708804096
+  }
+ },
+ {
+  "id": "turintech/Qwen3.5-4B-Artemis-GGUF",
+  "gated": false,
+  "lastModified": "2026-11-10T14:28:50.000Z",
+  "sha": "c72ea73534cf71d6f00a78290923fcea96d272f9",
+  "downloads": 291023,
+  "gguf": {
+   "total": 4205751296,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 2714078432
+  },
+  "pipeline_tag": "image-text-to-text"
+ },
+ {
+  "id": "HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive",
+  "gated": false,
+  "lastModified": "2026-04-05T19:01:02.000Z",
+  "sha": "c09cdbcdb1fefad6d335809d445621b5f5ba0c6e",
+  "downloads": 279341,
+  "gguf": {
+   "total": 4205751296,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 8424393056
+  }
+ },
+ {
+  "id": "lmstudio-community/Qwen3.5-4B-GGUF",
+  "gated": false,
+  "lastModified": "2026-03-02T13:36:47.000Z",
+  "sha": "f9f88ac3e234be915e23811a6d28ea287bdb927e",
+  "downloads": 205715,
+  "gguf": {
+   "total": 4205751296,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 2707513696
+  }
+ },
+ {
+  "id": "bartowski/Qwen_Qwen3.5-4B-GGUF",
+  "gated": false,
+  "lastModified": "2026-05-19T19:44:11.000Z",
+  "sha": "4168f45a16a1290d65a4ec0fa312ae917a4c15d6",
+  "downloads": 133515,
+  "gguf": {
+   "total": 4326350848,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 8665620192
+  },
+  "pipeline_tag": "image-text-to-text"
+ }
+]

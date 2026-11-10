@@ -2017,7 +2017,7 @@ fn any_stt_model_installed(app: &AppHandle) -> bool {
     let Ok(models_root) = app.path().app_data_dir() else {
         return false;
     };
-    let Ok(entries) = catalog::load_catalog() else {
+    let Ok(entries) = catalog::merged_catalog(&models_root) else {
         return false;
     };
     entries.iter().any(|entry| {

@@ -2292,7 +2292,7 @@ fn spawn_stt_worker_if_model_installed(
         }
     };
 
-    let catalog = match catalog::load_catalog() {
+    let catalog = match catalog::merged_catalog(&models_root) {
         Ok(catalog) => catalog,
         Err(e) => {
             log::warn!("failed to load model catalog for stt worker: {e}");
@@ -2815,7 +2815,7 @@ fn auto_trigger_summarize(
     // actually runs.
     let model_id = settings::lock_settings(settings).llm_model.clone();
 
-    let catalog = match catalog::load_catalog() {
+    let catalog = match catalog::merged_catalog(&models_root) {
         Ok(catalog) => catalog,
         Err(e) => {
             log::warn!("auto-summarize: failed to load model catalog: {e}");

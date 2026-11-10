@@ -1,0 +1,166 @@
+[
+ {
+  "id": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF",
+  "gated": false,
+  "lastModified": "2026-11-09T05:11:45.000Z",
+  "trendingScore": 356,
+  "sha": "926f44a3d81936187ab2af7783ed759f33c39ff5",
+  "downloads": 1459029,
+  "gguf": {
+   "total": 26895998464,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "bos_token": "<|endoftext|>",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 11673303648
+  },
+  "pipeline_tag": "image-text-to-text"
+ },
+ {
+  "id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "gated": false,
+  "lastModified": "2026-11-07T06:28:34.000Z",
+  "trendingScore": 247,
+  "sha": "084c631ac221016019d6e0a863afe92d90edd3b0",
+  "downloads": 1816522,
+  "gguf": {
+   "total": 176943899520,
+   "architecture": "qwen4exp",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "bos_token": "<|endoftext|>",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 354029930496
+  },
+  "pipeline_tag": "image-text-to-text"
+ },
+ {
+  "id": "unsloth/Qwen3.8-27B-GGUF",
+  "gated": false,
+  "lastModified": "2026-08-20T12:04:25.000Z",
+  "trendingScore": 97,
+  "sha": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+  "downloads": 5952713,
+  "gguf": {
+   "total": 27320697856,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "bos_token": "<|endoftext|>",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 16056478688
+  }
+ },
+ {
+  "id": "LiquidAI/LFM3-1.7B-GGUF",
+  "gated": false,
+  "lastModified": "2026-11-03T14:48:57.000Z",
+  "trendingScore": 52,
+  "sha": "cd0c74c575b5c416f3011b5b4c298077f26ca8c2",
+  "downloads": 292662,
+  "gguf": {
+   "total": 1728801600,
+   "architecture": "lfm3",
+   "context_length": 262144,
+   "chat_template": "{{- bos_token -}}\n{%- se",
+   "bos_token": "<|startoftext|>",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 3466626336
+  },
+  "pipeline_tag": "text-generation"
+ },
+ {
+  "id": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
+  "gated": false,
+  "lastModified": "2026-10-23T19:03:57.000Z",
+  "trendingScore": 37,
+  "sha": "1db54d5b12533ff1bcaa8e42cf4c667988a1f1be",
+  "downloads": 134686,
+  "gguf": {
+   "total": 7518069290,
+   "architecture": "gemma4",
+   "context_length": 65536,
+   "chat_template": "{%- if conversational_mo",
+   "bos_token": "<bos>",
+   "eos_token": "<eos>",
+   "totalFileSize": 6180446208
+  },
+  "pipeline_tag": "text-generation"
+ },
+ {
+  "id": "unsloth/Qwen3.6-35B-A3B-GGUF",
+  "gated": false,
+  "lastModified": "2026-04-20T12:42:25.000Z",
+  "trendingScore": 20,
+  "sha": "a483e9e6cbd595906af30beda3187c2663a1118c",
+  "downloads": 1641709,
+  "gguf": {
+   "total": 34660610688,
+   "architecture": "qwen35moe",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "bos_token": "<|endoftext|>",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 21706144736
+  },
+  "pipeline_tag": "image-text-to-text"
+ },
+ {
+  "id": "lmstudio-community/Qwen3.8-27B-GGUF",
+  "gated": false,
+  "lastModified": "2026-08-14T15:10:57.000Z",
+  "trendingScore": 19,
+  "sha": "5a7da681f60570ab5b439a587e912d2e5eddb582",
+  "downloads": 1088889,
+  "gguf": {
+   "total": 27320697856,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- set image_count = na",
+   "bos_token": "<|endoftext|>",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 16810714336
+  }
+ },
+ {
+  "id": "nvidia/parakeet-tdt-0.6b-v3",
+  "gated": false,
+  "lastModified": "2026-08-05T21:46:17.000Z",
+  "trendingScore": 15,
+  "sha": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+  "downloads": 531342,
+  "gguf": {
+   "total": 637329158,
+   "architecture": "asr",
+   "totalFileSize": 713975456
+  },
+  "pipeline_tag": "automatic-speech-recognition"
+ },
+ {
+  "id": "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+  "gated": false,
+  "lastModified": "2026-09-21T22:44:19.000Z",
+  "trendingScore": 14,
+  "sha": "4371da10c84fb26da3592d4cf312d24aa82b7b65",
+  "downloads": 980287,
+  "gguf": {
+   "total": 8953803264,
+   "architecture": "qwen35",
+   "context_length": 262144,
+   "chat_template": "{%- macro render_value(v",
+   "eos_token": "<|im_end|>",
+   "totalFileSize": 17920693440
+  },
+  "pipeline_tag": "image-text-to-text"
+ },
+ {
+  "id": "xtools-at/DeepSeek-V4-Pro-Qwen3.5-4B-UNCENSORED-heretic",
+  "gated": false,
+  "lastModified": "2026-11-08T03:49:54.000Z",
+  "trendingScore": 23,
+  "sha": "763ec401cfc60681a9b4cece9b1f182f40b9c6bb",
+  "downloads": 8014,
+  "pipeline_tag": "text-generation"
+ }
+]
