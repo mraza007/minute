@@ -2422,12 +2422,25 @@ fn select_meeting_app(
         MeetingPolicy::Record => Some(StartMode::Record),
         MeetingPolicy::Ignore => None,
     };
-    // The rule before the fix: the first running app, with its own policy.
-    let first = running.first()?;
-    Some(MeetingSelection {
-        app_name: first.name.clone(),
-        mode: mode_for(first)?,
-    })
+    let mut on_the_mic = running
+        .iter()
+        .filter(|app| app.capturing == Some(true))
+        .peekable();
+    if on_the_mic.peek().is_some() {
+        return on_the_mic.find_map(|app| {
+            Some(MeetingSelection {
+                app_name: app.name.clone(),
+                mode: mode_for(app)?,
+            })
+        });
+    }
+    running
+        .iter()
+        .find(|app| mode_for(app).is_some())
+        .map(|app| MeetingSelection {
+            app_name: app.name.clone(),
+            mode: StartMode::Ask,
+        })
 }
 
 #[cfg(test)]
