@@ -205,8 +205,8 @@ use crate::store::{lock_store, SharedStore, StoredSegment};
 
 /// The chunking window/overlap used by `SttWorker` — 8s windows with a 1s
 /// overlap tail, per the plan's tuning.
-const WINDOW_SECS: f32 = 8.0;
-const OVERLAP_SECS: f32 = 1.0;
+pub(crate) const WINDOW_SECS: f32 = 8.0;
+pub(crate) const OVERLAP_SECS: f32 = 1.0;
 
 /// Placeholder speaker label — diarization is out of scope for Stage 2;
 /// every segment is attributed to this one constant "speaker" for now.
@@ -473,7 +473,7 @@ fn handle_window_segments(
         }
 
         let stored = StoredSegment {
-            speaker: SPEAKER_PLACEHOLDER.to_string(),
+            speaker: SPEAKER_PLACEHOLDER.into(),
             start: seg.start,
             end: seg.end,
             text: seg.text.clone(),

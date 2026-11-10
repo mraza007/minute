@@ -137,13 +137,13 @@ fn yaml_string(s: &str) -> String {
 }
 
 /// YAML frontmatter for Obsidian properties: `date`, `title`, `duration` (in
-/// minutes) and `speakers` (distinct transcript labels, in order of first
-/// appearance).
+/// minutes) and `speakers` (distinct named transcript speakers, in order of
+/// first appearance; unknown turns name nobody, so they add no entry).
 pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript) -> String {
     let mut speakers: Vec<&str> = Vec::new();
-    for seg in &transcript.segments {
-        if !speakers.contains(&seg.speaker.as_str()) {
-            speakers.push(&seg.speaker);
+    for name in transcript.segments.iter().filter_map(|seg| seg.speaker.name()) {
+        if !speakers.contains(&name) {
+            speakers.push(name);
         }
     }
     let date = match date_stamp(&meta.created_at) {
@@ -411,7 +411,7 @@ mod tests {
     use super::*;
     use crate::llm::SummaryDoc;
     use crate::settings::Settings;
-    use crate::store::StoredSegment;
+    use crate::store::{Speaker, StoredSegment};
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
     use time::macros::datetime;
@@ -440,35 +440,33 @@ mod tests {
         let meta = store
             .create_note("Weekly: Sync/Plan", "m", datetime!(2026-07-23 10:15:30 UTC))
             .unwrap();
-        store
-            .write_transcript(
-                &meta.id,
-                &Transcript {
-                    segments: vec![
-                        StoredSegment {
-                            speaker: "Ada".into(),
-                            start: 0.0,
-                            end: 2.0,
-                            text: "Hello".into(),
-                        },
-                        StoredSegment {
-                            speaker: "Grace".into(),
-                            start: 2.0,
-                            end: 4.0,
-                            text: "Hi".into(),
-                        },
-                        StoredSegment {
-                            speaker: "Ada".into(),
-                            start: 4.0,
-                            end: 6.0,
-                            text: "Bye".into(),
-                        },
-                    ],
+        let transcript = Transcript {
+            segments: vec![
+                StoredSegment {
+                    speaker: "Ada".into(),
+                    start: 0.0,
+                    end: 2.0,
+                    text: "Hello".into(),
                 },
-            )
-            .unwrap();
+                StoredSegment {
+                    speaker: "Grace".into(),
+                    start: 2.0,
+                    end: 4.0,
+                    text: "Hi".into(),
+                },
+                StoredSegment {
+                    speaker: "Ada".into(),
+                    start: 4.0,
+                    end: 6.0,
+                    text: "Bye".into(),
+                },
+            ],
+        };
+        store.write_transcript(&meta.id, &transcript).unwrap();
         store.finalize_note(&meta.id, 2520.0, 2).unwrap();
-        store.write_summary_and_finalize(&meta.id, &summary()).unwrap();
+        store
+            .write_summary_and_finalize(&meta.id, &summary(), &transcript)
+            .unwrap();
         drop(store);
         let mut settings = Settings::default();
         settings.obsidian.enabled = enabled;
@@ -539,6 +537,31 @@ mod tests {
             fm,
             "---\ndate: 2026-07-23\ntitle: \"Weekly: Sync/Plan\"\nduration: 42\nspeakers:\n  - \"Ada\"\n  - \"Grace\"\n---\n\n"
         );
+    }
+
+    #[test]
+    fn frontmatter_speakers_leave_out_unknown_turns() {
+        let f = fixture(true);
+        let meta = meta_of(&f);
+        let transcript = Transcript {
+            segments: vec![
+                StoredSegment {
+                    speaker: Speaker::Unknown,
+                    start: 0.0,
+                    end: 1.0,
+                    text: "Hm.".into(),
+                },
+                StoredSegment {
+                    speaker: "Grace".into(),
+                    start: 1.0,
+                    end: 2.0,
+                    text: "Hi".into(),
+                },
+            ],
+        };
+        let fm = render_frontmatter(&meta, &transcript);
+        assert!(fm.contains("speakers:\n  - \"Grace\"\n---\n"), "{fm}");
+        assert!(!fm.contains(crate::store::UNKNOWN_SPEAKER_LABEL), "{fm}");
     }
 
     #[test]

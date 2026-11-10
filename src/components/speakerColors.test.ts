@@ -26,4 +26,12 @@ describe('assignSpeakerColors', () => {
       '--speaker-tint': 'var(--speaker-2-tint)',
     })
   })
+
+  it('gives an unknown speaker grey ink rather than a speaker colour', () => {
+    const colors = assignSpeakerColors(['You', 'Marcus Chen'])
+    expect(speakerColorStyle(colors, null)).toEqual({
+      '--speaker-color': 'var(--ink-muted)',
+      '--speaker-tint': 'var(--surface-softer)',
+    })
+  })
 })

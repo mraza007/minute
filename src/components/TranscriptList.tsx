@@ -1,5 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { UNKNOWN_SPEAKER_LABEL } from '../state/adapters'
 import type { TranscriptSegment } from '../types'
 import { EMPTY_SPEAKER_COLORS, speakerColorStyle, type SpeakerColors } from './speakerColors'
 
@@ -71,7 +72,9 @@ function Segment({
         {segment.time}
       </button>
       <div className="turn-body">
-        <div className="turn-who" style={speakerColorStyle(speakerColors, segment.speaker)}>{segment.speaker}</div>
+        <div className="turn-who" style={speakerColorStyle(speakerColors, segment.speaker)}>
+          {segment.speaker ?? UNKNOWN_SPEAKER_LABEL}
+        </div>
         <p className="turn-said">{segment.text}</p>
       </div>
     </div>

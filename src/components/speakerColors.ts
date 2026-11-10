@@ -32,8 +32,18 @@ export function assignSpeakerColors(speakers: readonly string[]): SpeakerColors 
 
 export const EMPTY_SPEAKER_COLORS: SpeakerColors = new Map()
 
-/** Sets the `--speaker-color` / `--speaker-tint` pair the chip, dot, and transcript label read. */
-export function speakerColorStyle(colors: SpeakerColors, speaker: string): CSSProperties {
+const UNKNOWN_STYLE = {
+  '--speaker-color': 'var(--ink-muted)',
+  '--speaker-tint': 'var(--surface-softer)',
+} as CSSProperties
+
+/**
+ * Sets the `--speaker-color` / `--speaker-tint` pair the chip, dot, and
+ * transcript label read. An unknown speaker (`null`) is grey ink, never a
+ * speaker colour: it is nobody, so it must not look like one more person.
+ */
+export function speakerColorStyle(colors: SpeakerColors, speaker: string | null): CSSProperties {
+  if (speaker === null) return UNKNOWN_STYLE
   const slot = colors.get(speaker) ?? OTHER_COLORS[0]
   return {
     '--speaker-color': `var(--speaker-${slot})`,

@@ -36,6 +36,7 @@ const APP_COMMANDS: &[&str] = &[
     "delete_note_marker",
     "rename_speaker",
     "merge_speakers",
+    "mark_speaker_unknown",
     "undo_speaker_merge",
     "diarize_note",
     "dismiss_speaker_suggestion",

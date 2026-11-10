@@ -48,6 +48,13 @@ describe('TranscriptList', () => {
     expect(screen.getByText('Priya Shah')).toBeInTheDocument()
   })
 
+  it('labels a turn with no attributed speaker "Unknown speaker" in grey ink', () => {
+    const [unknown] = makeSegments(1)
+    render(<Page {...makeProps({ segments: [{ ...unknown, speaker: null }] })} />)
+    const label = screen.getByText('Unknown speaker', { selector: '.turn-who' })
+    expect(label.style.getPropertyValue('--speaker-color')).toBe('var(--ink-muted)')
+  })
+
   it('renders nothing but an empty container for an empty segment list', () => {
     const { container } = render(<Page {...makeProps({ segments: [] })} />)
     expect(container.querySelector('.transcript')).toBeEmptyDOMElement()

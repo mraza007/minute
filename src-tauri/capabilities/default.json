@@ -21,6 +21,7 @@
     "allow-delete-note-marker",
     "allow-rename-speaker",
     "allow-merge-speakers",
+    "allow-mark-speaker-unknown",
     "allow-undo-speaker-merge",
     "allow-diarize-note",
     "allow-dismiss-speaker-suggestion",

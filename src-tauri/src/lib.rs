@@ -6,6 +6,7 @@ mod download;
 mod error;
 mod llm;
 mod obsidian;
+mod mentions;
 mod popup;
 mod profiles;
 mod settings;
@@ -258,6 +259,19 @@ fn merge_speakers(
 ) -> Result<SpeakerMergeResult, String> {
     lock_store(&state)
         .merge_speakers(&id, &from, &into)
+        .map_err(|e| e.to_string())
+}
+
+/// "Mark these turns as unknown" (issue #49). Returns the same result as
+/// `merge_speakers`, and `undo_speaker_merge` reverses it.
+#[tauri::command]
+fn mark_speaker_unknown(
+    state: State<SharedStore>,
+    id: String,
+    speaker: String,
+) -> Result<SpeakerMergeResult, String> {
+    lock_store(&state)
+        .mark_speaker_unknown(&id, &speaker)
         .map_err(|e| e.to_string())
 }
 
@@ -751,6 +765,7 @@ pub fn run() {
             list_voice_profiles,
             delete_voice_profile,
             merge_speakers,
+            mark_speaker_unknown,
             undo_speaker_merge,
             toggle_action_item,
             llm::summarize_note,
