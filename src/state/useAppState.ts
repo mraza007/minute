@@ -99,6 +99,8 @@ export function useAppState() {
   const [stopping, setStopping] = useState(false)
   const [processingStage, setProcessingStage] = useState<RecordingProcessingStage>('idle')
   const [processingFailure, setProcessingFailure] = useState<ProcessingFailure | null>(null)
+  // The note the last recording became. Its page shows what is still running on it.
+  const [lastRecordedNoteId, setLastRecordedNoteId] = useState<string | null>(null)
   const [recordingPreflightOpen, setRecordingPreflightOpen] = useState(false)
   const [preflightMicrophoneDevices, setPreflightMicrophoneDevices] = useState<AudioInputDevice[]>([])
   const [selectedPreflightMicrophoneId, setSelectedPreflightMicrophoneId] = useState<string | null>(null)
@@ -1160,6 +1162,7 @@ export function useAppState() {
    */
   const finishStop = useCallback((stoppedNoteId: string) => {
     setProcessingStage('preparing')
+    setLastRecordedNoteId(stoppedNoteId)
     // Returned so callers that must not release their own in-flight guards
     // early (restartWithSystemAudio's failure path) can chain on the full
     // transition, not just its kickoff.
@@ -1726,6 +1729,7 @@ export function useAppState() {
     stopping,
     processingStage,
     processingFailure,
+    lastRecordedNoteId,
     sttStatus,
     sttError,
     sttStatusNoteId,

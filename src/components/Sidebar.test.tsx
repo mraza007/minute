@@ -259,6 +259,13 @@ describe('Sidebar', () => {
       expect(onReturnToRecording).toHaveBeenCalledTimes(1)
       expect(onStartRecording).not.toHaveBeenCalled()
     })
+
+    it('says Finishing without a timer once capture has stopped', () => {
+      render(<Sidebar {...base} isRecording stopping recTime="12:47" />)
+      const row = screen.getByRole('button', { name: 'Return to recording' })
+      expect(row).toHaveTextContent('Finishing…')
+      expect(row).not.toHaveTextContent('12:47')
+    })
   })
 
   describe('filter menu', () => {

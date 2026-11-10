@@ -19,11 +19,12 @@ import {
   NOTES,
   PRICING_SEARCH_HITS,
   RECOMMENDATION,
+  SAM_NOTE_ID,
   SETTINGS,
   STORAGE,
 } from './demoData'
 
-export type ScreenshotState = 'note' | 'recording' | 'preflight' | 'palette' | 'settings' | 'onboarding' | 'popup' | 'empty'
+export type ScreenshotState = 'note' | 'recording' | 'preflight' | 'messages' | 'palette' | 'settings' | 'onboarding' | 'popup' | 'empty'
 
 function buildModels(state: ScreenshotState): ModelStatus[] {
   const onboarding = state === 'onboarding'
@@ -270,6 +271,9 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
         case 'resume_recording':
           return null
         case 'stop_recording':
+          // `processing=note` lands on a note with no summary yet, so its
+          // page shows the steps still running. Any other value holds on Stop.
+          if (params.get('processing') === 'note') return notes.find(note => note.id === SAM_NOTE_ID) ?? notes[0]
           if (params.get('processing')) return new Promise(() => {})
           return notes[0]
         case 'get_settings':

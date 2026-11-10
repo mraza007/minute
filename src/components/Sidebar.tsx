@@ -17,6 +17,8 @@ interface SidebarProps {
   onOpenPalette: () => void
   onStartRecording: () => void
   isRecording: boolean
+  /** Capture has stopped and the recording is being finalized. */
+  stopping?: boolean
   recTime: string
   /** The red "Recording" row returns to the live recording view from any screen. */
   onReturnToRecording: () => void
@@ -113,6 +115,7 @@ export const Sidebar = memo(function Sidebar({
   onOpenPalette,
   onStartRecording,
   isRecording,
+  stopping = false,
   recTime,
   onReturnToRecording,
   summaryStatus,
@@ -221,10 +224,10 @@ export const Sidebar = memo(function Sidebar({
           {isRecording ? (
             <button type="button" className="sidebar-record" data-recording="true" aria-label="Return to recording" onClick={onReturnToRecording}>
               <span className="sidebar-record-lead">
-                <span className="sidebar-record-dot blink-dot" />
-                <span className="sidebar-nav-label">Recording</span>
+                <span className={stopping ? 'sidebar-record-dot' : 'sidebar-record-dot blink-dot'} />
+                <span className="sidebar-nav-label">{stopping ? 'Finishing…' : 'Recording'}</span>
               </span>
-              <span className="sidebar-nav-label sidebar-record-time">{recTime}</span>
+              {!stopping && <span className="sidebar-nav-label sidebar-record-time">{recTime}</span>}
             </button>
           ) : (
             <button type="button" className="sidebar-record" aria-label="New recording" onClick={onStartRecording}>

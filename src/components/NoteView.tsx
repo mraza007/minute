@@ -7,6 +7,7 @@ import type {
   SpeakerMergeUndo,
   StoredSegment,
   SummaryDoc,
+  SummaryStyle,
 } from '../ipc/types'
 import type { SttStatus } from '../types'
 import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
@@ -18,6 +19,8 @@ import { AskPanel } from './AskPanel'
 import { NoteMenu, type NoteMenuAction } from './NoteMenu'
 import { NoteSummary } from './NoteSummary'
 import { PlayerBar } from './PlayerBar'
+import { ProcessingStepList } from './ProcessingStepList'
+import { noteProcessingSteps } from './processingSteps'
 import { SpeakerPopover } from './SpeakerPopover'
 import { TranscriptList } from './TranscriptList'
 import { useFocusAfterCommit } from './useFocusAfterCommit'
@@ -104,6 +107,9 @@ export interface NoteViewProps {
   processingFailure: ProcessingFailure | null
   onRetryProcessing: () => void
   onDismissProcessing: () => void
+  /** Whether this note is the recording that just stopped, so its page shows what is still running on it. */
+  justRecorded: boolean
+  summaryStyle: SummaryStyle
 }
 
 /**
@@ -594,6 +600,8 @@ export function NoteView({
   processingFailure,
   onRetryProcessing,
   onDismissProcessing,
+  justRecorded,
+  summaryStyle,
 }: NoteViewProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   // The virtualized transcript needs the scroll container as a value it
@@ -778,6 +786,14 @@ export function NoteView({
 
   const now = new Date()
   const metaLine = noteMetaToListItem(meta, now).meta
+  const pendingSteps = noteProcessingSteps({
+    justRecorded,
+    hasSummary: summary !== null,
+    speakersRunning: diarStatus === 'running',
+    summaryStatus,
+    summaryModelInstalled: llmInstalled,
+    summaryStyle,
+  })
   const includedSystemAudio = meta.sources.includes('system')
   const suggestions = Object.entries(meta.speakerSuggestions ?? {})
   const autoApplied = Object.entries(meta.speakerAutoApplied ?? {})
@@ -1069,17 +1085,25 @@ export function NoteView({
             )}
           </header>
 
-          <NoteSummary
-            summary={summary}
-            status={summaryStatus}
-            error={summaryError}
-            modelName={llmModelName}
-            llmInstalled={llmInstalled}
-            onGenerate={handleRegenerate}
-            onCancel={handleCancelSummary}
-            onToggleAction={handleToggleAction}
-            onGoSettings={onGoSettings}
-          />
+          {pendingSteps ? (
+            <ProcessingStepList
+              steps={pendingSteps}
+              onSkipSummary={handleCancelSummary}
+              note="You can open another note. Minute finishes this one in the background."
+            />
+          ) : (
+            <NoteSummary
+              summary={summary}
+              status={summaryStatus}
+              error={summaryError}
+              modelName={llmModelName}
+              llmInstalled={llmInstalled}
+              onGenerate={handleRegenerate}
+              onCancel={handleCancelSummary}
+              onToggleAction={handleToggleAction}
+              onGoSettings={onGoSettings}
+            />
+          )}
 
           <section className="note-section note-transcript" aria-labelledby="note-transcript-heading">
             <div className="note-section-head">

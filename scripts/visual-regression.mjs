@@ -11,6 +11,9 @@ const actualDir = path.join(root, 'tests', 'visual', 'actual')
 const diffDir = path.join(root, 'tests', 'visual', 'diff')
 const update = process.env.UPDATE_VISUAL_BASELINES === '1'
 const port = Number(process.env.VISUAL_PORT ?? 4173)
+// VISUAL_ONLY=name,name limits the run to those scenarios, so one unit's
+// baselines can be refreshed without rewriting every other PNG.
+const only = process.env.VISUAL_ONLY ? new Set(process.env.VISUAL_ONLY.split(',')) : null
 
 const scenarios = [
   { name: 'note-light', url: 'screenshot-app.html?state=note&theme=light', width: 1440, height: 900 },
@@ -20,6 +23,13 @@ const scenarios = [
   { name: 'note-menu', url: 'screenshot-app.html?state=note&theme=light&menu=note', width: 1440, height: 900 },
   { name: 'note-speaker-rename', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&suggest=1', width: 1440, height: 900 },
   { name: 'recording-reduced-motion', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced', width: 1440, height: 900 },
+  { name: 'recording-preflight', url: 'screenshot-app.html?state=preflight&theme=light', width: 1440, height: 900 },
+  { name: 'recording-live', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced&sysaudio=1&marker=Download%20step%20follow-up', width: 1440, height: 900 },
+  { name: 'recording-live-dark', url: 'screenshot-app.html?state=recording&theme=dark&motion=reduced&sysaudio=1&message=autostop', width: 1440, height: 900 },
+  { name: 'recording-auto-start', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced&sysaudio=1&origin=auto', width: 1440, height: 900 },
+  { name: 'recording-messages', url: 'screenshot-app.html?state=messages&theme=light', width: 880, height: 640 },
+  { name: 'recording-processing', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced&sysaudio=1&processing=finalizing', width: 1440, height: 900 },
+  { name: 'note-processing', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced&sysaudio=1&processing=note', width: 1440, height: 900 },
   { name: 'library-empty', url: 'screenshot-app.html?state=empty&theme=light', width: 1440, height: 900 },
   { name: 'sidebar-select-mode', url: 'screenshot-app.html?state=note&theme=light&select=3&summarizing=1', width: 1440, height: 900 },
   { name: 'sidebar-filter-menu', url: 'screenshot-app.html?state=note&theme=light&menu=open&summarizing=1', width: 1440, height: 900 },
@@ -81,6 +91,7 @@ let failures = 0
 try {
   await waitForServer()
   for (const scenario of scenarios) {
+    if (only && !only.has(scenario.name)) continue
     const session = `minute-visual-${scenario.name}`
     const actualPath = path.join(actualDir, `${scenario.name}.png`)
     const baselinePath = path.join(baselineDir, `${scenario.name}.png`)

@@ -88,6 +88,8 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     processingFailure: null,
     onRetryProcessing: vi.fn(),
     onDismissProcessing: vi.fn(),
+    justRecorded: false,
+    summaryStyle: 'detailed',
     ...overrides,
   }
 }
@@ -1427,5 +1429,61 @@ describe('NoteView', () => {
 
     rerender(<NoteView {...makeProps({ meta: noteA, selectedMeta: noteA })} />)
     expect(screen.getByTestId('note-scroll').scrollTop).toBe(240)
+  })
+  describe('a note that just finished recording', () => {
+    const meta = noteFixture()
+    const fresh = { meta, selectedMeta: meta, selectedSummary: null, justRecorded: true, llmInstalled: true }
+
+    function stepTexts() {
+      return within(screen.getByRole('region', { name: 'Finishing this note' }))
+        .getAllByRole('listitem')
+        .map(step => [step.querySelector('.processing-label')?.textContent, step.dataset.state])
+    }
+
+    it('shows the steps still to run, with the summary next after speakers', () => {
+      render(<NoteView {...makeProps({ ...fresh, diarStatus: 'running' })} />)
+      expect(stepTexts()).toEqual([
+        ['Audio saved', 'done'],
+        ['Transcript finished', 'done'],
+        ['Finding speakers…', 'active'],
+        ['Detailed summary · next', 'waiting'],
+      ])
+      expect(screen.getByText('You can open another note. Minute finishes this one in the background.')).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Transcript' })).toBeInTheDocument()
+      // Nothing can cancel a summary that is not queued yet.
+      expect(screen.queryByRole('button', { name: 'Skip summary' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
+    })
+
+    it('skips a queued summary by cancelling it', () => {
+      const onCancelSummary = vi.fn()
+      render(<NoteView {...makeProps({ ...fresh, summaryStatus: 'queued', onCancelSummary })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Skip summary' }))
+      expect(onCancelSummary).toHaveBeenCalledWith(meta.id)
+    })
+
+    it('hands back to the summary section when the summary fails, so it can be retried', () => {
+      const onRegenerateSummary = vi.fn()
+      render(
+        <NoteView
+          {...makeProps({ ...fresh, summaryStatus: 'error', summaryError: 'summary cancelled', onRegenerateSummary })}
+        />,
+      )
+      expect(screen.queryByRole('region', { name: 'Finishing this note' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Retry summary' }))
+      expect(onRegenerateSummary).toHaveBeenCalledWith(meta.id)
+    })
+
+    it('shows the summary once it is written', () => {
+      render(<NoteView {...makeProps({ ...fresh, selectedSummary: summaryFixture() })} />)
+      expect(screen.queryByRole('region', { name: 'Finishing this note' })).not.toBeInTheDocument()
+      expect(screen.getByText('Discussed the Q3 roadmap.')).toBeInTheDocument()
+    })
+
+    it('leaves an older note with a queued summary to the summary section', () => {
+      render(<NoteView {...makeProps({ ...fresh, justRecorded: false, summaryStatus: 'queued' })} />)
+      expect(screen.queryByRole('region', { name: 'Finishing this note' })).not.toBeInTheDocument()
+      expect(screen.getByText('Queued. Starts when the engine is free.')).toBeInTheDocument()
+    })
   })
 })

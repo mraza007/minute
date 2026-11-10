@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppState } from './state/useAppState'
 import { useSidebarCollapsed } from './state/useSidebarCollapsed'
 import { AppToolbar, SidebarReopen } from './components/AppToolbar'
@@ -11,6 +11,7 @@ import { RecordingPreflight } from './components/RecordingPreflight'
 import { SettingsView } from './components/SettingsView'
 import { SearchPalette } from './components/SearchPalette'
 import { ShortcutReference } from './components/ShortcutReference'
+import { transcriptionModeOptions } from './components/transcriptionModes'
 
 export default function App() {
   const s = useAppState()
@@ -62,6 +63,10 @@ export default function App() {
     preflightReturnFocusRef.current = null
     startRec()
   }, [startRec])
+  const transcriptionModes = useMemo(
+    () => transcriptionModeOptions(s.models, s.sttModel, s.hardware, s.recommendation),
+    [s.models, s.sttModel, s.hardware, s.recommendation],
+  )
 
   // ⌘K / ⌘F anywhere opens the search palette — the palette steals focus
   // (autofocuses its input) rather than checking what's currently focused,
@@ -202,7 +207,7 @@ export default function App() {
             window. It's visible from the corner of the eye no matter which
             view is open or where the window sits, and it costs no layout —
             which is what lets the rest of the recording UI stay calm. */}
-        {s.isRecording && <div className="rec-edge" aria-hidden="true" />}
+        {s.isRecording && !s.stopping && <div className="rec-edge" aria-hidden="true" />}
         <Sidebar
           notes={s.sidebarNotes}
           selectedNoteId={s.selectedNoteId}
@@ -214,6 +219,7 @@ export default function App() {
           onOpenPalette={openSearch}
           onStartRecording={openRecordingPreflight}
           isRecording={s.isRecording}
+          stopping={s.stopping}
           recTime={s.recTime}
           onReturnToRecording={s.goRecording}
           summaryStatus={s.summaryStatus}
@@ -227,7 +233,7 @@ export default function App() {
           onSetCollapsed={setSidebarCollapsed}
         />
         <div className="app-main">
-          {s.view !== 'notes' && <AppToolbar lead={toolbarLead} />}
+          {s.view === 'settings' && <AppToolbar lead={toolbarLead} />}
           {s.view === 'notes' && (
             <NoteView
               meta={selectedNoteMeta}
@@ -281,6 +287,8 @@ export default function App() {
               processingFailure={s.processingFailure}
               onRetryProcessing={s.retryProcessingFailure}
               onDismissProcessing={s.dismissProcessingFailure}
+              justRecorded={selectedNoteMeta !== null && selectedNoteMeta.id === s.lastRecordedNoteId}
+              summaryStyle={s.tSummaryStyle}
             />
           )}
           {s.view === 'recording' && (
@@ -310,6 +318,12 @@ export default function App() {
               quietSecs={s.quietSecs}
               canRestartWithSystemAudio={s.sysAudioAvailability === 'ready'}
               onRestartWithSystemAudio={s.restartWithSystemAudio}
+              origin={s.recOrigin}
+              onOpenSettings={s.goSettings}
+              speakersExpected={s.tDetectSpeakers && canDetectSpeakers}
+              summaryExpected={s.llmInstalled}
+              summaryStyle={s.tSummaryStyle}
+              toolbarLead={toolbarLead}
             />
           )}
           {s.view === 'settings' && (
@@ -392,12 +406,17 @@ export default function App() {
           microphoneLoading={s.preflightMicrophoneLoading}
           microphonePermission={s.preflightMicrophonePermission}
           requestingMicrophonePermission={s.requestingMicrophonePermission}
-          modelName={s.sttModelDisplayName}
+          transcriptionModes={transcriptionModes}
           systemAudioEnabled={s.tCaptureSystemAudio}
           sysAudioAvailability={s.sysAudioAvailability}
           starting={s.recordingStarting}
           onSelectMicrophone={s.selectPreflightMicrophone}
           onRequestMicrophonePermission={s.requestMicrophonePermission}
+          onSelectTranscriptionModel={s.setSttModel}
+          onOpenSettings={() => {
+            closeRecordingPreflightState()
+            s.goSettings()
+          }}
           onToggleSystemAudio={s.toggleCaptureSystemAudio}
           onRequestSysAudioPermission={s.requestSysAudioPermission}
           onClose={closeRecordingPreflight}

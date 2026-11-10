@@ -6,7 +6,7 @@
 // honest: if a capture looks right, the real app produces that screen too.
 
 import { emit } from '@tauri-apps/api/event'
-import { AURORA_ASK_ENTRIES, PRICING_NOTE_ID, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID } from './demoData'
+import { AURORA_ASK_ENTRIES, PRICING_NOTE_ID, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID, SAM_NOTE_ID } from './demoData'
 import type { ScreenshotState } from './mockIpc'
 
 function sleep(ms: number): Promise<void> {
@@ -37,17 +37,43 @@ function setNativeInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+/** One `recording-state` tick as the backend sends it, shaped by the harness parameters. */
+function recordingTick(params: URLSearchParams, elapsed: number, overrides: Record<string, unknown> = {}) {
+  return {
+    noteId: RECORDING_NOTE_ID,
+    state: 'recording',
+    elapsed,
+    systemAudioActive: params.get('sysaudio') === '1',
+    microphoneName: 'MacBook Pro Microphone',
+    inputRms: 0.08,
+    inputPeak: 0.42,
+    inputSequence: 120,
+    inputError: null,
+    quietSecs: 0,
+    origin: params.get('origin') === 'auto' ? { kind: 'automatic', appName: 'Microsoft Teams' } : { kind: 'manual' },
+    ...overrides,
+  }
+}
+
+/**
+ * `?state=recording`, with:
+ * - `sysaudio=1`: system audio is part of the recording.
+ * - `origin=auto`: the recording was started by a detected call.
+ * - `message=silent|autostop|disconnected|lag|failed`: the condition behind one status message.
+ * - `title=`, `marker=`: rename the recording, add a marker.
+ * - `processing=saving|finalizing`: press Stop and hold on that stage.
+ * - `processing=note`: press Stop and land on the note while speakers are found.
+ */
 async function driveRecording(params: URLSearchParams): Promise<void> {
   const startButton = await waitForButtonByText('New recording')
   startButton?.click()
   const confirmButton = await waitForButtonByText('Start recording')
   confirmButton?.click()
 
-  await waitFor(() => document.querySelector('[data-testid="waveform-bars"]') !== null)
+  await waitFor(() => document.querySelector('[data-testid="level-indicator"]') !== null)
 
   // Stream the demo dialogue in as individual transcript-segment events,
-  // exactly like the real stt worker would, then report the elapsed time
-  // the recording pill/title bar should show.
+  // exactly like the real stt worker would, then report the elapsed time.
   for (const turn of RECORDING_LIVE_TURNS) {
     // eslint-disable-next-line no-await-in-loop
     await emit('transcript-segment', {
@@ -59,46 +85,23 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
     })
   }
   await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'ready', error: null })
+  const message = params.get('message')
   const latestSegmentEnd = RECORDING_LIVE_TURNS[RECORDING_LIVE_TURNS.length - 1]?.end ?? 0
-  const elapsed = params.get('lag') === 'delayed'
-    ? Math.max(RECORDING_ELAPSED_SECONDS, latestSegmentEnd + 45)
-    : RECORDING_ELAPSED_SECONDS
-  await emit('recording-state', {
-    noteId: RECORDING_NOTE_ID,
-    state: 'recording',
-    elapsed,
-    systemAudioActive: false,
-    microphoneName: 'MacBook Pro Microphone',
-    inputRms: 0.08,
-    inputPeak: 0.42,
-    inputSequence: 120,
-    inputError: null,
-  })
+  const elapsed = message === 'lag' ? latestSegmentEnd + 45 : RECORDING_ELAPSED_SECONDS
+  await emit('recording-state', recordingTick(params, elapsed))
 
-  if (params.get('health') === 'silent') {
-    await emit('recording-state', {
-      noteId: RECORDING_NOTE_ID,
-      state: 'recording',
-      elapsed: elapsed + 1,
-      systemAudioActive: false,
-      microphoneName: 'MacBook Pro Microphone',
-      inputRms: 0,
-      inputPeak: 0.12,
-      inputSequence: 121,
-      inputError: null,
-    })
-    await emit('recording-state', {
-      noteId: RECORDING_NOTE_ID,
-      state: 'recording',
-      elapsed: elapsed + 11,
-      systemAudioActive: false,
-      microphoneName: 'MacBook Pro Microphone',
-      inputRms: 0,
-      inputPeak: 0.1,
-      inputSequence: 122,
-      inputError: null,
-    })
+  if (message === 'silent') {
+    await emit('recording-state', recordingTick(params, elapsed + 1, { inputRms: 0, inputPeak: 0.12, inputSequence: 121 }))
+    await emit('recording-state', recordingTick(params, elapsed + 11, { inputRms: 0, inputPeak: 0.1, inputSequence: 122, quietSecs: 40 }))
+  } else if (message === 'autostop') {
+    await emit('recording-state', recordingTick(params, elapsed + 1, { inputRms: 0, inputPeak: 0, inputSequence: 121, quietSecs: 120 }))
+    await emit('auto-stop-state', { noteId: RECORDING_NOTE_ID, state: 'pending', secondsRemaining: 108 })
+  } else if (message === 'disconnected') {
+    await emit('recording-state', recordingTick(params, elapsed + 1, { inputSequence: 121, inputError: 'device disconnected' }))
+  } else if (message === 'failed') {
+    await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'error', error: 'The transcription model stopped.' })
   }
+  if (message) await waitFor(() => document.querySelector('.recording-message') !== null)
 
   const title = params.get('title')
   if (title) {
@@ -112,7 +115,7 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
         bubbles: true,
         cancelable: true,
       }))
-      await waitFor(() => document.querySelector('.recording-title-value h1')?.textContent === title)
+      await waitFor(() => document.querySelector('.recording-head h1')?.textContent === title)
     }
   }
 
@@ -124,23 +127,19 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
       setNativeInputValue(markerInput, marker)
       await waitFor(() => findButtonByText('Save marker')?.disabled === false)
       findButtonByText('Save marker')?.click()
-      await waitFor(() => document.body.textContent?.includes(marker) ?? false)
+      await waitFor(() => document.querySelector('.live-marker') !== null)
     }
   }
 
-  const details = params.get('details')
-  if (details === 'closed') {
-    findButtonByText('Hide details')?.click()
-    await waitFor(() => findButtonByText('Show details') !== undefined)
-  } else if (details === 'open') {
-    findButtonByText('Show details')?.click()
-    await waitFor(() => document.querySelector('#recording-details-panel:not([hidden])') !== null)
-  }
-
   const processing = params.get('processing')
-  if (processing) {
-    findButtonByText('Stop & transcribe')?.click()
-    await waitFor(() => document.body.textContent?.includes('Turning your recording into notes') ?? false)
+  if (processing === 'note') {
+    findButtonByText('Stop and')?.click()
+    await waitFor(() => document.querySelector('.note-scroll') !== null)
+    await emit('diar-status', { noteId: SAM_NOTE_ID, state: 'running', error: null })
+    await waitFor(() => document.querySelector('.processing-list') !== null)
+  } else if (processing) {
+    findButtonByText('Stop and')?.click()
+    await waitFor(() => document.querySelector('.processing-list') !== null)
     if (processing === 'finalizing') {
       await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'finalizing', error: null })
     }
@@ -357,6 +356,8 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
     await driveRecording(params)
   } else if (state === 'preflight') {
     await drivePreflight(params)
+  } else if (state === 'messages') {
+    await waitFor(() => document.querySelector('.recording-message') !== null)
   } else if (state === 'palette') {
     await drivePalette()
   } else if (state === 'settings') {

@@ -206,7 +206,7 @@ describe('core flow accessibility', () => {
     installIpc()
     const view = render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'New recording' }))
-    await screen.findByRole('dialog', { name: 'Ready to record' })
+    await screen.findByRole('dialog', { name: 'New recording' })
     await expectNoAccessibilityViolations(view)
   })
 
@@ -215,7 +215,7 @@ describe('core flow accessibility', () => {
     const view = render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'New recording' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Start recording' }))
-    await screen.findByText('Live transcript — audio never leaves this machine')
+    await screen.findByRole('button', { name: 'Pause' })
     await expectNoAccessibilityViolations(view)
   })
 

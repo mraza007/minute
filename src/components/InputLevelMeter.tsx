@@ -13,17 +13,17 @@ import {
 function diagnosticCopy(diagnostic: InputDiagnostic): string {
   switch (diagnostic) {
     case 'starting':
-      return 'Starting input check…'
+      return 'Starting…'
     case 'listening':
-      return 'Speak to check your level'
+      return 'Speak to check the level'
     case 'good':
-      return 'Input level looks good'
+      return 'Level is good'
     case 'silent':
-      return 'No sound detected — check mute or input'
+      return 'No sound. Check mute or input.'
     case 'clipping':
-      return 'Input is clipping — lower the input level'
+      return 'Clipping. Lower the input level.'
     case 'error':
-      return 'Input preview unavailable'
+      return 'Level check unavailable'
   }
 }
 
