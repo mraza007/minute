@@ -22,6 +22,8 @@ const base = {
   onBulkDelete: vi.fn().mockResolvedValue(undefined),
   onRenameNote: vi.fn(),
   onRevealNote: vi.fn(),
+  collapsed: false,
+  onSetCollapsed: vi.fn(),
 }
 
 function chooseFilter(group: string, option: string) {
@@ -37,10 +39,6 @@ function enterSelectMode() {
 }
 
 describe('Sidebar', () => {
-  // The collapse toggle persists to localStorage (issue #34) — clear it so
-  // one test's toggle can't leak an initial collapsed state into the next.
-  beforeEach(() => window.localStorage.clear())
-
   it('renders all demo note titles', () => {
     render(<Sidebar {...base} />)
     for (const note of demoNotes) {
@@ -203,40 +201,26 @@ describe('Sidebar', () => {
     expect(screen.queryByText('1:1 — Sarah')).not.toBeInTheDocument()
   })
 
-  it('pins a note and collapses the library into its compact mode', () => {
+  it('pins a note from its row', () => {
     const onTogglePinned = vi.fn()
     render(<Sidebar {...base} onTogglePinned={onTogglePinned} />)
     fireEvent.click(screen.getAllByRole('button', { name: 'Pin note' })[0])
     expect(onTogglePinned).toHaveBeenCalledWith('demo-1', true)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
-    expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'true')
-    expect(screen.getByRole('button', { name: 'Expand library sidebar' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
   })
 
-  // Issue #34: the manual collapse choice survives a restart.
-  describe('collapse persistence', () => {
-    it('stores the manual toggle in localStorage', () => {
-      render(<Sidebar {...base} />)
-      fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
-      expect(window.localStorage.getItem('minute.sidebarCollapsed')).toBe('true')
-      fireEvent.click(screen.getByRole('button', { name: 'Expand library sidebar' }))
-      expect(window.localStorage.getItem('minute.sidebarCollapsed')).toBe('false')
-    })
+  it('asks to collapse from its own control', () => {
+    const onSetCollapsed = vi.fn()
+    render(<Sidebar {...base} onSetCollapsed={onSetCollapsed} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
+    expect(onSetCollapsed).toHaveBeenCalledWith(true)
+  })
 
-    it('starts collapsed when the stored preference says so', () => {
-      window.localStorage.setItem('minute.sidebarCollapsed', 'true')
-      render(<Sidebar {...base} />)
-      expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'true')
-      expect(screen.getByRole('button', { name: 'Expand library sidebar' })).toBeInTheDocument()
-    })
-
-    it('starts expanded when nothing is stored', () => {
-      render(<Sidebar {...base} />)
-      expect(screen.getByRole('navigation', { name: 'Notes' })).toHaveAttribute('data-collapsed', 'false')
-    })
+  // The toolbar's "Notes" button is the way back, so nothing of the sidebar
+  // stays on screen or in the accessibility tree.
+  it('is hidden entirely while collapsed', () => {
+    const { container } = render(<Sidebar {...base} collapsed />)
+    expect(screen.queryByRole('navigation', { name: 'Notes' })).not.toBeInTheDocument()
+    expect(container.querySelector('nav')).toHaveAttribute('hidden')
   })
 
   describe('search field', () => {
@@ -339,28 +323,5 @@ describe('Sidebar', () => {
       render(<Sidebar {...base} notes={notes} />)
       expect(screen.getByRole('button', { name: 'Unpin note' })).toHaveAttribute('data-active', 'true')
     })
-  })
-
-  it('shows a glyph instead of repeated initials for default-titled notes when collapsed', () => {
-    const notes = [
-      { ...demoNotes[0], id: 'n1', title: 'New recording' },
-      { ...demoNotes[1], id: 'n2', title: 'Pricing workshop' },
-    ]
-    render(<Sidebar {...base} notes={notes} selectedNoteId="n1" />)
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
-    expect(screen.queryByText('NR')).not.toBeInTheDocument()
-    expect(screen.getByText('PW')).toBeInTheDocument()
-  })
-
-  it('expands a collapsed sidebar when Rename is chosen from the context menu', () => {
-    render(<Sidebar {...base} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
-    // Collapsed rows are monograms — the inline rename input has no room, so
-    // choosing Rename must expand the sidebar first.
-    const collapsedRow = screen.getAllByRole('button', { name: new RegExp(demoNotes[0].title) })[0]
-    fireEvent.contextMenu(collapsedRow)
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
-    expect(screen.getByRole('textbox', { name: `Rename ${demoNotes[0].title}` })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Collapse library sidebar' })).toBeInTheDocument()
   })
 })

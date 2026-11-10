@@ -1089,7 +1089,6 @@ describe('useAppState', () => {
       expect(result.current.sel).toBe(0)
       expect(result.current.liveSegments).toEqual([])
       expect(result.current.processingStage).toBe('idle')
-      expect(result.current.noteTab).toBe('overview')
       expect(result.current.processingFailure).toBeNull()
     })
 
@@ -1860,7 +1859,7 @@ describe('useAppState', () => {
         })
 
         // A confirmed toggle re-fetches the note (rather than trusting the
-        // command's bare SummaryDoc response) so the Markdown tab's
+        // command's bare SummaryDoc response) so the copied Markdown's
         // checkbox stays in sync with the backend's re-rendered note.md.
         await waitFor(() => expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2))
       })

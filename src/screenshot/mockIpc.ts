@@ -63,6 +63,29 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
   const models = buildModels(state)
   const notes = state === 'empty' ? [] : [...NOTES]
   const transcriptOverrides = new Map<string, StoredSegment[]>()
+  // `?turns=<n>` swaps in a long synthetic Aurora transcript, to exercise the
+  // virtualized transcript inside the note page's scroll container.
+  const turns = Number(params.get('turns') ?? 0)
+  if (turns > 0) {
+    const speakers = ['You', 'Marcus Chen', 'Speaker 3']
+    transcriptOverrides.set(
+      AURORA_NOTE_ID,
+      Array.from({ length: turns }, (_, index) => ({
+        speaker: speakers[index % speakers.length],
+        start: index * 4,
+        end: index * 4 + 3,
+        text: `Turn ${index + 1}. ${'A longer remark that wraps onto a second line when it has enough words in it. '.repeat(index % 3)}`.trim(),
+      })),
+    )
+  }
+  // `?suggest=1` gives the unnamed Aurora speaker a voice-profile match, for
+  // the speaker popover's "Sounds like" row.
+  if (params.get('suggest') === '1') {
+    const index = notes.findIndex(note => note.id === AURORA_NOTE_ID)
+    if (index >= 0) {
+      notes[index] = { ...notes[index], speakerSuggestions: { 'Speaker 3': { name: 'Priya Shah', similarity: 0.82 } } }
+    }
+  }
 
   mockIPC(
     (cmd, rawArgs) => {
@@ -215,6 +238,10 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
         }
         case 'reveal_note':
           return null
+        case 'save_note_to_obsidian': {
+          const { id } = args as { id: string }
+          return notes.find(note => note.id === id)?.obsidian ?? {}
+        }
         case 'storage_stats':
           return STORAGE
         case 'library_info':

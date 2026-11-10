@@ -36,13 +36,7 @@ function PlayPauseIcon({ playing }: { playing: boolean }) {
   )
 }
 
-/**
- * Playback transport, set flush into the bottom edge of the note pane —
- * a ruled strip continuous with the title bar and sidebar chrome, rather
- * than the floating rounded card it used to be. Nothing in this app is
- * meant to hover above the page ("paper, not glass"), and a raised card
- * pinned to the bottom of a document was the last thing that did.
- */
+/** Playback transport, pinned to the bottom edge of the note. */
 export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec, rate, onToggle, onSkip, onSeek, onCycleRate }: PlayerBarProps) {
   const disabled = audioPath === null || failed
   const trackRef = useRef<HTMLDivElement>(null)
@@ -90,88 +84,36 @@ export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec
     }
   }
 
-  const iconBtnStyle = {
-    width: 28,
-    height: 28,
-    border: 'none',
-    borderRadius: '50%',
-    background: 'transparent',
-    color: 'var(--ink-muted)',
-    cursor: disabled ? 'default' : 'pointer',
-    opacity: disabled ? 0.45 : 1,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 'none',
-  } as const
+  const skipBack = (
+    <button disabled={disabled} aria-disabled={disabled} aria-label="Back 15s" title="Back 15 seconds" onClick={() => onSkip(-SKIP_SECONDS)} className="icon-btn player-skip">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+        <path d="M3 3v5h5"></path>
+      </svg>
+    </button>
+  )
+  const skipForward = (
+    <button disabled={disabled} aria-disabled={disabled} aria-label="Forward 15s" title="Forward 15 seconds" onClick={() => onSkip(SKIP_SECONDS)} className="icon-btn player-skip">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+        <path d="M21 3v5h-5"></path>
+      </svg>
+    </button>
+  )
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 14,
-        flex: 'none',
-        height: 58,
-        padding: '0 34px',
-        borderTop: '1px solid var(--rule)',
-        background: 'var(--panel-warm)',
-      }}
-    >
-      <button
-        disabled={disabled}
-        aria-disabled={disabled}
-        aria-label="Back 15s"
-        onClick={() => onSkip(-SKIP_SECONDS)}
-        className="icon-btn"
-        style={iconBtnStyle}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-          <path d="M3 3v5h5"></path>
-        </svg>
-      </button>
-      <button
-        disabled={disabled}
-        aria-disabled={disabled}
-        className="btn-dark"
-        aria-label={playing ? 'Pause' : 'Play'}
-        onClick={onToggle}
-        style={{
-          width: 32,
-          height: 32,
-          border: 'none',
-          borderRadius: '50%',
-          background: 'var(--btn-ink-bg)',
-          color: 'var(--btn-ink-fg)',
-          cursor: disabled ? 'default' : 'pointer',
-          opacity: disabled ? 0.45 : 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flex: 'none',
-        }}
-      >
+    <div className="player-bar" data-disabled={disabled ? 'true' : undefined}>
+      <button disabled={disabled} aria-disabled={disabled} className="player-play" aria-label={playing ? 'Pause' : 'Play'} onClick={onToggle}>
         <PlayPauseIcon playing={playing} />
       </button>
-      <button
-        disabled={disabled}
-        aria-disabled={disabled}
-        aria-label="Forward 15s"
-        onClick={() => onSkip(SKIP_SECONDS)}
-        className="icon-btn"
-        style={iconBtnStyle}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
-          <path d="M21 3v5h-5"></path>
-        </svg>
-      </button>
-      {/* A drawn rule, not a rounded pill: 2px, square ends, filled in the
-          signal accent so elapsed position reads at a glance without the
-          bar itself becoming a graphic element. */}
+      {disabled ? (
+        <span className="player-time player-time-off">{failed ? 'Audio unavailable' : 'Audio removed'}</span>
+      ) : (
+        <span className="player-time">{formatMmSs(currentTime)}</span>
+      )}
       <div
         ref={trackRef}
+        className="player-track"
         role="slider"
         tabIndex={disabled ? -1 : 0}
         aria-label="Seek"
@@ -183,66 +125,13 @@ export function PlayerBar({ audioPath, failed, playing, currentTime, durationSec
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onKeyDown={handleKeyDown}
-        style={{
-          flex: 1,
-          height: 2,
-          background: 'var(--player-track)',
-          position: 'relative',
-          cursor: disabled ? 'default' : 'pointer',
-          touchAction: 'none',
-          opacity: disabled ? 0.5 : 1,
-        }}
       >
-        <div style={{ position: 'absolute', inset: `0 ${100 - progressPercent}% 0 0`, background: 'var(--accent)' }} />
-        <div
-          aria-hidden="true"
-          style={{
-            position: 'absolute',
-            left: `${progressPercent}%`,
-            top: '50%',
-            width: 11,
-            height: 11,
-            marginTop: -5.5,
-            borderRadius: '50%',
-            background: 'var(--panel-warm)',
-            border: '2px solid var(--accent)',
-            transform: 'translateX(-50%)',
-            opacity: disabled ? 0.5 : 1,
-          }}
-        />
+        <div className="player-track-fill" style={{ width: `${progressPercent}%` }} />
       </div>
-      <div
-        style={{
-          fontSize: 11,
-          fontVariantNumeric: 'tabular-nums',
-          letterSpacing: '.02em',
-          color: disabled ? 'var(--ink-faint)' : 'var(--ink-muted)',
-          flex: 'none',
-        }}
-      >
-        {disabled ? (failed ? 'Audio unavailable' : 'Audio removed') : `${formatMmSs(currentTime)} / ${formatMmSs(durationSec)}`}
-      </div>
-      <button
-        disabled={disabled}
-        aria-disabled={disabled}
-        aria-label="Playback speed"
-        onClick={onCycleRate}
-        className="btn-light"
-        style={{
-          padding: '3px 8px',
-          border: '1px solid var(--rule-strong)',
-          borderRadius: 'var(--radius-sm)',
-          background: 'transparent',
-          fontFamily: 'inherit',
-          fontSize: 10.5,
-          fontWeight: 600,
-          fontVariantNumeric: 'tabular-nums',
-          color: 'var(--ink-muted)',
-          cursor: disabled ? 'default' : 'pointer',
-          opacity: disabled ? 0.5 : 1,
-          flex: 'none',
-        }}
-      >
+      {!disabled && <span className="player-time player-time-total">{formatMmSs(durationSec)}</span>}
+      {skipBack}
+      {skipForward}
+      <button disabled={disabled} aria-disabled={disabled} aria-label="Playback speed" onClick={onCycleRate} className="player-rate">
         {rate}×
       </button>
     </div>

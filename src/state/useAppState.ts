@@ -23,7 +23,7 @@ import type {
   VoiceProfile,
   TranscriptSegmentEvent,
 } from '../ipc/types'
-import type { NoteTab, SttStatus, View } from '../types'
+import type { SttStatus, View } from '../types'
 import type { RecordingProcessingStage } from '../types'
 import {
   INITIAL_CAPTURE_HEALTH_TRACKER,
@@ -82,7 +82,6 @@ export function useAppState() {
   // switch views and so appeared to do nothing. `null` renders the notes
   // view's pick-a-note state instead of falling back to the newest note.
   const [sel, setSel] = useState<number | null>(0)
-  const [noteTab, setNoteTab] = useState<NoteTab>('transcript')
 
   // Recording slice — entirely backend-event-driven (no local interval
   // timer): `activeNoteId` is what every recording/segment event handler
@@ -687,7 +686,7 @@ export function useAppState() {
    * Markdown card "Reveal in Finder" → reveals the note's audio.wav (or its
    * folder) in Finder. `useCallback` (deps: `reportError` only) — closes
    * over nothing else, so this has a permanently stable identity; passed
-   * straight through to MarkdownCard as `onReveal`.
+   * straight through to NoteView as `onReveal`.
    */
   const revealNote = useCallback(
     (id: string) => {
@@ -858,7 +857,7 @@ export function useAppState() {
     [modelManager.models, modelManager.llmModel],
   )
 
-  /** Whether the currently selected summary model is actually installed — what the AI notes panel's empty state (a "Generate summary" button vs. a "download a model" prompt) branches on. */
+  /** Whether the currently selected summary model is actually installed — what the Summary section's empty state (a "Generate summary" button vs. a "download a model" prompt) branches on. */
   const llmInstalled = useMemo(
     () => modelManager.llmModel !== null && modelManager.models.some(m => m.kind === 'llm' && m.id === modelManager.llmModel && m.state === 'installed'),
     [modelManager.models, modelManager.llmModel],
@@ -1180,7 +1179,6 @@ export function useAppState() {
         setCaptureHealth('checking')
         setProcessingStage('idle')
         setStopping(false)
-        setNoteTab('overview')
       })
   }, [reportError, invalidateNoteCache])
 
@@ -1791,7 +1789,6 @@ export function useAppState() {
     recordingTitle,
     recordingMarkers,
     captureHealth,
-    noteTab,
     sidebarNotes,
     statsLine,
     searchOpen,
@@ -1816,7 +1813,6 @@ export function useAppState() {
     togglePause,
     renameActiveRecording,
     addRecordingMarker,
-    setNoteTab,
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,
     toggleDel,

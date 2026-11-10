@@ -4,7 +4,7 @@
 // transcript is now wired to real `transcript-segment` events, grouped via
 // `state/adapters.ts`'s `groupLiveSegments`). Everything here is a reusable
 // fixture for component tests (Sidebar.test, TranscriptList.test,
-// AiNotesPanel.test, MarkdownCard.test).
+// NoteView.test).
 
 import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
 

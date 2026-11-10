@@ -20,13 +20,13 @@ function messageOf(err: unknown): string {
 export type SummaryEventState = 'queued' | 'running' | 'done' | 'error'
 
 /**
- * The AI notes panel's (and NoteView's status pill's) simplified view of a
+ * NoteView's (and its status pill's) simplified view of a
  * note's summarization state — `'idle'` covers both "no `summary-status`
  * event seen this session" and "the last one was `'done'`", since `'done'`
  * itself carries no special UI once it's landed (the panel just renders the
  * real summary/decisions/action items normally at that point). `App.tsx`
  * collapses `summaryStatus[id]` (a `SummaryEventState | undefined`) down to
- * this before handing it to `NoteView`/`AiNotesPanel`.
+ * this before handing it to `NoteView`.
  */
 export type SummaryStatus = 'idle' | 'queued' | 'running' | 'error'
 
@@ -46,11 +46,11 @@ export type AskStatus = 'idle' | 'running' | 'error'
  * `ask-answer` event, which is never written to disk either; see
  * `llm::AskAnswerPayload`'s docs). Exactly one of `answer`/`error` is set: a
  * successful ask carries `answer` (with inline `[mm:ss]` citations,
- * rendered by `AiNotesPanel`'s `splitAnswerCitations`), a failed one carries
+ * rendered by `AskPanel` via `splitAnswerCitations`), a failed one carries
  * `error` (and a retry affordance that just re-asks `question`).
  *
  * `id` is a monotonically increasing counter this hook assigns at
- * insertion (see `nextAskEntryId`) — a stable React list key `AiNotesPanel`
+ * insertion (see `nextAskEntryId`) — a stable React list key `AskPanel`
  * uses instead of the entry's array index: history is newest-first, so
  * every existing entry's *index* shifts by one on every prepend, which
  * would make an index-keyed list re-key (and, worse, potentially
@@ -107,7 +107,7 @@ export function useNoteDetail(params: {
   // --- transcript/summary/markdown/audio loading, LRU-cached -------------
   //
   // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
-  // back NoteView's Transcript/Markdown tabs and the AI notes panel once a
+  // back NoteView's transcript, summary, and Markdown copy once a
   // note is actually selected — fetched via `get_note` (the notes list
   // itself only carries `NoteMeta`, no segments/summary/markdown). Cached
   // per id in `transcriptCache` (LRU-capped — see `cacheGet`/`cacheSet`) so
@@ -265,7 +265,7 @@ export function useNoteDetail(params: {
       if (payload.state === 'done') {
         // The note's summary/markdown/status just changed on disk —
         // invalidate its cache entry, refetch it if it's the one currently
-        // on screen (so the AI notes panel picks up the real summary
+        // on screen (so the note page picks up the real summary
         // without a manual reselect), and refresh the notes list so its
         // status flips transcribed -> ready in the sidebar/header pill.
         invalidateNoteCache(payload.noteId)
@@ -368,14 +368,14 @@ export function useNoteDetail(params: {
   }, [])
 
   /**
-   * AI notes panel checkbox click: flips one action item's `done` state.
+   * Action item checkbox click: flips one action item's `done` state.
    * Optimistic — updates the cached `SummaryDoc` (and, if `id` is the
    * selected note, `selectedSummary`) immediately, then confirms via
    * `toggle_action_item`. On success the cache entry is dropped and (if
    * selected) force-refetched rather than merged from the command's
    * response — `toggle_action_item` only returns the updated `SummaryDoc`,
    * not a fresh `markdown` rendering, and `note.md`'s checkbox did change
-   * server-side, so a full refetch is what keeps the Markdown tab honest.
+   * server-side, so a full refetch is what keeps the copied Markdown honest.
    * On failure, reverts the optimistic edit and reports the error.
    *
    * `useCallback` (deps: `selectedNoteId`, `cacheGet`, `cacheSet`,
@@ -553,7 +553,7 @@ export function useNoteDetail(params: {
    * flag (see `llm.rs`'s docs — at most one generation runs app-wide at a
    * time), so at most one of these two `.some(...)` checks is ever true at
    * once in practice; both are checked anyway rather than assuming which.
-   * `AiNotesPanel` uses this to disable the ask input (and show "Waiting
+   * `AskPanel` uses this to disable the ask input (and show "Waiting
    * for the current generation…") even when it's some *other* note that's
    * busy, honestly reflecting that submitting right now would just be
    * rejected server-side.

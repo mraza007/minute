@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppState } from './state/useAppState'
+import { useSidebarCollapsed } from './state/useSidebarCollapsed'
+import { AppToolbar, SidebarReopen } from './components/AppToolbar'
 import { ErrorBanner } from './components/ErrorBanner'
 import { Sidebar } from './components/Sidebar'
 import { NoteView } from './components/NoteView'
@@ -19,6 +21,7 @@ export default function App() {
     closeRecordingPreflight: closeRecordingPreflightState,
     startRec,
   } = s
+  const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = useSidebarCollapsed()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const shortcutReturnFocusRef = useRef<HTMLElement | null>(null)
   const searchReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -47,6 +50,14 @@ export default function App() {
     closeRecordingPreflightState()
     requestAnimationFrame(() => preflightReturnFocusRef.current?.focus())
   }, [closeRecordingPreflightState])
+  const { exportNotes, saveNoteToObsidian } = s
+  const exportNote = useCallback((id: string) => {
+    // A failure is already on the error banner.
+    exportNotes([id]).catch(() => {})
+  }, [exportNotes])
+  const saveToObsidian = useCallback((id: string) => {
+    void saveNoteToObsidian(id)
+  }, [saveNoteToObsidian])
   const startRecording = useCallback(() => {
     preflightReturnFocusRef.current = null
     startRec()
@@ -116,10 +127,10 @@ export default function App() {
   // newest-note fallback there, that's the pick-a-note state.
   const selectedNoteMeta = s.sel === null ? null : (s.notes[s.sel] ?? s.notes[0] ?? null)
 
-  // NoteView/AiNotesPanel distinguish 'idle' | 'queued' | 'running' |
+  // NoteView distinguishes 'idle' | 'queued' | 'running' |
   // 'error' — `summaryStatus`'s `'done'` (and "no event seen this session")
   // both collapse to 'idle' here, since 'done' carries no special UI once
-  // it's landed (the panel just shows the real summary at that point).
+  // it's landed (the note just shows the real summary at that point).
   // `'queued'` (issue #11) does pass through: a note waiting its turn looks
   // identical to an un-summarized one otherwise, and offering Generate for
   // work that's already scheduled is how you get it summarized twice.
@@ -140,6 +151,17 @@ export default function App() {
   // `every` alone would be vacuously true on a catalog without them.
   const diarModels = s.models.filter(m => m.kind === 'diarization')
   const canDetectSpeakers = diarModels.length > 0 && diarModels.every(m => m.state === 'installed')
+
+  // While the sidebar is hidden (a narrow window, or the manual collapse),
+  // the toolbar carries the way back to it and the record button it held.
+  const toolbarLead = sidebarCollapsed ? (
+    <SidebarReopen
+      isRecording={s.isRecording}
+      onShowNotes={() => setSidebarCollapsed(false)}
+      onStartRecording={openRecordingPreflight}
+      onReturnToRecording={s.goRecording}
+    />
+  ) : undefined
 
   if (s.view === 'loading') {
     return (
@@ -201,9 +223,11 @@ export default function App() {
           onBulkDelete={s.deleteNotes}
           onRenameNote={s.renameNote}
           onRevealNote={s.revealNote}
+          collapsed={sidebarCollapsed}
+          onSetCollapsed={setSidebarCollapsed}
         />
         <div className="app-main">
-          <div className="app-toolbar" data-tauri-drag-region="" />
+          {s.view !== 'notes' && <AppToolbar lead={toolbarLead} />}
           {s.view === 'notes' && (
             <NoteView
               meta={selectedNoteMeta}
@@ -217,8 +241,6 @@ export default function App() {
               transcriptLoading={s.transcriptLoading}
               pendingSeek={s.pendingSeek}
               onPendingSeekApplied={s.clearPendingSeek}
-              noteTab={s.noteTab}
-              setNoteTab={s.setNoteTab}
               sttStatus={s.sttStatus}
               sttStatusNoteId={s.sttStatusNoteId}
               summaryStatus={selectedSummaryStatus}
@@ -235,6 +257,11 @@ export default function App() {
               onRename={s.renameNote}
               onDelete={s.deleteNote}
               onReveal={s.revealNote}
+              onExport={exportNote}
+              obsidianEnabled={s.tObsidian.enabled}
+              obsidianSaving={selectedNoteMeta !== null && s.obsidianSavingId === selectedNoteMeta.id}
+              onSaveToObsidian={saveToObsidian}
+              toolbarLead={toolbarLead}
               onCopyError={s.reportError}
               onToggleActionItem={s.toggleActionItem}
               onRegenerateSummary={s.regenerateSummary}

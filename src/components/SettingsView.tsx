@@ -81,7 +81,7 @@ export interface SettingsViewProps {
 }
 
 /**
- * A settings section, set the same way the AI-notes leaf sets its sections:
+ * A settings section, set as a ruled section:
  * a micro label with a hairline running out to the column edge. Settings
  * used to be a column of raised, shadowed cards — the same widget-stack
  * pattern the notes rail had, and equally at odds with a page that's meant

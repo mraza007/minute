@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { NoteListItem, View } from '../types'
 import { NoteContextMenu } from './NoteContextMenu'
 import { LibraryFilterMenu } from './LibraryFilterMenu'
@@ -28,17 +28,9 @@ interface SidebarProps {
   onBulkDelete: (ids: string[]) => Promise<void>
   onRenameNote: (id: string, title: string) => void
   onRevealNote: (id: string) => void
-}
-
-// Issue #34: the collapse toggle is a plain UI preference, so it persists
-// in localStorage rather than settings.json — same treatment as NoteView's
-// aiPanelWidth. Only the *manual* toggle is ever stored; a narrow viewport
-// still force-collapses regardless (the content genuinely doesn't fit),
-// and widening back restores the stored choice.
-const SIDEBAR_COLLAPSED_KEY = 'minute.sidebarCollapsed'
-
-function storedSidebarCollapsed(): boolean {
-  return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+  /** Hidden entirely while collapsed; the toolbar's "Notes" button brings it back (see `useSidebarCollapsed`). */
+  collapsed: boolean
+  onSetCollapsed: (collapsed: boolean) => void
 }
 
 function applyFilters(notes: NoteListItem[], filters: LibraryFilters): NoteListItem[] {
@@ -130,12 +122,9 @@ export const Sidebar = memo(function Sidebar({
   onBulkDelete,
   onRenameNote,
   onRevealNote,
+  collapsed,
+  onSetCollapsed,
 }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(() => {
-    const narrow =
-      typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1280px)').matches : false
-    return narrow || storedSidebarCollapsed()
-  })
   const [filters, setFilters] = useState<LibraryFilters>(DEFAULT_FILTERS)
   const [menuAnchor, setMenuAnchor] = useState<number | null>(null)
   const [selectionMode, setSelectionMode] = useState(false)
@@ -154,16 +143,6 @@ export const Sidebar = memo(function Sidebar({
     if (trimmed && trimmed !== note.title) onRenameNote(note.id, trimmed)
     setRenamingId(null)
   }
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const query = window.matchMedia('(max-width: 1280px)')
-    // Narrowing force-collapses; widening restores the stored manual
-    // preference instead of unconditionally expanding (issue #34).
-    const sync = () => setCollapsed(query.matches || storedSidebarCollapsed())
-    query.addEventListener('change', sync)
-    return () => query.removeEventListener('change', sync)
-  }, [])
 
   const filtering = isFiltering(filters)
   const visibleNotes = useMemo(() => applyFilters(notes, filters), [filters, notes])
@@ -209,10 +188,10 @@ export const Sidebar = memo(function Sidebar({
   }
 
   const selectCount = selectedIds.size
-  const showSelect = selectionMode && !collapsed
+  const showSelect = selectionMode
 
   return (
-    <nav aria-label="Notes" className="library-sidebar" data-collapsed={collapsed ? 'true' : 'false'}>
+    <nav aria-label="Notes" className="library-sidebar" data-collapsed={collapsed ? 'true' : 'false'} hidden={collapsed}>
       {/* Clears the macOS traffic lights (the window uses an overlay title
           bar) and doubles as the window's drag handle. */}
       <div className="sidebar-top" data-tauri-drag-region="" />
@@ -220,22 +199,14 @@ export const Sidebar = memo(function Sidebar({
         <button
           type="button"
           className="icon-btn sidebar-collapse"
-          aria-label={collapsed ? 'Expand library sidebar' : 'Collapse library sidebar'}
-          title={collapsed ? 'Expand library sidebar' : 'Collapse library sidebar'}
-          onClick={() => {
-            // Last click wins, deliberately — including a click made while
-            // a narrow window force-collapses the sidebar. "Peeking" and
-            // "changing my mind" are indistinguishable here, and one more
-            // click always restores the other preference.
-            const next = !collapsed
-            window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
-            setCollapsed(next)
-          }}
+          aria-label="Collapse library sidebar"
+          title="Collapse library sidebar"
+          onClick={() => onSetCollapsed(true)}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
             <rect x="3" y="4" width="18" height="16" rx="2" />
             <path d="M9 4v16" />
-            <path d={collapsed ? 'm13 9 3 3-3 3' : 'm16 9-3 3 3 3'} />
+            <path d="m16 9-3 3 3 3" />
           </svg>
         </button>
       </div>
@@ -301,7 +272,7 @@ export const Sidebar = memo(function Sidebar({
       )}
 
       <div className="sidebar-list">
-        {notes.length === 0 && !collapsed && <div className="sidebar-empty">Your notes appear here.</div>}
+        {notes.length === 0 && <div className="sidebar-empty">Your notes appear here.</div>}
         {notes.length > 0 && filtering && visibleNotes.length === 0 && (
           <div className="sidebar-empty">
             <div>No notes match these filters.</div>
@@ -326,7 +297,7 @@ export const Sidebar = memo(function Sidebar({
                     <RowStatus note={note} summaryState={summaryStatus[note.id]} />
                   </span>
                 </label>
-              ) : renamingId === note.id && !collapsed ? (
+              ) : renamingId === note.id ? (
                 <input
                   className="side-row-rename"
                   defaultValue={note.title}
@@ -348,35 +319,13 @@ export const Sidebar = memo(function Sidebar({
                   }}
                   className="side-row"
                   aria-current={note.id === selectedNoteId ? 'true' : undefined}
-                  aria-label={collapsed ? `${note.title} ${note.meta}` : undefined}
                   title={note.title}
                 >
-                  {collapsed ? (
-                    // Initials only mean something once a note has a real
-                    // title — a library of default-titled notes would render
-                    // as a column of identical "NR" monograms, so those show
-                    // a quiet note glyph instead.
-                    note.title === 'New recording' ? (
-                      <span className="side-row-monogram">
-                        <Icon size={12} strokeWidth={1.8}>
-                          <path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z" />
-                          <path d="M15 3v6h6" />
-                        </Icon>
-                      </span>
-                    ) : (
-                      <span className="side-row-monogram" aria-hidden="true">
-                        {note.title.split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase()}
-                      </span>
-                    )
-                  ) : (
-                    <>
-                      <span className="side-row-title">{note.title}</span>
-                      <RowStatus note={note} summaryState={summaryStatus[note.id]} />
-                    </>
-                  )}
+                  <span className="side-row-title">{note.title}</span>
+                  <RowStatus note={note} summaryState={summaryStatus[note.id]} />
                 </button>
               )}
-              {!collapsed && !showSelect && (
+              {!showSelect && (
                 <button
                   type="button"
                   className="side-row-pin"
@@ -407,12 +356,7 @@ export const Sidebar = memo(function Sidebar({
             actions={[
               {
                 label: 'Rename',
-                onAction: () => {
-                  // The inline rename input only renders in the expanded rows
-                  // — a collapsed monogram has no room for it, so expand first.
-                  setCollapsed(false)
-                  setRenamingId(menuNote.id)
-                },
+                onAction: () => setRenamingId(menuNote.id),
               },
               { label: menuNote.pinned ? 'Unpin' : 'Pin', onAction: () => onTogglePinned(menuNote.id, !menuNote.pinned) },
               { label: 'Reveal in Finder', onAction: () => onRevealNote(menuNote.id) },

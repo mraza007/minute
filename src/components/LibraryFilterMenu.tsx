@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, type KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef } from 'react'
+import { handleMenuKeyDown } from './menuKeys'
 import { FILTER_SECTIONS, type FilterSection, type LibraryFilters } from './libraryFilters'
 
 interface LibraryFilterMenuProps {
@@ -59,35 +60,6 @@ export function LibraryFilterMenu({ anchorBottom, filters, onChange, onSelectNot
     menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"]')?.focus()
   }, [])
 
-  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])
-    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
-    const focusAt = (index: number) => items[(index + items.length) % items.length]?.focus()
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault()
-        focusAt(currentIndex + 1)
-        break
-      case 'ArrowUp':
-        e.preventDefault()
-        focusAt(currentIndex - 1)
-        break
-      case 'Home':
-        e.preventDefault()
-        focusAt(0)
-        break
-      case 'End':
-        e.preventDefault()
-        focusAt(items.length - 1)
-        break
-      case 'Escape':
-      case 'Tab':
-        e.preventDefault()
-        onClose()
-        break
-    }
-  }
-
   return (
     <>
       <div
@@ -104,7 +76,7 @@ export function LibraryFilterMenu({ anchorBottom, filters, onChange, onSelectNot
         role="menu"
         aria-label="Sort and filter notes"
         style={{ top: anchorBottom + 6, maxHeight: `calc(100vh - ${anchorBottom + 18}px)` }}
-        onKeyDown={handleKeyDown}
+        onKeyDown={e => handleMenuKeyDown(e, onClose)}
       >
         {FILTER_SECTIONS.map(section => (
           <MenuSection key={section.key} section={section} filters={filters} onChange={onChange} />

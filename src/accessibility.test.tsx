@@ -165,24 +165,40 @@ describe('core flow accessibility', () => {
     await expectNoAccessibilityViolations(view)
   })
 
-  it('checks the post-recording overview and marker actions', async () => {
+  it('checks the note page with a marker editor open', async () => {
     installIpc()
     const view = render(<App />)
     await screen.findByRole('heading', { name: note.title })
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
-    await screen.findByText('Pricing decision')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit marker Pricing decision' }))
+    await screen.findByRole('textbox', { name: /^Marker label at/ })
     await expectNoAccessibilityViolations(view)
   })
 
-  it('checks the inline speaker merge confirmation', async () => {
+  it('checks the speaker popover with its merge form open', async () => {
     installIpc()
     const view = render(<App />)
     await screen.findByRole('heading', { name: note.title })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter transcript by speaker' }), {
-      target: { value: 'You' },
-    })
-    fireEvent.click(await screen.findByRole('button', { name: 'Merge speaker' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename You' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Merge with another speaker…' }))
     await screen.findByRole('combobox', { name: 'Merge into speaker' })
+    await expectNoAccessibilityViolations(view)
+  })
+
+  it('checks the note menu', async () => {
+    installIpc()
+    const view = render(<App />)
+    await screen.findByRole('heading', { name: note.title })
+    fireEvent.click(screen.getByRole('button', { name: 'More note actions' }))
+    await screen.findByRole('menu')
+    await expectNoAccessibilityViolations(view)
+  })
+
+  it('checks the Ask panel', async () => {
+    installIpc()
+    const view = render(<App />)
+    await screen.findByRole('heading', { name: note.title })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+    await screen.findByRole('dialog', { name: 'Ask about this meeting' })
     await expectNoAccessibilityViolations(view)
   })
 

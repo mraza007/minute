@@ -87,7 +87,7 @@ export function notesToSidebarItems(notes: NoteMeta[], now: Date): NoteListItem[
  * whole bytes under 1 KB, one-decimal KB under 1 MB (trimmed when whole),
  * rounded MB under 1 GB, one-decimal GB at or above (trimmed when whole).
  * The KB/B tiers exist for small values like a markdown export's byte size
- * (MarkdownCard's subtitle) — the MB/GB tiers are what model/storage sizes
+ * (the note menu's size labels) — the MB/GB tiers are what model/storage sizes
  * actually exercise.
  */
 export function formatBytes(bytes: number): string {
@@ -216,9 +216,8 @@ export function pickInitialLlmModel(
  * Exists because "a summary object came back from `get_note`" is not the
  * same question as "this note has a summary", and the UI cares about the
  * second one. Every recovery affordance is gated on the note having *no*
- * summary (the Overview tab's "Generate summary", `AiNotesPanel`'s
- * `GenerateSummaryButton`) or on an explicit error status (the Overview
- * tab's "Retry summary"). A note carrying a present-but-empty `SummaryDoc`
+ * summary (`NoteSummary`'s "Generate summary") or on an explicit error
+ * status (its "Retry summary"). A note carrying a present-but-empty `SummaryDoc`
  * satisfies neither condition, so before this predicate it rendered a blank
  * Summary section with no way to re-run it at all — issue #13.
  *
@@ -393,7 +392,7 @@ const CITATION_RE = /\[(\d{1,2}):(\d{2})\]/g
 /**
  * Splits an ask-your-notes answer into plain-text and citation parts around
  * every inline `[mm:ss]` timestamp citation the model was instructed to emit
- * (see `llm::build_ask_prompt`) — `AiNotesPanel` renders each citation part
+ * (see `llm::build_ask_prompt`) — `AskPanel` renders each citation part
  * as a clickable seek button (`onSeekCitation(citationSeconds)`) and
  * everything else as plain text, same split-around-matches shape as
  * `splitHighlight` above. `mm` is 1-2 digits, `ss` exactly 2 (matches

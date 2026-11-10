@@ -21,12 +21,14 @@ function makeProps(overrides: Partial<PlayerBarProps> = {}): PlayerBarProps {
 describe('PlayerBar', () => {
   it('shows the current elapsed time against the total duration, mm:ss', () => {
     render(<PlayerBar {...makeProps({ currentTime: 0, durationSec: 48 * 60 + 22 })} />)
-    expect(screen.getByText('00:00 / 48:22')).toBeInTheDocument()
+    expect(screen.getByText('00:00')).toBeInTheDocument()
+    expect(screen.getByText('48:22')).toBeInTheDocument()
   })
 
   it('formats a sub-minute duration correctly', () => {
     render(<PlayerBar {...makeProps({ currentTime: 5, durationSec: 42 })} />)
-    expect(screen.getByText('00:05 / 00:42')).toBeInTheDocument()
+    expect(screen.getByText('00:05')).toBeInTheDocument()
+    expect(screen.getByText('00:42')).toBeInTheDocument()
   })
 
   it('shows the current playback rate on the speed chip', () => {
@@ -142,7 +144,7 @@ describe('PlayerBar', () => {
     it('shows "Audio removed" instead of a time label', () => {
       render(<PlayerBar {...makeProps({ audioPath: null })} />)
       expect(screen.getByText('Audio removed')).toBeInTheDocument()
-      expect(screen.queryByText(/\d\d:\d\d \/ \d\d:\d\d/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/^\d\d:\d\d$/)).not.toBeInTheDocument()
     })
 
     it('disables every control', () => {
@@ -166,7 +168,7 @@ describe('PlayerBar', () => {
       render(<PlayerBar {...makeProps({ failed: true })} />)
       expect(screen.getByText('Audio unavailable')).toBeInTheDocument()
       expect(screen.queryByText('Audio removed')).not.toBeInTheDocument()
-      expect(screen.queryByText(/\d\d:\d\d \/ \d\d:\d\d/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/^\d\d:\d\d$/)).not.toBeInTheDocument()
     })
 
     it('disables every control, same as no audio at all', () => {

@@ -23,21 +23,6 @@ async function waitFor(predicate: () => boolean, { timeoutMs = 4000, intervalMs 
   return predicate()
 }
 
-function closestScrollable(el: HTMLElement | null): HTMLElement | null {
-  let node = el?.parentElement ?? null
-  while (node) {
-    if (node.scrollHeight > node.clientHeight && getComputedStyle(node).overflowY !== 'visible') return node
-    node = node.parentElement
-  }
-  return null
-}
-
-function scrollAskSectionIntoView(): void {
-  const askInput = document.querySelector<HTMLElement>('input[aria-label="Ask about this meeting"]')
-  const scrollContainer = closestScrollable(askInput)
-  if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight
-}
-
 function findButtonByText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes(text)) as HTMLButtonElement | undefined
 }
@@ -255,18 +240,13 @@ async function driveSidebar(params: URLSearchParams): Promise<void> {
 }
 
 async function driveNote(params: URLSearchParams): Promise<void> {
-  await waitFor(() => document.querySelector('[role="tablist"][aria-label="Note content"]') !== null)
-
-  const tab = params.get('tab')
-  if (tab === 'overview') {
-    findButtonByText('Overview')?.click()
-    await waitFor(() => document.querySelector('#note-panel-overview') !== null)
-  }
+  await waitFor(() => document.querySelector('.note-scroll') !== null)
+  await waitFor(() => document.querySelector('.speaker-chip') !== null)
 
   if (params.get('markerAction') === 'edit') {
     const editButton = await waitForSelector<HTMLButtonElement>('button[aria-label^="Edit marker"]')
     editButton?.click()
-    await waitFor(() => document.querySelector('input[aria-label="Marker label"]') !== null)
+    await waitFor(() => document.querySelector('input[aria-label^="Marker label at"]') !== null)
   }
 
   if (params.get('markerAction') === 'add') {
@@ -289,59 +269,60 @@ async function driveNote(params: URLSearchParams): Promise<void> {
 
   if (params.get('sidebar') === 'collapsed') {
     document.querySelector<HTMLButtonElement>('button[aria-label="Collapse library sidebar"]')?.click()
-    await waitFor(() => document.querySelector('.library-sidebar')?.getAttribute('data-collapsed') === 'true')
+    await waitFor(() => document.querySelector('button[aria-label="Show notes"]') !== null)
   }
 
-  const speaker = params.get('speaker')
-  if (speaker) {
+  const speakerFilter = params.get('speaker')
+  if (speakerFilter) {
     const select = document.querySelector<HTMLSelectElement>('select[aria-label="Filter transcript by speaker"]')
     if (select) {
-      select.value = speaker
+      select.value = speakerFilter
       select.dispatchEvent(new Event('change', { bubbles: true }))
-      await waitFor(() => findButtonByText('Rename speaker') !== undefined)
     }
   }
 
-  const speakerMerge = params.get('speakerMerge')
-  if (speakerMerge && speaker) {
-    findButtonByText('Merge speaker')?.click()
-    const target = await waitForSelector<HTMLSelectElement>('select[aria-label="Merge into speaker"]')
+  // `?rename=<speaker>` opens that speaker's popover; `&mergeInto=<speaker>`
+  // goes on to merge, and `&speakerMerge=done` confirms it.
+  const rename = params.get('rename')
+  if (rename) {
+    const chip = await waitForSelector<HTMLButtonElement>(`.speaker-chip[data-speaker="${rename}"]`)
+    chip?.click()
+    await waitFor(() => document.querySelector('.speaker-popover') !== null)
     const mergeInto = params.get('mergeInto')
-    if (target && mergeInto) {
-      target.value = mergeInto
-      target.dispatchEvent(new Event('change', { bubbles: true }))
-    }
-    if (speakerMerge === 'done') {
-      document.querySelector<HTMLButtonElement>('.speaker-merge-form button[type="submit"]')?.click()
-      await waitFor(() => findButtonByText('Undo') !== undefined)
+    if (mergeInto) {
+      findButtonByText('Merge with another speaker')?.click()
+      const target = await waitForSelector<HTMLSelectElement>('select[aria-label="Merge into speaker"]')
+      if (target) {
+        target.value = mergeInto
+        target.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      if (params.get('speakerMerge') === 'done') {
+        document.querySelector<HTMLButtonElement>('.speaker-popover-merge button')?.click()
+        await waitFor(() => findButtonByText('Undo') !== undefined)
+      }
     }
   }
 
-  // Populate ask-your-notes' session history — session-only state, only
-  // ever produced by real `ask-answer` events (see useNoteDetail.ts), so
-  // there's no IPC field to seed this from; emitted in order so the second
-  // question ends up on top (history is newest-first). Awaited + settled
-  // one at a time — `emit`'s promise resolves once the mocked IPC dispatch
-  // has run, not once React has necessarily flushed and painted the
-  // resulting state update, so each iteration gets a short settle beat too.
-  for (const entry of AURORA_ASK_ENTRIES) {
-    // eslint-disable-next-line no-await-in-loop
-    await emit('ask-answer', { noteId: 'note-aurora', question: entry.question, answer: entry.answer })
-    // eslint-disable-next-line no-await-in-loop
-    await sleep(50)
+  if (params.get('menu') === 'note') {
+    document.querySelector<HTMLButtonElement>('button[aria-label="More note actions"]')?.click()
+    await waitFor(() => document.querySelector('.note-menu') !== null)
   }
 
-  if (params.get('focus') === 'ask') {
-    // 3 total citation buttons across both demo answers (1 + 2) — the
-    // precise count, not just ">0", so this doesn't race ahead of the
-    // second (topmost) entry still rendering.
-    await waitFor(() => document.querySelectorAll('button[aria-label^="Play from"]').length >= 3)
-    await sleep(50)
-    scrollAskSectionIntoView()
-    // One more pass after a layout settle beat, in case the first scroll
-    // landed before the panel's final content height (fonts/reflow).
-    await sleep(120)
-    scrollAskSectionIntoView()
+  if (params.get('ask') === 'open') {
+    // Ask history is session-only state that only real `ask-answer` events
+    // produce, so there is no IPC field to seed it from. `emit` resolves
+    // once the mocked dispatch has run, not once React has painted, hence
+    // the short settle after each one.
+    for (const entry of AURORA_ASK_ENTRIES) {
+      // eslint-disable-next-line no-await-in-loop
+      await emit('ask-answer', { noteId: 'note-aurora', question: entry.question, answer: entry.answer })
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(50)
+    }
+    document.querySelector<HTMLButtonElement>('.toolbar-btn[aria-haspopup="dialog"]')?.click()
+    await waitFor(() => document.querySelector('.ask-panel') !== null)
+    // 3 citations across both demo answers (1 + 2).
+    await waitFor(() => document.querySelectorAll('.ask-panel button[aria-label^="Play from"]').length >= 3)
   }
 }
 

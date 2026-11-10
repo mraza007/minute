@@ -528,7 +528,7 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
   })
 
-  it('auto-trigger simulation: record, stop, summary-status running then done shows the real summary in the AI notes panel', async () => {
+  it('auto-trigger simulation: record, stop, summary-status running then done shows the real summary on the note page', async () => {
     const noteId = '20260722-130000'
     const finishedNote = noteFixture({ id: noteId, title: 'Auto-summarized note', status: 'transcribed' })
     const readyNote = { ...finishedNote, status: 'ready' as const }

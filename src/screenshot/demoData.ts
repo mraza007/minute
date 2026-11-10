@@ -48,8 +48,12 @@ export const NOTES: NoteMeta[] = [
     status: 'ready',
     speakers: 3,
     audioDeleted: false,
-    sources: ['mic'],
+    sources: ['mic', 'system'],
     pinned: true,
+    obsidian: {
+      path: '/Users/demo/Vault/Meetings/Aurora launch sync.md',
+      savedAt: isoHoursAgo(1),
+    },
     markers: [
       { seconds: 472, label: 'Launch date decision' },
       { seconds: 1100, label: 'Illustrations follow-up' },
@@ -116,16 +120,16 @@ export const NOTES: NoteMeta[] = [
 /** Full transcript for the Aurora launch sync — the note behind hero.png / ask.png. */
 export const AURORA_TRANSCRIPT: StoredSegment[] = [
   { speaker: 'You', start: 8, end: 28, text: "Let's start — Aurora's the async-transcription pipeline rewrite, right? Where are we against next Friday?" },
-  { speaker: 'Marcus Chen — Eng', start: 34, end: 64, text: "Load testing's clean up to 40 concurrent streams. Past that we start dropping frames on the M1 baseline, so I want one more pass before we call it." },
-  { speaker: 'Priya Shah — Design', start: 72, end: 96, text: 'On my side, the onboarding redesign is in review. Two of the five screens still need empty-state illustrations, but nothing blocks engineering.' },
+  { speaker: 'Marcus Chen', start: 34, end: 64, text: "Load testing's clean up to 40 concurrent streams. Past that we start dropping frames on the M1 baseline, so I want one more pass before we call it." },
+  { speaker: 'Speaker 3', start: 72, end: 96, text: 'On my side, the onboarding redesign is in review. Two of the five screens still need empty-state illustrations, but nothing blocks engineering.' },
   { speaker: 'You', start: 160, end: 172, text: 'If load testing slips, does the 14th still hold?' },
-  { speaker: 'Marcus Chen — Eng', start: 185, end: 214, text: "If I get Thursday to finish the pass, yes. If not, I'd rather push three days than ship something that stutters on real hardware." },
-  { speaker: 'Priya Shah — Design', start: 435, end: 460, text: 'Can we scope the illustrations down to three screens for launch and backfill the rest after? That buys me two days.' },
+  { speaker: 'Marcus Chen', start: 185, end: 214, text: "If I get Thursday to finish the pass, yes. If not, I'd rather push three days than ship something that stutters on real hardware." },
+  { speaker: 'Speaker 3', start: 435, end: 460, text: 'Can we scope the illustrations down to three screens for launch and backfill the rest after? That buys me two days.' },
   { speaker: 'You', start: 472, end: 502, text: "Works for me. Let's lock the 14th — Marcus gets Thursday for load testing. If it's still red Wednesday night, we push to the 17th, no later." },
-  { speaker: 'Marcus Chen — Eng', start: 872, end: 892, text: "Fair. I'll post results in #aurora by end of day Thursday either way." },
+  { speaker: 'Marcus Chen', start: 872, end: 892, text: "Fair. I'll post results in #aurora by end of day Thursday either way." },
   { speaker: 'You', start: 1100, end: 1122, text: "Priya, can you get the three trimmed illustrations to review by Wednesday morning so we're not doing sign-off day-of?" },
-  { speaker: 'Priya Shah — Design', start: 1124, end: 1148, text: "Yep, Wednesday morning. I'll flag the two backfilled screens as known follow-ups in the release notes." },
-  { speaker: 'Marcus Chen — Eng', start: 1390, end: 1416, text: "One more thing — I want frame-drop telemetry behind a flag for the first week, just so we're not flying blind if support tickets come in." },
+  { speaker: 'Speaker 3', start: 1124, end: 1148, text: "Yep, Wednesday morning. I'll flag the two backfilled screens as known follow-ups in the release notes." },
+  { speaker: 'Marcus Chen', start: 1390, end: 1416, text: "One more thing — I want frame-drop telemetry behind a flag for the first week, just so we're not flying blind if support tickets come in." },
   { speaker: 'You', start: 1421, end: 1444, text: "Good call. Ship it behind the existing debug flag rather than a new one — one less thing to remember to turn off." },
   { speaker: 'You', start: 1625, end: 1660, text: "Okay — the 14th it is, with the 17th as the real fallback if Thursday's numbers are still red. I'll write this up and send it around." },
 ]
@@ -174,7 +178,7 @@ function formatTs(totalSeconds: number): string {
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
 }
 
-/** Ask-your-notes demo Q&A, emitted (in this order) as `ask-answer` events — the second one lands on top since history is newest-first. */
+/** Ask-your-notes demo Q&A, emitted (in this order) as `ask-answer` events, so the second one is the latest exchange in the Ask panel. */
 export const AURORA_ASK_ENTRIES: { question: string; answer: string }[] = [
   {
     question: "What's blocking the illustration work?",
@@ -319,7 +323,7 @@ export const SETTINGS: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
-  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
+  obsidian: { ...DEFAULT_OBSIDIAN_SETTINGS, enabled: true, vaultPath: '/Users/demo/Vault' },
 }
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 

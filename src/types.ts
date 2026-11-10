@@ -1,5 +1,4 @@
 export type View = 'loading' | 'onboarding' | 'notes' | 'recording' | 'settings'
-export type NoteTab = 'overview' | 'transcript' | 'md'
 
 /**
  * Live-transcription lifecycle state for the active (or most recently

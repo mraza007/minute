@@ -69,7 +69,7 @@ function askAnswerEvent(overrides: Partial<AskAnswerEvent> = {}): AskAnswerEvent
   return { noteId: 'note-a', question: 'What did they discuss?', answer: 'Q3 roadmap.', ...overrides }
 }
 
-/** Strips the `id` field `AiNotesPanel`'s stable-key rendering needs (see `AskHistoryEntry.id`'s docs) so an assertion can compare the rest of an entry's shape without hardcoding the exact counter value it was assigned. */
+/** Strips the `id` field `AskPanel`'s stable-key rendering needs (see `AskHistoryEntry.id`'s docs) so an assertion can compare the rest of an entry's shape without hardcoding the exact counter value it was assigned. */
 function withoutIds(entries: AskHistoryEntry[]) {
   return entries.map(({ id: _id, ...rest }) => rest)
 }
@@ -80,7 +80,7 @@ describe('useNoteDetail', () => {
       // The exact on-disk state issue #13 reported: status `ready` (the
       // summarize worker persisted an empty extraction and finalized the
       // note) with a SummaryDoc that has nothing in it. Collapsing it to
-      // `null` here is what puts the Overview tab back on its "Summary not
+      // `null` here is what puts the note page back on its "Summary not
       // generated" branch, which is the only one carrying a Generate button.
       setupIPC({
         note: noteWithTranscriptFixture({

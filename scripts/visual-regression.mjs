@@ -13,10 +13,13 @@ const update = process.env.UPDATE_VISUAL_BASELINES === '1'
 const port = 4173
 
 const scenarios = [
-  { name: 'note-light', url: 'screenshot-app.html?state=note&tab=overview&theme=light', width: 1440, height: 900 },
-  { name: 'note-dark', url: 'screenshot-app.html?state=note&tab=overview&theme=dark', width: 1440, height: 900 },
+  { name: 'note-light', url: 'screenshot-app.html?state=note&theme=light', width: 1440, height: 900 },
+  { name: 'note-dark', url: 'screenshot-app.html?state=note&theme=dark', width: 1440, height: 900 },
+  { name: 'note-narrow', url: 'screenshot-app.html?state=note&theme=light', width: 860, height: 640 },
+  { name: 'note-ask', url: 'screenshot-app.html?state=note&theme=light&ask=open', width: 1440, height: 900 },
+  { name: 'note-menu', url: 'screenshot-app.html?state=note&theme=light&menu=note', width: 1440, height: 900 },
+  { name: 'note-speaker-rename', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&suggest=1', width: 1440, height: 900 },
   { name: 'recording-reduced-motion', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced', width: 1440, height: 900 },
-  { name: 'note-minimum-width', url: 'screenshot-app.html?state=note&theme=light&sidebar=collapsed', width: 1180, height: 820 },
   { name: 'library-empty', url: 'screenshot-app.html?state=empty&theme=light', width: 1440, height: 900 },
   { name: 'sidebar-select-mode', url: 'screenshot-app.html?state=note&theme=light&select=3&summarizing=1', width: 1440, height: 900 },
   { name: 'sidebar-filter-menu', url: 'screenshot-app.html?state=note&theme=light&menu=open&summarizing=1', width: 1440, height: 900 },
