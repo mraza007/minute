@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::Result;
 use crate::llm::SummaryDoc;
@@ -92,8 +92,11 @@ pub fn sanitize_file_name(raw: &str) -> String {
     }
 }
 
+/// The UTC offset in force at an instant, or `None` when it is not known.
+pub type OffsetAt = fn(OffsetDateTime) -> Option<UtcOffset>;
+
 /// `YYYY-MM-DD` of the note's creation, in UTC like the rest of `meta.json`.
-fn date_stamp(created_at: &str) -> Option<String> {
+fn date_stamp(created_at: &str, _offset_at: OffsetAt) -> Option<String> {
     let dt = OffsetDateTime::parse(
         created_at,
         &time::format_description::well_known::Rfc3339,
@@ -109,8 +112,8 @@ fn date_stamp(created_at: &str) -> Option<String> {
 
 /// Renders the file name template (`{date}`, `{title}`) and sanitizes the
 /// result. The title is sanitized first so it cannot smuggle a separator in.
-pub fn render_file_stem(template: &str, meta: &NoteMeta) -> String {
-    let date = date_stamp(&meta.created_at).unwrap_or_else(|| "undated".to_string());
+pub fn render_file_stem(template: &str, meta: &NoteMeta, offset_at: OffsetAt) -> String {
+    let date = date_stamp(&meta.created_at, offset_at).unwrap_or_else(|| "undated".to_string());
     let rendered = template
         .replace("{date}", &date)
         .replace("{title}", &sanitize_file_name(&meta.title));
@@ -147,7 +150,7 @@ fn yaml_string(s: &str) -> String {
 /// YAML frontmatter for Obsidian properties: `date`, `title`, `duration` (in
 /// minutes) and `speakers` (distinct named transcript speakers, in order of
 /// first appearance; unknown turns name nobody, so they add no entry).
-pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript) -> String {
+pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript, offset_at: OffsetAt) -> String {
     let mut speakers: Vec<&str> = Vec::new();
     for name in transcript
         .segments
@@ -158,7 +161,7 @@ pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript) -> String {
             speakers.push(name);
         }
     }
-    let date = match date_stamp(&meta.created_at) {
+    let date = match date_stamp(&meta.created_at, offset_at) {
         Some(d) => d,
         None => yaml_string(&meta.created_at),
     };
@@ -186,10 +189,11 @@ pub fn render_obsidian_md(
     meta: &NoteMeta,
     summary: Option<&SummaryDoc>,
     transcript: &Transcript,
+    offset_at: OffsetAt,
 ) -> String {
     let body = render_note_md_with(meta, summary, transcript, cfg.include_transcript);
     let mut out = if cfg.add_properties {
-        render_frontmatter(meta, transcript)
+        render_frontmatter(meta, transcript, offset_at)
     } else {
         String::new()
     };
@@ -324,13 +328,14 @@ pub fn save_to_vault(
     transcript: &Transcript,
     trigger: Trigger,
     now: &str,
+    offset_at: OffsetAt,
 ) -> std::result::Result<ObsidianExport, String> {
     let vault = check_vault(&cfg.vault_path)?;
     let mut dir = vault.clone();
     for seg in folder_segments(&cfg.folder)? {
         dir.push(seg);
     }
-    let content = render_obsidian_md(cfg, meta, summary, transcript);
+    let content = render_obsidian_md(cfg, meta, summary, transcript, offset_at);
     let previous = meta.obsidian.as_ref();
 
     let recorded = previous
@@ -355,7 +360,7 @@ pub fn save_to_vault(
         }
         None => {
             fs::create_dir_all(&dir).map_err(|e| describe_io("create", &dir, &e))?;
-            free_path(&dir, &render_file_stem(&cfg.file_name_template, meta))?
+            free_path(&dir, &render_file_stem(&cfg.file_name_template, meta, offset_at))?
         }
     };
 
@@ -408,6 +413,7 @@ pub fn export_note(
             &transcript,
             trigger,
             &now_rfc3339(),
+            |_| None,
         )
     };
     let status = status.unwrap_or_else(|error| ObsidianExport {
@@ -444,6 +450,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
     use time::macros::datetime;
+
+    const UTC: OffsetAt = |_| Some(UtcOffset::UTC);
 
     fn summary() -> SummaryDoc {
         SummaryDoc {
@@ -540,12 +548,45 @@ mod tests {
         let f = fixture(true);
         let meta = meta_of(&f);
         assert_eq!(
-            render_file_stem("{date} - {title}", &meta),
+            render_file_stem("{date} - {title}", &meta, UTC),
             "2026-07-23 - Weekly- Sync-Plan"
         );
-        assert_eq!(render_file_stem("{title}", &meta), "Weekly- Sync-Plan");
-        assert_eq!(render_file_stem("Meeting {date}", &meta), "Meeting 2026-07-23");
-        assert_eq!(render_file_stem("{unknown} {date}", &meta), "{unknown} 2026-07-23");
+        assert_eq!(render_file_stem("{title}", &meta, UTC), "Weekly- Sync-Plan");
+        assert_eq!(render_file_stem("Meeting {date}", &meta, UTC), "Meeting 2026-07-23");
+        assert_eq!(render_file_stem("{unknown} {date}", &meta, UTC), "{unknown} 2026-07-23");
+    }
+
+    #[test]
+    fn an_evening_meeting_west_of_utc_files_under_the_local_day() {
+        let f = fixture(true);
+        let mut meta = meta_of(&f);
+        meta.created_at = "2026-07-24T02:15:30Z".to_string();
+        let pacific: OffsetAt = |_| UtcOffset::from_hms(-7, 0, 0).ok();
+
+        assert_eq!(render_file_stem("{date}", &meta, pacific), "2026-07-23");
+        assert!(render_frontmatter(&meta, &Transcript::default(), pacific)
+            .starts_with("---\ndate: 2026-07-23\n"));
+    }
+
+    #[test]
+    fn the_date_falls_back_to_utc_when_the_local_offset_is_unknown() {
+        let f = fixture(true);
+        let mut meta = meta_of(&f);
+        meta.created_at = "2026-07-24T02:15:30Z".to_string();
+        assert_eq!(render_file_stem("{date}", &meta, |_| None), "2026-07-24");
+    }
+
+    #[test]
+    fn the_offset_is_asked_for_the_notes_own_instant() {
+        let f = fixture(true);
+        let mut meta = meta_of(&f);
+        meta.created_at = "2026-01-15T07:30:00Z".to_string();
+        // A zone on daylight time today may be on standard time for the note.
+        let by_season: OffsetAt = |at| {
+            let hours = if u8::from(at.month()) < 3 { -8 } else { -7 };
+            UtcOffset::from_hms(hours, 0, 0).ok()
+        };
+        assert_eq!(render_file_stem("{date}", &meta, by_season), "2026-01-14");
     }
 
     #[test]
@@ -561,7 +602,7 @@ mod tests {
         let f = fixture(true);
         let meta = meta_of(&f);
         let transcript = lock_store(&f.store).get_note(&f.id).unwrap().1;
-        let fm = render_frontmatter(&meta, &transcript);
+        let fm = render_frontmatter(&meta, &transcript, UTC);
         assert_eq!(
             fm,
             "---\ndate: 2026-07-23\ntitle: \"Weekly: Sync/Plan\"\nduration: 42\nspeakers:\n  - \"Ada\"\n  - \"Grace\"\n---\n\n"
@@ -588,7 +629,7 @@ mod tests {
                 },
             ],
         };
-        let fm = render_frontmatter(&meta, &transcript);
+        let fm = render_frontmatter(&meta, &transcript, UTC);
         assert!(fm.contains("speakers:\n  - \"Grace\"\n---\n"), "{fm}");
         assert!(!fm.contains(crate::store::UNKNOWN_SPEAKER_LABEL), "{fm}");
     }
@@ -598,7 +639,7 @@ mod tests {
         let f = fixture(true);
         let mut meta = meta_of(&f);
         meta.title = "Say \"hi\" \\ now".to_string();
-        let fm = render_frontmatter(&meta, &Transcript::default());
+        let fm = render_frontmatter(&meta, &Transcript::default(), UTC);
         assert!(fm.contains("title: \"Say \\\"hi\\\" \\\\ now\"\n"));
         assert!(fm.contains("speakers: []\n"));
     }
@@ -609,14 +650,14 @@ mod tests {
         let meta = meta_of(&f);
         let transcript = lock_store(&f.store).get_note(&f.id).unwrap().1;
         let mut cfg = ObsidianSettings::default();
-        let plain = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript);
+        let plain = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript, UTC);
         assert!(plain.starts_with("---\n"));
         assert!(plain.contains("## Summary\n\nWe shipped it."));
         assert!(!plain.contains("## Transcript"));
 
         cfg.add_properties = false;
         cfg.include_transcript = true;
-        let full = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript);
+        let full = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript, UTC);
         assert!(full.starts_with("# Weekly: Sync/Plan"));
         assert!(full.contains("## Transcript\n\n**Ada** (00:00)\nHello"));
         assert!(full.ends_with('\n'));
