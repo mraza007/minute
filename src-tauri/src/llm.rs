@@ -594,42 +594,76 @@ fn balanced_json_object_at(s: &str, start: usize) -> Option<&str> {
 /// found unbalanced. The result is valid JSON only if the text before the
 /// cut was, so the caller still has to parse it.
 fn close_cut_off_json(s: &str, start: usize) -> Option<String> {
+    let (comma, closers) = scan_open_json(s, start).last_kept_comma?;
+    let mut closed = s[start..comma].to_string();
+    closed.extend(closers.iter().rev());
+    Some(closed)
+}
+
+/// Closes a JSON object whose text stops after a complete value, keeping
+/// every value, unlike [`close_cut_off_json`]. A model that ends its answer
+/// one `}` short (seen from Gemma 4 E4B and Qwen3.5 9B on long meetings)
+/// lost nothing. The returned flag is `true` when more than that final `}`
+/// was open: the answer stopped inside a list or a nested object, so later
+/// members may be missing. `None` when the text stops inside a string or
+/// right after a comma or colon.
+fn close_missing_brackets(s: &str, start: usize) -> Option<(String, bool)> {
+    let scan = scan_open_json(s, start);
+    let text = s[start..].trim_end();
+    if scan.in_string || scan.closers.is_empty() || text.ends_with([',', ':']) {
+        return None;
+    }
+    let mut closed = text.to_string();
+    closed.extend(scan.closers.iter().rev());
+    Some((closed, scan.closers.len() > 1))
+}
+
+/// Where an unbalanced JSON object stands at the end of `s`.
+struct OpenJson {
+    /// The brackets still open, innermost last, as the characters that close them.
+    closers: Vec<char>,
+    in_string: bool,
+    /// The last comma between two top-level members or two elements of a
+    /// top-level array, with the brackets open there.
+    last_kept_comma: Option<(usize, Vec<char>)>,
+}
+
+fn scan_open_json(s: &str, start: usize) -> OpenJson {
     // The deepest comma kept: 1 is between the object's own members, 2 is
     // between the elements of one of its arrays.
     const KEEP_DEPTH: usize = 2;
 
-    let mut closers: Vec<char> = Vec::new();
-    let mut in_string = false;
+    let mut scan = OpenJson {
+        closers: Vec::new(),
+        in_string: false,
+        last_kept_comma: None,
+    };
     let mut escape = false;
-    let mut keep: Option<(usize, Vec<char>)> = None;
-
     for (i, c) in s[start..].char_indices() {
-        if in_string {
+        if scan.in_string {
             if escape {
                 escape = false;
             } else if c == '\\' {
                 escape = true;
             } else if c == '"' {
-                in_string = false;
+                scan.in_string = false;
             }
             continue;
         }
         match c {
-            '"' => in_string = true,
-            '{' => closers.push('}'),
-            '[' => closers.push(']'),
+            '"' => scan.in_string = true,
+            '{' => scan.closers.push('}'),
+            '[' => scan.closers.push(']'),
             '}' | ']' => {
-                closers.pop();
+                scan.closers.pop();
             }
-            ',' if closers.len() <= KEEP_DEPTH => keep = Some((start + i, closers.clone())),
+            ',' if scan.closers.len() <= KEEP_DEPTH => {
+                scan.last_kept_comma = Some((start + i, scan.closers.clone()));
+            }
             _ => {}
         }
     }
-
-    let (comma, closers) = keep?;
-    let mut closed = s[start..comma].to_string();
-    closed.extend(closers.iter().rev());
-    Some(closed)
+    scan
 }
 
 /// Truncates `raw` to at most 200 chars (char-safe) for embedding in an
@@ -1064,6 +1098,15 @@ fn extract_summary_parts(raw: &str) -> Result<SummaryExtraction> {
                 Err(_) => search_from = start + candidate.len(),
             },
             None => {
+                let closed = close_missing_brackets(&cleaned, start).and_then(|(closed, cut_off)| {
+                    let raw = serde_json::from_str::<RawSummary>(&closed).ok()?;
+                    let mut extraction = SummaryExtraction::from_raw(raw);
+                    extraction.doc.cut_off = cut_off;
+                    Some(extraction)
+                });
+                if let Some(extraction) = closed.filter(|extraction| is_nonempty_summary(&extraction.doc)) {
+                    break extraction;
+                }
                 let cut_off = close_cut_off_json(&cleaned, start)
                     .and_then(|closed| serde_json::from_str::<RawSummary>(&closed).ok())
                     .map(SummaryExtraction::from_raw)
@@ -4239,6 +4282,34 @@ mod tests {
         let raw = r#"{"summary": "", "topics": [{"title": "Pricing", "summary": "Locked."}], "decisions": [], "action_items": []}"#;
         let doc = require_nonempty_summary(extract_summary_json(raw).unwrap()).unwrap();
         assert_eq!(doc.topics.len(), 1);
+    }
+
+    /// Real Detailed answers from Gemma 4 E4B and Qwen3.5 9B that stop one
+    /// `}` short. Before, the outer object failed to balance and a single
+    /// inner topic won as the whole summary.
+    #[test]
+    fn an_answer_missing_only_its_final_brace_keeps_every_member() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/llm");
+        for (file, topics, decisions) in [
+            ("missing-final-brace-gemma.txt", 4, 3),
+            ("missing-final-brace-qwen.txt", 3, 4),
+        ] {
+            let raw = std::fs::read_to_string(fixtures.join(file)).unwrap();
+            let parts = extract_summary_parts(&raw).unwrap();
+            assert_eq!(parts.doc.topics.len(), topics, "{file}: topics");
+            assert_eq!(parts.doc.decisions.len(), decisions, "{file}: decisions");
+            assert_eq!(parts.doc.action_items.len(), 4, "{file}: action items");
+            assert!(!parts.doc.cut_off, "{file}: nothing was lost");
+            assert!(!parts.suggested_title.is_empty(), "{file}: title");
+        }
+    }
+
+    #[test]
+    fn an_answer_that_stops_inside_a_list_keeps_its_items_and_says_it_was_cut_off() {
+        let raw = r#"{"summary": "They set the date.", "decisions": ["Ship on the 14th", "Keep the 17th as fallback""#;
+        let parts = extract_summary_parts(raw).unwrap();
+        assert_eq!(parts.doc.decisions, ["Ship on the 14th", "Keep the 17th as fallback"]);
+        assert!(parts.doc.cut_off, "later members may be missing");
     }
 
     // --- suggested title extraction (issue #12) ---------------------------------
