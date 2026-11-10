@@ -15,6 +15,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -244,13 +245,16 @@ fn hash_hex(bytes: &[u8]) -> String {
 
 /// Writes `content` to `path` through a hidden temp file in the same folder,
 /// then renames it into place. The dot prefix keeps Obsidian from indexing
-/// the temp file.
+/// the temp file. Each call gets its own temp name, so two saves of one note
+/// never write or rename each other's file. The name does not include the
+/// target's, so it cannot push a long file name past the file system limit.
 fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.minute-tmp"));
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_file_name(format!(
+        ".minute-{}-{}.tmp",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
     if let Err(e) = fs::write(&tmp, content) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
