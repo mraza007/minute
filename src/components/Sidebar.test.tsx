@@ -293,6 +293,32 @@ describe('Sidebar', () => {
       expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     })
 
+    it('clears every filter from the menu and keeps the sort order', () => {
+      render(<Sidebar {...base} />)
+      chooseFilter('Sort', 'Oldest first')
+      chooseFilter('Show', 'Summarized')
+      chooseFilter('Source', 'Microphone')
+      const filterButton = screen.getByRole('button', { name: 'Sort and filter notes' })
+      expect(filterButton).toHaveAttribute('data-active', 'true')
+
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Clear filters' }))
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      expect(filterButton).toHaveFocus()
+      expect(filterButton).toHaveAttribute('data-active', 'false')
+
+      fireEvent.click(filterButton)
+      expect(screen.getByRole('menuitemradio', { name: 'All notes' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByRole('menuitemradio', { name: 'Any source' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByRole('menuitemradio', { name: 'Oldest first' })).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('has nothing to clear while only the sort order changed', () => {
+      render(<Sidebar {...base} />)
+      chooseFilter('Sort', 'Oldest first')
+      expect(screen.queryByRole('menuitem', { name: 'Clear filters' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Sort and filter notes' })).toHaveAttribute('data-active', 'false')
+    })
+
     it('offers a way back from a filter that matches nothing', () => {
       render(<Sidebar {...base} />)
       chooseFilter('Show', 'Pinned')

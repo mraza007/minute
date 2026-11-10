@@ -1,12 +1,14 @@
 import { useLayoutEffect, useRef } from 'react'
 import { handleMenuKeyDown } from './menuKeys'
-import { FILTER_SECTIONS, type FilterSection, type LibraryFilters } from './libraryFilters'
+import { FILTER_SECTIONS, hidesNotes, type FilterSection, type LibraryFilters } from './libraryFilters'
 
 interface LibraryFilterMenuProps {
   /** Bottom edge of the invoking button, in viewport coordinates. */
   anchorBottom: number
   filters: LibraryFilters
   onChange: <K extends keyof LibraryFilters>(key: K, value: LibraryFilters[K]) => void
+  /** Resets Show, Source, and Date. Offered only while one of them hides notes. */
+  onClear: () => void
   onSelectNotes: () => void
   onClose: () => void
 }
@@ -53,7 +55,7 @@ function MenuSection<K extends keyof LibraryFilters>({
  * open so several choices can be made in one visit; Escape, Tab or a click
  * outside closes it.
  */
-export function LibraryFilterMenu({ anchorBottom, filters, onChange, onSelectNotes, onClose }: LibraryFilterMenuProps) {
+export function LibraryFilterMenu({ anchorBottom, filters, onChange, onClear, onSelectNotes, onClose }: LibraryFilterMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useLayoutEffect(() => {
@@ -82,6 +84,11 @@ export function LibraryFilterMenu({ anchorBottom, filters, onChange, onSelectNot
           <MenuSection key={section.key} section={section} filters={filters} onChange={onChange} />
         ))}
         <div className="filter-menu-section">
+          {hidesNotes(filters) && (
+            <button type="button" role="menuitem" tabIndex={-1} className="filter-menu-item" onClick={onClear}>
+              Clear filters
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

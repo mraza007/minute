@@ -2,7 +2,7 @@ import { memo, useMemo, useRef, useState, type ReactNode, type RefObject } from 
 import type { NoteListItem, View } from '../types'
 import { NoteContextMenu } from './NoteContextMenu'
 import { LibraryFilterMenu } from './LibraryFilterMenu'
-import { DEFAULT_FILTERS, isFiltering, type LibraryFilters } from './libraryFilters'
+import { DEFAULT_FILTERS, clearFilters, hidesNotes, isFiltering, type LibraryFilters } from './libraryFilters'
 import { useFocusAfterCommit } from './useFocusAfterCommit'
 
 interface SidebarProps {
@@ -168,8 +168,13 @@ export const Sidebar = memo(function Sidebar({
   }
 
   function closeFilterMenu() {
+    requestFocus(() => filterButtonRef.current)
     setMenuAnchor(null)
-    requestAnimationFrame(() => filterButtonRef.current?.focus())
+  }
+
+  function clearFilterMenu() {
+    setFilters(clearFilters)
+    closeFilterMenu()
   }
 
   function leaveSelectionMode() {
@@ -267,7 +272,7 @@ export const Sidebar = memo(function Sidebar({
               title="Sort and filter notes"
               aria-haspopup="menu"
               aria-expanded={menuAnchor !== null}
-              data-active={filtering ? 'true' : 'false'}
+              data-active={hidesNotes(filters) ? 'true' : 'false'}
               onClick={event => setMenuAnchor(event.currentTarget.getBoundingClientRect().bottom)}
             >
               <Icon><path d="M4 7h16M7 12h10M10 17h4" /></Icon>
@@ -281,6 +286,7 @@ export const Sidebar = memo(function Sidebar({
           anchorBottom={menuAnchor}
           filters={filters}
           onChange={setFilter}
+          onClear={clearFilterMenu}
           onSelectNotes={enterSelectionMode}
           onClose={closeFilterMenu}
         />
@@ -288,10 +294,10 @@ export const Sidebar = memo(function Sidebar({
 
       <div className="sidebar-list">
         {notes.length === 0 && <div className="sidebar-empty">Your notes appear here.</div>}
-        {notes.length > 0 && filtering && visibleNotes.length === 0 && (
+        {notes.length > 0 && hidesNotes(filters) && visibleNotes.length === 0 && (
           <div className="sidebar-empty">
             <div>No notes match these filters.</div>
-            <button type="button" className="empty-action" onClick={() => setFilters(DEFAULT_FILTERS)}>Clear filters</button>
+            <button type="button" className="empty-action" onClick={() => setFilters(clearFilters)}>Clear filters</button>
           </div>
         )}
         {visibleNotes.map(note => (

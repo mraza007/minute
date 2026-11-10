@@ -68,3 +68,13 @@ export const FILTER_SECTIONS: readonly [
 export function isFiltering(filters: LibraryFilters): boolean {
   return FILTER_SECTIONS.some(section => filters[section.key] !== DEFAULT_FILTERS[section.key])
 }
+
+/** Whether Show, Source, or Date hides any notes. Sort only reorders them. */
+export function hidesNotes(filters: LibraryFilters): boolean {
+  return filters.status !== 'all' || filters.source !== 'all' || filters.date !== 'all'
+}
+
+/** Every note again, in the same order. */
+export function clearFilters(filters: LibraryFilters): LibraryFilters {
+  return { ...DEFAULT_FILTERS, sort: filters.sort }
+}
