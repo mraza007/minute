@@ -3229,7 +3229,8 @@ html[data-reduced-motion='true'] .speaker-popover { animation: none; }
   text-align: left;
   cursor: pointer;
 }
-.speaker-popover-option:hover { background: var(--hover-overlay); }
+.speaker-popover-option:hover:not(:disabled) { background: var(--hover-overlay); }
+.speaker-popover-option:disabled { cursor: default; opacity: .5; }
 .speaker-popover-merge {
   display: flex;
   align-items: flex-end;

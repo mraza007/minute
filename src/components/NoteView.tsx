@@ -98,6 +98,8 @@ export interface NoteViewProps {
   /** Drops one "sounds like" suggestion without renaming (issue #22). */
   onDismissSpeakerSuggestion: (id: string, label: string) => void
   onMergeSpeakers: (id: string, from: string, into: string) => Promise<SpeakerMergeUndo>
+  /** "Mark these turns as unknown" (issue #49). Undone through `onUndoSpeakerMerge`. */
+  onMarkSpeakerUnknown: (id: string, speaker: string) => Promise<SpeakerMergeUndo>
   onUndoSpeakerMerge: (id: string, undo: SpeakerMergeUndo) => Promise<void>
   onDeleteAudio: () => Promise<void>
   onStartRecording: () => void
@@ -121,6 +123,12 @@ type Composer = { kind: 'none' } | { kind: 'marker'; seconds: number } | { kind:
 
 const NO_OVERLAY: Overlay = { kind: 'none' }
 const NO_COMPOSER: Composer = { kind: 'none' }
+
+/** The transcript speaker filter: `ALL_SPEAKERS`, one speaker's label, or `null` for the unknown turns. */
+type SpeakerFilter = string | null
+const ALL_SPEAKERS = 'all'
+/** The filter option for unknown turns. A speaker label is never empty, so it cannot collide with one. */
+const UNKNOWN_FILTER_VALUE = ''
 
 // A stable reference for the "not ready yet" case, so `displaySegments`'s
 // useMemo below is not defeated by a fresh `[]` every render.
@@ -584,6 +592,7 @@ export function NoteView({
   onRenameSpeaker,
   onDismissSpeakerSuggestion,
   onMergeSpeakers,
+  onMarkSpeakerUnknown,
   onUndoSpeakerMerge,
   diarStatus,
   diarError,
@@ -610,7 +619,7 @@ export function NoteView({
   const [overlay, setOverlay] = useState<Overlay>(NO_OVERLAY)
   const [composer, setComposer] = useState<Composer>(NO_COMPOSER)
   const [titleEditing, setTitleEditing] = useState(false)
-  const [speakerFilter, setSpeakerFilter] = useState('all')
+  const [speakerFilter, setSpeakerFilter] = useState<SpeakerFilter>(ALL_SPEAKERS)
   const [speakerMergeUndo, setSpeakerMergeUndo] = useState<SpeakerMergeUndo | null>(null)
   const [speakerUndoPending, setSpeakerUndoPending] = useState(false)
   const [speakerDetectCount, setSpeakerDetectCount] = useState('auto')
@@ -633,7 +642,7 @@ export function NoteView({
   const speakers = useMemo(() => roster.speakers.map(entry => entry.speaker), [roster])
   const speakerColors = useMemo(() => assignSpeakerColors(speakers), [speakers])
   const filteredSegments = useMemo(
-    () => speakerFilter === 'all' ? segments : segments.filter(segment => segment.speaker === speakerFilter),
+    () => speakerFilter === ALL_SPEAKERS ? segments : segments.filter(segment => segment.speaker === speakerFilter),
     [segments, speakerFilter],
   )
   const displaySegments = useMemo(() => storedSegmentsToDisplay(filteredSegments), [filteredSegments])
@@ -665,7 +674,7 @@ export function NoteView({
     setOverlay(NO_OVERLAY)
     setComposer(NO_COMPOSER)
     setTitleEditing(false)
-    setSpeakerFilter('all')
+    setSpeakerFilter(ALL_SPEAKERS)
     setSpeakerMergeUndo(null)
     setSpeakerUndoPending(false)
     setMarkerAddDraft('')
@@ -781,6 +790,14 @@ export function NoteView({
   const metaLine = noteMetaToListItem(meta, now).meta
   const includedSystemAudio = meta.sources.includes('system')
   const suggestions = Object.entries(meta.speakerSuggestions ?? {})
+  const overlayEntry = overlay.kind === 'speaker'
+    ? roster.speakers.find(entry => entry.speaker === overlay.speaker)
+    : undefined
+
+  function showSpeakerMergeUndo(undo: SpeakerMergeUndo) {
+    setSpeakerMergeUndo(undo)
+    setSpeakerFilter(ALL_SPEAKERS)
+  }
   const autoApplied = Object.entries(meta.speakerAutoApplied ?? {})
   const audioRemoved = (detailMeta ?? meta).audioDeleted
   const obsidianStatus = (detailMeta ?? meta).obsidian ?? null
@@ -946,23 +963,17 @@ export function NoteView({
                 >
                   Rename speakers
                 </button>
-                {overlay.kind === 'speaker' && (
+                {overlay.kind === 'speaker' && overlayEntry && (
                   <SpeakerPopover
-                    key={overlay.speaker}
-                    speaker={overlay.speaker}
-                    turnCount={segments.filter(segment => segment.speaker === overlay.speaker).length}
-                    otherSpeakers={speakers.filter(speaker => speaker !== overlay.speaker)}
-                    suggestion={meta.speakerSuggestions?.[overlay.speaker]}
-                    colorStyle={speakerColorStyle(speakerColors, overlay.speaker)}
+                    key={overlayEntry.speaker}
+                    entry={overlayEntry}
+                    otherSpeakers={speakers.filter(speaker => speaker !== overlayEntry.speaker)}
+                    colorStyle={speakerColorStyle(speakerColors, overlayEntry.speaker)}
                     offsetLeft={overlay.offsetLeft}
-                    onRename={name => onRenameSpeaker(meta.id, overlay.speaker, name)}
-                    onDismissSuggestion={() => onDismissSpeakerSuggestion(meta.id, overlay.speaker)}
-                    onMerge={into =>
-                      onMergeSpeakers(meta.id, overlay.speaker, into).then(undo => {
-                        setSpeakerMergeUndo(undo)
-                        setSpeakerFilter('all')
-                      })
-                    }
+                    onRename={name => onRenameSpeaker(meta.id, overlayEntry.speaker, name)}
+                    onDismissSuggestion={() => onDismissSpeakerSuggestion(meta.id, overlayEntry.speaker)}
+                    onMerge={into => onMergeSpeakers(meta.id, overlayEntry.speaker, into).then(showSpeakerMergeUndo)}
+                    onMarkUnknown={() => onMarkSpeakerUnknown(meta.id, overlayEntry.speaker).then(showSpeakerMergeUndo)}
                     onClose={closeOverlay}
                   />
                 )}
@@ -1021,7 +1032,9 @@ export function NoteView({
             {speakerMergeUndo && (
               <div className="note-notice">
                 <span role="status">
-                  <strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into ?? UNKNOWN_SPEAKER_LABEL}</strong>.
+                  {speakerMergeUndo.into === null
+                    ? <>Turns from <strong>{speakerMergeUndo.from}</strong> marked as unknown.</>
+                    : <><strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into}</strong>.</>}
                 </span>
                 <span className="note-notice-actions">
                   <button
@@ -1099,11 +1112,12 @@ export function NoteView({
                 <div className="transcript-tools">
                   <select
                     aria-label="Filter transcript by speaker"
-                    value={speakerFilter}
-                    onChange={event => setSpeakerFilter(event.target.value)}
+                    value={speakerFilter ?? UNKNOWN_FILTER_VALUE}
+                    onChange={event => setSpeakerFilter(event.target.value === UNKNOWN_FILTER_VALUE ? null : event.target.value)}
                   >
-                    <option value="all">All speakers</option>
+                    <option value={ALL_SPEAKERS}>All speakers</option>
                     {speakers.map(speaker => <option key={speaker} value={speaker}>{speaker}</option>)}
+                    {roster.unknownTurns > 0 && <option value={UNKNOWN_FILTER_VALUE}>{UNKNOWN_SPEAKER_LABEL}</option>}
                   </select>
                   <span className="transcript-tools-end">
                     {canDetectSpeakers && composer.kind !== 'detect' && (
@@ -1203,10 +1217,10 @@ export function NoteView({
                   onDeleteMarker={index => onDeleteMarker(meta.id, index)}
                   onRestoreMarker={marker => onAddMarker(meta.id, marker.seconds, marker.label)}
                 />
-                {filteredSegments.length === 0 && speakerFilter !== 'all' ? (
+                {filteredSegments.length === 0 && speakerFilter !== ALL_SPEAKERS ? (
                   <p className="note-muted">
                     No transcript turns match this speaker.{' '}
-                    <button type="button" className="note-link" onClick={() => setSpeakerFilter('all')}>Show all speakers</button>
+                    <button type="button" className="note-link" onClick={() => setSpeakerFilter(ALL_SPEAKERS)}>Show all speakers</button>
                   </p>
                 ) : (
                   <TranscriptList
