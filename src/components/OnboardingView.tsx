@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Hardware, ModelStatus, Recommendation } from '../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../state/adapters'
+import { modelDetail } from '../state/modelCatalog'
 import { assessModelSuitability, hardwareSpecs } from '../state/modelSuitability'
 import { DownloadProgressBar } from './DownloadProgressBar'
 import { ModelFit } from './ModelSuitability'
@@ -58,7 +59,7 @@ function ModelLine({ entry, hardware, recommendation, downloads, inUseId, onDown
       <div className="ob-model-row">
         <div className="ob-model-text">
           <span className="ob-model-name">{info.displayName}</span>
-          <span className="ob-sub">{info.desc}</span>
+          <span className="ob-sub">{modelDetail(entry)}</span>
           <span className="ob-sub">
             {info.state !== 'downloading' && <>{info.sub} · </>}
             <ModelFit result={suitability} />

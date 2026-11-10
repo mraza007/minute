@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { Hardware, ModelStatus, Recommendation } from '../../ipc/types'
 import { formatBytes, modelStatusToSttInfo, type DownloadProgressState } from '../../state/adapters'
+import { modelDetail } from '../../state/modelCatalog'
 import { assessModelSuitability } from '../../state/modelSuitability'
 import { DownloadProgressBar } from '../DownloadProgressBar'
 import { HardwareSummary, ModelFit } from '../ModelSuitability'
@@ -106,7 +107,7 @@ function ModelRow({ entry, hardware, recommendation, downloads, selected, onSele
         <span className="st-radio-slot"><span className="st-radio" /></span>
         <span className="st-model-text">
           <span className="st-model-name">{info.displayName}</span>
-          <span className="st-model-sub">{info.desc}</span>
+          <span className="st-model-sub">{modelDetail(entry)}</span>
         </span>
         <ModelFit result={suitability} />
       </div>

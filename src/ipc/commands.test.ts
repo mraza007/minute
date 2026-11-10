@@ -1,7 +1,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
-import type { AudioInputStatus, Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
+import type { AudioInputStatus, Hardware, ModelBrowse, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
 import { DEFAULT_OBSIDIAN_SETTINGS } from '../state/obsidian'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
@@ -38,7 +38,8 @@ describe('ipc/commands', () => {
         id: 'whisper-small',
         kind: 'stt',
         displayName: 'Whisper Small',
-        desc: 'Fast, lightweight',
+        traits: ['Fast', '99 languages'],
+        origin: { kind: 'tested' },
         url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
         sha256: 'a'.repeat(64),
         sizeBytes: 488_000_000,
@@ -67,13 +68,27 @@ describe('ipc/commands', () => {
     expect(result).toEqual(rec)
   })
 
-  it('downloadModel invokes download_model with { id }', async () => {
+  it('downloadModel invokes download_model and refuses unknown publishers unless asked', async () => {
     const calls = captureIPC()
 
     await commands.downloadModel('whisper-medium')
+    await commands.downloadModel('hf:jdoe/llama-GGUF/llama-Q4_K_M.gguf', true)
 
-    expect(calls[0].cmd).toBe('download_model')
-    expect(calls[0].args).toEqual({ id: 'whisper-medium' })
+    expect(calls.map(call => [call.cmd, call.args])).toEqual([
+      ['download_model', { id: 'whisper-medium', allowUnknownPublisher: false }],
+      ['download_model', { id: 'hf:jdoe/llama-GGUF/llama-Q4_K_M.gguf', allowUnknownPublisher: true }],
+    ])
+  })
+
+  it('browseModels invokes browse_models with the kind, query, and refresh flag', async () => {
+    const answer: ModelBrowse = { entries: [], fetchedAt: '2026-11-10T08:00:00Z', unsupportedCount: 1, error: null }
+    const calls = captureIPC(() => answer)
+
+    const result = await commands.browseModels('llm', 'granite', true)
+
+    expect(calls[0].cmd).toBe('browse_models')
+    expect(calls[0].args).toEqual({ kind: 'llm', query: 'granite', refresh: true })
+    expect(result).toEqual(answer)
   })
 
   it('cancelDownload invokes cancel_download with { id }', async () => {
