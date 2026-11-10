@@ -1344,9 +1344,14 @@ impl Store {
         if !changed {
             return Err(MinuteError::Other(format!("speaker not found: {from}")));
         }
-        let summary = self.read_summary(id)?.map(|mut summary| {
-            crate::mentions::retarget(&mut summary, &Speaker::from(from), &Speaker::from(to), None);
-            summary
+        let summary = self.read_summary(id)?.and_then(|mut summary| {
+            let changed = crate::mentions::retarget(
+                &mut summary,
+                &Speaker::from(from),
+                &Speaker::from(to),
+                None,
+            );
+            (!changed.is_empty()).then_some(summary)
         });
         let mut meta = self.persist_speaker_edit(id, &transcript, summary.as_ref())?;
         // Issue #39: compact alias chains through the name that just
@@ -1442,7 +1447,8 @@ impl Store {
             .map(|summary| crate::mentions::retarget(summary, &Speaker::from(from), &into, None))
             .unwrap_or_default();
         let summary_fingerprint = summary.as_ref().map(crate::mentions::fingerprint);
-        let mut meta = self.persist_speaker_edit(id, &transcript, summary.as_ref())?;
+        let rewritten = summary.as_ref().filter(|_| !summary_mentions.is_empty());
+        let mut meta = self.persist_speaker_edit(id, &transcript, rewritten)?;
         match &into {
             Speaker::Named(name) => {
                 meta.speaker_aliases.insert(from.to_string(), name.clone());
@@ -1522,14 +1528,14 @@ impl Store {
         let summary = self.read_summary(id)?.filter(|summary| {
             undo.summary_fingerprint.as_deref() == Some(&crate::mentions::fingerprint(summary))
         });
-        let summary = summary.map(|mut summary| {
-            crate::mentions::retarget(
+        let summary = summary.and_then(|mut summary| {
+            let changed = crate::mentions::retarget(
                 &mut summary,
                 &undo.into,
                 &from,
                 Some(&undo.summary_mentions),
             );
-            summary
+            (!changed.is_empty()).then_some(summary)
         });
         let mut meta = self.persist_speaker_edit(id, &transcript, summary.as_ref())?;
         match &undo.into {
@@ -1581,10 +1587,13 @@ impl Store {
                 Speaker::Unknown => Speaker::Unknown,
             };
         }
-        let summary = self.read_summary(id)?.map(|mut summary| {
-            summary.speaker_mentions.clear();
-            summary
-        });
+        let summary = self
+            .read_summary(id)?
+            .filter(|summary| !summary.speaker_mentions.is_empty())
+            .map(|mut summary| {
+                summary.speaker_mentions.clear();
+                summary
+            });
         self.persist_speaker_edit(id, &transcript, summary.as_ref())
     }
 
