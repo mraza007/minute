@@ -240,8 +240,7 @@ fn is_safe_component(name: &str, extra: &[char]) -> bool {
 
 fn split_repo(repo: &str) -> Option<(&str, &str)> {
     let (publisher, name) = repo.split_once('/')?;
-    (is_safe_component(publisher, &[]) && is_safe_component(name, &[]))
-        .then_some((publisher, name))
+    (is_safe_component(publisher, &[]) && is_safe_component(name, &[])).then_some((publisher, name))
 }
 
 /// Whether `file` is a model file the app can load for `kind`.

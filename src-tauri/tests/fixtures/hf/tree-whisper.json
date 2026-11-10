@@ -1,0 +1,554 @@
+[
+ {
+  "type": "file",
+  "oid": "c7d9f3332a950355d5a77d85000f05e6f45435ea",
+  "size": 1477,
+  "path": ".gitattributes"
+ },
+ {
+  "type": "file",
+  "oid": "bb0749e3c17cdf1d040a7e95fbf45610a212ec0a",
+  "size": 3196,
+  "path": "README.md"
+ },
+ {
+  "type": "file",
+  "oid": "57caaacf2b3f622ff9cd7056b7be66410525437f",
+  "size": 37922638,
+  "lfs": {
+   "oid": "7e6ab77041942572f239b5b602f8aaa1c3ed29d73e3d8f20abea03a773541089",
+   "size": 37922638,
+   "pointerSize": 133
+  },
+  "xetHash": "38e1e01c9680649a8d2769c884da25ae1565c9f6f2f33eb7531e43ba8ffd6671",
+  "path": "ggml-base-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "4947e22c7365d941a9864b2d0f9f474a505cf39b",
+  "size": 59707625,
+  "lfs": {
+   "oid": "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+   "size": 59707625,
+   "pointerSize": 133
+  },
+  "xetHash": "1472da3b8dde27b952b515a60bbea06532be2639bcecc5a6c9dd248bed11865d",
+  "path": "ggml-base-q5_1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "1a710c5bff0c9b764ee332dd9a8422bc978bfb1e",
+  "size": 81768585,
+  "lfs": {
+   "oid": "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9",
+   "size": 81768585,
+   "pointerSize": 133
+  },
+  "xetHash": "1d57d637ad7c7995995cf805eba0e1b94f600e5427b0f2bb4056377572ceb833",
+  "path": "ggml-base-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "17993a254ac4e9db7642a261cf53af3dc446145c",
+  "size": 147951465,
+  "lfs": {
+   "oid": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+   "size": 147951465,
+   "pointerSize": 134
+  },
+  "xetHash": "2f62d18b50c3f3feafbf990eec23a93d319660b1efbdd3fff55e52b7cde2e374",
+  "path": "ggml-base.bin"
+ },
+ {
+  "type": "file",
+  "oid": "2ef628f0c91930593908d9ac23c18660b01c275b",
+  "size": 37950917,
+  "lfs": {
+   "oid": "8cf860309e2449e2bdc8be834cf838ab2565747ecc8c0ef914ef5975115e192b",
+   "size": 37950917,
+   "pointerSize": 133
+  },
+  "xetHash": "77e8e24888512209a1e1a52dd4cb7a942c9bdf2e62272c30e74b11bfe25f5859",
+  "path": "ggml-base.en-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "5c89fe2c0d47f0d16d536610dc5f7c4a6fe81bc7",
+  "size": 59721011,
+  "lfs": {
+   "oid": "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f",
+   "size": 59721011,
+   "pointerSize": 133
+  },
+  "xetHash": "323473b7c41bfb7fb994c1e9526abdcc7c55d3a909c8fa0c29f753005e87d372",
+  "path": "ggml-base.en-q5_1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "f459c0ad21ffd7b3661f62914745c59bb63f2422",
+  "size": 81781811,
+  "lfs": {
+   "oid": "a4d4a0768075e13cfd7e19df3ae2dbc4a68d37d36a7dad45e8410c9a34f8c87e",
+   "size": 81781811,
+   "pointerSize": 133
+  },
+  "xetHash": "13d2990f9c900b251544771bf80d4d94ad1d889f21d070ea2145a22a24cc8ff4",
+  "path": "ggml-base.en-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "87c664c563ef3ff52424dd4fa925cf95b306dba6",
+  "size": 147964211,
+  "lfs": {
+   "oid": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+   "size": 147964211,
+   "pointerSize": 134
+  },
+  "xetHash": "ff7d10f8526045d48149699b43aeaa014e4b337239bc5a35251116fc179aabcf",
+  "path": "ggml-base.en.bin"
+ },
+ {
+  "type": "file",
+  "oid": "fdd1cc51de663e3c24bb0b1e8fca78c69d98ce4c",
+  "size": 1177529527,
+  "lfs": {
+   "oid": "d10d24a4272572fee07843ffc2e4e4ceebd1d0b0831a142dd2fdb3d56d5bf56e",
+   "size": 1177529527,
+   "pointerSize": 135
+  },
+  "xetHash": "d14c854f6e2a198578ddeaaea798ec257a7b6e8116273549a59055aeb34f8305",
+  "path": "ggml-large-v1-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "047db73ddfd7789113dfc94c20b22bc1d044586f",
+  "size": 3094623691,
+  "lfs": {
+   "oid": "7d99f41a10525d0206bddadd86760181fa920438b6b33237e3118ff6c83bb53d",
+   "size": 3094623691,
+   "pointerSize": 135
+  },
+  "xetHash": "cbcb187d1e1abe979d33636cdc63381de20738eeda0885c39440b086e184248a",
+  "path": "ggml-large-v1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "90a40a16eb970b25bded31221b842037369014cc",
+  "size": 1174643458,
+  "lfs": {
+   "oid": "c65d28737f51d09dff3b9da9d26c2ab6f5d82857c9b049ce383d64c2502a5541",
+   "size": 1174643458,
+   "pointerSize": 135
+  },
+  "xetHash": "3b325a8c2a5efd342c3c228aa060a7a03cd86dadad868511791c5898ad5df618",
+  "path": "ggml-large-v2-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "8ea090d899ab4099f57a60abcba4d4008553b675",
+  "size": 1080732091,
+  "lfs": {
+   "oid": "3a214837221e4530dbc1fe8d734f302af393eb30bd0ed046042ebf4baf70f6f2",
+   "size": 1080732091,
+   "pointerSize": 135
+  },
+  "xetHash": "5ead00b2240342e36e4dae57603fc261fa08edc02bbffdaf2fe6086273bdca3e",
+  "path": "ggml-large-v2-q5_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "423bfb2f2932572249bc17a16139883d9aaed65f",
+  "size": 1656129691,
+  "lfs": {
+   "oid": "fef54e6d898246a65c8285bfa83bd1807e27fadf54d5d4e81754c47634737e8c",
+   "size": 1656129691,
+   "pointerSize": 135
+  },
+  "xetHash": "627cf615d5bc05d2053d5731ec1f0afa6e34d82dc7ae76598d23507f57027684",
+  "path": "ggml-large-v2-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "649aafd67e30021d0140c24342ee2ffb947f4bde",
+  "size": 3094623691,
+  "lfs": {
+   "oid": "9a423fe4d40c82774b6af34115b8b935f34152246eb19e80e376071d3f999487",
+   "size": 3094623691,
+   "pointerSize": 135
+  },
+  "xetHash": "c6d6d3dcebc5e0074175386e17eba305fc5cc7d3d5dff3ecfd11e8f2bd4222d7",
+  "path": "ggml-large-v2.bin"
+ },
+ {
+  "type": "file",
+  "oid": "7ea6727cd0c0124ffced62b9eeb8cc9d563e3c8f",
+  "size": 1175711232,
+  "lfs": {
+   "oid": "47837be7594a29429ec08620043390c4d6d467f8bd362df09e9390ace76a55a4",
+   "size": 1175711232,
+   "pointerSize": 135
+  },
+  "xetHash": "b648fedf286ed8ec93a5e0ceb21f634f8a729a6b27e4fbe62ed21816e42d6a51",
+  "path": "ggml-large-v3-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "14150f8463725bde9626c0656683ad5735e01ac2",
+  "size": 1081140203,
+  "lfs": {
+   "oid": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
+   "size": 1081140203,
+   "pointerSize": 135
+  },
+  "xetHash": "32b578ab5cbc39031ca85dac674cf364e9396a0c12b62d6fdd9c21c7df269400",
+  "path": "ggml-large-v3-q5_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "9a92b77ae93111849ccabadc8bf4441233ad58a8",
+  "size": 1173393014,
+  "lfs": {
+   "oid": "84bedfe895bd7b5de6e8e89a0803dfc5addf8c0c5bc4c937451716bf7cf7988a",
+   "size": 1173393014,
+   "pointerSize": 135
+  },
+  "xetHash": "386e2a4079bcc19c8284cc0294fde49e32981ba07157ee82dd3b3cbb42177100",
+  "path": "ggml-large-v3-turbo-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "0e2474d5ec0361bb1726829aa83317ed4cbc3f18",
+  "size": 574041195,
+  "lfs": {
+   "oid": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+   "size": 574041195,
+   "pointerSize": 134
+  },
+  "xetHash": "9c7b9c6bf60cf555f34fe7d81e8643764ff03d2f60b6fa550f5630be52eef830",
+  "path": "ggml-large-v3-turbo-q5_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "dd827281ffb9642e91f152f2a90de53907d4603a",
+  "size": 874188075,
+  "lfs": {
+   "oid": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+   "size": 874188075,
+   "pointerSize": 134
+  },
+  "xetHash": "971539eabfa951d62cc5e06672e676da1e5e8768115056362fe6301b664b4ea4",
+  "path": "ggml-large-v3-turbo-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "819841c70bdf4488c4ff778f8becdcb37df43969",
+  "size": 1624555275,
+  "lfs": {
+   "oid": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+   "size": 1624555275,
+   "pointerSize": 135
+  },
+  "xetHash": "5a4b65b05933d70ce9d5aa6265eb128fa5eba38f6fee40836fdedc4d2fde42ad",
+  "path": "ggml-large-v3-turbo.bin"
+ },
+ {
+  "type": "file",
+  "oid": "30488f6b9eeae93e026c978ac7a3190274732ea2",
+  "size": 3095033483,
+  "lfs": {
+   "oid": "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+   "size": 3095033483,
+   "pointerSize": 135
+  },
+  "xetHash": "766d11cebbdf5a67c179c5774e2642b609e35e1a30240e7b559d5647c655b0a4",
+  "path": "ggml-large-v3.bin"
+ },
+ {
+  "type": "file",
+  "oid": "a5e970d86b7f2a7478ba0a0f5356c95b0e6353ab",
+  "size": 567829413,
+  "lfs": {
+   "oid": "79b0b8d436d47d3f24dd3afc91f19447dd686a4f37521b2f6d9c30a642133fbd",
+   "size": 567829413,
+   "pointerSize": 134
+  },
+  "xetHash": "71d1933232f669a178fdc318ab8469f69a8c53ce099cd4e7589fe5ca5b89922e",
+  "path": "ggml-medium-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "9cc19f38fec2314f6c00f666ca708e8cf22d189d",
+  "size": 539212467,
+  "lfs": {
+   "oid": "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+   "size": 539212467,
+   "pointerSize": 134
+  },
+  "xetHash": "f2f2b4f1d1ba74b5b672c622065e9884eb9c4fbe91dbbb4091d556a9a7e362ee",
+  "path": "ggml-medium-q5_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "6c783bed539147853779c28702e59d170ab6a5bb",
+  "size": 823369779,
+  "lfs": {
+   "oid": "42a1ffcbe4167d224232443396968db4d02d4e8e87e213d3ee2e03095dea6502",
+   "size": 823369779,
+   "pointerSize": 134
+  },
+  "xetHash": "c8116b244ec4960951435c4a244acdaee9efec098f3c7ca763a13762e66f7351",
+  "path": "ggml-medium-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "be775c464024bdcd9e834c2f9ed42aae6b708d2b",
+  "size": 1533763059,
+  "lfs": {
+   "oid": "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+   "size": 1533763059,
+   "pointerSize": 135
+  },
+  "xetHash": "d3d5696e6a3e0ca2aa08eb31cad208ffa1e87b3cc341f59e628fbdcf8122de9b",
+  "path": "ggml-medium.bin"
+ },
+ {
+  "type": "file",
+  "oid": "b9ab3229626a5850377c38b5a66d5984c53e9425",
+  "size": 566993085,
+  "lfs": {
+   "oid": "cdc44fee3c62b5743913e3147ed75f4e8ecfb52dd7a0f0f7387094b406ff0ee6",
+   "size": 566993085,
+   "pointerSize": 134
+  },
+  "xetHash": "a892d6dfb434c5cf9ca2505910d1044ff5b1f872ad049b35439cef440734f5e7",
+  "path": "ggml-medium.en-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "8722db4993ba67f49c4f20cdd9880202c8cc3f2b",
+  "size": 539225533,
+  "lfs": {
+   "oid": "76733e26ad8fe1c7a5bf7531a9d41917b2adc0f20f2e4f5531688a8c6cd88eb0",
+   "size": 539225533,
+   "pointerSize": 134
+  },
+  "xetHash": "5ce4bb290d6d5b998951eea06404a8a5c89c6ff1eec7f52bb326c4b2de45a3b3",
+  "path": "ggml-medium.en-q5_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "c4ca4e1562dffe8db2381e32299fe64110228156",
+  "size": 823382461,
+  "lfs": {
+   "oid": "43fa2cd084de5a04399a896a9a7a786064e221365c01700cea4666005218f11c",
+   "size": 823382461,
+   "pointerSize": 134
+  },
+  "xetHash": "316ce928903900e2f2f69a0d681a8aeada4d1918c1698e9b585d978c12059df0",
+  "path": "ggml-medium.en-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "f8d7f988b60916d7f7e7feee9897c037a09b2f85",
+  "size": 1533774781,
+  "lfs": {
+   "oid": "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
+   "size": 1533774781,
+   "pointerSize": 135
+  },
+  "xetHash": "a163589aa264d5188df3b05ed4eac56bfd97e26910f207809d869f7e99886fd2",
+  "path": "ggml-medium.en.bin"
+ },
+ {
+  "type": "file",
+  "oid": "f5a0d8d0634acd13b9e19b9587e0a3473af5be02",
+  "size": 163083239,
+  "lfs": {
+   "oid": "de43fb9fed471e95c19e60ae67575c2bf09e8fb607016da171b06ddad313988b",
+   "size": 163083239,
+   "pointerSize": 134
+  },
+  "xetHash": "a1cb815bfea9bd229637cfc3005ffed474dc441d9ef4f047eb1cd5b916c51770",
+  "path": "ggml-small-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "87631c52c89d37ed2337a46ec4a009976db1f3f4",
+  "size": 190085487,
+  "lfs": {
+   "oid": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+   "size": 190085487,
+   "pointerSize": 134
+  },
+  "xetHash": "f4a8c6ba84184c3af18f9f63ca9f777e27d39858c1435d27b8b9239092c16c15",
+  "path": "ggml-small-q5_1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "8a9937d2be60bae6b1efbb01b9ca1612ab2a617c",
+  "size": 264464607,
+  "lfs": {
+   "oid": "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f",
+   "size": 264464607,
+   "pointerSize": 134
+  },
+  "xetHash": "53268772a59b455b5582e60c9330689fe313317bdff7f38d5df9a9190f2dc598",
+  "path": "ggml-small-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "bc4c4d96b528654fb067e2b243bdc438cfaf0072",
+  "size": 487601967,
+  "lfs": {
+   "oid": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+   "size": 487601967,
+   "pointerSize": 134
+  },
+  "xetHash": "edd29d67e70b000132af65205b99bb774b77abc13d10103e14f80ce2242913e1",
+  "path": "ggml-small.bin"
+ },
+ {
+  "type": "file",
+  "oid": "77bb2f2fd6a33134be5cbf4bdaeeeee07c364f2b",
+  "size": 162952446,
+  "lfs": {
+   "oid": "b2ef1c506378b825b4b4341979a93e1656b5d6c129f17114cfb8fb78aabc2f89",
+   "size": 162952446,
+   "pointerSize": 134
+  },
+  "xetHash": "0b6e64a659c3214818059676e3c9a801ad92d815ffc028cfe55161ad05876dd9",
+  "path": "ggml-small.en-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "bf61baaf463626fe45fc9157b8e9c69de8943c87",
+  "size": 190098681,
+  "lfs": {
+   "oid": "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
+   "size": 190098681,
+   "pointerSize": 134
+  },
+  "xetHash": "ba5733534a74f94f8f53afadda9dcb21d029f015065399bb22e72d8cc4bc9ced",
+  "path": "ggml-small.en-q5_1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "9c826215654cf46674a38d02f19e123e17c5b2d3",
+  "size": 264477561,
+  "lfs": {
+   "oid": "67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067",
+   "size": 264477561,
+   "pointerSize": 134
+  },
+  "xetHash": "c201e334b695846b0ad3943c973f7cbb2bc9dd52aac2c91c11769531023c3fa8",
+  "path": "ggml-small.en-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "eaeeb6d63378cf6515ff2c1cb4e33486ae6bcc2f",
+  "size": 487614201,
+  "lfs": {
+   "oid": "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+   "size": 487614201,
+   "pointerSize": 134
+  },
+  "xetHash": "0d57184d34ae7d736e5bb2db5bf83debe730bd53dcefa235a0979b9dcfd33fb3",
+  "path": "ggml-small.en.bin"
+ },
+ {
+  "type": "file",
+  "oid": "f0a50f75adbb3cef51e857f0621e6e28d51b15d0",
+  "size": 15037446,
+  "lfs": {
+   "oid": "c88cbd2648e1f5415092bcf5256add463a0f19943e6938f46e8d4ffdebd47739",
+   "size": 15037446,
+   "pointerSize": 133
+  },
+  "xetHash": "afab24d2bff6128116cf49434176d04be245712cca7cacee0834708bc72c946b",
+  "path": "ggml-tiny-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "42701a9c1d8a9f4f0b96dbcefcc049075814bcf3",
+  "size": 32152673,
+  "lfs": {
+   "oid": "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
+   "size": 32152673,
+   "pointerSize": 133
+  },
+  "xetHash": "3e8822ab7e529860cd1844c54901cab7615db4e74c414caf40131e17036794d3",
+  "path": "ggml-tiny-q5_1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "fc48fd17b13f7eb147bab1c66dee10c97f471b27",
+  "size": 43537433,
+  "lfs": {
+   "oid": "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca",
+   "size": 43537433,
+   "pointerSize": 133
+  },
+  "xetHash": "b5b7dba25c0272de00bc5b26d1bb91e21c201298200a3525fc2e00aa11bdcb09",
+  "path": "ggml-tiny-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "d144f735b005ae8cbfa04a49e22fe40faa24dbec",
+  "size": 77691713,
+  "lfs": {
+   "oid": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+   "size": 77691713,
+   "pointerSize": 133
+  },
+  "xetHash": "518970a29bedb265f23ac48d486ddbc63bedffd90967b10140ae5ac61243acf3",
+  "path": "ggml-tiny.bin"
+ },
+ {
+  "type": "file",
+  "oid": "3eeeb7dbc71af46e4c0cc48d72d64cbb9b84f1a5",
+  "size": 15034655,
+  "lfs": {
+   "oid": "82b32eef73c94bb0c432a776a047b757d9525c26d84038a15d8798d7c8d1ee58",
+   "size": 15034655,
+   "pointerSize": 133
+  },
+  "xetHash": "3456f26f3d3786d7e815b2a5e30785476974926b750d84c1aad69580e15ae0fd",
+  "path": "ggml-tiny.en-encoder.mlmodelc.zip"
+ },
+ {
+  "type": "file",
+  "oid": "46aeed3b01f3fc86f05fa3e8ca711cc1773ead08",
+  "size": 32166155,
+  "lfs": {
+   "oid": "c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b",
+   "size": 32166155,
+   "pointerSize": 133
+  },
+  "xetHash": "830d18b4d554f5d36e8e7c085d6b289063e5f2997e977716ff6301c11e961bf3",
+  "path": "ggml-tiny.en-q5_1.bin"
+ },
+ {
+  "type": "file",
+  "oid": "959468eb9f72c2100ab5e4a9efc102a45cc8b313",
+  "size": 43550795,
+  "lfs": {
+   "oid": "5bc2b3860aa151a4c6e7bb095e1fcce7cf12c7b020ca08dcec0c6d018bb7dd94",
+   "size": 43550795,
+   "pointerSize": 133
+  },
+  "xetHash": "968fd6b666c286f956ae34e5365d44ced7413c287a0b54b4b287d758babf96c7",
+  "path": "ggml-tiny.en-q8_0.bin"
+ },
+ {
+  "type": "file",
+  "oid": "17ad750438d1d42162fe06ab4b21aef2389d2137",
+  "size": 77704715,
+  "lfs": {
+   "oid": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+   "size": 77704715,
+   "pointerSize": 133
+  },
+  "xetHash": "0d686a2a6a22b02da2ef3101d4c86e68461363a623c58f27f81b1b2d36b42317",
+  "path": "ggml-tiny.en.bin"
+ }
+]

@@ -4,6 +4,7 @@ mod detect;
 mod diar;
 mod download;
 mod error;
+mod hf;
 mod llm;
 mod popup;
 mod profiles;
@@ -31,7 +32,8 @@ fn hardware_info() -> Hardware {
     catalog::detect_hardware()
 }
 
-/// Lists every catalog entry with its current install state. A model's
+/// Lists every built-in entry, plus each Hugging Face entry the user has
+/// downloaded or started downloading, with its current install state. A model's
 /// state is `Downloading` iff the download registry has an active
 /// cancellation flag for it right now — not merely because a `.part` file
 /// exists on disk. A `.part` with no active registry entry means an idle,
@@ -47,7 +49,7 @@ fn list_models(
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let entries = catalog::load_catalog().map_err(|e| e.to_string())?;
+    let entries = catalog::merged_catalog(&models_root).map_err(|e| e.to_string())?;
     Ok(entries
         .into_iter()
         .map(|entry| {
@@ -753,6 +755,7 @@ pub fn run() {
             download::download_model,
             download::cancel_download,
             download::delete_model,
+            hf::browse_models,
             audio::audio_input_status,
             audio::request_microphone_permission,
             audio::start_audio_input_preview,
@@ -964,6 +967,7 @@ pub fn run() {
             // `download::DownloadRegistry`.
             let download_registry: DownloadRegistry = download::open_registry();
             app.manage(download_registry);
+            app.manage(hf::BrowseIndex::default());
 
             // Tracks the single in-progress recording (if any) so pause/resume/
             // stop commands can reach the active `Recorder` — see

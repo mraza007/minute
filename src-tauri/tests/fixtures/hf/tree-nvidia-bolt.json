@@ -1,0 +1,74 @@
+[
+ {
+  "type": "file",
+  "oid": "67dad67cdc2fd7d4bf39a7bb1246229da197b990",
+  "size": 1768,
+  "path": ".gitattributes"
+ },
+ {
+  "type": "file",
+  "oid": "dc21fd343ea55faf753d6100ce7bda8e471e8570",
+  "size": 6180446208,
+  "lfs": {
+   "oid": "c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612",
+   "size": 6180446208,
+   "pointerSize": 135
+  },
+  "xetHash": "3cfff84f6bc83acfc9ba3df58f4a93a498e920c6844eacc13b113073a5108014",
+  "path": "Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "4d4885185be7604a1efb9267c567eb4a3ce658ec",
+  "size": 59009,
+  "path": "README.md"
+ },
+ {
+  "type": "file",
+  "oid": "9363fe5c01f6cd4ce23709896010462a16c07e81",
+  "size": 3254,
+  "path": "bias.md"
+ },
+ {
+  "type": "file",
+  "oid": "1b59e55e347ff6603b24bec5e80a58670a70d845",
+  "size": 444073,
+  "lfs": {
+   "oid": "244b8a0f465c13fbfa81c8046b0bd4471d2202c275ea950c4845374788852145",
+   "size": 444073,
+   "pointerSize": 131
+  },
+  "xetHash": "d288025e4d3c90df6f6302b84fab56e74346c1b8cc3522ef5a5ca10c6aee0481",
+  "path": "bolt-smart-and-fast.png"
+ },
+ {
+  "type": "file",
+  "oid": "d414423a76ee510683f75fb48b7fda7b3aef2a00",
+  "size": 3315,
+  "path": "explainability.md"
+ },
+ {
+  "type": "file",
+  "oid": "34ae94eed1aa623d152261ba4b9952d6cbec42f1",
+  "size": 1671,
+  "path": "privacy.md"
+ },
+ {
+  "type": "file",
+  "oid": "66ca0b2c71416e73fcf35dc2a3fdfd536fbe07dc",
+  "size": 29796429,
+  "lfs": {
+   "oid": "446ab42f5a52e2d9d2bb09a76efa4439d96929090eaab0f3d2fce4f9e330cd75",
+   "size": 29796429,
+   "pointerSize": 133
+  },
+  "xetHash": "be3d7756c582618ed1861c9215641238f780eb4a3bcf0f9c1020531fd0206630",
+  "path": "reachy-bolt.gif"
+ },
+ {
+  "type": "file",
+  "oid": "6e72aa753fc6e89f1e205a1fb2bffec8f61c7a8d",
+  "size": 2292,
+  "path": "safety.md"
+ }
+]

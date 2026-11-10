@@ -25,8 +25,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 
 use crate::audio::{self, SharedRecorderState};
-use crate::catalog::{self, CatalogEntry};
+use crate::catalog::{self, CatalogEntry, ModelOrigin};
 use crate::error::{MinuteError, Result};
+use crate::hf::BrowseIndex;
 use crate::llm::LlmBusy;
 
 /// Where a target model file's in-progress download lives: `<target>.part`.
@@ -238,6 +239,16 @@ fn should_restart(requested_range: bool, status: reqwest::StatusCode) -> bool {
     requested_range && status != reqwest::StatusCode::PARTIAL_CONTENT
 }
 
+/// The HTTP client for every request the app makes to Hugging Face. The
+/// User-Agent is the app's name and nothing else: no version, no machine or
+/// user detail.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("Minute")
+        .build()
+        .unwrap_or_default()
+}
+
 /// Downloads one catalog entry's model file into `models_root`, resuming
 /// from an existing `.part` file if present, verifying its sha256 on
 /// completion, and reporting progress via `on_progress(downloaded, total)`.
@@ -262,6 +273,7 @@ pub async fn execute_download(
     cancel_flag: &Arc<AtomicBool>,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<()> {
+    catalog::validate_entry(entry)?;
     let target = catalog::installed_path(entry, models_root);
     let part = part_path(&target);
 
@@ -274,7 +286,7 @@ pub async fn execute_download(
         .await
         .map_err(|e| MinuteError::Other(format!("resume task panicked: {e}")))??;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut request = client.get(&entry.url);
     let requested_range = resume.offset > 0;
     if requested_range {
@@ -402,6 +414,61 @@ impl Drop for RegistryGuard {
     }
 }
 
+/// Resolves `id` to the entry to download and enforces the publisher rule.
+///
+/// The id may name a built-in entry, a saved Hugging Face entry, or one of
+/// this session's browse results. A Hugging Face entry from a publisher
+/// outside [`catalog::TRUSTED_PUBLISHERS`] is refused unless the caller
+/// passes the user's explicit confirmation. Trust is read from the
+/// publisher name, never from the entry's own `trusted` flag. An accepted
+/// Hugging Face entry is saved, so it shows in `list_models` from now on.
+fn prepare_download(
+    models_root: &Path,
+    browse_index: &BrowseIndex,
+    id: &str,
+    allow_unknown_publisher: bool,
+) -> std::result::Result<CatalogEntry, String> {
+    let entry = catalog::merged_catalog(models_root)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == id)
+        .or_else(|| browse_index.get(id))
+        .ok_or_else(|| format!("unknown model id: {id}"))?;
+    if let ModelOrigin::HuggingFace { publisher, .. } = &entry.origin {
+        if !catalog::is_trusted_publisher(publisher) && !allow_unknown_publisher {
+            return Err(format!(
+                "{publisher} is not a trusted publisher. Confirm to download this model."
+            ));
+        }
+        catalog::remember_added(models_root, &entry).map_err(|e| e.to_string())?;
+    }
+    Ok(entry)
+}
+
+/// Deletes a model's file and any stray `.part`, and forgets a Hugging Face
+/// entry so it leaves `list_models`. Missing files are not an error.
+fn remove_model(models_root: &Path, id: &str) -> std::result::Result<(), String> {
+    let entry = catalog::merged_catalog(models_root)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| format!("unknown model id: {id}"))?;
+
+    let target = catalog::installed_path(&entry, models_root);
+    remove_file_tolerant(&target).map_err(|e| e.to_string())?;
+    remove_file_tolerant(&part_path(&target)).map_err(|e| e.to_string())?;
+
+    if entry.origin != ModelOrigin::Tested {
+        catalog::forget_added(models_root, id).map_err(|e| e.to_string())?;
+        // Tidy the now-empty `hf/<publisher>/<repo>` folders. `remove_dir`
+        // refuses a folder that still holds another model.
+        for dir in target.ancestors().skip(1).take(2) {
+            let _ = fs::remove_dir(dir);
+        }
+    }
+    Ok(())
+}
+
 /// Downloads (or resumes) a catalog entry's model file, emitting
 /// `model-download-progress` events (throttled to >=250ms apart) while it
 /// runs and a single terminal `model-download-done` event when it stops —
@@ -416,18 +483,21 @@ impl Drop for RegistryGuard {
 pub async fn download_model(
     app: AppHandle,
     registry: State<'_, DownloadRegistry>,
+    browse_index: State<'_, BrowseIndex>,
     id: String,
+    allow_unknown_publisher: Option<bool>,
 ) -> std::result::Result<(), String> {
     let registry = registry.inner().clone();
     let models_root = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let catalog = catalog::load_catalog().map_err(|e| e.to_string())?;
-    let entry = catalog
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| format!("unknown model id: {id}"))?;
+    let entry = prepare_download(
+        &models_root,
+        &browse_index,
+        &id,
+        allow_unknown_publisher == Some(true),
+    )?;
 
     let cancel_flag = registry_start(&registry, &id).map_err(|e| e.to_string())?;
     let _cleanup = RegistryGuard {
@@ -556,18 +626,7 @@ pub fn delete_model(
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let catalog = catalog::load_catalog().map_err(|e| e.to_string())?;
-    let entry = catalog
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| format!("unknown model id: {id}"))?;
-
-    let target = catalog::installed_path(&entry, &models_root);
-    let part = part_path(&target);
-
-    remove_file_tolerant(&target).map_err(|e| e.to_string())?;
-    remove_file_tolerant(&part).map_err(|e| e.to_string())?;
-    Ok(())
+    remove_model(&models_root, &id)
 }
 
 #[cfg(test)]
@@ -575,6 +634,150 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    // --- Hugging Face entries: resolve, consent, save, forget ---------------
+
+    fn hf_entry(repo: &str, file: &str) -> CatalogEntry {
+        let publisher = repo.split('/').next().unwrap().to_string();
+        CatalogEntry {
+            id: catalog::hf_entry_id(repo, file),
+            kind: catalog::ModelKind::Llm,
+            display_name: "Model".to_string(),
+            traits: Vec::new(),
+            url: catalog::hf_download_url(repo, "main", file),
+            sha256: "c".repeat(64),
+            size_bytes: 16,
+            min_ram_gb: 8,
+            requires_apple_silicon: false,
+            origin: ModelOrigin::HuggingFace {
+                // Deliberately a lie for unknown publishers: the flag must
+                // not be what grants trust.
+                trusted: true,
+                repo: repo.to_string(),
+                file: file.to_string(),
+                publisher,
+                architecture: None,
+                parameters: None,
+                quantization: None,
+                updated_at: None,
+                downloads: None,
+            },
+        }
+    }
+
+    fn browsed(entry: &CatalogEntry) -> BrowseIndex {
+        let index = BrowseIndex::default();
+        index.record(&[catalog::ModelStatus {
+            entry: entry.clone(),
+            state: catalog::InstallState::NotInstalled,
+        }]);
+        index
+    }
+
+    fn listed(models_root: &Path, id: &str) -> bool {
+        catalog::merged_catalog(models_root)
+            .unwrap()
+            .iter()
+            .any(|e| e.id == id)
+    }
+
+    #[test]
+    fn a_built_in_model_downloads_without_being_saved_as_added() {
+        let dir = tempdir().unwrap();
+        let entry =
+            prepare_download(dir.path(), &BrowseIndex::default(), "whisper-small", false).unwrap();
+        assert_eq!(entry.origin, ModelOrigin::Tested);
+        assert!(catalog::load_added(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn an_unknown_id_is_refused() {
+        let dir = tempdir().unwrap();
+        let err = prepare_download(dir.path(), &BrowseIndex::default(), "hf:a/b/m.gguf", true);
+        assert_eq!(err.unwrap_err(), "unknown model id: hf:a/b/m.gguf");
+    }
+
+    #[test]
+    fn a_trusted_browse_result_is_accepted_and_saved() {
+        let dir = tempdir().unwrap();
+        let entry = hf_entry("unsloth/Model-GGUF", "model-Q4_K_M.gguf");
+        let index = browsed(&entry);
+
+        prepare_download(dir.path(), &index, &entry.id, false).unwrap();
+
+        assert!(listed(dir.path(), &entry.id));
+        // After a restart the browse index is empty, and the id still
+        // resolves from the saved entry.
+        prepare_download(dir.path(), &BrowseIndex::default(), &entry.id, false).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_publisher_needs_explicit_confirmation() {
+        let dir = tempdir().unwrap();
+        let entry = hf_entry("someone/Model-GGUF", "model-Q4_K_M.gguf");
+        let index = browsed(&entry);
+
+        let refused = prepare_download(dir.path(), &index, &entry.id, false).unwrap_err();
+        assert!(refused.contains("someone is not a trusted publisher"));
+        assert!(!listed(dir.path(), &entry.id));
+
+        prepare_download(dir.path(), &index, &entry.id, true).unwrap();
+        assert!(listed(dir.path(), &entry.id));
+
+        // Resuming later still needs the confirmation.
+        assert!(prepare_download(dir.path(), &BrowseIndex::default(), &entry.id, false).is_err());
+    }
+
+    #[test]
+    fn removing_a_hugging_face_model_deletes_its_files_and_forgets_it() {
+        let dir = tempdir().unwrap();
+        let entry = hf_entry("unsloth/Model-GGUF", "model-Q4_K_M.gguf");
+        let sibling = hf_entry("unsloth/Other-GGUF", "other-Q4_K_M.gguf");
+        for e in [&entry, &sibling] {
+            prepare_download(dir.path(), &browsed(e), &e.id, false).unwrap();
+            let target = catalog::installed_path(e, dir.path());
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(&target, b"weights").unwrap();
+            fs::write(part_path(&target), b"partial").unwrap();
+        }
+        let target = catalog::installed_path(&entry, dir.path());
+
+        remove_model(dir.path(), &entry.id).unwrap();
+
+        assert!(!target.exists());
+        assert!(!part_path(&target).exists());
+        assert!(!target.parent().unwrap().exists());
+        assert!(!listed(dir.path(), &entry.id));
+        assert!(listed(dir.path(), &sibling.id));
+        assert!(catalog::installed_path(&sibling, dir.path()).exists());
+        assert_eq!(
+            remove_model(dir.path(), &entry.id).unwrap_err(),
+            format!("unknown model id: {}", entry.id)
+        );
+    }
+
+    #[test]
+    fn removing_a_built_in_model_keeps_it_listed() {
+        let dir = tempdir().unwrap();
+        remove_model(dir.path(), "whisper-small").unwrap();
+        assert!(listed(dir.path(), "whisper-small"));
+    }
+
+    #[test]
+    fn execute_download_refuses_an_entry_that_fails_validation() {
+        let dir = tempdir().unwrap();
+        let mut entry = hf_entry("someone/Model-GGUF", "model-Q4_K_M.gguf");
+        entry.url = "https://evil.example/someone/Model-GGUF/resolve/main/model-Q4_K_M.gguf".into();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(execute_download(
+            &entry,
+            dir.path(),
+            &Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        ));
+        assert!(result.is_err());
+        assert!(!dir.path().join("models").exists());
+    }
 
     // --- resume offset / hash continuation ---------------------------------
 
