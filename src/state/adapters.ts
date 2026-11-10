@@ -318,6 +318,44 @@ export const SUMMARY_STYLE_NAMES: Record<SummaryStyle, string> = {
   detailed: 'Detailed',
 }
 
+/** What holds a queued summary back, as far as the app can see. */
+export type SummaryWaitCause = 'recording' | 'otherNote' | 'unknown'
+
+/** A queued summary as the "This summary has waited …" card shows it (issue #44). */
+export interface SummaryWait {
+  /** When the note joined the queue, in ms since the epoch. `null` when no queued event said. */
+  queuedAt: number | null
+  /** The length the summary will be written at. The backend reads the setting when the summary starts, so this is the current setting. */
+  style: SummaryStyle
+  cause: SummaryWaitCause
+}
+
+/**
+ * Why `noteId`'s queued summary has not started. A live recording holds
+ * the whole queue, so it wins over another note's running summary.
+ * Anything else (an Ask, a stuck queue) is `'unknown'`.
+ */
+export function summaryWaitCause(
+  noteId: string,
+  isRecording: boolean,
+  summaryStatus: Readonly<Record<string, SummaryStatusEvent['state']>>,
+): SummaryWaitCause {
+  if (isRecording) return 'recording'
+  const otherRunning = Object.entries(summaryStatus).some(([id, state]) => id !== noteId && state === 'running')
+  return otherRunning ? 'otherNote' : 'unknown'
+}
+
+/** The queued-summary card's reason line. */
+export function summaryWaitReason({ style, cause }: SummaryWait): string {
+  const queued = `It was queued as ${SUMMARY_STYLE_NAMES[style]}`
+  const why = {
+    otherNote: `${queued} behind another note and did not start.`,
+    recording: `${queued} and waits for the recording to end.`,
+    unknown: `${queued} and did not start.`,
+  }[cause]
+  return `${why} Your recording and transcript are safe.`
+}
+
 function plural(count: number, unit: string): string {
   return `${count} ${unit}${count === 1 ? '' : 's'}`
 }

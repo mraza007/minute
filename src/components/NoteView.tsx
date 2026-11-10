@@ -6,10 +6,11 @@ import type {
   ObsidianExport,
   SpeakerMergeUndo,
   StoredSegment,
+  SummarizeNowOutcome,
   SummaryDoc,
 } from '../ipc/types'
 import type { SttStatus } from '../types'
-import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, speakerRoster, storedSegmentsToDisplay, UNKNOWN_SPEAKER_LABEL } from '../state/adapters'
+import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, speakerRoster, storedSegmentsToDisplay, UNKNOWN_SPEAKER_LABEL, type SummaryWait } from '../state/adapters'
 import { useAudioPlayer } from '../state/useAudioPlayer'
 import type { ProcessingFailure, SummaryStatus } from '../state/useAppState'
 import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
@@ -55,6 +56,8 @@ export interface NoteViewProps {
   /** This note's summarization lifecycle. `'idle'` if no `summary-status` event has been seen for it this session. */
   summaryStatus: SummaryStatus
   summaryError?: string
+  /** How long and why this note's summary has waited, while `summaryStatus` is `'queued'` (issue #44). */
+  summaryWait: SummaryWait | null
   /** This note's speaker-detection lifecycle, same collapsed shape as `summaryStatus`. */
   diarStatus: SummaryStatus
   diarError?: string
@@ -88,6 +91,8 @@ export interface NoteViewProps {
   onRegenerateSummary: (id: string) => void
   /** Cancels a queued or running summarization for this note (issue #30). */
   onCancelSummary: (id: string) => void
+  /** Starts a queued summary without waiting its turn (issue #44). */
+  onSummarizeNow: (id: string) => Promise<SummarizeNowOutcome | null>
   onAsk: (id: string, question: string) => void
   onGoSettings: () => void
   onSetPinned: (id: string, pinned: boolean) => void
@@ -565,6 +570,7 @@ export function NoteView({
   sttStatusNoteId,
   summaryStatus,
   summaryError,
+  summaryWait,
   llmInstalled,
   llmModelName,
   askHistory,
@@ -583,6 +589,7 @@ export function NoteView({
   onToggleActionItem,
   onRegenerateSummary,
   onCancelSummary,
+  onSummarizeNow,
   onAsk,
   onGoSettings,
   onSetPinned,
@@ -759,6 +766,10 @@ export function NoteView({
   const handleCancelSummary = useCallback(() => {
     if (noteId) onCancelSummary(noteId)
   }, [noteId, onCancelSummary])
+  const handleSummarizeNow = useCallback(
+    () => (noteId ? onSummarizeNow(noteId) : Promise.resolve(null)),
+    [noteId, onSummarizeNow],
+  )
   const handleAsk = useCallback(
     (question: string) => {
       if (noteId) onAsk(noteId, question)
@@ -1091,6 +1102,8 @@ export function NoteView({
             llmInstalled={llmInstalled}
             onGenerate={handleRegenerate}
             onCancel={handleCancelSummary}
+            wait={summaryWait}
+            onSummarizeNow={handleSummarizeNow}
             onToggleAction={handleToggleAction}
             onGoSettings={onGoSettings}
           />

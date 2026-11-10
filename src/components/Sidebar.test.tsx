@@ -311,10 +311,14 @@ describe('Sidebar', () => {
   })
 
   describe('row status', () => {
-    it('shows "Summarizing…" instead of the metadata while a summary is queued or running', () => {
+    it('shows "Summarizing…" while a summary runs and "Summary waiting" while it is queued, instead of the metadata', () => {
       render(<Sidebar {...base} summaryStatus={{ 'demo-1': 'running', 'demo-2': 'queued', 'demo-3': 'done' }} />)
-      expect(screen.getAllByText('Summarizing…')).toHaveLength(2)
-      expect(screen.getByRole('button', { name: /board prep sync/i })).not.toHaveTextContent(demoNotes[0].meta)
+      const running = screen.getByRole('button', { name: /board prep sync/i })
+      expect(running).toHaveTextContent('Summarizing…')
+      expect(running).not.toHaveTextContent(demoNotes[0].meta)
+      const queued = screen.getByRole('button', { name: /1:1 — sarah/i })
+      expect(queued).toHaveTextContent('Summary waiting')
+      expect(queued).not.toHaveTextContent('Summarizing…')
       expect(screen.getByRole('button', { name: /client call — acme/i })).toHaveTextContent(demoNotes[2].meta)
     })
 

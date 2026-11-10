@@ -20,6 +20,8 @@ import {
   speakerInitials,
   speakerRoster,
   summaryCoverageNotice,
+  summaryWaitCause,
+  summaryWaitReason,
   splitAnswerCitations,
   splitHighlight,
   storedSegmentsToDisplay,
@@ -152,6 +154,31 @@ describe('summaryCoverageNotice', () => {
     const notice = summaryCoverageNotice({ truncated: true, cutOff: true })
     expect(notice).toMatch(/covers only part of it/)
     expect(notice).toMatch(/last items are missing/)
+  })
+})
+
+describe('summaryWaitCause', () => {
+  it('blames a live recording first, since it holds the whole queue', () => {
+    expect(summaryWaitCause('a', true, { b: 'running' })).toBe('recording')
+  })
+
+  it('blames another note only while that note is summarizing', () => {
+    expect(summaryWaitCause('a', false, { a: 'queued', b: 'running' })).toBe('otherNote')
+    expect(summaryWaitCause('a', false, { a: 'queued', b: 'done' })).toBe('unknown')
+  })
+})
+
+describe('summaryWaitReason', () => {
+  it('names the length and what the summary waits behind', () => {
+    expect(summaryWaitReason({ queuedAt: 0, style: 'detailed', cause: 'otherNote' })).toBe(
+      'It was queued as Detailed behind another note and did not start. Your recording and transcript are safe.',
+    )
+    expect(summaryWaitReason({ queuedAt: 0, style: 'short', cause: 'recording' })).toBe(
+      'It was queued as Short and waits for the recording to end. Your recording and transcript are safe.',
+    )
+    expect(summaryWaitReason({ queuedAt: null, style: 'standard', cause: 'unknown' })).toBe(
+      'It was queued as Standard and did not start. Your recording and transcript are safe.',
+    )
   })
 })
 

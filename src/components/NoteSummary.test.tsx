@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SummaryDoc } from '../ipc/types'
 import { NoteSummary, type NoteSummaryProps } from './NoteSummary'
 
@@ -24,6 +24,8 @@ function baseProps(overrides: Partial<NoteSummaryProps> = {}): NoteSummaryProps 
     llmInstalled: true,
     onGenerate: vi.fn(),
     onCancel: vi.fn(),
+    wait: null,
+    onSummarizeNow: vi.fn().mockResolvedValue('started'),
     onToggleAction: vi.fn(),
     onGoSettings: vi.fn(),
     ...overrides,
@@ -167,11 +169,67 @@ describe('NoteSummary', () => {
     })
   })
 
-  // Issue #11: a note waiting behind another generation.
+  // Issues #11 and #44: a note waiting behind another generation.
   describe('while a summary is queued', () => {
-    it('says the note is queued and will start on its own', () => {
-      render(<NoteSummary {...baseProps({ status: 'queued' })} />)
-      expect(screen.getByText('Queued. Starts when the engine is free.')).toBeInTheDocument()
+    const MINUTE = 60_000
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('says how long the summary has waited and why', () => {
+      vi.useFakeTimers()
+      const now = Date.UTC(2026, 10, 10, 16, 0)
+      vi.setSystemTime(now)
+      render(<NoteSummary {...baseProps({
+        status: 'queued',
+        summary: null,
+        wait: { queuedAt: now - 6 * 60 * MINUTE, style: 'detailed', cause: 'otherNote' },
+      })} />)
+      expect(screen.getByText('This summary has waited 6 hours')).toBeInTheDocument()
+      expect(screen.getByText(
+        'It was queued as Detailed behind another note and did not start. Your recording and transcript are safe.',
+      )).toBeInTheDocument()
+    })
+
+    it('keeps the wait current as minutes pass', () => {
+      vi.useFakeTimers()
+      const now = Date.UTC(2026, 10, 10, 16, 0)
+      vi.setSystemTime(now)
+      render(<NoteSummary {...baseProps({
+        status: 'queued',
+        wait: { queuedAt: now - 4.5 * MINUTE, style: 'standard', cause: 'unknown' },
+      })} />)
+      expect(screen.getByText('This summary has waited 4 minutes')).toBeInTheDocument()
+      act(() => vi.advanceTimersByTime(MINUTE / 2))
+      expect(screen.getByText('This summary has waited 5 minutes')).toBeInTheDocument()
+      act(() => vi.advanceTimersByTime(MINUTE))
+      expect(screen.getByText('This summary has waited 6 minutes')).toBeInTheDocument()
+    })
+
+    it('still says it is waiting when no queue time is known', () => {
+      render(<NoteSummary {...baseProps({ status: 'queued', wait: null })} />)
+      expect(screen.getByText('This summary is waiting')).toBeInTheDocument()
+    })
+
+    it('starts the summary from Summarize now', async () => {
+      const onSummarizeNow = vi.fn().mockResolvedValue('started')
+      render(<NoteSummary {...baseProps({ status: 'queued', onSummarizeNow })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Summarize now' }))
+      expect(onSummarizeNow).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Summarize now' })).toBeEnabled())
+    })
+
+    it('says the summary starts next when another one is still running', async () => {
+      const onSummarizeNow = vi.fn().mockResolvedValue('next')
+      render(<NoteSummary {...baseProps({
+        status: 'queued',
+        wait: { queuedAt: Date.now(), style: 'standard', cause: 'otherNote' },
+        onSummarizeNow,
+      })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Summarize now' }))
+      expect(await screen.findByRole('button', { name: 'Starts next' })).toBeDisabled()
+      expect(screen.getByText(/It starts next, when the summary that is running ends/)).toBeInTheDocument()
     })
 
     it('does not claim to be summarizing', () => {
@@ -186,7 +244,6 @@ describe('NoteSummary', () => {
       expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument()
       rerender(<NoteSummary {...baseProps({ status: 'queued', summary: null })} />)
       expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
-      expect(screen.getByText('Minute is busy with a recording or another summary. This one starts on its own.')).toBeInTheDocument()
     })
 
     it('disables the action item checkboxes', () => {

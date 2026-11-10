@@ -1,7 +1,7 @@
-import { memo } from 'react'
-import type { SummaryDoc } from '../ipc/types'
+import { memo, useEffect, useState } from 'react'
+import type { SummarizeNowOutcome, SummaryDoc } from '../ipc/types'
 import type { SummaryStatus } from '../state/useAppState'
-import { SUMMARY_STYLE_NAMES, summaryCoverageNotice } from '../state/adapters'
+import { formatWait, SUMMARY_STYLE_NAMES, summaryCoverageNotice, summaryWaitReason, type SummaryWait } from '../state/adapters'
 
 export interface NoteSummaryProps {
   /** The note's persisted summary, or `null` if it has none (yet, or ever). */
@@ -18,6 +18,10 @@ export interface NoteSummaryProps {
   onGenerate: () => void
   /** Cancels a queued or running summarization (issue #30). */
   onCancel: () => void
+  /** What the queued card says while `status === 'queued'` (issue #44). */
+  wait: SummaryWait | null
+  /** Starts a queued summary without waiting its turn. */
+  onSummarizeNow: () => Promise<SummarizeNowOutcome | null>
   onToggleAction: (index: number, done: boolean) => void
   onGoSettings: () => void
 }
@@ -25,6 +29,74 @@ export interface NoteSummaryProps {
 /** Every summary is written on this Mac. Older ones did not record their length, so they name none. */
 function styleLabel(summary: SummaryDoc): string {
   return summary.style ? `${SUMMARY_STYLE_NAMES[summary.style]} · made on this Mac` : 'Made on this Mac'
+}
+
+const MINUTE_MS = 60_000
+
+/** The current time, refreshed as each whole minute since `since` passes, so a wait in minutes stays true. */
+function useMinuteClock(since: number | null): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (since === null) return
+    const elapsed = Math.max(0, Date.now() - since)
+    const timer = window.setTimeout(() => setNow(Date.now()), MINUTE_MS - (elapsed % MINUTE_MS))
+    return () => window.clearTimeout(timer)
+  }, [since, now])
+  return now
+}
+
+/**
+ * A summary that waits in the queue (issue #44): how long it has waited,
+ * why, and the two ways out. Keyed by `queuedAt` by its owner, so the clock
+ * starts fresh when the wait does.
+ */
+function QueuedSummaryCard({
+  wait,
+  onCancel,
+  onSummarizeNow,
+}: {
+  wait: SummaryWait | null
+  onCancel: () => void
+  onSummarizeNow: () => Promise<SummarizeNowOutcome | null>
+}) {
+  const queuedAt = wait?.queuedAt ?? null
+  const now = useMinuteClock(queuedAt)
+  const [starting, setStarting] = useState(false)
+  const [startsNext, setStartsNext] = useState(false)
+
+  function summarizeNow() {
+    setStarting(true)
+    void onSummarizeNow()
+      .then(outcome => setStartsNext(outcome === 'next'))
+      .finally(() => setStarting(false))
+  }
+
+  const reason = startsNext
+    ? 'It starts next, when the summary that is running ends. Your recording and transcript are safe.'
+    : wait ? summaryWaitReason(wait) : 'It has not started yet. Your recording and transcript are safe.'
+
+  return (
+    <div className="summary-wait">
+      <div className="summary-wait-text">
+        <p className="summary-wait-title">
+          {queuedAt === null ? 'This summary is waiting' : `This summary has waited ${formatWait(queuedAt, now)}`}
+        </p>
+        <p className="summary-wait-reason">{reason}</p>
+      </div>
+      <span className="summary-wait-actions">
+        <button type="button" className="summary-wait-btn" onClick={onCancel}>Cancel</button>
+        <button
+          type="button"
+          className="summary-wait-btn"
+          data-variant="primary"
+          disabled={starting || startsNext}
+          onClick={summarizeNow}
+        >
+          {startsNext ? 'Starts next' : starting ? 'Starting…' : 'Summarize now'}
+        </button>
+      </span>
+    </div>
+  )
 }
 
 /**
@@ -41,6 +113,8 @@ export const NoteSummary = memo(function NoteSummary({
   llmInstalled,
   onGenerate,
   onCancel,
+  wait,
+  onSummarizeNow,
   onToggleAction,
   onGoSettings,
 }: NoteSummaryProps) {
@@ -62,14 +136,17 @@ export const NoteSummary = memo(function NoteSummary({
                 <span>Summarizing on this Mac · {modelName}</span>
               </>
             )}
-            {queued && <span>Queued. Starts when the engine is free.</span>}
             {!pending && summary && <span>{styleLabel(summary)}</span>}
-            {pending && <button type="button" className="note-link" onClick={onCancel}>Cancel</button>}
+            {running && <button type="button" className="note-link" onClick={onCancel}>Cancel</button>}
             {!pending && summary && status !== 'error' && (
               <button type="button" className="note-link" onClick={onGenerate}>Regenerate</button>
             )}
           </div>
         </div>
+
+        {queued && (
+          <QueuedSummaryCard key={wait?.queuedAt ?? 'unknown'} wait={wait} onCancel={onCancel} onSummarizeNow={onSummarizeNow} />
+        )}
 
         {status === 'error' && (
           <div className="note-notice" data-tone="error" role="alert">
@@ -88,12 +165,8 @@ export const NoteSummary = memo(function NoteSummary({
             <p className="note-body">{summary.summary}</p>
             {summaryCoverageNotice(summary) && <p className="note-muted">{summaryCoverageNotice(summary)}</p>}
           </>
-        ) : status === 'error' ? null : pending ? (
-          <p className="note-muted">
-            {running
-              ? 'The transcript stays available while Minute writes the summary.'
-              : 'Minute is busy with a recording or another summary. This one starts on its own.'}
-          </p>
+        ) : status === 'error' || queued ? null : running ? (
+          <p className="note-muted">The transcript stays available while Minute writes the summary.</p>
         ) : llmInstalled ? (
           <div className="note-empty-summary">
             <p className="note-muted">No summary yet. Minute can write one on this Mac, with the decisions and action items.</p>
