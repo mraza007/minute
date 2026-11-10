@@ -29,6 +29,7 @@
     "allow-toggle-action-item",
     "allow-summarize-note",
     "allow-cancel-summarize",
+    "allow-summarize-now",
     "allow-ask-note",
     "allow-delete-note",
     "allow-restore-note",

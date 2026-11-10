@@ -2823,7 +2823,6 @@ fn auto_trigger_summarize(
         llm::SummarizeDisposition::Queued | llm::SummarizeDisposition::AlreadyQueued
     ) {
         log::info!("auto-summarize: engine busy for note {note_id} — queued");
-        llm::emit_summary_status_queued(app, &note_id);
     }
 }
 
