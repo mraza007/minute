@@ -181,10 +181,11 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           return { segments }
         }
         case 'merge_speakers':
-        case 'mark_speaker_unknown': {
-          const { id, from, into, speaker } = args as { id: string; from?: string; into?: string; speaker?: string }
-          const source = from ?? speaker ?? ''
-          const target = into ?? null
+        case 'mark_speaker_unknown':
+        case 'assign_unknown_turns': {
+          const { id, from, into, speaker, to } = args as { id: string; from?: string; into?: string; speaker?: string; to?: string }
+          const source = cmd === 'assign_unknown_turns' ? null : from ?? speaker ?? ''
+          const target = into ?? to ?? null
           const noteIndex = notes.findIndex(note => note.id === id)
           const meta = noteIndex >= 0 ? notes[noteIndex] : notes[0]
           const current = noteWithTranscript(meta, transcriptOverrides.get(id)).transcript.segments

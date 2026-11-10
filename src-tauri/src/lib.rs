@@ -275,6 +275,20 @@ fn mark_speaker_unknown(
         .map_err(|e| e.to_string())
 }
 
+/// Gives a note's unknown turns to a speaker, existing or new (issue #49).
+/// Returns the same result as `merge_speakers`, and `undo_speaker_merge`
+/// reverses it.
+#[tauri::command]
+fn assign_unknown_turns(
+    state: State<SharedStore>,
+    id: String,
+    to: String,
+) -> Result<SpeakerMergeResult, String> {
+    lock_store(&state)
+        .assign_unknown_turns(&id, &to)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn undo_speaker_merge(
     state: State<SharedStore>,
@@ -766,6 +780,7 @@ pub fn run() {
             delete_voice_profile,
             merge_speakers,
             mark_speaker_unknown,
+            assign_unknown_turns,
             undo_speaker_merge,
             toggle_action_item,
             llm::summarize_note,

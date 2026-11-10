@@ -15,10 +15,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::Result;
 use crate::llm::SummaryDoc;
@@ -29,6 +30,9 @@ pub const DEFAULT_FOLDER: &str = "Meetings";
 pub const DEFAULT_FILE_NAME_TEMPLATE: &str = "{date} - {title}";
 
 const MAX_FILE_STEM_CHARS: usize = 100;
+/// File systems limit a name to 255 bytes, not characters. 240 leaves room
+/// for the ` 999` clash suffix and `.md`.
+const MAX_FILE_STEM_BYTES: usize = 240;
 const MAX_COLLISION_SUFFIX: u32 = 999;
 
 /// Per-note export status, stored in `meta.json` and sent to the frontend.
@@ -76,7 +80,11 @@ pub fn sanitize_file_name(raw: &str) -> String {
         .collect();
     let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
     let capped: String = collapsed.chars().take(MAX_FILE_STEM_CHARS).collect();
-    let trimmed = capped.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    let mut end = capped.len().min(MAX_FILE_STEM_BYTES);
+    while !capped.is_char_boundary(end) {
+        end -= 1;
+    }
+    let trimmed = capped[..end].trim_matches(|c: char| c == '.' || c.is_whitespace());
     if trimmed.is_empty() {
         "Untitled".to_string()
     } else {
@@ -84,13 +92,41 @@ pub fn sanitize_file_name(raw: &str) -> String {
     }
 }
 
-/// `YYYY-MM-DD` of the note's creation, in UTC like the rest of `meta.json`.
-fn date_stamp(created_at: &str) -> Option<String> {
-    let dt = OffsetDateTime::parse(
+/// The UTC offset in force at an instant, or `None` when it is not known.
+pub type OffsetAt = fn(OffsetDateTime) -> Option<UtcOffset>;
+
+/// The system time zone's offset at `at`, daylight time included. This is
+/// the zone the app's own date labels use.
+///
+/// It asks Foundation because `time`'s local-offset lookup refuses to run in
+/// a process with more than one thread on Unix, so it would fail here every
+/// time.
+#[cfg(target_os = "macos")]
+pub fn system_offset_at(at: OffsetDateTime) -> Option<UtcOffset> {
+    use objc2_foundation::{NSDate, NSTimeZone};
+    objc2::rc::autoreleasepool(|_| {
+        let date = NSDate::dateWithTimeIntervalSince1970(at.unix_timestamp() as f64);
+        let seconds = NSTimeZone::localTimeZone().secondsFromGMTForDate(&date);
+        UtcOffset::from_whole_seconds(i32::try_from(seconds).ok()?).ok()
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn system_offset_at(_at: OffsetDateTime) -> Option<UtcOffset> {
+    None
+}
+
+/// `YYYY-MM-DD` of the note's creation as a local calendar day, the day the
+/// app shows. `meta.json` stores UTC, so an evening meeting west of UTC
+/// would otherwise land on the next day. Falls back to the UTC day when the
+/// local offset is not known.
+fn date_stamp(created_at: &str, offset_at: OffsetAt) -> Option<String> {
+    let utc = OffsetDateTime::parse(
         created_at,
         &time::format_description::well_known::Rfc3339,
     )
     .ok()?;
+    let dt = utc.to_offset(offset_at(utc).unwrap_or(UtcOffset::UTC));
     Some(format!(
         "{:04}-{:02}-{:02}",
         dt.year(),
@@ -101,8 +137,8 @@ fn date_stamp(created_at: &str) -> Option<String> {
 
 /// Renders the file name template (`{date}`, `{title}`) and sanitizes the
 /// result. The title is sanitized first so it cannot smuggle a separator in.
-pub fn render_file_stem(template: &str, meta: &NoteMeta) -> String {
-    let date = date_stamp(&meta.created_at).unwrap_or_else(|| "undated".to_string());
+pub fn render_file_stem(template: &str, meta: &NoteMeta, offset_at: OffsetAt) -> String {
+    let date = date_stamp(&meta.created_at, offset_at).unwrap_or_else(|| "undated".to_string());
     let rendered = template
         .replace("{date}", &date)
         .replace("{title}", &sanitize_file_name(&meta.title));
@@ -139,7 +175,7 @@ fn yaml_string(s: &str) -> String {
 /// YAML frontmatter for Obsidian properties: `date`, `title`, `duration` (in
 /// minutes) and `speakers` (distinct named transcript speakers, in order of
 /// first appearance; unknown turns name nobody, so they add no entry).
-pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript) -> String {
+pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript, offset_at: OffsetAt) -> String {
     let mut speakers: Vec<&str> = Vec::new();
     for name in transcript
         .segments
@@ -150,7 +186,7 @@ pub fn render_frontmatter(meta: &NoteMeta, transcript: &Transcript) -> String {
             speakers.push(name);
         }
     }
-    let date = match date_stamp(&meta.created_at) {
+    let date = match date_stamp(&meta.created_at, offset_at) {
         Some(d) => d,
         None => yaml_string(&meta.created_at),
     };
@@ -178,10 +214,11 @@ pub fn render_obsidian_md(
     meta: &NoteMeta,
     summary: Option<&SummaryDoc>,
     transcript: &Transcript,
+    offset_at: OffsetAt,
 ) -> String {
     let body = render_note_md_with(meta, summary, transcript, cfg.include_transcript);
     let mut out = if cfg.add_properties {
-        render_frontmatter(meta, transcript)
+        render_frontmatter(meta, transcript, offset_at)
     } else {
         String::new()
     };
@@ -243,13 +280,16 @@ fn hash_hex(bytes: &[u8]) -> String {
 
 /// Writes `content` to `path` through a hidden temp file in the same folder,
 /// then renames it into place. The dot prefix keeps Obsidian from indexing
-/// the temp file.
+/// the temp file. Each call gets its own temp name, so two saves of one note
+/// never write or rename each other's file. The name does not include the
+/// target's, so it cannot push a long file name past the file system limit.
 fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.minute-tmp"));
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_file_name(format!(
+        ".minute-{}-{}.tmp",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
     if let Err(e) = fs::write(&tmp, content) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -290,6 +330,20 @@ fn free_path(dir: &Path, stem: &str) -> std::result::Result<PathBuf, String> {
     ))
 }
 
+/// Whether `path` really sits in the vault, after symlinks and `..` are
+/// resolved. `vault` is already resolved. The export folder may itself be a
+/// symlink that leaves the vault, which Obsidian supports, so a file in that
+/// folder's real location counts too.
+fn resolves_inside(path: &Path, vault: &Path, export_dir: &Path) -> bool {
+    let Ok(real) = path.canonicalize() else {
+        return false;
+    };
+    real.starts_with(vault)
+        || export_dir
+            .canonicalize()
+            .is_ok_and(|dir| real.starts_with(dir))
+}
+
 /// Writes one note into the vault and returns the new status, or the error
 /// text. Does not touch the store.
 pub fn save_to_vault(
@@ -299,19 +353,20 @@ pub fn save_to_vault(
     transcript: &Transcript,
     trigger: Trigger,
     now: &str,
+    offset_at: OffsetAt,
 ) -> std::result::Result<ObsidianExport, String> {
     let vault = check_vault(&cfg.vault_path)?;
     let mut dir = vault.clone();
     for seg in folder_segments(&cfg.folder)? {
         dir.push(seg);
     }
-    let content = render_obsidian_md(cfg, meta, summary, transcript);
+    let content = render_obsidian_md(cfg, meta, summary, transcript, offset_at);
     let previous = meta.obsidian.as_ref();
 
     let recorded = previous
         .and_then(|p| p.path.as_deref())
         .map(PathBuf::from)
-        .filter(|p| p.starts_with(&vault) && p.is_file());
+        .filter(|p| p.is_file() && resolves_inside(p, &vault, &dir));
 
     let target = match recorded {
         Some(path) => {
@@ -330,7 +385,7 @@ pub fn save_to_vault(
         }
         None => {
             fs::create_dir_all(&dir).map_err(|e| describe_io("create", &dir, &e))?;
-            free_path(&dir, &render_file_stem(&cfg.file_name_template, meta))?
+            free_path(&dir, &render_file_stem(&cfg.file_name_template, meta, offset_at))?
         }
     };
 
@@ -383,6 +438,7 @@ pub fn export_note(
             &transcript,
             trigger,
             &now_rfc3339(),
+            system_offset_at,
         )
     };
     let status = status.unwrap_or_else(|error| ObsidianExport {
@@ -419,6 +475,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
     use time::macros::datetime;
+
+    const UTC: OffsetAt = |_| Some(UtcOffset::UTC);
+
+    /// The fixture note's day in this machine's zone, for tests that go
+    /// through `export_note`.
+    fn system_day(f: &Fixture) -> String {
+        render_file_stem("{date}", &meta_of(f), system_offset_at)
+    }
 
     fn summary() -> SummaryDoc {
         SummaryDoc {
@@ -515,12 +579,56 @@ mod tests {
         let f = fixture(true);
         let meta = meta_of(&f);
         assert_eq!(
-            render_file_stem("{date} - {title}", &meta),
+            render_file_stem("{date} - {title}", &meta, UTC),
             "2026-07-23 - Weekly- Sync-Plan"
         );
-        assert_eq!(render_file_stem("{title}", &meta), "Weekly- Sync-Plan");
-        assert_eq!(render_file_stem("Meeting {date}", &meta), "Meeting 2026-07-23");
-        assert_eq!(render_file_stem("{unknown} {date}", &meta), "{unknown} 2026-07-23");
+        assert_eq!(render_file_stem("{title}", &meta, UTC), "Weekly- Sync-Plan");
+        assert_eq!(render_file_stem("Meeting {date}", &meta, UTC), "Meeting 2026-07-23");
+        assert_eq!(render_file_stem("{unknown} {date}", &meta, UTC), "{unknown} 2026-07-23");
+    }
+
+    #[test]
+    fn an_evening_meeting_west_of_utc_files_under_the_local_day() {
+        let f = fixture(true);
+        let mut meta = meta_of(&f);
+        meta.created_at = "2026-07-24T02:15:30Z".to_string();
+        let pacific: OffsetAt = |_| UtcOffset::from_hms(-7, 0, 0).ok();
+
+        assert_eq!(render_file_stem("{date}", &meta, pacific), "2026-07-23");
+        assert!(render_frontmatter(&meta, &Transcript::default(), pacific)
+            .starts_with("---\ndate: 2026-07-23\n"));
+    }
+
+    #[test]
+    fn the_date_falls_back_to_utc_when_the_local_offset_is_unknown() {
+        let f = fixture(true);
+        let mut meta = meta_of(&f);
+        meta.created_at = "2026-07-24T02:15:30Z".to_string();
+        assert_eq!(render_file_stem("{date}", &meta, |_| None), "2026-07-24");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_offset_is_known_in_a_process_with_many_threads() {
+        let others: Vec<_> = (0..4)
+            .map(|_| std::thread::spawn(|| system_offset_at(OffsetDateTime::now_utc())))
+            .collect();
+        for other in others {
+            assert!(other.join().unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn the_offset_is_asked_for_the_notes_own_instant() {
+        let f = fixture(true);
+        let mut meta = meta_of(&f);
+        meta.created_at = "2026-01-15T07:30:00Z".to_string();
+        // A zone on daylight time today may be on standard time for the note.
+        let by_season: OffsetAt = |at| {
+            let hours = if u8::from(at.month()) < 3 { -8 } else { -7 };
+            UtcOffset::from_hms(hours, 0, 0).ok()
+        };
+        assert_eq!(render_file_stem("{date}", &meta, by_season), "2026-01-14");
     }
 
     #[test]
@@ -536,7 +644,7 @@ mod tests {
         let f = fixture(true);
         let meta = meta_of(&f);
         let transcript = lock_store(&f.store).get_note(&f.id).unwrap().1;
-        let fm = render_frontmatter(&meta, &transcript);
+        let fm = render_frontmatter(&meta, &transcript, UTC);
         assert_eq!(
             fm,
             "---\ndate: 2026-07-23\ntitle: \"Weekly: Sync/Plan\"\nduration: 42\nspeakers:\n  - \"Ada\"\n  - \"Grace\"\n---\n\n"
@@ -563,7 +671,7 @@ mod tests {
                 },
             ],
         };
-        let fm = render_frontmatter(&meta, &transcript);
+        let fm = render_frontmatter(&meta, &transcript, UTC);
         assert!(fm.contains("speakers:\n  - \"Grace\"\n---\n"), "{fm}");
         assert!(!fm.contains(crate::store::UNKNOWN_SPEAKER_LABEL), "{fm}");
     }
@@ -573,7 +681,7 @@ mod tests {
         let f = fixture(true);
         let mut meta = meta_of(&f);
         meta.title = "Say \"hi\" \\ now".to_string();
-        let fm = render_frontmatter(&meta, &Transcript::default());
+        let fm = render_frontmatter(&meta, &Transcript::default(), UTC);
         assert!(fm.contains("title: \"Say \\\"hi\\\" \\\\ now\"\n"));
         assert!(fm.contains("speakers: []\n"));
     }
@@ -584,14 +692,14 @@ mod tests {
         let meta = meta_of(&f);
         let transcript = lock_store(&f.store).get_note(&f.id).unwrap().1;
         let mut cfg = ObsidianSettings::default();
-        let plain = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript);
+        let plain = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript, UTC);
         assert!(plain.starts_with("---\n"));
         assert!(plain.contains("## Summary\n\nWe shipped it."));
         assert!(!plain.contains("## Transcript"));
 
         cfg.add_properties = false;
         cfg.include_transcript = true;
-        let full = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript);
+        let full = render_obsidian_md(&cfg, &meta, Some(&summary()), &transcript, UTC);
         assert!(full.starts_with("# Weekly: Sync/Plan"));
         assert!(full.contains("## Transcript\n\n**Ada** (00:00)\nHello"));
         assert!(full.ends_with('\n'));
@@ -603,13 +711,14 @@ mod tests {
         let status = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
         assert_eq!(status.error, None);
         let path = PathBuf::from(status.path.clone().unwrap());
+        let day = system_day(&f);
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
-            "2026-07-23 - Weekly- Sync-Plan.md"
+            format!("{day} - Weekly- Sync-Plan.md")
         );
         assert!(path.starts_with(f.vault.path().canonicalize().unwrap().join("Meetings")));
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("---\ndate: 2026-07-23\n"));
+        assert!(text.starts_with(&format!("---\ndate: {day}\n")));
         assert_eq!(meta_of(&f).obsidian, Some(status));
         assert_eq!(vault_files(&f).len(), 1, "no temp file left behind");
     }
@@ -631,7 +740,7 @@ mod tests {
         let f = fixture(true);
         let dir = f.vault.path().join("Meetings");
         fs::create_dir_all(&dir).unwrap();
-        let foreign = dir.join("2026-07-23 - Weekly- Sync-Plan.md");
+        let foreign = dir.join(format!("{} - Weekly- Sync-Plan.md", system_day(&f)));
         fs::write(&foreign, "mine").unwrap();
         let status = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
         assert_eq!(fs::read_to_string(&foreign).unwrap(), "mine");
@@ -723,6 +832,91 @@ mod tests {
         assert_ne!(second.path, first.path);
         assert!(Path::new(second.path.as_ref().unwrap()).starts_with(other.path().canonicalize().unwrap()));
         assert!(Path::new(first.path.as_ref().unwrap()).is_file());
+    }
+
+    #[test]
+    fn concurrent_saves_of_one_file_all_succeed_and_leave_one_whole_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        let writers: Vec<_> = (0..8)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let content = format!("writer {writer}\n").repeat(2000);
+                    (0..100)
+                        .filter(|_| write_atomic(&path, &content).is_err())
+                        .count()
+                })
+            })
+            .collect();
+        let failures: usize = writers.into_iter().map(|w| w.join().unwrap()).sum();
+        assert_eq!(failures, 0, "a save lost its temp file to another save");
+
+        let text = fs::read_to_string(&path).unwrap();
+        let first = text.lines().next().unwrap();
+        assert_eq!(text.lines().count(), 2000);
+        assert!(text.lines().all(|line| line == first), "two saves were mixed");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
+    }
+
+    #[test]
+    fn a_long_cjk_title_still_fits_the_file_name_limit() {
+        let title = "会".repeat(100);
+        assert!(sanitize_file_name(&title).len() <= MAX_FILE_STEM_BYTES);
+
+        let f = fixture(true);
+        lock_store(&f.store).rename_note(&f.id, &title).unwrap();
+        let status = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
+        assert_eq!(status.error, None);
+        assert!(Path::new(status.path.as_ref().unwrap()).is_file());
+
+        // The worst case still fits: every clash suffix up to the last one.
+        let name = format!("{} {MAX_COLLISION_SUFFIX}.md", sanitize_file_name(&title));
+        fs::write(f.vault.path().join(name), "fits").unwrap();
+    }
+
+    #[test]
+    fn a_recorded_path_that_resolves_outside_the_vault_is_not_written() {
+        let f = fixture(true);
+        let outside = tempdir().unwrap();
+        let foreign = outside.path().canonicalize().unwrap().join("secret.md");
+        fs::write(&foreign, "not Minute's").unwrap();
+        let vault = f.vault.path().canonicalize().unwrap();
+        let escaping = vault.join("..").join(foreign.strip_prefix(vault.parent().unwrap()).unwrap());
+        assert!(escaping.starts_with(&vault) && escaping.is_file(), "fixture: lexically inside");
+        lock_store(&f.store)
+            .set_obsidian_export(
+                &f.id,
+                ObsidianExport {
+                    path: Some(escaping.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let status = export_note(&f.store, &f.settings, &f.id, Trigger::Manual).unwrap();
+
+        assert_eq!(status.error, None);
+        assert_eq!(fs::read_to_string(&foreign).unwrap(), "not Minute's");
+        assert!(Path::new(status.path.as_ref().unwrap())
+            .canonicalize()
+            .unwrap()
+            .starts_with(vault.join("Meetings")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_export_folder_keeps_one_file_across_saves() {
+        let f = fixture(true);
+        let real = tempdir().unwrap();
+        std::os::unix::fs::symlink(real.path(), f.vault.path().join("Meetings")).unwrap();
+
+        let first = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
+        let second = export_note(&f.store, &f.settings, &f.id, Trigger::Manual).unwrap();
+
+        assert_eq!(first.error, None);
+        assert_eq!(second.path, first.path);
+        assert_eq!(fs::read_dir(real.path()).unwrap().count(), 1);
     }
 
     #[test]

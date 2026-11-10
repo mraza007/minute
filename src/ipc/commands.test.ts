@@ -247,6 +247,15 @@ describe('ipc/commands', () => {
     expect(calls[0].args).toEqual({ id: '20260722-120000', speaker: 'Speaker 3' })
   })
 
+  it('assignUnknownTurns invokes assign_unknown_turns with the destination name', async () => {
+    const calls = captureIPC()
+
+    await commands.assignUnknownTurns('20260722-120000', 'Sam')
+
+    expect(calls[0].cmd).toBe('assign_unknown_turns')
+    expect(calls[0].args).toEqual({ id: '20260722-120000', to: 'Sam' })
+  })
+
   it('undoSpeakerMerge passes the exact backend-issued undo token', async () => {
     const calls = captureIPC()
     const undo = {

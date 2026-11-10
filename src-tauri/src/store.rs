@@ -233,13 +233,19 @@ pub struct Transcript {
 /// Exact information required to reverse one speaker merge without
 /// accidentally renaming turns that already belonged to the destination
 /// speaker before the merge. `into` is [`Speaker::Unknown`] when the merge
-/// was "mark these turns as unknown" (issue #49).
+/// was "mark these turns as unknown" (issue #49), and `from` is when it gave
+/// the unknown turns to a speaker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerMergeUndo {
-    pub from: String,
+    pub from: Speaker,
     pub into: Speaker,
     pub segment_indices: Vec<usize>,
+    /// The turns in `segment_indices` the user had marked unknown, when
+    /// `from` is unknown. Undo pins these again and no others: a turn the
+    /// diarizer left unknown stays free for a re-run to label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_unknown: Vec<usize>,
     /// Indices into the summary's `speaker_mentions` the merge rewrote.
     #[serde(default)]
     pub summary_mentions: Vec<usize>,
@@ -1418,7 +1424,7 @@ impl Store {
                 "speaker names cannot be empty".to_string(),
             ));
         }
-        self.reassign_speaker(id, from, Speaker::from(into))
+        self.reassign_speaker(id, Speaker::from(from.trim()), Speaker::from(into))
     }
 
     /// "Mark these turns as unknown" (issue #49): every turn attributed to
@@ -1426,12 +1432,31 @@ impl Store {
     /// so it returns the same undo token and `undo_speaker_merge` reverses
     /// it.
     pub fn mark_speaker_unknown(&self, id: &str, speaker: &str) -> Result<SpeakerMergeResult> {
-        self.reassign_speaker(id, speaker, Speaker::Unknown)
+        self.reassign_speaker(id, Speaker::from(speaker.trim()), Speaker::Unknown)
     }
 
-    fn reassign_speaker(&self, id: &str, from: &str, into: Speaker) -> Result<SpeakerMergeResult> {
-        let from = from.trim();
-        if from.is_empty() {
+    /// Gives every unknown turn to `to` (issue #49): the way back from
+    /// "mark as unknown" once its undo token is stale. `to` is a speaker the
+    /// transcript already has, or a new name. The turns stop being pinned
+    /// unknown, the summary's mentions of them now name `to`, and
+    /// `undo_speaker_merge` reverses it.
+    pub fn assign_unknown_turns(&self, id: &str, to: &str) -> Result<SpeakerMergeResult> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err(MinuteError::Other(
+                "speaker name cannot be empty".to_string(),
+            ));
+        }
+        if to.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL) {
+            return Err(MinuteError::Other(format!(
+                "\"{UNKNOWN_SPEAKER_LABEL}\" is reserved; choose a speaker name"
+            )));
+        }
+        self.reassign_speaker(id, Speaker::Unknown, Speaker::from(to))
+    }
+
+    fn reassign_speaker(&self, id: &str, from: Speaker, into: Speaker) -> Result<SpeakerMergeResult> {
+        if from.name().is_some_and(str::is_empty) {
             return Err(MinuteError::Other(
                 "speaker names cannot be empty".to_string(),
             ));
@@ -1443,7 +1468,10 @@ impl Store {
         }
 
         let mut transcript = self.read_transcript(id)?;
-        if into != Speaker::Unknown
+        // Only a merge of two named speakers needs its destination to exist:
+        // unknown turns may go to a new name.
+        if from != Speaker::Unknown
+            && into != Speaker::Unknown
             && !transcript
                 .segments
                 .iter()
@@ -1461,7 +1489,10 @@ impl Store {
             .filter_map(|(index, segment)| (segment.speaker == from).then_some(index))
             .collect::<Vec<_>>();
         if segment_indices.is_empty() {
-            return Err(MinuteError::Other(format!("speaker not found: {from}")));
+            return Err(MinuteError::Other(format!(
+                "speaker not found: {}",
+                from.display()
+            )));
         }
         for index in &segment_indices {
             transcript.segments[*index].speaker = into.clone();
@@ -1469,28 +1500,37 @@ impl Store {
         let mut summary = self.read_summary(id)?;
         let summary_mentions = summary
             .as_mut()
-            .map(|summary| crate::mentions::retarget(summary, &Speaker::from(from), &into, None))
+            .map(|summary| crate::mentions::retarget(summary, &from, &into, None))
             .unwrap_or_default();
         let summary_fingerprint = summary.as_ref().map(crate::mentions::fingerprint);
         let rewritten = summary.as_ref().filter(|_| !summary_mentions.is_empty());
         let mut meta = self.persist_speaker_edit(id, &transcript, rewritten)?;
-        match &into {
-            Speaker::Named(name) => {
-                meta.speaker_aliases.insert(from.to_string(), name.clone());
+        let mut pinned_unknown = Vec::new();
+        match (&from, &into) {
+            (Speaker::Named(from), Speaker::Named(into)) => {
+                meta.speaker_aliases.insert(from.clone(), into.clone());
             }
-            Speaker::Unknown => meta.unknown_turns.extend(&segment_indices),
+            (_, Speaker::Unknown) => meta.unknown_turns.extend(&segment_indices),
+            (Speaker::Unknown, Speaker::Named(_)) => {
+                pinned_unknown = segment_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| meta.unknown_turns.remove(index))
+                    .collect();
+            }
         }
         // Issue #32: merging away an auto-applied name answers its notice
         // — without this, the "auto-renamed — Undo" chip would linger and
         // its Undo (a rename from a name that no longer exists) would
         // always fail.
         meta.speaker_auto_applied
-            .retain(|_, applied| applied.name != from);
+            .retain(|_, applied| from != applied.name);
         self.write_meta(&meta)?;
         let mut undo = SpeakerMergeUndo {
-            from: from.to_string(),
+            from,
             into,
             segment_indices,
+            pinned_unknown,
             summary_mentions,
             summary_fingerprint,
             checksum: String::new(),
@@ -1503,8 +1543,9 @@ impl Store {
         })
     }
 
-    /// Reverses exactly the turns changed by [`Store::merge_speakers`] or
-    /// [`Store::mark_speaker_unknown`], and the summary mentions it
+    /// Reverses exactly the turns changed by [`Store::merge_speakers`],
+    /// [`Store::mark_speaker_unknown`] or [`Store::assign_unknown_turns`],
+    /// and the summary mentions it
     /// rewrote while the summary is unchanged since. The full token is
     /// validated before any mutation reaches disk.
     pub fn undo_speaker_merge(
@@ -1512,8 +1553,8 @@ impl Store {
         id: &str,
         undo: &SpeakerMergeUndo,
     ) -> Result<SpeakerMergeUndoResult> {
-        let into_blank = undo.into.name().is_some_and(|name| name.trim().is_empty());
-        if undo.from.trim().is_empty() || into_blank || undo.into == undo.from {
+        let blank = |speaker: &Speaker| speaker.name().is_some_and(|name| name.trim().is_empty());
+        if blank(&undo.from) || blank(&undo.into) || undo.into == undo.from {
             return Err(MinuteError::Other(
                 "invalid speaker merge undo token".to_string(),
             ));
@@ -1546,7 +1587,7 @@ impl Store {
                 )));
             }
         }
-        let from = Speaker::from(undo.from.as_str());
+        let from = &undo.from;
         for index in &undo.segment_indices {
             transcript.segments[*index].speaker = from.clone();
         }
@@ -1557,22 +1598,25 @@ impl Store {
             let changed = crate::mentions::retarget(
                 &mut summary,
                 &undo.into,
-                &from,
+                from,
                 Some(&undo.summary_mentions),
             );
             (!changed.is_empty()).then_some(summary)
         });
         let mut meta = self.persist_speaker_edit(id, &transcript, summary.as_ref())?;
-        match &undo.into {
-            Speaker::Named(into) => {
-                if meta.speaker_aliases.get(&undo.from) == Some(into) {
-                    meta.speaker_aliases.remove(&undo.from);
+        match (from, &undo.into) {
+            (Speaker::Named(from), Speaker::Named(into)) => {
+                if meta.speaker_aliases.get(from) == Some(into) {
+                    meta.speaker_aliases.remove(from);
                 }
             }
-            Speaker::Unknown => {
+            (_, Speaker::Unknown) => {
                 for index in &undo.segment_indices {
                     meta.unknown_turns.remove(index);
                 }
+            }
+            (Speaker::Unknown, Speaker::Named(_)) => {
+                meta.unknown_turns.extend(&undo.pinned_unknown);
             }
         }
         self.write_meta(&meta)?;
@@ -2091,6 +2135,7 @@ fn speaker_merge_undo_checksum(
         &undo.from,
         &undo.into,
         &undo.segment_indices,
+        &undo.pinned_unknown,
         &undo.summary_mentions,
         &undo.summary_fingerprint,
         transcript,
@@ -3030,6 +3075,7 @@ mod tests {
                 from: "Speaker 1".into(),
                 into: "Sam".into(),
                 segment_indices: vec![0, 2],
+                pinned_unknown: Vec::new(),
                 summary_mentions: Vec::new(),
                 summary_fingerprint: None,
                 checksum: merged.undo.checksum.clone(),
@@ -5948,6 +5994,124 @@ mod tests {
         assert!(undone.meta.unknown_turns.is_empty());
         assert_eq!(undone.meta.speakers, 3);
         assert_eq!(store.read_summary(&id).unwrap().unwrap(), summary_before);
+    }
+
+    fn speakers_in(store: &Store, id: &str) -> Vec<Speaker> {
+        store
+            .read_transcript(id)
+            .unwrap()
+            .segments
+            .into_iter()
+            .map(|segment| segment.speaker)
+            .collect()
+    }
+
+    #[test]
+    fn unknown_turns_go_to_an_existing_speaker_once_the_undo_is_stale() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let marked = store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+        store.rename_speaker(&id, "Speaker 1", "Sam").unwrap();
+        assert!(store.undo_speaker_merge(&id, &marked.undo).is_err());
+        let transcript_before = store.read_transcript(&id).unwrap();
+        let summary_before = store.read_summary(&id).unwrap().unwrap();
+
+        let assigned = store.assign_unknown_turns(&id, " Sam ").unwrap();
+
+        assert_eq!(assigned.transcript.segments[2].speaker, "Sam");
+        assert!(assigned.meta.unknown_turns.is_empty());
+        assert_eq!(assigned.meta.speakers, 2);
+        let summary = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(summary.decisions[0], "Sam owns the launch date.");
+        assert_eq!(summary.action_items[0].text, "Speaker 2 sends the deck to Sam.");
+
+        let undone = store.undo_speaker_merge(&id, &assigned.undo).unwrap();
+        assert_eq!(undone.transcript, transcript_before);
+        assert_eq!(undone.meta.unknown_turns, BTreeSet::from([2]));
+        assert_eq!(store.read_summary(&id).unwrap().unwrap(), summary_before);
+    }
+
+    #[test]
+    fn unknown_turns_go_to_a_new_name() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+
+        let assigned = store.assign_unknown_turns(&id, "Dana").unwrap();
+
+        let token = serde_json::to_value(&assigned.undo).unwrap();
+        assert!(token["from"].is_null(), "the token reads from: null on the wire");
+        assert_eq!(token["into"], "Dana");
+        assert_eq!(speakers_in(&store, &id)[2], "Dana");
+        assert_eq!(assigned.meta.speakers, 3);
+        assert!(assigned.meta.unknown_turns.is_empty());
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().decisions[0],
+            "Dana owns the launch date."
+        );
+        assert!(fs::read_to_string(store.note_md_path(&id))
+            .unwrap()
+            .contains("Dana owns the launch date."));
+
+        // The turns are no longer pinned unknown, so a re-run labels them.
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    "Speaker 2".into(),
+                    "Speaker 3".into(),
+                    "Speaker 1".into(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(speakers_in(&store, &id)[2], "Speaker 3");
+    }
+
+    #[test]
+    fn assigning_unknown_turns_rejects_a_bad_name_and_a_note_without_any() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        assert!(store.assign_unknown_turns(&id, "Dana").is_err(), "no unknown turns");
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+        let before = store.read_transcript(&id).unwrap();
+
+        assert!(store.assign_unknown_turns(&id, "  ").is_err());
+        assert!(store.assign_unknown_turns(&id, "unknown speaker").is_err());
+        assert_eq!(store.read_transcript(&id).unwrap(), before);
+        assert_eq!(store.read_meta(&id).unwrap().unknown_turns, BTreeSet::from([2]));
+    }
+
+    #[test]
+    fn undoing_an_assignment_pins_only_the_turns_the_user_had_marked() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        // Turn 1 is unknown because the diarizer heard no one, turn 2
+        // because the user said so.
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    Speaker::Unknown,
+                    "Speaker 3".into(),
+                    "Speaker 1".into(),
+                ],
+            )
+            .unwrap();
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+
+        let assigned = store.assign_unknown_turns(&id, "Speaker 1").unwrap();
+        assert_eq!(assigned.undo.segment_indices, vec![1, 2]);
+        let undone = store.undo_speaker_merge(&id, &assigned.undo).unwrap();
+
+        assert_eq!(undone.transcript.segments[1].speaker, Speaker::Unknown);
+        assert_eq!(undone.transcript.segments[2].speaker, Speaker::Unknown);
+        assert_eq!(undone.meta.unknown_turns, BTreeSet::from([2]));
     }
 
     #[test]
