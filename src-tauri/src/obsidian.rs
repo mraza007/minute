@@ -95,13 +95,38 @@ pub fn sanitize_file_name(raw: &str) -> String {
 /// The UTC offset in force at an instant, or `None` when it is not known.
 pub type OffsetAt = fn(OffsetDateTime) -> Option<UtcOffset>;
 
-/// `YYYY-MM-DD` of the note's creation, in UTC like the rest of `meta.json`.
-fn date_stamp(created_at: &str, _offset_at: OffsetAt) -> Option<String> {
-    let dt = OffsetDateTime::parse(
+/// The system time zone's offset at `at`, daylight time included. This is
+/// the zone the app's own date labels use.
+///
+/// It asks Foundation because `time`'s local-offset lookup refuses to run in
+/// a process with more than one thread on Unix, so it would fail here every
+/// time.
+#[cfg(target_os = "macos")]
+pub fn system_offset_at(at: OffsetDateTime) -> Option<UtcOffset> {
+    use objc2_foundation::{NSDate, NSTimeZone};
+    objc2::rc::autoreleasepool(|_| {
+        let date = NSDate::dateWithTimeIntervalSince1970(at.unix_timestamp() as f64);
+        let seconds = NSTimeZone::localTimeZone().secondsFromGMTForDate(&date);
+        UtcOffset::from_whole_seconds(i32::try_from(seconds).ok()?).ok()
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn system_offset_at(_at: OffsetDateTime) -> Option<UtcOffset> {
+    None
+}
+
+/// `YYYY-MM-DD` of the note's creation as a local calendar day, the day the
+/// app shows. `meta.json` stores UTC, so an evening meeting west of UTC
+/// would otherwise land on the next day. Falls back to the UTC day when the
+/// local offset is not known.
+fn date_stamp(created_at: &str, offset_at: OffsetAt) -> Option<String> {
+    let utc = OffsetDateTime::parse(
         created_at,
         &time::format_description::well_known::Rfc3339,
     )
     .ok()?;
+    let dt = utc.to_offset(offset_at(utc).unwrap_or(UtcOffset::UTC));
     Some(format!(
         "{:04}-{:02}-{:02}",
         dt.year(),
@@ -413,7 +438,7 @@ pub fn export_note(
             &transcript,
             trigger,
             &now_rfc3339(),
-            |_| None,
+            system_offset_at,
         )
     };
     let status = status.unwrap_or_else(|error| ObsidianExport {
@@ -452,6 +477,12 @@ mod tests {
     use time::macros::datetime;
 
     const UTC: OffsetAt = |_| Some(UtcOffset::UTC);
+
+    /// The fixture note's day in this machine's zone, for tests that go
+    /// through `export_note`.
+    fn system_day(f: &Fixture) -> String {
+        render_file_stem("{date}", &meta_of(f), system_offset_at)
+    }
 
     fn summary() -> SummaryDoc {
         SummaryDoc {
@@ -576,6 +607,17 @@ mod tests {
         assert_eq!(render_file_stem("{date}", &meta, |_| None), "2026-07-24");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_offset_is_known_in_a_process_with_many_threads() {
+        let others: Vec<_> = (0..4)
+            .map(|_| std::thread::spawn(|| system_offset_at(OffsetDateTime::now_utc())))
+            .collect();
+        for other in others {
+            assert!(other.join().unwrap().is_some());
+        }
+    }
+
     #[test]
     fn the_offset_is_asked_for_the_notes_own_instant() {
         let f = fixture(true);
@@ -669,13 +711,14 @@ mod tests {
         let status = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
         assert_eq!(status.error, None);
         let path = PathBuf::from(status.path.clone().unwrap());
+        let day = system_day(&f);
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
-            "2026-07-23 - Weekly- Sync-Plan.md"
+            format!("{day} - Weekly- Sync-Plan.md")
         );
         assert!(path.starts_with(f.vault.path().canonicalize().unwrap().join("Meetings")));
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("---\ndate: 2026-07-23\n"));
+        assert!(text.starts_with(&format!("---\ndate: {day}\n")));
         assert_eq!(meta_of(&f).obsidian, Some(status));
         assert_eq!(vault_files(&f).len(), 1, "no temp file left behind");
     }
@@ -697,7 +740,7 @@ mod tests {
         let f = fixture(true);
         let dir = f.vault.path().join("Meetings");
         fs::create_dir_all(&dir).unwrap();
-        let foreign = dir.join("2026-07-23 - Weekly- Sync-Plan.md");
+        let foreign = dir.join(format!("{} - Weekly- Sync-Plan.md", system_day(&f)));
         fs::write(&foreign, "mine").unwrap();
         let status = export_note(&f.store, &f.settings, &f.id, Trigger::Auto).unwrap();
         assert_eq!(fs::read_to_string(&foreign).unwrap(), "mine");

@@ -179,7 +179,9 @@ objc2-core-graphics = { version = "=0.3.2", default-features = false, features =
 # across the whole dependency graph), confirmed by the crate's own
 # `Cargo.toml`. If those SCK features are ever narrowed, this entry would
 # need `"NSArray"`/`"NSError"`/`"NSString"` added explicitly.
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
+# `NSDate`/`NSTimeZone`: the local calendar day for Obsidian file names
+# (`obsidian.rs::system_offset_at`).
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSDate", "NSProcessInfo", "NSTimeZone"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
