@@ -1140,7 +1140,8 @@ mod tests {
 
         let stt = snapshot("2026-11-10T08:00:00Z", whisper_entries(&tree(TREE_WHISPER)));
         let shown = present(Some(stt), None, &known, None, dir.path());
-        assert_eq!(shown.entries.len(), 30);
+        assert_eq!(shown.entries.len(), 26);
+        assert!(!browse_ids(&shown).contains(&"hf:ggerganov/whisper.cpp/ggml-medium-q5_0.bin"));
         assert!(!browse_ids(&shown).contains(&"hf:ggerganov/whisper.cpp/ggml-small.bin"));
         assert_eq!(shown.fetched_at.as_deref(), Some("2026-11-10T08:00:00Z"));
         assert_eq!(shown.unsupported_count, 3);

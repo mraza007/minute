@@ -164,12 +164,14 @@ pub fn detect_hardware() -> Hardware {
 /// total and safe even against an empty catalog slice (e.g. if the caller's
 /// `load_catalog()` failed) — it still returns a well-formed `Recommendation`.
 pub fn recommend(catalog: &[CatalogEntry], hw: &Hardware) -> Recommendation {
+    // The compact (q5) Whisper files wrote the same text as the full ones on
+    // the eval clip, at about a third of the download.
     let (stt_tier, llm_tier) = if hw.total_ram_gb < 16 {
         ("whisper-small", "qwen3.5-4b")
     } else if hw.total_ram_gb < 32 {
-        ("whisper-medium", "gemma-4-e4b")
+        ("whisper-medium-q5", "gemma-4-e4b")
     } else {
-        ("whisper-large-v3-turbo", "qwen3.5-9b")
+        ("whisper-large-v3-turbo-q5", "qwen3.5-9b")
     };
 
     let fits = |id: &str| -> bool {
@@ -185,7 +187,7 @@ pub fn recommend(catalog: &[CatalogEntry], hw: &Hardware) -> Recommendation {
     let stt = if fits(stt_tier) {
         stt_tier
     } else {
-        "whisper-medium"
+        "whisper-medium-q5"
     };
     let llm = if fits(llm_tier) {
         llm_tier
@@ -762,13 +764,13 @@ mod tests {
     }
 
     #[test]
-    fn catalog_parses_with_nine_entries() {
+    fn catalog_parses_with_thirteen_entries() {
         let catalog = load_catalog().expect("catalog.json should parse");
-        assert_eq!(catalog.len(), 9);
+        assert_eq!(catalog.len(), 13);
     }
 
     #[test]
-    fn catalog_has_three_stt_four_llm_and_two_diarization_entries() {
+    fn catalog_has_seven_stt_four_llm_and_two_diarization_entries() {
         let catalog = load_catalog().unwrap();
         let stt = catalog.iter().filter(|e| e.kind == ModelKind::Stt).count();
         let llm = catalog.iter().filter(|e| e.kind == ModelKind::Llm).count();
@@ -776,7 +778,7 @@ mod tests {
             .iter()
             .filter(|e| e.kind == ModelKind::Diarization)
             .count();
-        assert_eq!(stt, 3);
+        assert_eq!(stt, 7);
         assert_eq!(llm, 4);
         assert_eq!(diar, 2);
     }
@@ -857,7 +859,7 @@ mod tests {
             cores: 8,
         };
         let rec = recommend(&catalog(), &hw);
-        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.stt, "whisper-medium-q5");
         assert_eq!(rec.llm, "gemma-4-e4b");
     }
 
@@ -869,7 +871,7 @@ mod tests {
             cores: 8,
         };
         let rec = recommend(&catalog(), &hw);
-        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.stt, "whisper-medium-q5");
         assert_eq!(rec.llm, "gemma-4-e4b");
     }
 
@@ -881,7 +883,7 @@ mod tests {
             cores: 8,
         };
         let rec = recommend(&catalog(), &hw);
-        assert_eq!(rec.stt, "whisper-large-v3-turbo");
+        assert_eq!(rec.stt, "whisper-large-v3-turbo-q5");
         assert_eq!(rec.llm, "qwen3.5-9b");
     }
 
@@ -893,7 +895,7 @@ mod tests {
             cores: 8,
         };
         let rec = recommend(&catalog(), &hw);
-        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.stt, "whisper-medium-q5");
         assert_eq!(rec.llm, "qwen3.5-9b");
     }
 
@@ -917,7 +919,7 @@ mod tests {
             cores: 8,
         };
         let rec = recommend(&catalog(), &hw);
-        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.stt, "whisper-medium-q5");
         assert_eq!(rec.llm, "gemma-4-e4b");
     }
 
@@ -934,10 +936,10 @@ mod tests {
         };
         let partial: Vec<CatalogEntry> = catalog()
             .into_iter()
-            .filter(|e| e.id != "whisper-large-v3-turbo")
+            .filter(|e| e.id != "whisper-large-v3-turbo-q5")
             .collect();
         let rec = recommend(&partial, &hw);
-        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.stt, "whisper-medium-q5");
         assert_eq!(rec.llm, "qwen3.5-9b");
     }
 
@@ -949,7 +951,7 @@ mod tests {
             cores: 8,
         };
         let rec = recommend(&[], &hw);
-        assert_eq!(rec.stt, "whisper-medium");
+        assert_eq!(rec.stt, "whisper-medium-q5");
         assert_eq!(rec.llm, "qwen3.5-4b");
     }
 
