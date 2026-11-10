@@ -10,6 +10,7 @@
 // app, not something this capture tool needs, and it would double-fire the
 // scenario-driving side effects below (button clicks, emitted events).
 
+import './fixedClock'
 import { createRoot } from 'react-dom/client'
 import { mockConvertFileSrc } from '@tauri-apps/api/mocks'
 import '../index.css'
