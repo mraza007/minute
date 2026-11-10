@@ -5,6 +5,7 @@ export type ModelSuitabilityTone =
   | 'comfortable'
   | 'constrained'
   | 'unsupported'
+  | 'unverified'
   | 'unknown'
 
 export interface ModelSuitabilityResult {
@@ -50,6 +51,16 @@ export function assessModelSuitability(
       tone: 'unsupported',
       label: 'Below minimum',
       detail: `Needs ${entry.minRamGb} GB memory; this Mac has ${hardware.totalRamGb} GB.`,
+    }
+  }
+
+  // Trust outranks memory fit until the file is on this Mac: the user has to
+  // decide about the publisher before the download, not after.
+  if (entry.origin.kind === 'huggingFace' && !entry.origin.trusted && entry.state !== 'installed') {
+    return {
+      tone: 'unverified',
+      label: 'Unknown publisher',
+      detail: `Minute has not checked files from ${entry.origin.publisher}.`,
     }
   }
 
