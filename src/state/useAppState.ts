@@ -33,6 +33,7 @@ import {
 } from '../components/recordingDiagnostics'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
 import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
+import { useToday } from './useToday'
 import { useModelManager } from './useModelManager'
 import { useNoteDetail } from './useNoteDetail'
 import { useTauriEvent } from './useTauriEvent'
@@ -844,7 +845,8 @@ export function useAppState() {
     [],
   )
 
-  const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
+  const today = useToday()
+  const sidebarNotes = useMemo(() => notesToSidebarItems(notes, today), [notes, today])
 
   const statsLine = useMemo(() => {
     const totalBytes = storage ? storage.modelsBytes + storage.audioBytes + storage.notesBytes : 0
@@ -1742,6 +1744,8 @@ export function useAppState() {
     selectedAudioPath: noteDetail.selectedAudioPath,
     summaryStatus: noteDetail.summaryStatus,
     summaryError: noteDetail.summaryError,
+    summaryQueuedAt: noteDetail.summaryQueuedAt,
+    summarizeNow: noteDetail.summarizeNow,
     diarStatus: noteDetail.diarStatus,
     diarError: noteDetail.diarError,
     detectSpeakers: noteDetail.detectSpeakers,

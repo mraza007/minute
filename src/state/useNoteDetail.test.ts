@@ -359,6 +359,62 @@ describe('useNoteDetail', () => {
     })
   })
 
+  describe('waiting summaries (issue #44)', () => {
+    it('tracks when a queued note started waiting and forgets it once the summary runs', async () => {
+      setupIPC()
+      const { result } = setup()
+
+      await act(async () => {
+        await emit('summary-status', { noteId: 'note-a', state: 'queued', error: null, queuedAt: 1_786_650_000_000 })
+      })
+      expect(result.current.summaryStatus['note-a']).toBe('queued')
+      expect(result.current.summaryQueuedAt['note-a']).toBe(1_786_650_000_000)
+
+      await act(async () => {
+        await emit('summary-status', { noteId: 'note-a', state: 'running', error: null })
+      })
+      expect(result.current.summaryQueuedAt).toEqual({})
+    })
+
+    it('summarizeNow asks the backend to start the note and reports what it did', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      mockIPC(
+        (cmd, args) => {
+          calls.push({ cmd, args })
+          return cmd === 'summarize_now' ? 'next' : null
+        },
+        { shouldMockEvents: true },
+      )
+      const { result } = setup()
+
+      let outcome: unknown
+      await act(async () => {
+        outcome = await result.current.summarizeNow('note-a')
+      })
+
+      expect(outcome).toBe('next')
+      expect(calls).toContainEqual({ cmd: 'summarize_now', args: { id: 'note-a' } })
+    })
+
+    it('summarizeNow surfaces a backend failure as the note error', async () => {
+      mockIPC(
+        cmd => {
+          if (cmd === 'summarize_now') throw 'no summary model installed'
+          return null
+        },
+        { shouldMockEvents: true },
+      )
+      const { result } = setup()
+
+      await act(async () => {
+        await result.current.summarizeNow('note-a')
+      })
+
+      expect(result.current.summaryStatus['note-a']).toBe('error')
+      expect(result.current.summaryError['note-a']).toBe('no summary model installed')
+    })
+  })
+
   describe('pruneNoteDetail', () => {
     it('removes the note from summaryStatus/summaryError/askHistory/askStatus (verified via the maps themselves, and by reselecting the pruned note) without touching another note, and leaves llmBusy unaffected', async () => {
       setupIPC()

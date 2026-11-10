@@ -374,6 +374,21 @@ describe('useAppState', () => {
     expect(result.current.statsLine).toBe('2 notes · 800 MB')
   })
 
+  it('moves a note from Today to Yesterday when the app stays open past midnight (issue #44)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 7, 13, 16, 0))
+    setupIPC({ notes: [noteFixture({ createdAt: new Date(2026, 7, 13, 15, 0).toISOString() })] })
+    const result = await loaded()
+    expect(result.current.sidebarNotes[0].group).toBe('Today')
+
+    vi.setSystemTime(new Date(2026, 7, 14, 8, 40))
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(result.current.sidebarNotes[0].group).toBe('Yesterday')
+  })
+
   it('handles an empty note library', async () => {
     setupIPC({ notes: [] })
     const result = await loaded()

@@ -230,6 +230,8 @@ export interface SummaryDoc {
   summary: string
   /** Issue #41: the transcript was cut to fit the model's context window, so this summary covers only part of the recording. Optional so cached pre-#41 fixtures/payloads stay valid; absent means false. */
   truncated?: boolean
+  /** Issue #45: the model's answer stopped before it was finished, so the last items of this summary are missing. Absent means false. */
+  cutOff?: boolean
   /**
    * Per-topic breakdown, empty unless the note was summarized under the
    * Detailed style (issue #14). Always present in JSON from `get_note`
@@ -486,12 +488,26 @@ export interface SttStatusEvent {
  * generation and will start on its own — never a terminal state, always
  * followed by `'running'` when its turn comes. Emitted by whoever enqueued
  * rather than by a worker, since no worker exists for that note yet.
+ *
+ * `queuedAt` is set only on `'queued'`: when the note joined the queue, in
+ * milliseconds since the Unix epoch. A repeat request for a note that is
+ * already waiting keeps the original time.
  */
 export interface SummaryStatusEvent {
   noteId: string
   state: 'queued' | 'running' | 'done' | 'error'
   error: string | null
+  queuedAt?: number | null
 }
+
+/**
+ * `llm.rs::SummarizeNowOutcome` — what `summarize_now` did. `'started'`: the
+ * engine was free and the summary is running. `'next'`: another generation
+ * is running, so the note moved to the front of the queue and starts when
+ * that one ends, even during a recording. `'notQueued'`: the note was not
+ * waiting (it already started, or was cancelled).
+ */
+export type SummarizeNowOutcome = 'started' | 'next' | 'notQueued'
 
 /**
  * `llm.rs::AskStatusPayload` — event `ask-status`. Ask-your-notes'

@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, SummaryStatusEvent, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -25,27 +25,44 @@ export interface ModelCardInfo {
   progressPercent?: number
 }
 
-function startOfUTCDay(d: Date): number {
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+const dayFormatters = new Map<string, Intl.DateTimeFormat>()
+
+/** The calendar date `d` falls on in `timeZone`, as whole days since the epoch. */
+function calendarDay(d: Date, timeZone: string): number {
+  let formatter = dayFormatters.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' })
+    dayFormatters.set(timeZone, formatter)
+  }
+  const parts: Record<string, number> = {}
+  for (const part of formatter.formatToParts(d)) parts[part.type] = Number(part.value)
+  return Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000
+}
+
+function systemTimeZone(): string {
+  return new Intl.DateTimeFormat().resolvedOptions().timeZone
 }
 
 /**
- * Today / Yesterday / Last week / <Month name> — bucketed off whole UTC
- * calendar days (not wall-clock 24h windows) so a note from 11pm yesterday
- * and one from 1am today both land correctly regardless of what time "now"
- * is. UTC (rather than local) keeps the boundary deterministic in tests
- * independent of the machine's timezone.
+ * Today / Yesterday / Last week / <Month name> — bucketed off whole
+ * calendar days in the reader's time zone, not wall-clock 24h windows and
+ * not UTC days: a meeting at 5:30 pm in Los Angeles is already "tomorrow"
+ * in UTC, so UTC buckets showed it under Today for the whole next day
+ * (issue #44).
  */
-function noteGroup(createdAt: Date, now: Date): string {
-  const diffDays = Math.round((startOfUTCDay(now) - startOfUTCDay(createdAt)) / 86_400_000)
+function noteGroup(createdAt: Date, now: Date, timeZone: string): string {
+  // `formatToParts` throws on an invalid date; keep the label the sidebar
+  // showed for one before.
+  if (Number.isNaN(createdAt.getTime())) return 'Invalid Date'
+  const diffDays = calendarDay(now, timeZone) - calendarDay(createdAt, timeZone)
   if (diffDays <= 0) return 'Today'
   if (diffDays === 1) return 'Yesterday'
   if (diffDays < 7) return 'Last week'
-  return createdAt.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })
+  return createdAt.toLocaleString('en-US', { month: 'long', timeZone })
 }
 
-/** Maps one stored note's metadata to the sidebar row shape. */
-export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
+/** Maps one stored note's metadata to the sidebar row shape. `timeZone` defaults to the system zone. */
+export function noteMetaToListItem(meta: NoteMeta, now: Date, timeZone: string = systemTimeZone()): NoteListItem {
   const createdAt = new Date(meta.createdAt)
   const minutes = Math.round(meta.durationSec / 60)
   const speakersPart = meta.speakers > 1 ? ` · ${meta.speakers} speakers` : ''
@@ -53,7 +70,7 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
     id: meta.id,
     title: meta.title,
     meta: `${minutes} min${speakersPart}`,
-    group: noteGroup(createdAt, now),
+    group: noteGroup(createdAt, now, timeZone),
     status: meta.status,
     sources: meta.sources,
     createdAt: meta.createdAt,
@@ -70,10 +87,10 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
  * Notes are expected pre-sorted newest-first (as `list_notes` returns them),
  * so consecutive same-group notes are always adjacent.
  */
-export function notesToSidebarItems(notes: NoteMeta[], now: Date): NoteListItem[] {
+export function notesToSidebarItems(notes: NoteMeta[], now: Date, timeZone: string = systemTimeZone()): NoteListItem[] {
   let prevGroup: string | undefined
   return notes.map(meta => {
-    const item = noteMetaToListItem(meta, now)
+    const item = noteMetaToListItem(meta, now, timeZone)
     if (item.group === prevGroup) {
       return { ...item, group: undefined }
     }
@@ -236,6 +253,67 @@ export function pickInitialLlmModel(
 export function hasSummaryContent(summary: SummaryDoc | null | undefined): boolean {
   if (!summary) return false
   return summary.summary.trim() !== '' || summary.decisions.length > 0 || summary.actionItems.length > 0
+}
+
+/**
+ * The line to show under a summary that does not cover the whole meeting,
+ * or `null` when it does. Two limits can cut a summary short: the
+ * transcript did not fit the context window (`truncated`, issue #41), or
+ * the model's answer ran past its response budget (`cutOff`, issue #45).
+ */
+export function summaryCoverageNotice(summary: Pick<SummaryDoc, 'truncated' | 'cutOff'>): string | null {
+  const notices: string[] = []
+  if (summary.truncated) {
+    notices.push(
+      "This meeting was too long for the summary model's memory, so this summary covers only part of it. A larger context window in Settings → Summary gives full coverage.",
+    )
+  }
+  if (summary.cutOff) {
+    notices.push(
+      'This summary was too long for the model to finish, so the last items are missing. A larger context window in Settings → Summary can give it more room.',
+    )
+  }
+  return notices.length > 0 ? notices.join(' ') : null
+}
+
+/**
+ * Folds one `summary-status` event into the per-note "waiting since" map:
+ * a `'queued'` event records when the note joined the queue, every other
+ * state removes the entry. `now` stands in when a queued event carries no
+ * `queuedAt`. Returns `prev` itself when nothing changes.
+ */
+export function nextSummaryQueuedAt(
+  prev: Record<string, number>,
+  event: SummaryStatusEvent,
+  now: number,
+): Record<string, number> {
+  if (event.state === 'queued') {
+    const queuedAt = event.queuedAt ?? prev[event.noteId] ?? now
+    return prev[event.noteId] === queuedAt ? prev : { ...prev, [event.noteId]: queuedAt }
+  }
+  if (!(event.noteId in prev)) return prev
+  const next = { ...prev }
+  delete next[event.noteId]
+  return next
+}
+
+/**
+ * How long a summary has waited, as the words after "has waited":
+ * "less than a minute", "5 minutes", "1 hour", "6 hours", "2 days". Rounds
+ * down, so "6 hours" means at least six. A `queuedAt` in the future (clock
+ * change) reads as no wait.
+ */
+export function formatWait(queuedAt: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - queuedAt) / 60_000)
+  if (minutes < 1) return 'less than a minute'
+  if (minutes < 60) return plural(minutes, 'minute')
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return plural(hours, 'hour')
+  return plural(Math.floor(hours / 24), 'day')
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`
 }
 
 /**

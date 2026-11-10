@@ -44,6 +44,7 @@ const APP_COMMANDS: &[&str] = &[
     "toggle_action_item",
     "summarize_note",
     "cancel_summarize",
+    "summarize_now",
     "ask_note",
     "delete_note",
     "restore_note",

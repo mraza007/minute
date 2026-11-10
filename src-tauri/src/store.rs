@@ -4271,6 +4271,7 @@ mod tests {
                 &summarized.id,
                 &crate::llm::SummaryDoc {
                     truncated: false,
+                    cut_off: false,
                     summary: "They decided things.".to_string(),
                     ..Default::default()
                 },
@@ -4519,6 +4520,7 @@ mod tests {
     fn sample_summary() -> SummaryDoc {
         SummaryDoc {
             truncated: false,
+            cut_off: false,
             summary: "Discussed Q3 roadmap.".to_string(),
             topics: Vec::new(),
             decisions: vec!["Ship by Friday".to_string()],
@@ -4852,6 +4854,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             truncated: false,
+            cut_off: false,
             summary: "Reviewed the roadmap and aligned on priorities.".to_string(),
             topics: Vec::new(),
             decisions: vec![
@@ -4908,6 +4911,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             truncated: false,
+            cut_off: false,
             summary: "Reviewed the roadmap.".to_string(),
             topics: vec![
                 SummaryTopic {
@@ -4961,6 +4965,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             truncated: false,
+            cut_off: false,
             summary: "Reviewed the roadmap.".to_string(),
             topics: Vec::new(),
             decisions: Vec::new(),
@@ -4978,6 +4983,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             truncated: false,
+            cut_off: false,
             summary: "Quick sync, nothing decided.".to_string(),
             topics: Vec::new(),
             decisions: vec![],
@@ -5010,6 +5016,7 @@ mod tests {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
             truncated: false,
+            cut_off: false,
             summary: "x".to_string(),
             topics: Vec::new(),
             decisions: vec![],

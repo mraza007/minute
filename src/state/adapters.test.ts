@@ -4,15 +4,18 @@ import {
   findActiveSegmentIndex,
   formatBytes,
   formatMmSs,
+  formatWait,
   groupLiveSegments,
   hasSummaryContent,
   modelDisplayName,
   modelStatusToSttInfo,
+  nextSummaryQueuedAt,
   noteMetaToListItem,
   notesToSidebarItems,
   pickInitialLlmModel,
   pickInitialSttModel,
   speakerInitials,
+  summaryCoverageNotice,
   splitAnswerCitations,
   splitHighlight,
   storedSegmentsToDisplay,
@@ -53,23 +56,43 @@ describe('noteMetaToListItem', () => {
   const now = new Date('2026-07-23T15:00:00.000Z')
 
   it('groups a note created earlier today as Today', () => {
-    const item = noteMetaToListItem(meta({ createdAt: '2026-07-23T09:00:00.000Z' }), now)
+    const item = noteMetaToListItem(meta({ createdAt: '2026-07-23T09:00:00.000Z' }), now, 'UTC')
     expect(item.group).toBe('Today')
   })
 
   it('groups a note created one calendar day ago as Yesterday', () => {
-    const item = noteMetaToListItem(meta({ createdAt: '2026-07-22T23:00:00.000Z' }), now)
+    const item = noteMetaToListItem(meta({ createdAt: '2026-07-22T23:00:00.000Z' }), now, 'UTC')
     expect(item.group).toBe('Yesterday')
   })
 
   it('groups a note 2-6 calendar days ago as Last week', () => {
-    expect(noteMetaToListItem(meta({ createdAt: '2026-07-21T09:00:00.000Z' }), now).group).toBe('Last week')
-    expect(noteMetaToListItem(meta({ createdAt: '2026-07-17T09:00:00.000Z' }), now).group).toBe('Last week')
+    expect(noteMetaToListItem(meta({ createdAt: '2026-07-21T09:00:00.000Z' }), now, 'UTC').group).toBe('Last week')
+    expect(noteMetaToListItem(meta({ createdAt: '2026-07-17T09:00:00.000Z' }), now, 'UTC').group).toBe('Last week')
   })
 
   it('groups a note 7+ calendar days ago by month name', () => {
-    const item = noteMetaToListItem(meta({ createdAt: '2026-06-30T09:00:00.000Z' }), now)
+    const item = noteMetaToListItem(meta({ createdAt: '2026-06-30T09:00:00.000Z' }), now, 'UTC')
     expect(item.group).toBe('June')
+  })
+
+  it('groups by the calendar day of the reader, not the UTC day (issue #44)', () => {
+    // 5:30 pm on August 13 in Los Angeles is already August 14 in UTC.
+    const recordedYesterdayEvening = meta({ createdAt: '2026-08-14T00:30:00.000Z' })
+    const nextMorning = new Date('2026-08-14T15:40:00.000Z')
+    expect(noteMetaToListItem(recordedYesterdayEvening, nextMorning, 'America/Los_Angeles').group).toBe('Yesterday')
+  })
+
+  it('groups a note from just after local midnight as Today even when UTC is a day behind (issue #44)', () => {
+    // 00:30 on August 14 in Tokyo is still August 13 in UTC.
+    const recordedAfterMidnight = meta({ createdAt: '2026-08-13T15:30:00.000Z' })
+    const laterThatMorning = new Date('2026-08-14T00:10:00.000Z')
+    expect(noteMetaToListItem(recordedAfterMidnight, laterThatMorning, 'Asia/Tokyo').group).toBe('Today')
+  })
+
+  it('names the month in the reader time zone', () => {
+    // 9 pm on June 30 in Los Angeles is July 1 in UTC.
+    const lateJune = meta({ createdAt: '2026-07-01T04:00:00.000Z' })
+    expect(noteMetaToListItem(lateJune, now, 'America/Los_Angeles').group).toBe('June')
   })
 
   it('rounds duration to the nearest minute', () => {
@@ -93,7 +116,7 @@ describe('notesToSidebarItems', () => {
       meta({ id: 'b', createdAt: '2026-07-23T08:00:00.000Z' }), // Today
       meta({ id: 'c', createdAt: '2026-07-22T09:00:00.000Z' }), // Yesterday
     ]
-    const items = notesToSidebarItems(notes, now)
+    const items = notesToSidebarItems(notes, now, 'UTC')
     expect(items[0].group).toBe('Today')
     expect(items[1].group).toBeUndefined()
     expect(items[2].group).toBe('Yesterday')
@@ -101,6 +124,80 @@ describe('notesToSidebarItems', () => {
 
   it('returns an empty array for an empty note list', () => {
     expect(notesToSidebarItems([], now)).toEqual([])
+  })
+})
+
+describe('summaryCoverageNotice', () => {
+  it('says nothing for a summary that covers the whole meeting', () => {
+    expect(summaryCoverageNotice({})).toBeNull()
+    expect(summaryCoverageNotice({ truncated: false, cutOff: false })).toBeNull()
+  })
+
+  it('says the meeting was too long when the transcript was cut', () => {
+    expect(summaryCoverageNotice({ truncated: true })).toMatch(/covers only part of it/)
+  })
+
+  it('says the last items are missing when the answer was cut off (issue #45)', () => {
+    const notice = summaryCoverageNotice({ cutOff: true })
+    expect(notice).toMatch(/last items are missing/)
+    expect(notice).not.toMatch(/covers only part of it/)
+  })
+
+  it('says both when both limits were hit', () => {
+    const notice = summaryCoverageNotice({ truncated: true, cutOff: true })
+    expect(notice).toMatch(/covers only part of it/)
+    expect(notice).toMatch(/last items are missing/)
+  })
+})
+
+describe('formatWait', () => {
+  const queuedAt = Date.UTC(2026, 7, 13, 20, 0)
+  const after = (ms: number) => formatWait(queuedAt, queuedAt + ms)
+  const MINUTE = 60_000
+  const HOUR = 60 * MINUTE
+
+  it('reads as less than a minute at first', () => {
+    expect(after(0)).toBe('less than a minute')
+    expect(after(59_000)).toBe('less than a minute')
+  })
+
+  it('counts whole minutes, then hours, then days, rounding down', () => {
+    expect(after(MINUTE)).toBe('1 minute')
+    expect(after(59 * MINUTE)).toBe('59 minutes')
+    expect(after(HOUR)).toBe('1 hour')
+    expect(after(6 * HOUR + 50 * MINUTE)).toBe('6 hours')
+    expect(after(24 * HOUR)).toBe('1 day')
+    expect(after(49 * HOUR)).toBe('2 days')
+  })
+
+  it('reads a queue time in the future as no wait', () => {
+    expect(after(-5 * MINUTE)).toBe('less than a minute')
+  })
+})
+
+describe('nextSummaryQueuedAt', () => {
+  const now = 2_000
+
+  it('records when a note joined the queue', () => {
+    expect(nextSummaryQueuedAt({}, { noteId: 'a', state: 'queued', error: null, queuedAt: 1_000 }, now)).toEqual({ a: 1_000 })
+  })
+
+  it('falls back to now when a queued event carries no time', () => {
+    expect(nextSummaryQueuedAt({}, { noteId: 'a', state: 'queued', error: null }, now)).toEqual({ a: now })
+  })
+
+  it('keeps the first time when a waiting note is queued again without one', () => {
+    expect(nextSummaryQueuedAt({ a: 1_000 }, { noteId: 'a', state: 'queued', error: null }, now)).toEqual({ a: 1_000 })
+  })
+
+  it.each(['running', 'done', 'error'] as const)('drops the entry once the note is %s', state => {
+    expect(nextSummaryQueuedAt({ a: 1_000, b: 1_500 }, { noteId: 'a', state, error: null }, now)).toEqual({ b: 1_500 })
+  })
+
+  it('returns the same map when nothing changes', () => {
+    const prev = { a: 1_000 }
+    expect(nextSummaryQueuedAt(prev, { noteId: 'b', state: 'running', error: null }, now)).toBe(prev)
+    expect(nextSummaryQueuedAt(prev, { noteId: 'a', state: 'queued', error: null, queuedAt: 1_000 }, now)).toBe(prev)
   })
 })
 

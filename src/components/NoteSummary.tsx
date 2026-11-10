@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import type { SummaryDoc } from '../ipc/types'
 import type { SummaryStatus } from '../state/useAppState'
+import { summaryCoverageNotice } from '../state/adapters'
 
 export interface NoteSummaryProps {
   /** The note's persisted summary, or `null` if it has none (yet, or ever). */
@@ -89,12 +90,7 @@ export const NoteSummary = memo(function NoteSummary({
         {summary ? (
           <>
             <p className="note-body">{summary.summary}</p>
-            {summary.truncated && (
-              <p className="note-muted">
-                This meeting was too long for the summary model's memory, so this summary covers only part of it. A
-                larger context window in Settings → Summary gives full coverage.
-              </p>
-            )}
+            {summaryCoverageNotice(summary) && <p className="note-muted">{summaryCoverageNotice(summary)}</p>}
           </>
         ) : status === 'error' ? null : pending ? (
           <p className="note-muted">

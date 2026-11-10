@@ -141,6 +141,12 @@ pub struct SummaryDoc {
     /// files omit it and must keep parsing.
     #[serde(default)]
     pub truncated: bool,
+    /// Issue #45: the model's answer stopped before its JSON ended (it hit
+    /// the response token cap), so the tail of this summary is missing —
+    /// usually the last action items, sometimes the last topics. Same
+    /// `#[serde(default)]` rationale as `topics`.
+    #[serde(default)]
+    pub cut_off: bool,
 }
 
 /// Formats a segment's start time as `mm:ss` for the transcript rendered
@@ -541,6 +547,58 @@ fn balanced_json_object_at(s: &str, start: usize) -> Option<&str> {
     None
 }
 
+/// Rebuilds a JSON object that stops before its end (issue #45), or `None`
+/// when nothing complete can be kept.
+///
+/// Generation stops at the response token cap wherever the model happens to
+/// be, so a long answer ends mid-string or mid-array. This cuts the text
+/// back to the last comma that separates two top-level members or two
+/// elements of a top-level array, then closes what is still open. Every
+/// member and element before that comma is complete; the one the cut landed
+/// in is dropped whole, so no half-written topic or action item survives.
+///
+/// `s[start]` must be the `{` of an object [`balanced_json_object_at`]
+/// found unbalanced. The result is valid JSON only if the text before the
+/// cut was, so the caller still has to parse it.
+fn close_cut_off_json(s: &str, start: usize) -> Option<String> {
+    // The deepest comma kept: 1 is between the object's own members, 2 is
+    // between the elements of one of its arrays.
+    const KEEP_DEPTH: usize = 2;
+
+    let mut closers: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escape = false;
+    let mut keep: Option<(usize, Vec<char>)> = None;
+
+    for (i, c) in s[start..].char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => closers.push('}'),
+            '[' => closers.push(']'),
+            '}' | ']' => {
+                closers.pop();
+            }
+            ',' if closers.len() <= KEEP_DEPTH => keep = Some((start + i, closers.clone())),
+            _ => {}
+        }
+    }
+
+    let (comma, closers) = keep?;
+    let mut closed = s[start..comma].to_string();
+    closed.extend(closers.iter().rev());
+    Some(closed)
+}
+
 /// Truncates `raw` to at most 200 chars (char-safe) for embedding in an
 /// extraction error message/event — long raw model output shouldn't blow up
 /// the error surfaced to the frontend.
@@ -690,6 +748,7 @@ fn raw_to_summary_doc(parsed: RawSummary) -> SummaryDoc {
         .collect();
     SummaryDoc {
         truncated: false,
+        cut_off: false,
         summary: parsed.summary,
         topics,
         decisions: parsed.decisions,
@@ -853,6 +912,16 @@ pub struct SummaryExtraction {
     pub suggested_title: String,
 }
 
+impl SummaryExtraction {
+    fn from_raw(mut parsed: RawSummary) -> Self {
+        let suggested_title = std::mem::take(&mut parsed.title);
+        Self {
+            doc: raw_to_summary_doc(parsed),
+            suggested_title,
+        }
+    }
+}
+
 /// Tolerantly extracts a [`SummaryExtraction`] from a model's raw
 /// generation output. Handles, in order:
 ///
@@ -867,9 +936,17 @@ pub struct SummaryExtraction {
 ///    prose), or balances *and* parses but converts to an empty
 ///    [`SummaryDoc`] (see [`is_nonempty_summary`] — e.g. an incidental
 ///    `{"status": "open", "id": 42}` object with no summary-shaped keys at
-///    all), the scan resumes just past that `{` and tries the next one, up
-///    to [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on (or
+///    all), the scan moves on and tries the next one, up to
+///    [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on (or
 ///    settling for) the first candidate.
+///
+/// An object nested in a failed candidate is not the answer (issue #45): a
+/// Detailed answer's topics are objects with a `title` and a `summary`, so
+/// the first one parses as a whole summary. Two rules keep it out. A
+/// candidate that never balances is an answer that stopped early, so it is
+/// closed with [`close_cut_off_json`] and kept, marked
+/// [`SummaryDoc::cut_off`]. A candidate that balances but is not valid JSON
+/// is skipped whole, nested objects included.
 ///
 /// A valid-but-empty candidate is remembered (only the first one — later
 /// empty candidates don't overwrite it) rather than discarded outright: if
@@ -941,21 +1018,29 @@ fn extract_summary_parts(raw: &str) -> Result<SummaryExtraction> {
 
         match balanced_json_object_at(&cleaned, start) {
             Some(candidate) => match serde_json::from_str::<RawSummary>(candidate) {
-                Ok(mut parsed) => {
-                    let suggested_title = std::mem::take(&mut parsed.title);
-                    let extraction = SummaryExtraction {
-                        doc: raw_to_summary_doc(parsed),
-                        suggested_title,
-                    };
+                Ok(parsed) => {
+                    let extraction = SummaryExtraction::from_raw(parsed);
                     if is_nonempty_summary(&extraction.doc) {
                         break extraction;
                     }
                     first_empty_candidate.get_or_insert(extraction);
                     search_from = start + 1;
                 }
-                Err(_) => search_from = start + 1,
+                Err(_) => search_from = start + candidate.len(),
             },
-            None => search_from = start + 1,
+            None => {
+                let cut_off = close_cut_off_json(&cleaned, start)
+                    .and_then(|closed| serde_json::from_str::<RawSummary>(&closed).ok())
+                    .map(SummaryExtraction::from_raw)
+                    .filter(|extraction| is_nonempty_summary(&extraction.doc));
+                if let Some(mut extraction) = cut_off {
+                    extraction.doc.cut_off = true;
+                    break extraction;
+                }
+                // Not a cut-off answer: a stray `{` in prose ahead of the
+                // real object. Keep looking inside it.
+                search_from = start + 1;
+            }
         }
     };
 
@@ -1075,11 +1160,9 @@ pub struct GenerationCancel(pub Arc<AtomicBool>);
 /// [`GenerationCancel`]) so `app.manage` can hold a third bare
 /// `Arc<AtomicBool>` without colliding with [`LlmBusy`].
 ///
-/// Deliberately not consulted by [`drain_summarize_queue`]: the drain
-/// runs when a generation just *finished*, and skipping it there would
-/// strand the queue with nothing scheduled to drain it later —
-/// `stop_recording`'s own drain call is the recording-aware entry point.
-/// Asks are also exempt: an ask during a recording is an explicit user
+/// [`drain_summarize_queue`] honors it too, so a generation that ends
+/// mid-recording does not start the next note; `stop_recording` drains
+/// once the gate is down. Asks are exempt: an ask during a recording is an explicit user
 /// action, and the generation timeout bounds it either way.
 pub struct RecordingGate(pub Arc<AtomicBool>);
 
@@ -1189,6 +1272,25 @@ fn try_claim_busy(busy: &LlmBusy) -> bool {
         .is_ok()
 }
 
+/// One note waiting in the [`SummarizeQueue`].
+pub struct QueuedSummarize {
+    pub ctx: SummarizeWorkerCtx,
+    /// When the note joined the queue, in milliseconds since the Unix
+    /// epoch. A repeat request keeps it: the note has waited since the
+    /// first one. Sent to the frontend so it can say how long (issue #44).
+    pub queued_at_ms: u64,
+    /// Set by [`start_queued_summarize_now`]: the user asked for this note
+    /// now, so a live recording no longer holds it back.
+    pub ignore_recording: bool,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since_epoch| since_epoch.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Notes waiting for the engine, oldest first (issue #11).
 ///
 /// Holds whole [`SummarizeWorkerCtx`] values rather than note ids, which is
@@ -1205,7 +1307,7 @@ fn try_claim_busy(busy: &LlmBusy) -> bool {
 ///
 /// Type alias plus free functions rather than a method-bearing struct, to
 /// match `store::SharedStore` and `download::DownloadRegistry`.
-pub type SummarizeQueue = Arc<Mutex<VecDeque<SummarizeWorkerCtx>>>;
+pub type SummarizeQueue = Arc<Mutex<VecDeque<QueuedSummarize>>>;
 
 /// Creates an empty, ready-to-`app.manage()` summarize queue.
 pub(crate) fn open_summarize_queue() -> SummarizeQueue {
@@ -1215,7 +1317,7 @@ pub(crate) fn open_summarize_queue() -> SummarizeQueue {
 /// Locks the queue, recovering from poisoning instead of propagating it —
 /// same rationale as `store::lock_store`: one panicking worker must not
 /// brick every later summarization for the rest of the session.
-fn lock_summarize_queue(queue: &SummarizeQueue) -> MutexGuard<'_, VecDeque<SummarizeWorkerCtx>> {
+fn lock_summarize_queue(queue: &SummarizeQueue) -> MutexGuard<'_, VecDeque<QueuedSummarize>> {
     queue
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1242,49 +1344,88 @@ pub enum SummarizeDisposition {
 /// dropped on the floor.
 ///
 /// Deduplicates on note id. Three Regenerate clicks against a blocked note
-/// enqueue once and report [`SummarizeDisposition::AlreadyQueued`] twice —
-/// the caller re-emits `Queued` either way, so the UI stays correct without
-/// the note being summarized three times in a row.
+/// enqueue once and report [`SummarizeDisposition::AlreadyQueued`] twice.
+/// A re-request replaces the stored context in place, keeping its position
+/// and its `queued_at_ms` (issue #41): the newest request carries the
+/// freshest model snapshot.
+///
 /// `defer` (issue #35): `true` while a recording is live — the request
 /// joins the queue even when the engine is free, so the LLM never loads
 /// onto the GPU next to the recording's Whisper context. Callers read it
 /// from [`RecordingGate`]; a plain `bool` here keeps this function pure
 /// and testable.
+///
+/// Emits the `queued` status itself, through `ctx.emit`, while it holds the
+/// queue lock. A drain cannot see the entry until the lock is released, so
+/// the note's `running` event can never arrive before its `queued` one.
+///
+/// The queue lock is held across the busy claim (issue #44). Checking
+/// `busy` first and locking the queue second left a gap: the running
+/// worker could release `busy` and drain an empty queue inside it, and the
+/// note then sat in the queue with an idle engine and nothing left to
+/// start it. [`drain_summarize_queue`] takes the same lock for its own
+/// claim, so one of the two always sees the other's effect.
 pub fn spawn_or_enqueue_summarize(
     queue: &SummarizeQueue,
     ctx: SummarizeWorkerCtx,
     defer: bool,
 ) -> SummarizeDisposition {
+    let mut pending = lock_summarize_queue(queue);
+    let waiting = pending
+        .iter()
+        .position(|queued| queued.ctx.note_id == ctx.note_id);
+
     if !defer && try_claim_busy(&ctx.busy) {
+        // The note may still hold a place in line from a request that was
+        // deferred behind a recording; starting it now uses that place up.
+        if let Some(index) = waiting {
+            pending.remove(index);
+        }
+        drop(pending);
         SummarizeWorker::spawn(ctx);
         return SummarizeDisposition::Started;
     }
-    let mut pending = lock_summarize_queue(queue);
-    // Issue #41: a re-request of an already-waiting note replaces the
-    // stored context in place (keeping its FIFO position) — the newest
-    // request carries the freshest model snapshot, and silently dropping
-    // it made a post-settings-change Regenerate a no-op.
-    if let Some(slot) = pending.iter_mut().find(|queued| queued.note_id == ctx.note_id) {
-        *slot = ctx;
-        return SummarizeDisposition::AlreadyQueued;
+
+    let queued_at_ms = match waiting {
+        Some(index) => pending[index].queued_at_ms,
+        None => now_ms(),
+    };
+    (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
+        note_id: ctx.note_id.clone(),
+        state: SummaryStatusState::Queued,
+        error: None,
+        queued_at: Some(queued_at_ms),
+    }));
+    match waiting {
+        Some(index) => {
+            pending[index].ctx = ctx;
+            SummarizeDisposition::AlreadyQueued
+        }
+        None => {
+            pending.push_back(QueuedSummarize {
+                ctx,
+                queued_at_ms,
+                ignore_recording: false,
+            });
+            SummarizeDisposition::Queued
+        }
     }
-    pending.push_back(ctx);
-    SummarizeDisposition::Queued
 }
 
 /// Starts the next queued summarization if the engine is free. Called by
 /// every worker on its way out, *after* its [`BusyGuard`] has released.
 ///
-/// Losing the claim puts the context back at the front rather than
-/// dropping or retrying it: whoever won is itself a generation, and will
-/// call this same function when it finishes. So the queue always has a
-/// scheduled drain in flight and nothing is stranded — without this
-/// function ever needing to hold `busy` and the queue lock together.
+/// Losing the claim leaves the note where it is: whoever won is itself a
+/// generation, and will call this same function when it finishes. So the
+/// queue always has a scheduled drain in flight and nothing is stranded.
+/// The claim is made under the queue lock for the reason
+/// [`spawn_or_enqueue_summarize`] gives.
 ///
 /// Not done in [`BusyGuard`]'s `Drop`: spawning a thread while unwinding a
 /// panic is how a crash becomes a hang.
 pub fn drain_summarize_queue(queue: &SummarizeQueue, busy: &LlmBusy) {
-    let Some(ctx) = lock_summarize_queue(queue).pop_front() else {
+    let mut pending = lock_summarize_queue(queue);
+    let Some(front) = pending.front() else {
         return;
     };
     // Issue #35: a worker finishing mid-recording must not start the next
@@ -1292,28 +1433,76 @@ pub fn drain_summarize_queue(queue: &SummarizeQueue, busy: &LlmBusy) {
     // contention the queue entry was deferred to avoid. Every entry's
     // `recording` is a clone of the one app-wide [`RecordingGate`], so the
     // front entry speaks for all of them; `stop_recording` re-drains once
-    // the gate is down.
-    if ctx.recording.load(Ordering::SeqCst) {
-        lock_summarize_queue(queue).push_front(ctx);
+    // the gate is down. A note the user asked for now is at the front and
+    // does not wait.
+    let held_by_recording = !front.ignore_recording && front.ctx.recording.load(Ordering::SeqCst);
+    if held_by_recording || !try_claim_busy(busy) {
         return;
     }
-    if try_claim_busy(busy) {
-        SummarizeWorker::spawn(ctx);
-    } else {
-        lock_summarize_queue(queue).push_front(ctx);
+    let next = pending.pop_front();
+    drop(pending);
+    if let Some(next) = next {
+        SummarizeWorker::spawn(next.ctx);
     }
 }
 
 /// Removes `note_id`'s waiting entry from the queue, if it has one —
-/// `cancel_summarize`'s queued-note path. Returning the removed context
+/// `cancel_summarize`'s queued-note path. Returning the removed entry
 /// (rather than a bool) is what lets the command emit the terminal
 /// `summary-status` event through the same `emit` closure the worker
 /// would have used, so a cancelled queued note resolves exactly like a
 /// failed one from the frontend's point of view.
-pub fn remove_queued_summarize(queue: &SummarizeQueue, note_id: &str) -> Option<SummarizeWorkerCtx> {
+pub fn remove_queued_summarize(queue: &SummarizeQueue, note_id: &str) -> Option<QueuedSummarize> {
     let mut pending = lock_summarize_queue(queue);
-    let index = pending.iter().position(|queued| queued.note_id == note_id)?;
+    let index = pending
+        .iter()
+        .position(|queued| queued.ctx.note_id == note_id)?;
     pending.remove(index)
+}
+
+/// What [`start_queued_summarize_now`] did with a waiting note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SummarizeNowOutcome {
+    /// The engine was free — the note is running.
+    Started,
+    /// Another generation is running. The note moved to the front of the
+    /// queue and starts when that one ends, recording or not.
+    Next,
+    /// The note was not waiting: it already started, or was cancelled.
+    NotQueued,
+}
+
+/// Starts a waiting note on the user's say-so (issue #44), without waiting
+/// for a live recording to end. Waiting behind a recording is the one wait
+/// with no bound, and the user may rather have the summary than the
+/// protection from a slow generation. Asks are exempt from the recording
+/// gate for the same reason.
+///
+/// Only one generation runs at a time, so a busy engine still wins: the
+/// note moves to the front instead and no longer waits for the recording.
+pub fn start_queued_summarize_now(
+    queue: &SummarizeQueue,
+    busy: &LlmBusy,
+    note_id: &str,
+) -> SummarizeNowOutcome {
+    let mut pending = lock_summarize_queue(queue);
+    let waiting = pending
+        .iter()
+        .position(|queued| queued.ctx.note_id == note_id)
+        .and_then(|index| pending.remove(index));
+    let Some(mut entry) = waiting else {
+        return SummarizeNowOutcome::NotQueued;
+    };
+    if try_claim_busy(busy) {
+        drop(pending);
+        SummarizeWorker::spawn(entry.ctx);
+        SummarizeNowOutcome::Started
+    } else {
+        entry.ignore_recording = true;
+        pending.push_front(entry);
+        SummarizeNowOutcome::Next
+    }
 }
 
 /// Floor context window (tokens) — what machines under 16 GB of RAM get,
@@ -1391,6 +1580,7 @@ const SAMPLER_SEED: u32 = 1_746_312_558;
 const ASK_GENERATION_PARAMS: GenerationParams = GenerationParams {
     temperature: 0.2,
     max_tokens: 512,
+    max_tokens_with_room: 512,
 };
 
 impl LlmEngineState {
@@ -1682,7 +1872,34 @@ pub fn spawn_janitor(engine: SharedLlmEngine, busy: LlmBusy) -> std::thread::Joi
 #[derive(Debug, Clone, Copy)]
 pub struct GenerationParams {
     pub temperature: f32,
+    /// Response room that is always reserved: a prompt must leave this
+    /// much of the context free, or it is shrunk to fit.
     pub max_tokens: usize,
+    /// How far the response may run when the context has room left after
+    /// the prompt (issue #45) — see [`response_token_limit`]. Equal to
+    /// `max_tokens` for a response that never needs more.
+    pub max_tokens_with_room: usize,
+}
+
+/// Response room a Detailed summary may use when the context has it.
+/// Measured with Qwen3.5-4B on a 36-topic, one-hour meeting: the full
+/// answer was 15,100 bytes, about 3,300 tokens, and at the 2,560 reserved
+/// it stopped inside the action items. Twice the reservation covers that
+/// with margin, and a model stuck repeating itself still stops here.
+const DETAILED_MAX_TOKENS_WITH_ROOM: usize = 5_120;
+
+/// How many tokens one generation may produce: the reserved `max_tokens`,
+/// stretched toward `max_tokens_with_room` by whatever the context has
+/// left after the prompt. Reserving the larger number up front instead
+/// would cut that much more transcript out of every long meeting; this way
+/// a short prompt gets the room and a long one keeps its transcript.
+fn response_token_limit(
+    params: GenerationParams,
+    prompt_tokens: usize,
+    context_tokens: usize,
+) -> usize {
+    let room = context_tokens.saturating_sub(prompt_tokens);
+    params.max_tokens_with_room.min(room).max(params.max_tokens)
 }
 
 impl Default for GenerationParams {
@@ -1693,6 +1910,7 @@ impl Default for GenerationParams {
         Self {
             temperature: 0.3,
             max_tokens: MAX_GENERATION_TOKENS,
+            max_tokens_with_room: MAX_GENERATION_TOKENS,
         }
     }
 }
@@ -1704,25 +1922,34 @@ impl Default for GenerationParams {
 /// [`GenerationParams::default`] exactly, so the default style behaves
 /// byte-for-byte like the app did before styles existed.
 pub(crate) const fn generation_params_for(style: SummaryStyle) -> GenerationParams {
+    let max_tokens = reserved_response_tokens(style);
     GenerationParams {
         temperature: 0.3,
-        max_tokens: match style {
-            SummaryStyle::Short => 512,
-            SummaryStyle::Standard => MAX_GENERATION_TOKENS,
-            // Raised from 1536 for issue #14's topic breakdown. Not free:
-            // `run_summarize` derives the transcript budget as
-            // `ctx_tokens - max_tokens`, so on the 8k floor context this is
-            // 1024 fewer tokens of transcript — more truncation of the very
-            // meeting we're trying to cover topic by topic. 2560 is the
-            // balance point: a typical breakdown (overview + ~6 topics +
-            // decisions + actions) runs 700-900 tokens, and this leaves
-            // headroom for a dozen topics without over-reserving.
-            // `generate_fitting_transcript` shrinks the transcript rather
-            // than failing when it doesn't fit, and Detailed is opt-in —
-            // both are why this cost is acceptable here and would not be as
-            // a default.
-            SummaryStyle::Detailed => 2_560,
+        max_tokens,
+        max_tokens_with_room: match style {
+            SummaryStyle::Detailed => DETAILED_MAX_TOKENS_WITH_ROOM,
+            SummaryStyle::Short | SummaryStyle::Standard => max_tokens,
         },
+    }
+}
+
+const fn reserved_response_tokens(style: SummaryStyle) -> usize {
+    match style {
+        SummaryStyle::Short => 512,
+        SummaryStyle::Standard => MAX_GENERATION_TOKENS,
+        // Raised from 1536 for issue #14's topic breakdown. Not free:
+        // `run_summarize` derives the transcript budget as
+        // `ctx_tokens - max_tokens`, so on the 8k floor context this is
+        // 1024 fewer tokens of transcript — more truncation of the very
+        // meeting we're trying to cover topic by topic. 2560 is the
+        // balance point: a typical breakdown (overview + ~6 topics +
+        // decisions + actions) runs 700-900 tokens, and this leaves
+        // headroom for a dozen topics without over-reserving.
+        // `generate_fitting_transcript` shrinks the transcript rather
+        // than failing when it doesn't fit, and Detailed is opt-in —
+        // both are why this cost is acceptable here and would not be as
+        // a default.
+        SummaryStyle::Detailed => 2_560,
     }
 }
 
@@ -1963,6 +2190,7 @@ fn generate_with_loaded(
     let mut output_bytes: Vec<u8> = Vec::new();
     let mut n_cur = batch.n_tokens();
     let mut generated = 0usize;
+    let token_limit = response_token_limit(*params, prompt_tokens.len(), context_budget);
 
     loop {
         generation_gate(cancel, deadline, Instant::now())?;
@@ -1979,7 +2207,7 @@ fn generate_with_loaded(
         output_bytes.extend_from_slice(&piece);
 
         generated += 1;
-        if generated >= params.max_tokens {
+        if generated >= token_limit {
             break;
         }
 
@@ -2142,6 +2370,9 @@ pub struct SummaryStatusPayload {
     pub note_id: String,
     pub state: SummaryStatusState,
     pub error: Option<String>,
+    /// Set only on `queued`: when the note joined the queue, in
+    /// milliseconds since the Unix epoch (see [`QueuedSummarize`]).
+    pub queued_at: Option<u64>,
 }
 
 /// Events a summarization worker emits — captured directly by tests via an
@@ -2175,20 +2406,7 @@ pub fn emit_summary_status_error(app: &AppHandle, note_id: &str, error: &str) {
         note_id: note_id.to_string(),
         state: SummaryStatusState::Error,
         error: Some(error.to_string()),
-    }));
-}
-
-/// Emits a one-shot `summary-status` queued event (issue #11) — the note is
-/// waiting behind another generation and will start on its own.
-///
-/// Emitted by whoever *enqueued*, not by a worker: the whole point is that
-/// no worker exists for this note yet. The `Running` event still comes from
-/// the worker when its turn arrives.
-pub fn emit_summary_status_queued(app: &AppHandle, note_id: &str) {
-    tauri_emit(app.clone())(SummaryEvent::SummaryStatus(SummaryStatusPayload {
-        note_id: note_id.to_string(),
-        state: SummaryStatusState::Queued,
-        error: None,
+        queued_at: None,
     }));
 }
 
@@ -2682,6 +2900,7 @@ fn run_summarize_worker_with(
             note_id: ctx.note_id.clone(),
             state: SummaryStatusState::Running,
             error: None,
+            queued_at: None,
         }));
 
         // Issue #21: a panic (realistically: inside llama.cpp's FFI) must
@@ -2705,6 +2924,7 @@ fn run_summarize_worker_with(
                     note_id: ctx.note_id.clone(),
                     state: SummaryStatusState::Error,
                     error: Some(e.to_string()),
+                    queued_at: None,
                 }));
             }
             Ok(()) => {
@@ -2712,6 +2932,7 @@ fn run_summarize_worker_with(
                     note_id: ctx.note_id.clone(),
                     state: SummaryStatusState::Done,
                     error: None,
+                    queued_at: None,
                 }));
             }
         }
@@ -2848,8 +3069,9 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
 ///   `Err("no summary model installed")`; the note's `meta.json` is
 ///   untouched either way.
 /// - Engine free -> spawns a [`SummarizeWorker`] and returns `Ok(())`.
-/// - Engine busy -> queues the note and emits `summary-status` `queued`,
-///   still returning `Ok(())` (issue #11). There is deliberately no
+/// - Engine busy, or a recording is live -> queues the note, which emits
+///   `summary-status` `queued` with the time it joined the queue, still
+///   returning `Ok(())` (issue #11). There is deliberately no
 ///   busy `Err` any more: a rejected summary is one the user has to
 ///   remember to re-request, which is the whole complaint.
 ///
@@ -2892,11 +3114,11 @@ pub async fn summarize_note(
     let model_path = catalog::installed_path(&entry, &models_root);
     let emit = Box::new(tauri_emit(app.clone()));
 
-    let disposition = spawn_or_enqueue_summarize(
+    spawn_or_enqueue_summarize(
         &queue,
         SummarizeWorkerCtx {
             recording: recording.0.clone(),
-            note_id: id.clone(),
+            note_id: id,
             store: store.inner().clone(),
             engine: engine.inner().clone(),
             busy: busy.inner().clone(),
@@ -2909,15 +3131,6 @@ pub async fn summarize_note(
         // Issue #35: a Regenerate during a live recording waits its turn.
         recording.0.load(Ordering::SeqCst),
     );
-
-    // `AlreadyQueued` re-emits too: the caller clicked Regenerate again, and
-    // the honest answer to "what is this note doing" is still "waiting".
-    if matches!(
-        disposition,
-        SummarizeDisposition::Queued | SummarizeDisposition::AlreadyQueued
-    ) {
-        emit_summary_status_queued(&app, &id);
-    }
     Ok(())
 }
 
@@ -2947,7 +3160,7 @@ pub async fn cancel_summarize(
     id: String,
 ) -> std::result::Result<(), String> {
     if let Some(removed) = remove_queued_summarize(&queue, &id) {
-        emit_summary_status_error(&app, &removed.note_id, "summary cancelled");
+        emit_summary_status_error(&app, &removed.ctx.note_id, "summary cancelled");
         return Ok(());
     }
     if busy.load(Ordering::SeqCst) {
@@ -2956,9 +3169,31 @@ pub async fn cancel_summarize(
     Ok(())
 }
 
+/// Starts note `id`'s waiting summary now (issue #44) — the "Summarize
+/// now" button beside a summary that has waited. See
+/// [`start_queued_summarize_now`] for what each outcome means. A note that
+/// is not waiting resolves `notQueued` (a stale click), never an error.
+#[tauri::command]
+pub async fn summarize_now(
+    queue: State<'_, SummarizeQueue>,
+    busy: State<'_, LlmBusy>,
+    id: String,
+) -> std::result::Result<SummarizeNowOutcome, String> {
+    Ok(start_queued_summarize_now(&queue, &busy, &id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A queue entry as a plain request leaves it.
+    fn waiting(ctx: SummarizeWorkerCtx) -> QueuedSummarize {
+        QueuedSummarize {
+            ctx,
+            queued_at_ms: now_ms(),
+            ignore_recording: false,
+        }
+    }
 
     /// [`extract_summary_parts`] with the suggested title dropped.
     ///
@@ -3216,6 +3451,38 @@ mod tests {
         let default = GenerationParams::default();
         assert_eq!(standard.temperature, default.temperature);
         assert_eq!(standard.max_tokens, default.max_tokens);
+    }
+
+    #[test]
+    fn a_detailed_summary_may_run_past_its_reservation_when_the_context_has_room() {
+        let detailed = generation_params_for(SummaryStyle::Detailed);
+        // A 9k-token prompt in a 32k context leaves far more than the cap.
+        assert_eq!(
+            response_token_limit(detailed, 9_000, 32_768),
+            DETAILED_MAX_TOKENS_WITH_ROOM
+        );
+        // 4,000 tokens of room: more than the reservation, less than the cap.
+        assert_eq!(response_token_limit(detailed, 4_192, 8_192), 4_000);
+        // A prompt that fills the context gets exactly the reservation.
+        assert_eq!(
+            response_token_limit(detailed, 8_192 - detailed.max_tokens, 8_192),
+            detailed.max_tokens
+        );
+    }
+
+    #[test]
+    fn the_other_generations_keep_their_fixed_response_cap() {
+        for params in [
+            generation_params_for(SummaryStyle::Short),
+            generation_params_for(SummaryStyle::Standard),
+            GenerationParams::default(),
+            ASK_GENERATION_PARAMS,
+        ] {
+            assert_eq!(
+                response_token_limit(params, 1_000, 32_768),
+                params.max_tokens
+            );
+        }
     }
 
     #[test]
@@ -4039,6 +4306,86 @@ mod tests {
         assert_eq!(doc.summary, "Found it.");
     }
 
+    // --- extract_summary_parts: answers that stop early (issue #45) -------------
+    //
+    // Generation stops at the response token cap without closing the JSON.
+    // A Detailed answer is the long one, so it is the one that gets cut. The
+    // scan then used to move on to the next `{`, which is the first topic,
+    // and a topic (`title` + `summary`) parses as a whole summary: the note
+    // got one topic's paragraph as its summary, that topic's name as its
+    // title, and no topics, decisions, or action items.
+
+    const CUT_OFF_DETAILED_ANSWER: &str = concat!(
+        r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+        r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}, "#,
+        r#"{"title": "Rollout", "summary": "Enterprise customers go first."}], "#,
+        r#""decisions": ["Ship on the 14th"], "#,
+        r#""action_items": [{"text": "Write the pricing page"}, {"text": "Email the bet"#,
+    );
+
+    #[test]
+    fn a_cut_off_detailed_answer_is_not_mistaken_for_its_first_topic() {
+        let extraction = extract_summary_parts(CUT_OFF_DETAILED_ANSWER).unwrap();
+        assert_eq!(extraction.suggested_title, "Launch planning");
+        assert_eq!(extraction.doc.summary, "The team planned the launch.");
+    }
+
+    #[test]
+    fn a_cut_off_detailed_answer_keeps_everything_that_was_finished() {
+        let doc = extract_summary_json(CUT_OFF_DETAILED_ANSWER).unwrap();
+        let topics: Vec<&str> = doc.topics.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(topics, ["Pricing", "Rollout"]);
+        assert_eq!(doc.decisions, ["Ship on the 14th"]);
+        let actions: Vec<&str> = doc.action_items.iter().map(|a| a.text.as_str()).collect();
+        assert_eq!(actions, ["Write the pricing page"]);
+    }
+
+    #[test]
+    fn only_an_answer_that_stopped_early_is_marked_cut_off() {
+        assert!(
+            extract_summary_json(CUT_OFF_DETAILED_ANSWER)
+                .unwrap()
+                .cut_off
+        );
+
+        let complete = format!(r#"{CUT_OFF_DETAILED_ANSWER}a team"}}]}}"#);
+        let doc = extract_summary_json(&complete).unwrap();
+        assert!(!doc.cut_off);
+        assert_eq!(doc.action_items.len(), 2);
+    }
+
+    #[test]
+    fn an_answer_cut_off_before_its_summary_ends_is_still_an_error() {
+        let raw = r#"{"title": "Launch planning", "summary": "The team planned the lau"#;
+        let err = extract_summary_json(raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
+    }
+
+    #[test]
+    fn an_answer_cut_off_inside_a_topic_drops_only_that_topic() {
+        let raw = concat!(
+            r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+            r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}, "#,
+            r#"{"title": "Rollout", "summary": "Enterprise custo"#,
+        );
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc.summary, "The team planned the launch.");
+        let topics: Vec<&str> = doc.topics.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(topics, ["Pricing"]);
+    }
+
+    #[test]
+    fn a_detailed_answer_that_is_not_valid_json_is_an_error_not_its_first_topic() {
+        // A trailing comma makes the whole object unparseable.
+        let raw = concat!(
+            r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+            r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}], "#,
+            r#""decisions": ["Ship on the 14th",], "action_items": []}"#,
+        );
+        let err = extract_summary_json(raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
+    }
+
     // --- extract_summary_json: shapeless-but-valid JSON candidates (rider) -----
     //
     // A candidate that's syntactically valid JSON but converts to an empty
@@ -4383,7 +4730,8 @@ mod tests {
 
     /// Issue #11's core behavior change: a busy engine queues instead of
     /// rejecting. Nothing is spawned (so no worker events fire), but the
-    /// note is now waiting rather than dropped.
+    /// note is now waiting rather than dropped, and says so with the time
+    /// it joined the queue.
     #[test]
     fn spawn_or_enqueue_summarize_queues_when_already_busy_and_spawns_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -4414,9 +4762,19 @@ mod tests {
         );
 
         assert_eq!(disposition, SummarizeDisposition::Queued);
-        assert_eq!(lock_summarize_queue(&queue).len(), 1);
-        // Nothing spawned — no worker ever ran, so no events fired either.
-        assert!(events.lock().unwrap().is_empty());
+        let pending = lock_summarize_queue(&queue);
+        assert_eq!(pending.len(), 1);
+        // Nothing spawned — no worker ever ran, so the only event is the
+        // enqueue's own.
+        assert_eq!(
+            *events.lock().unwrap(),
+            [SummaryEvent::SummaryStatus(SummaryStatusPayload {
+                note_id: "some-note".to_string(),
+                state: SummaryStatusState::Queued,
+                error: None,
+                queued_at: Some(pending[0].queued_at_ms),
+            })]
+        );
     }
 
     /// Repeat Regenerate clicks on a blocked note must not stack duplicate
@@ -4460,8 +4818,8 @@ mod tests {
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 2);
         // FIFO: the order they were asked for is the order they run in.
-        assert_eq!(pending[0].note_id, "note-a");
-        assert_eq!(pending[1].note_id, "note-b");
+        assert_eq!(pending[0].ctx.note_id, "note-a");
+        assert_eq!(pending[1].ctx.note_id, "note-b");
     }
 
     /// `drain_summarize_queue` must leave the queue untouched when it can't
@@ -4476,7 +4834,7 @@ mod tests {
         let queue = open_summarize_queue();
         busy.store(true, Ordering::SeqCst);
 
-        lock_summarize_queue(&queue).push_back(SummarizeWorkerCtx {
+        lock_summarize_queue(&queue).push_back(waiting(SummarizeWorkerCtx {
             recording: Arc::new(AtomicBool::new(false)),
             note_id: "waiting-note".to_string(),
             store,
@@ -4487,13 +4845,13 @@ mod tests {
             settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
-        });
+        }));
 
         drain_summarize_queue(&queue, &busy);
 
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 1, "the queued note must not be dropped");
-        assert_eq!(pending[0].note_id, "waiting-note");
+        assert_eq!(pending[0].ctx.note_id, "waiting-note");
     }
 
     #[test]
@@ -4523,7 +4881,7 @@ mod tests {
         let queue = open_summarize_queue();
         let gate = Arc::new(AtomicBool::new(true));
 
-        lock_summarize_queue(&queue).push_back(SummarizeWorkerCtx {
+        lock_summarize_queue(&queue).push_back(waiting(SummarizeWorkerCtx {
             recording: gate.clone(),
             note_id: "deferred-note".to_string(),
             store,
@@ -4534,13 +4892,13 @@ mod tests {
             settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
-        });
+        }));
 
         drain_summarize_queue(&queue, &busy);
         {
             let pending = lock_summarize_queue(&queue);
             assert_eq!(pending.len(), 1, "the deferred note must be put back");
-            assert_eq!(pending[0].note_id, "deferred-note");
+            assert_eq!(pending[0].ctx.note_id, "deferred-note");
         }
         assert!(
             !busy.load(Ordering::SeqCst),
@@ -4590,7 +4948,7 @@ mod tests {
         );
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].note_id, "mid-recording-note");
+        assert_eq!(pending[0].ctx.note_id, "mid-recording-note");
     }
 
     // --- cancel_summarize building blocks (issue #30) ---------------------
@@ -4622,11 +4980,11 @@ mod tests {
         assert!(remove_queued_summarize(&queue, "not-queued").is_none());
 
         let removed = remove_queued_summarize(&queue, "note-a").expect("note-a was queued");
-        assert_eq!(removed.note_id, "note-a");
+        assert_eq!(removed.ctx.note_id, "note-a");
 
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 1, "only the matching note is removed");
-        assert_eq!(pending[0].note_id, "note-b");
+        assert_eq!(pending[0].ctx.note_id, "note-b");
     }
 
     #[test]
@@ -4891,7 +5249,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
         let queued_id = queued.note_id.clone();
-        lock_summarize_queue(&queue).push_back(queued);
+        lock_summarize_queue(&queue).push_back(waiting(queued));
 
         busy.store(true, Ordering::SeqCst);
         run_summarize_worker(first_ctx);
@@ -4905,6 +5263,241 @@ mod tests {
             "the drained note must not still be queued"
         );
     }
+
+    // --- waiting summaries: how long, and "Summarize now" (issue #44) -----------
+
+    /// A context for `note_id` that records every event it emits.
+    fn recording_ctx(
+        dir: &tempfile::TempDir,
+        queue: &SummarizeQueue,
+        busy: &LlmBusy,
+        note_id: &str,
+    ) -> (SummarizeWorkerCtx, Arc<Mutex<Vec<SummaryEvent>>>) {
+        let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let ctx = SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
+            note_id: note_id.to_string(),
+            store: crate::store::open_shared(dir.path().to_path_buf()),
+            engine: open_shared(),
+            busy: busy.clone(),
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            settings: crate::settings::open_shared(dir.path()),
+            queue: queue.clone(),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        };
+        (ctx, events)
+    }
+
+    fn queued_at_of(events: &Arc<Mutex<Vec<SummaryEvent>>>) -> Vec<Option<u64>> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|SummaryEvent::SummaryStatus(payload)| {
+                assert_eq!(payload.state, SummaryStatusState::Queued);
+                payload.queued_at
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_repeat_request_reports_the_time_the_note_first_started_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+        busy.store(true, Ordering::SeqCst);
+
+        let (first, first_events) = recording_ctx(&dir, &queue, &busy, "note-a");
+        spawn_or_enqueue_summarize(&queue, first, false);
+        // Backdate the entry, so a repeat that restarted the clock shows.
+        lock_summarize_queue(&queue)[0].queued_at_ms = 1_000;
+
+        let (second, second_events) = recording_ctx(&dir, &queue, &busy, "note-a");
+        let disposition = spawn_or_enqueue_summarize(&queue, second, false);
+
+        assert_eq!(disposition, SummarizeDisposition::AlreadyQueued);
+        assert!(queued_at_of(&first_events)[0].is_some());
+        assert_eq!(queued_at_of(&second_events), [Some(1_000)]);
+    }
+
+    /// A note deferred behind a recording still holds its place in line
+    /// after the recording ends, until `stop_recording` drains. A Regenerate
+    /// in that gap starts the note; the old place must go with it, or the
+    /// drain summarizes the note a second time.
+    #[test]
+    fn a_waiting_note_that_a_new_request_starts_leaves_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let deferred = queued_ctx_signaling(&queue, &busy, &dir, tx.clone());
+        let note_id = deferred.note_id.clone();
+        assert_eq!(
+            spawn_or_enqueue_summarize(&queue, deferred, true),
+            SummarizeDisposition::Queued
+        );
+
+        let mut again = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        again.note_id = note_id;
+        assert_eq!(
+            spawn_or_enqueue_summarize(&queue, again, false),
+            SummarizeDisposition::Started
+        );
+
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the new request never started the note");
+        assert!(lock_summarize_queue(&queue).is_empty());
+    }
+
+    #[test]
+    fn summarize_now_starts_a_note_that_is_waiting_for_a_recording_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let deferred = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        deferred.recording.store(true, Ordering::SeqCst);
+        let note_id = deferred.note_id.clone();
+        spawn_or_enqueue_summarize(&queue, deferred, true);
+
+        // The recording is still live, so an ordinary drain leaves it.
+        drain_summarize_queue(&queue, &busy);
+        assert_eq!(lock_summarize_queue(&queue).len(), 1);
+
+        assert_eq!(
+            start_queued_summarize_now(&queue, &busy, &note_id),
+            SummarizeNowOutcome::Started
+        );
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), note_id);
+        assert!(lock_summarize_queue(&queue).is_empty());
+    }
+
+    #[test]
+    fn summarize_now_behind_a_running_generation_goes_next_even_while_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+        busy.store(true, Ordering::SeqCst);
+
+        let (first, _first_events) = recording_ctx(&dir, &queue, &busy, "first-in-line");
+        spawn_or_enqueue_summarize(&queue, first, false);
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let wanted = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        wanted.recording.store(true, Ordering::SeqCst);
+        let wanted_id = wanted.note_id.clone();
+        spawn_or_enqueue_summarize(&queue, wanted, false);
+
+        assert_eq!(
+            start_queued_summarize_now(&queue, &busy, &wanted_id),
+            SummarizeNowOutcome::Next
+        );
+        {
+            let pending = lock_summarize_queue(&queue);
+            let order: Vec<&str> = pending.iter().map(|q| q.ctx.note_id.as_str()).collect();
+            assert_eq!(order, [wanted_id.as_str(), "first-in-line"]);
+        }
+
+        // The running generation ends: what its worker does on the way out.
+        busy.store(false, Ordering::SeqCst);
+        drain_summarize_queue(&queue, &busy);
+
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), wanted_id);
+    }
+
+    #[test]
+    fn summarize_now_on_a_note_that_is_not_waiting_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+        let (other, _events) = recording_ctx(&dir, &queue, &busy, "other-note");
+        spawn_or_enqueue_summarize(&queue, other, true);
+
+        assert_eq!(
+            start_queued_summarize_now(&queue, &busy, "not-waiting"),
+            SummarizeNowOutcome::NotQueued
+        );
+        assert_eq!(lock_summarize_queue(&queue).len(), 1);
+        assert!(!busy.load(Ordering::SeqCst));
+    }
+
+    // --- a request racing a finishing worker (issue #44) ------------------------
+
+    /// A request that arrives as the running generation ends must not be
+    /// left in the queue with an idle engine: nothing would ever start it.
+    ///
+    /// Each round replays the two halves of that moment on two threads. One
+    /// does what a worker does on its way out (release `busy`, then drain).
+    /// The other asks for a summary. Whatever the interleaving, the note
+    /// must start.
+    #[test]
+    fn a_request_racing_a_finishing_worker_is_never_stranded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let note_id = lock_store(&store)
+            .create_note_now("Racing note", "whisper-small")
+            .unwrap()
+            .id;
+        let engine = open_shared();
+        let settings = crate::settings::open_shared(dir.path());
+
+        for round in 0..RACE_ROUNDS {
+            let queue = open_summarize_queue();
+            let busy = open_busy_flag();
+            busy.store(true, Ordering::SeqCst);
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let ctx = SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
+                note_id: note_id.clone(),
+                store: store.clone(),
+                engine: engine.clone(),
+                busy: busy.clone(),
+                model_id: "qwen3.5-4b".to_string(),
+                model_path: dir.path().join("does-not-exist.gguf"),
+                settings: settings.clone(),
+                queue: queue.clone(),
+                emit: Box::new(move |event| {
+                    let SummaryEvent::SummaryStatus(payload) = &event;
+                    if payload.state == SummaryStatusState::Running {
+                        let _ = tx.send(());
+                    }
+                }),
+            };
+
+            let go = Arc::new(AtomicBool::new(false));
+            let finishing_worker = std::thread::spawn({
+                let (queue, busy, go) = (queue.clone(), busy.clone(), go.clone());
+                move || {
+                    while !go.load(Ordering::Acquire) {
+                        std::hint::spin_loop();
+                    }
+                    busy.store(false, Ordering::SeqCst);
+                    drain_summarize_queue(&queue, &busy);
+                }
+            });
+            // Vary which side leads, so the rounds cover both orders and
+            // the overlap between them.
+            for _ in 0..(round % 64) {
+                std::hint::spin_loop();
+            }
+            go.store(true, Ordering::Release);
+            spawn_or_enqueue_summarize(&queue, ctx, false);
+            finishing_worker.join().unwrap();
+
+            assert!(
+                rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+                "round {round}: the note is waiting in the queue ({} queued, busy = {}) and \
+                 nothing is left to start it",
+                lock_summarize_queue(&queue).len(),
+                busy.load(Ordering::SeqCst),
+            );
+        }
+    }
+
+    const RACE_ROUNDS: usize = 20_000;
 
     // --- worker panic containment (issue #21) -----------------------------------
     //
@@ -4953,7 +5546,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
         let queued_id = queued.note_id.clone();
-        lock_summarize_queue(&queue).push_back(queued);
+        lock_summarize_queue(&queue).push_back(waiting(queued));
 
         busy.store(true, Ordering::SeqCst);
         run_summarize_worker_with(first_ctx, |_| panic!("boom"));
@@ -5005,7 +5598,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
         let queued_id = queued.note_id.clone();
-        lock_summarize_queue(&queue).push_back(queued);
+        lock_summarize_queue(&queue).push_back(waiting(queued));
 
         busy.store(true, Ordering::SeqCst);
         run_ask_worker(ask_ctx);

@@ -755,6 +755,7 @@ pub fn run() {
             toggle_action_item,
             llm::summarize_note,
             llm::cancel_summarize,
+            llm::summarize_now,
             llm::ask_note,
             diar::diarize_note,
             diar::dismiss_speaker_suggestion,
