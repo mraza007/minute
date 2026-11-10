@@ -20,6 +20,7 @@ import type {
   ObsidianExport,
   ObsidianPatch,
   ObsidianSettings,
+  SpeakerMergeResult,
   SpeakerMergeUndo,
   StorageStats,
   SummaryStyle,
@@ -524,10 +525,11 @@ export function useAppState() {
     [reportError],
   )
 
-  const mergeSpeakers = useCallback(
-    async (id: string, from: string, into: string): Promise<SpeakerMergeUndo> => {
+  /** Runs one speaker reassignment and resolves to the undo token `undoSpeakerMerge` takes. */
+  const reassignSpeaker = useCallback(
+    async (id: string, run: () => Promise<SpeakerMergeResult>): Promise<SpeakerMergeUndo> => {
       try {
-        const result = await ipc.mergeSpeakers(id, from, into)
+        const result = await run()
         setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
         invalidateNoteCache(id)
         if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
@@ -540,21 +542,21 @@ export function useAppState() {
     [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
   )
 
-  /** "Mark these turns as unknown" (issue #49). Resolves to the same undo token `undoSpeakerMerge` takes. */
+  const mergeSpeakers = useCallback(
+    (id: string, from: string, into: string) => reassignSpeaker(id, () => ipc.mergeSpeakers(id, from, into)),
+    [reassignSpeaker],
+  )
+
+  /** "Mark these turns as unknown" (issue #49). */
   const markSpeakerUnknown = useCallback(
-    async (id: string, speaker: string): Promise<SpeakerMergeUndo> => {
-      try {
-        const result = await ipc.markSpeakerUnknown(id, speaker)
-        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
-        invalidateNoteCache(id)
-        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
-        return result.undo
-      } catch (error) {
-        reportError(error)
-        throw error
-      }
-    },
-    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+    (id: string, speaker: string) => reassignSpeaker(id, () => ipc.markSpeakerUnknown(id, speaker)),
+    [reassignSpeaker],
+  )
+
+  /** Gives the note's unknown turns to `to`, a speaker it has or a new name (issue #49). */
+  const assignUnknownTurns = useCallback(
+    (id: string, to: string) => reassignSpeaker(id, () => ipc.assignUnknownTurns(id, to)),
+    [reassignSpeaker],
   )
 
   const undoSpeakerMerge = useCallback(
@@ -1912,6 +1914,7 @@ export function useAppState() {
     selectedObsidian: noteDetail.selectedMeta?.obsidian ?? null,
     mergeSpeakers,
     markSpeakerUnknown,
+    assignUnknownTurns,
     undoSpeakerMerge,
     deleteNote,
     deleteNotes,

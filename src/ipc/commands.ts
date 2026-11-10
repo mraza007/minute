@@ -112,6 +112,13 @@ export const mergeSpeakers = (id: string, from: string, into: string): Promise<S
 export const markSpeakerUnknown = (id: string, speaker: string): Promise<SpeakerMergeResult> =>
   invokeCmd('mark_speaker_unknown', { id, speaker })
 
+/**
+ * Gives a note's unknown turns to `to`, a speaker it has or a new name (issue #49).
+ * Reversed by `undoSpeakerMerge` with the returned `undo`, whose `from` is `null`.
+ */
+export const assignUnknownTurns = (id: string, to: string): Promise<SpeakerMergeResult> =>
+  invokeCmd('assign_unknown_turns', { id, to })
+
 export const undoSpeakerMerge = (id: string, undo: SpeakerMergeUndo): Promise<SpeakerMergeUndoResult> =>
   invokeCmd('undo_speaker_merge', { id, undo })
 

@@ -140,12 +140,15 @@ export interface Transcript {
 /**
  * `store::SpeakerMergeUndo` — exact turn indices changed by one merge.
  * Opaque to the frontend: pass it back to `undoSpeakerMerge` unchanged.
- * `into` is `null` when the merge was "mark these turns as unknown".
+ * `into` is `null` when the merge was "mark these turns as unknown", and
+ * `from` is `null` when it gave the unknown turns to a speaker.
  */
 export interface SpeakerMergeUndo {
-  from: string
+  from: string | null
   into: string | null
   segmentIndices: number[]
+  /** Present only when `from` is `null`. */
+  pinnedUnknown?: number[]
   summaryMentions: number[]
   summaryFingerprint: string | null
   checksum: string
