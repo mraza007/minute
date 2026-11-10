@@ -17,7 +17,6 @@ const base = {
   onReturnToRecording: vi.fn(),
   summaryStatus: {},
   onTogglePinned: vi.fn(),
-  onOpenShortcuts: vi.fn(),
   onBulkExport: vi.fn().mockResolvedValue(undefined),
   onBulkDelete: vi.fn().mockResolvedValue(undefined),
   onRenameNote: vi.fn(),
@@ -102,18 +101,19 @@ describe('Sidebar', () => {
     expect(onGoSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('sorts notes explicitly and opens the shortcut reference', () => {
-    const onOpenShortcuts = vi.fn()
-    render(<Sidebar {...base} onOpenShortcuts={onOpenShortcuts} />)
+  it('sorts notes explicitly', () => {
+    render(<Sidebar {...base} />)
 
     chooseFilter('Sort', 'Title A–Z')
     const noteRows = screen.getAllByRole('button').filter(button => button.classList.contains('side-row'))
     expect(noteRows.map(row => row.querySelector('.side-row-title')?.textContent)).toEqual(
       demoNotes.map(note => note.title).toSorted((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
     )
+  })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }))
-    expect(onOpenShortcuts).toHaveBeenCalledTimes(1)
+  it('has no keyboard shortcuts button; the list lives in Settings', () => {
+    render(<Sidebar {...base} />)
+    expect(screen.queryByRole('button', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument()
   })
 
   it('bulk selects, exports, and recoverably deletes notes', async () => {

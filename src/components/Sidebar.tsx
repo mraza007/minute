@@ -23,7 +23,6 @@ interface SidebarProps {
   /** Per-note summary lifecycle; a queued or running entry puts "Summarizing…" on that note's row. */
   summaryStatus: Readonly<Record<string, string>>
   onTogglePinned: (id: string, pinned: boolean) => void
-  onOpenShortcuts: () => void
   onBulkExport: (ids: string[]) => Promise<void>
   onBulkDelete: (ids: string[]) => Promise<void>
   onRenameNote: (id: string, title: string) => void
@@ -117,7 +116,6 @@ export const Sidebar = memo(function Sidebar({
   onReturnToRecording,
   summaryStatus,
   onTogglePinned,
-  onOpenShortcuts,
   onBulkExport,
   onBulkDelete,
   onRenameNote,
@@ -402,21 +400,7 @@ export const Sidebar = memo(function Sidebar({
             </Icon>
             <span className="sidebar-nav-label">Settings</span>
           </button>
-          <div className="sidebar-footer-end">
-            <span className="sidebar-stats">{statsLine}</span>
-            <button
-              type="button"
-              className="icon-btn sidebar-shortcuts"
-              onClick={onOpenShortcuts}
-              aria-label="Keyboard shortcuts"
-              title="Keyboard shortcuts (⌘/)"
-            >
-              <Icon size={15} strokeWidth={1.8}>
-                <rect x="3" y="6" width="18" height="12" rx="2" />
-                <path d="M7 10h.01M11 10h.01M15 10h.01M18 10h.01M7 14h10" />
-              </Icon>
-            </button>
-          </div>
+          <span className="sidebar-stats">{statsLine}</span>
         </div>
       )}
     </nav>

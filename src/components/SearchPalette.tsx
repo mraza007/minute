@@ -1,71 +1,78 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import type { NoteMeta, SearchHit } from '../ipc/types'
 import { formatMmSs, splitHighlight } from '../state/adapters'
+import './searchPalette.css'
 
 export interface SearchPaletteProps {
-  /** The full note list — used only to look up a title hit's date label (search hits don't carry `createdAt`; the frontend already has this). */
+  /** The full note list. Search hits carry no date or length, so a title hit looks them up here. */
   notes: NoteMeta[]
-  /** `search_notes`, injected (rather than imported from `ipc/commands` directly) so this component can be tested with a plain stub — see `useAppState`'s `searchNotes`. */
+  /** `search_notes`, passed in so tests can use a plain stub (see `useAppState`'s `searchNotes`). */
   search: (query: string) => Promise<SearchHit[]>
   onClose: () => void
-  /** Enter/click on a title hit — opens that note. */
+  /** Enter or click on a title hit opens that note. */
   onOpenTitleHit: (noteId: string) => void
-  /** Enter/click on a transcript hit — opens that note and seeks playback to the matched segment's start. */
+  /** Enter or click on a transcript hit opens that note and plays from the matched moment. */
   onOpenTranscriptHit: (noteId: string, segmentStart: number) => void
 }
 
 const SEARCH_DEBOUNCE_MS = 150
 
-function dateLabelFor(notes: NoteMeta[], noteId: string): string {
+const DAY_MS = 86_400_000
+
+/** "Today · 28 min", "Yesterday · 5 min", or "Jul 22, 2026 · 21 min". */
+function noteWhen(notes: NoteMeta[], noteId: string, now: Date = new Date()): string {
   const note = notes.find(n => n.id === noteId)
   if (!note) return ''
-  return new Date(note.createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+  const created = new Date(note.createdAt)
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const daysAgo = Math.round((startOfDay(now) - startOfDay(created)) / DAY_MS)
+  const day =
+    daysAgo === 0
+      ? 'Today'
+      : daysAgo === 1
+        ? 'Yesterday'
+        : created.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  return `${day} · ${Math.max(1, Math.round(note.durationSec / 60))} min`
 }
 
-/** Renders `splitHighlight`'s segments, bolding the matched substring in the app's accent color rather than a default `<mark>` yellow — keeps the palette inside the paper-and-ink palette instead of introducing a new color. */
+/** Bolds the matched text, so the match reads without a second highlight colour. */
 function Highlighted({ text, query }: { text: string; query: string }) {
   return (
     <>
       {splitHighlight(text, query).map((segment, i) =>
-        segment.match ? (
-          <strong key={i} style={{ color: 'var(--accent-text)', fontWeight: 700 }}>
-            {segment.text}
-          </strong>
-        ) : (
-          <span key={i}>{segment.text}</span>
-        ),
+        segment.match ? <strong key={i}>{segment.text}</strong> : <span key={i}>{segment.text}</span>,
       )}
     </>
   )
 }
 
 /**
- * ⌘K / ⌘F command palette — the one deliberately-justified overlay in the
- * app (see .impeccable.md's "paper, not glass"; `--scrim` in index.css is
- * the plain dim backdrop this uses). Combobox/listbox ARIA pattern: the
- * `<input>` (role="combobox") keeps real DOM focus for the whole time the
- * palette is open — arrow keys move a *visual* + `aria-activedescendant`
- * selection over the results (role="listbox"/"option"), never actual DOM
- * focus, which is also what makes this "focus trap" trivial: there is
- * exactly one focusable control inside the panel, and Tab/Shift-Tab (see
- * `handlePanelKeyDown`) simply keep it there rather than letting focus
- * escape to whatever's behind the overlay.
+ * ⌘K / ⌘F search palette. Combobox and listbox pattern: the `<input>` keeps
+ * DOM focus the whole time, and the arrow keys move a visual selection plus
+ * `aria-activedescendant` over the results. That also makes the focus trap
+ * simple, since the panel holds exactly one focusable control.
  */
 export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTranscriptHit }: SearchPaletteProps) {
   const [query, setQuery] = useState('')
-  const [hits, setHits] = useState<SearchHit[]>([])
+  const [rawHits, setHits] = useState<SearchHit[]>([])
   const [loading, setLoading] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
 
   const inputRef = useRef<HTMLInputElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
   const previouslyFocused = useRef<HTMLElement | null>(null)
   const requestSeq = useRef(0)
 
-  // Autofocus on mount; restore focus to whatever had it before the palette
-  // opened once it unmounts (App.tsx only mounts this while `searchOpen`,
-  // so unmount here always means "the palette just closed").
+  // Note hits come first, then transcript hits, so the arrow keys follow the
+  // order on screen.
+  const hits = useMemo(
+    () => [...rawHits.filter(hit => hit.kind === 'title'), ...rawHits.filter(hit => hit.kind !== 'title')],
+    [rawHits],
+  )
+  const titleCount = hits.filter(hit => hit.kind === 'title').length
+
+  // Focus the input on mount and give focus back on unmount. App mounts this
+  // only while search is open, so unmount always means it just closed.
   useEffect(() => {
     previouslyFocused.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     inputRef.current?.focus()
@@ -74,21 +81,12 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
     }
   }, [])
 
-  // Debounced search — a blank/whitespace query clears results immediately
-  // without ever calling `search` (matches the backend's own short-circuit;
-  // see `store::Store::search_notes`'s docs). `requestSeq` guards against a
-  // slow response to an abandoned query landing after a newer one already
-  // resolved.
+  // Debounced search. A blank query clears the results without calling
+  // `search`, as the backend does. `requestSeq` stops a slow answer to an
+  // abandoned query from landing after a newer one, including after a clear.
   useEffect(() => {
     const trimmed = query.trim()
     setActiveIndex(0)
-    // Bumped unconditionally — including the blank-query clear branch below
-    // — so a response for whatever query was previously in flight can never
-    // land after this effect ran, even though the clear branch itself
-    // doesn't start a new debounced search. Without this, clearing the
-    // input while a search is still in flight would leave that stale
-    // request's id current, and its eventual `.then`/`.catch` would
-    // repopulate `hits` right after this effect just cleared them.
     const requestId = ++requestSeq.current
     if (trimmed === '') {
       setHits([])
@@ -118,14 +116,8 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
     return () => clearTimeout(timer)
   }, [query, search])
 
-  // Keeps the roving keyboard selection visible as it moves — with up to
-  // [`SEARCH_HIT_CAP`]-worth of results in a `maxHeight`-capped listbox,
-  // arrowing past the fold would otherwise only move
-  // `aria-activedescendant` (and the visual highlight) on a row that's
-  // scrolled out of view, with nothing on screen to show it happened.
-  // `block: 'nearest'` scrolls the minimum amount needed to bring the row
-  // into view — never re-centers or over-scrolls a row that's already
-  // visible.
+  // Keeps the keyboard selection in view. `block: 'nearest'` scrolls the
+  // least it can and leaves a row that is already visible alone.
   useEffect(() => {
     if (hits.length === 0) return
     document.getElementById(`search-hit-${activeIndex}`)?.scrollIntoView({ block: 'nearest' })
@@ -147,10 +139,8 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
       e.preventDefault()
       if (hits.length > 0) setActiveIndex(i => (i - 1 + hits.length) % hits.length)
     } else if (e.key === 'Enter') {
-      // Ignore the Enter that confirms a CJK/IME composition (e.g. picking
-      // a kanji candidate while typing the query) — same guard as
-      // `AskPanel`'s input; that Enter is finishing the *text*, not
-      // asking to open the active hit.
+      // The Enter that confirms an IME composition finishes the text. It
+      // does not ask to open the hit.
       if (e.nativeEvent.isComposing) return
       e.preventDefault()
       const hit = hits[activeIndex]
@@ -161,9 +151,7 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
     }
   }
 
-  // Focus trap: the input is the only real tab stop inside the panel (see
-  // the component's docs above), so Tab/Shift-Tab both just keep focus on
-  // it rather than letting it escape to whatever's behind the overlay.
+  // The input is the only tab stop in the panel, so Tab keeps focus on it.
   function handlePanelKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
     if (e.key !== 'Tab') return
     e.preventDefault()
@@ -175,52 +163,64 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
   }
 
   const trimmedQuery = query.trim()
-  const activeId = hits[activeIndex] ? `search-hit-${activeIndex}` : undefined
+  const activeHit = hits[activeIndex]
+  const activeId = activeHit ? `search-hit-${activeIndex}` : undefined
 
   let resultsAnnouncement = ''
   if (trimmedQuery && !loading) {
     resultsAnnouncement = searchError ? 'Search failed' : `${hits.length} result${hits.length === 1 ? '' : 's'}`
   }
 
-  return (
-    <div
-      onMouseDown={handleOverlayMouseDown}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'var(--scrim)',
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'flex-start',
-        paddingTop: '12vh',
-        zIndex: 1000,
-      }}
-    >
+  function renderHit(hit: SearchHit, i: number) {
+    const active = i === activeIndex
+    return (
       <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Search notes"
-        onKeyDown={handlePanelKeyDown}
-        style={{
-          width: '100%',
-          maxWidth: 560,
-          maxHeight: '68vh',
-          display: 'flex',
-          flexDirection: 'column',
-          // A sheet of the same paper the app is made of, lifted off the
-          // page by a shadow — the one place a raised surface is justified,
-          // because it genuinely is a separate sheet laid over the others.
-          background: 'var(--panel)',
-          border: '1px solid var(--rule-strong)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: '0 20px 48px rgba(0,0,0,.22)',
-          overflow: 'hidden',
+        key={`${hit.noteId}-${hit.kind}-${i}`}
+        id={`search-hit-${i}`}
+        role="option"
+        aria-selected={active}
+        className="sp-hit"
+        data-kind={hit.kind === 'title' ? 'title' : 'transcript'}
+        data-active={active ? 'true' : undefined}
+        onMouseEnter={() => setActiveIndex(i)}
+        onMouseDown={e => {
+          // Selects on mouse down. The default action would blur the input,
+          // and the overlay's own handler must not read this as an outside click.
+          e.preventDefault()
+          selectHit(hit)
         }}
       >
-        <div style={{ padding: '0 20px', borderBottom: '1px solid var(--rule)', flex: 'none' }}>
+        {hit.kind === 'title' ? (
+          <>
+            <span className="sp-hit-title">{hit.title}</span>
+            <span className="sp-hit-meta">{noteWhen(notes, hit.noteId)}</span>
+          </>
+        ) : (
+          <>
+            <span className="sp-hit-time">{formatMmSs(hit.segmentStart ?? 0)}</span>
+            <span className="sp-hit-body">
+              <span className="sp-hit-snippet">
+                <Highlighted text={hit.snippet} query={trimmedQuery} />
+              </span>
+              <span className="sp-hit-meta">{hit.title}</span>
+            </span>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="sp-overlay" onMouseDown={handleOverlayMouseDown}>
+      <div className="sp-panel" role="dialog" aria-modal="true" aria-label="Search notes" onKeyDown={handlePanelKeyDown}>
+        <div className="sp-input-row">
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <path d="M20 20l-3.5-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
           <input
             ref={inputRef}
+            className="sp-input"
             role="combobox"
             aria-expanded="true"
             aria-controls="search-palette-listbox"
@@ -231,106 +231,34 @@ export function SearchPalette({ notes, search, onClose, onOpenTitleHit, onOpenTr
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleInputKeyDown}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              padding: '16px 0',
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              fontFamily: 'var(--sans)',
-              fontSize: 15,
-              color: 'var(--ink)',
-            }}
           />
+          <span className="sp-esc" aria-hidden="true">esc</span>
         </div>
-        <div id="search-palette-listbox" role="listbox" aria-label="Search results" style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
-          {trimmedQuery === '' && (
-            <div style={{ padding: '20px', fontFamily: 'var(--serif)', fontSize: 13.5, color: 'var(--ink-muted)' }}>
-              Search note titles and transcripts.
-            </div>
-          )}
-          {trimmedQuery !== '' && searchError && (
-            <div style={{ padding: '20px', fontFamily: 'var(--serif)', fontSize: 13.5, color: 'var(--ink-muted)' }}>Search failed: {searchError}</div>
-          )}
+        <div id="search-palette-listbox" role="listbox" aria-label="Search results" className="sp-results">
+          {trimmedQuery === '' && <div className="sp-empty">Search note titles and transcripts.</div>}
+          {trimmedQuery !== '' && searchError && <div className="sp-empty">Search failed: {searchError}</div>}
           {trimmedQuery !== '' && !searchError && !loading && hits.length === 0 && (
-            <div style={{ padding: '20px', fontFamily: 'var(--serif)', fontSize: 13.5, color: 'var(--ink-muted)' }}>No matches for “{trimmedQuery}”.</div>
+            <div className="sp-empty">No matches for “{trimmedQuery}”.</div>
           )}
-          {hits.map((hit, i) => (
-            <div
-              key={`${hit.noteId}-${hit.kind}-${i}`}
-              id={`search-hit-${i}`}
-              role="option"
-              aria-selected={i === activeIndex}
-              onMouseEnter={() => setActiveIndex(i)}
-              onMouseDown={e => {
-                // Prevent the overlay's onMouseDown (click-outside-closes)
-                // from treating this as "outside" — the row is inside the
-                // panel, but the panel's own onMouseDown doesn't stop
-                // propagation on purpose (it only closes on the overlay
-                // background itself, per `handleOverlayMouseDown`'s
-                // `e.target === e.currentTarget` check) — this just commits
-                // the selection on mousedown rather than waiting for click.
-                e.preventDefault()
-                selectHit(hit)
-              }}
-              // Same selection language as the sidebar: a margin marker and
-              // a wash, not a filled rounded block.
-              style={{
-                padding: '8px 20px 9px 18px',
-                borderLeft: `2px solid ${i === activeIndex ? 'var(--accent)' : 'transparent'}`,
-                cursor: 'pointer',
-                background: i === activeIndex ? 'rgba(var(--accent-rgb), .08)' : 'transparent',
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: 'var(--serif)',
-                  fontSize: 14,
-                  color: 'var(--ink)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {hit.title}
-              </div>
-              {hit.kind === 'title' ? (
-                <div style={{ fontSize: 11, color: 'var(--ink-faint)', marginTop: 2 }}>{dateLabelFor(notes, hit.noteId)}</div>
-              ) : (
-                // The timestamp sits in a fixed-width column so a run of
-                // transcript hits reads as one flush margin — the palette's
-                // echo of the manuscript gutter.
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginTop: 3 }}>
-                  <span
-                    style={{
-                      flex: 'none',
-                      width: 38,
-                      fontSize: 10.5,
-                      color: 'var(--ink-faint)',
-                      fontVariantNumeric: 'tabular-nums',
-                      letterSpacing: '.02em',
-                    }}
-                  >
-                    {formatMmSs(hit.segmentStart ?? 0)}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--serif)',
-                      fontSize: 12.5,
-                      color: 'var(--ink-muted)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <Highlighted text={hit.snippet} query={trimmedQuery} />
-                  </span>
-                </div>
-              )}
+          {titleCount > 0 && (
+            <div role="group" aria-labelledby="sp-group-notes">
+              <div id="sp-group-notes" className="sp-group-label">Notes</div>
+              {hits.slice(0, titleCount).map((hit, i) => renderHit(hit, i))}
             </div>
-          ))}
+          )}
+          {hits.length > titleCount && (
+            <div role="group" aria-labelledby="sp-group-transcripts">
+              <div id="sp-group-transcripts" className="sp-group-label">In transcripts</div>
+              {hits.slice(titleCount).map((hit, i) => renderHit(hit, titleCount + i))}
+            </div>
+          )}
         </div>
+        {hits.length > 0 && (
+          <div className="sp-hints" aria-hidden="true">
+            <span>↑↓ Move</span>
+            <span>↵ {activeHit?.kind === 'transcript' ? 'Open and play from this moment' : 'Open'}</span>
+          </div>
+        )}
         <span role="status" className="visually-hidden">
           {resultsAnnouncement}
         </span>

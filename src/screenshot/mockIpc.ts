@@ -20,7 +20,9 @@ import {
   PRICING_SEARCH_HITS,
   RECOMMENDATION,
   SETTINGS,
+  SETTINGS_SHOWCASE,
   STORAGE,
+  VOICE_PROFILES,
 } from './demoData'
 
 export type ScreenshotState = 'note' | 'recording' | 'preflight' | 'palette' | 'settings' | 'onboarding' | 'popup' | 'empty'
@@ -91,6 +93,8 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
     (cmd, rawArgs) => {
       const args = (rawArgs ?? {}) as Record<string, unknown>
       switch (cmd) {
+        case 'plugin:app|version':
+          return '1.12.1'
         case 'hardware_info':
           return HARDWARE
         case 'list_models':
@@ -273,9 +277,17 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           if (params.get('processing')) return new Promise(() => {})
           return notes[0]
         case 'get_settings':
-          return SETTINGS
         case 'set_settings':
-          return SETTINGS
+          return state === 'settings' ? SETTINGS_SHOWCASE : SETTINGS
+        case 'list_voice_profiles':
+          return state === 'settings' ? VOICE_PROFILES : []
+        case 'check_obsidian_vault':
+          // `?vault=missing` shows how the Integrations section reports a vault that moved.
+          if (params.get('vault') === 'missing') {
+            // The backend rejects with a plain string, not an Error.
+            throw 'The vault folder /Users/demo/Vault does not exist. Check the path in Settings.'
+          }
+          return null
         case 'sys_audio_status':
         case 'request_sys_audio_permission':
           // Marketing screenshots don't exercise the Grant-permission flow —

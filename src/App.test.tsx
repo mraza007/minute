@@ -204,7 +204,7 @@ describe('App', () => {
   it('boots to the onboarding gate when no STT model is installed', async () => {
     setupIPC({ models: [sttModel({ state: 'notInstalled' }), llmModel()] })
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Minute runs entirely on this Mac.')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Meeting notes that never leave your Mac')).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /new recording/i })).not.toBeInTheDocument()
   })
 
@@ -296,16 +296,13 @@ describe('App', () => {
     expect(screen.getByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
   })
 
-  it('opens the shortcut reference with Command-slash and restores invoking focus on close', async () => {
+  it('opens the shortcut list in Settings > About with Command-slash', async () => {
     setupIPC()
     render(<App />)
-    const trigger = await screen.findByRole('button', { name: 'Keyboard shortcuts' })
-    trigger.focus()
+    await screen.findByRole('button', { name: 'Settings' })
     fireEvent.keyDown(window, { key: '/', metaKey: true })
-    expect(await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
-    fireEvent.keyDown(window, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument())
-    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(await screen.findByRole('list', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'About' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('returns to the notes view when "Stop & transcribe" is clicked', async () => {
@@ -317,45 +314,48 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
   })
 
-  it('shows SettingsView when Settings is clicked in the sidebar, and returns to notes via the Show menu\'s "All notes"', async () => {
+  it('shows the Settings sections in place of the sidebar and returns to the notes via the back link', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Recording' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Notes' })).not.toBeInTheDocument()
 
-    // "All notes" leaves Settings *and* deselects (issue #24) — the main
-    // pane shows the pick-a-note state, not the last-open note.
-    chooseAllNotes()
-    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    expect(screen.getByRole('heading', { level: 1, name: 'Models' })).toBeInTheDocument()
+
+    // The back link deselects (issue #24), so the main pane shows the pick-a-note state.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+    expect(screen.queryByRole('navigation', { name: 'Settings sections' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Client call — Acme' })).not.toBeInTheDocument()
   })
 
-  it('starts a recording from the Settings view and navigates to RecordingView', async () => {
+  it('starts a recording after going back from Settings', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
 
-    fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Notes' })).getByRole('button', { name: /new recording/i }))
     expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
     await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
-    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
   })
 
-  it('leaves Settings when a note is selected from the sidebar', async () => {
+  it('leaves Settings when a note is selected after going back', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
 
     fireEvent.click(screen.getByText('Client call — Acme'))
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
-    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Recording' })).not.toBeInTheDocument()
   })
 
   describe('note right-click menu', () => {
@@ -457,7 +457,7 @@ describe('App', () => {
     // recording") must still be showing, proving `isRecording` survived
     // the view change instead of collapsing back to false.
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Recording' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /new recording/i })).not.toBeInTheDocument()
 
@@ -470,6 +470,7 @@ describe('App', () => {
     // Also navigate through Notes mid-recording — allowed, and still
     // doesn't lose the recording. "All notes" lands on the deselected
     // pick-a-note state (issue #24), REC pill intact.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
     chooseAllNotes()
     expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()

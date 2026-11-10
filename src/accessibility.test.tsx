@@ -223,23 +223,27 @@ describe('core flow accessibility', () => {
     installIpc()
     const view = render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
-    await screen.findByRole('radiogroup', { name: 'Transcription model' })
-    await expectNoAccessibilityViolations(view)
+    for (const section of ['Recording', 'Summaries', 'Speakers', 'Models', 'Integrations', 'Storage', 'About']) {
+      fireEvent.click(await screen.findByRole('button', { name: section }))
+      await screen.findByRole('heading', { level: 1 })
+      // eslint-disable-next-line no-await-in-loop
+      await expectNoAccessibilityViolations(view)
+    }
   })
 
-  it('checks the keyboard shortcut reference dialog', async () => {
+  it('checks the keyboard shortcut list', async () => {
     installIpc()
     const view = render(<App />)
     await screen.findByRole('heading', { name: note.title })
     fireEvent.keyDown(window, { key: '/', metaKey: true })
-    await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+    await screen.findByRole('list', { name: 'Keyboard shortcuts' })
     await expectNoAccessibilityViolations(view)
   })
 
   it('checks onboarding', async () => {
     installIpc({ installed: false })
     const view = render(<App />)
-    await waitFor(() => expect(screen.getByText('Minute runs entirely on this Mac.')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Meeting notes that never leave your Mac')).toBeInTheDocument())
     await expectNoAccessibilityViolations(view)
   })
 })

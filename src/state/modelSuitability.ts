@@ -76,3 +76,10 @@ export function assessModelSuitability(
     detail: `Meets the ${entry.minRamGb} GB minimum; close other memory-heavy apps.`,
   }
 }
+
+/** "Apple silicon · 16 GB memory · 8 CPU cores", or a placeholder until detection finishes. */
+export function hardwareSpecs(hardware: Hardware | null): string {
+  return hardware
+    ? `${hardware.appleSilicon ? 'Apple silicon' : 'Intel'} · ${hardware.totalRamGb} GB memory · ${hardware.cores} CPU cores`
+    : 'Checking hardware…'
+}

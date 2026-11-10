@@ -14,7 +14,9 @@ import type {
   StorageStats,
   StoredSegment,
   SummaryDoc,
+  VoiceProfile,
 } from '../ipc/types'
+import { ASK_FOR_EVERY_APP } from '../ipc/meetingPolicy'
 import { DEFAULT_OBSIDIAN_SETTINGS } from '../state/obsidian'
 
 const HOUR = 3_600_000
@@ -325,6 +327,26 @@ export const SETTINGS: Settings = {
   autoApplySpeakerNames: true,
   obsidian: { ...DEFAULT_OBSIDIAN_SETTINGS, enabled: true, vaultPath: '/Users/demo/Vault' },
 }
+/** The Settings captures show a configured install, so every section has something to read. */
+export const SETTINGS_SHOWCASE: Settings = {
+  ...SETTINGS,
+  meetingDetection: true,
+  meetingPolicies: { ...ASK_FOR_EVERY_APP, teams: 'record', faceTime: 'ignore' },
+  detectSpeakers: true,
+  speakerProfiles: true,
+  autoApplySpeakerNames: false,
+  compressAudioAfterDays: 14,
+  summaryStyle: 'detailed',
+  summaryInstructions: 'Focus on engineering decisions. Write owners by first name.',
+  deleteAudioAfter30d: false,
+}
+
+export const VOICE_PROFILES: VoiceProfile[] = [
+  { name: 'Marcus Chen', embedding: [], samples: 12, createdAt: isoDaysAgo(40), updatedAt: isoDaysAgo(1) },
+  { name: 'Priya Shah', embedding: [], samples: 7, createdAt: isoDaysAgo(30), updatedAt: isoDaysAgo(3) },
+  { name: 'Sam Okafor', embedding: [], samples: 4, createdAt: isoDaysAgo(12), updatedAt: isoDaysAgo(6) },
+]
+
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 
 /** Search-palette demo hits for the `?state=palette` capture — query "pricing". */
