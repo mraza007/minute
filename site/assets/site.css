@@ -137,6 +137,7 @@ h1 em { font-style: italic; color: var(--accent); }
   border-radius: 8px;
   border: 1px solid var(--rule-soft);
 }
+.shot.narrow img { max-width: min(100%, 600px); }
 
 section { padding-top: 72px; }
 h2 {
