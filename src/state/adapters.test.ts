@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
 import {
@@ -17,6 +20,7 @@ import {
   splitAnswerCitations,
   splitHighlight,
   storedSegmentsToDisplay,
+  UNKNOWN_SPEAKER_LABEL,
 } from './adapters'
 
 function meta(overrides: Partial<NoteMeta> = {}): NoteMeta {
@@ -178,6 +182,14 @@ describe('storedSegmentsToDisplay', () => {
     const [row] = storedSegmentsToDisplay([{ speaker: null, start: 3, end: 4, text: 'Hm.' }])
     expect(row.speaker).toBeNull()
     expect(row.initials).toBe('?')
+  })
+})
+
+describe('UNKNOWN_SPEAKER_LABEL', () => {
+  it('matches the label the backend writes into note.md, prompts, and summaries', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url))
+    const storeRs = readFileSync(path.resolve(here, '../../src-tauri/src/store.rs'), 'utf8')
+    expect(storeRs).toContain(`pub const UNKNOWN_SPEAKER_LABEL: &str = "${UNKNOWN_SPEAKER_LABEL}";`)
   })
 })
 

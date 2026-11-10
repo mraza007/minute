@@ -126,7 +126,13 @@ transcript toolbar runs the same pass on any note that still has its
 audio. Automatic speaker counting is strongest on clear call audio; when
 it gets the count wrong, re-run it with the exact number of speakers and
 it's very accurate. Names you've confirmed stick: a speaker you renamed
-keeps that name across re-runs.
+keeps that name across re-runs. A turn the detector heard no voice in is
+labeled "Unknown speaker" instead of being handed to the nearest speaker.
+
+Renaming a speaker renames them in the summary, decisions, and action
+items too, and renaming them back restores the notes exactly. Minute
+changes only the places where the summary used that speaker's name, never
+other text.
 
 Minute can also remember the people you meet with. Turn on **Remember
 named speakers** (Settings → Speakers) and renaming a speaker saves that

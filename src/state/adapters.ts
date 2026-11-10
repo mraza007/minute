@@ -314,7 +314,7 @@ export function speakerInitials(speaker: string): string {
   return `${first[0]}${second[0]}`.toUpperCase()
 }
 
-/** What every surface prints for an unknown speaker — `store::UNKNOWN_SPEAKER_LABEL`. */
+/** What every surface prints for an unknown speaker. Mirrors `store::UNKNOWN_SPEAKER_LABEL`. */
 export const UNKNOWN_SPEAKER_LABEL = 'Unknown speaker'
 
 /** One named speaker as the speaker controls show it: "Speaker 3 · 14 turns", plus its "Sounds like …" suggestion. */
