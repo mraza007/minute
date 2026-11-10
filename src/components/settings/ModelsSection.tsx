@@ -396,23 +396,23 @@ function SearchField({ query, onChange, onSubmit }: SearchFieldProps) {
   )
 }
 
-/** Rows folded away until asked for. A row that is downloading keeps the fold open, so its progress never hides. */
+/** Rows folded away until asked for. A closed fold still shows a row that is downloading, so its progress never hides. */
 function Fold({ rows, label, ...actions }: { rows: CatalogRow[]; label: string } & DownloadActions) {
   const [open, setOpen] = useState(false)
   if (rows.length === 0) return null
-  const shown = open || rows.some(row => row.status === 'downloading')
+  const visible = open ? rows : rows.filter(row => row.status === 'downloading')
   return (
     <>
-      <button type="button" className="st-model-fold" aria-expanded={shown} onClick={() => setOpen(!shown)}>
+      <button type="button" className="st-model-fold" aria-expanded={open} onClick={() => setOpen(value => !value)}>
         <span className="st-radio-slot">
-          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" data-open={shown ? 'true' : undefined}>
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" data-open={open ? 'true' : undefined}>
             <path d="M4.5 3L7.5 6L4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </span>
         <span className="st-model-fold-text">{label}</span>
-        <span className="st-model-fold-action">{shown ? 'Hide' : 'Show'}</span>
+        <span className="st-model-fold-action">{open ? 'Hide' : 'Show'}</span>
       </button>
-      {shown && <AvailableRows rows={rows} {...actions} />}
+      {visible.length > 0 && <AvailableRows rows={visible} {...actions} />}
     </>
   )
 }

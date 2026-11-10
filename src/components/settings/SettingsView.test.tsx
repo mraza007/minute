@@ -567,6 +567,20 @@ describe('SettingsView', () => {
       expect(screen.getByText('Whisper tiny, English (q5_1)')).toBeInTheDocument()
     })
 
+    it('keeps a folded file in view while it downloads', () => {
+      const tiny = hfModel(
+        'ggml-tiny.en-q5_1.bin',
+        { kind: 'stt', displayName: 'Whisper tiny, English (q5_1)', traits: [], sizeBytes: 32_000_000, minRamGb: 0 },
+        { publisher: 'ggerganov' },
+      )
+      renderSection('models', {
+        huggingFace: browse({ models: [tiny] }),
+        downloads: { [tiny.id]: { downloaded: 16_000_000, total: 32_000_000 } },
+      })
+      expect(screen.getByRole('button', { name: /1 more file from whisper\.cpp/ })).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.getByText('Whisper tiny, English (q5_1)')).toBeInTheDocument()
+    })
+
     it('downloads a trusted publisher’s file at once', () => {
       const downloadModel = vi.fn()
       const granite = hfModel('granite-4.0-h-tiny-Q4_K_M.gguf', { displayName: 'Granite 4.0 H Tiny', sizeBytes: 4_200_000_000 }, { publisher: 'ibm-granite' })
