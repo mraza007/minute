@@ -396,22 +396,23 @@ function SearchField({ query, onChange, onSubmit }: SearchFieldProps) {
   )
 }
 
-/** "N more need more memory than this Mac has": the models too big for this Mac, folded away until asked for. */
-function TooLargeFold({ rows, ...actions }: { rows: CatalogRow[] } & DownloadActions) {
+/** Rows folded away until asked for. A row that is downloading keeps the fold open, so its progress never hides. */
+function Fold({ rows, label, ...actions }: { rows: CatalogRow[]; label: string } & DownloadActions) {
   const [open, setOpen] = useState(false)
   if (rows.length === 0) return null
+  const shown = open || rows.some(row => row.status === 'downloading')
   return (
     <>
-      <button type="button" className="st-model-fold" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <button type="button" className="st-model-fold" aria-expanded={shown} onClick={() => setOpen(!shown)}>
         <span className="st-radio-slot">
-          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" data-open={open ? 'true' : undefined}>
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" data-open={shown ? 'true' : undefined}>
             <path d="M4.5 3L7.5 6L4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </span>
-        <span className="st-model-fold-text">{plural(rows.length, 'more needs', 'more need')} more memory than this Mac has</span>
-        <span className="st-model-fold-action">{open ? 'Hide' : 'Show'}</span>
+        <span className="st-model-fold-text">{label}</span>
+        <span className="st-model-fold-action">{shown ? 'Hide' : 'Show'}</span>
       </button>
-      {open && <AvailableRows rows={rows} {...actions} />}
+      {shown && <AvailableRows rows={rows} {...actions} />}
     </>
   )
 }
@@ -455,12 +456,13 @@ function ModelGroup({ kind, group, onSelect, huggingFace, deleteModel, ...action
       ) : (
         <>
           <SubgroupLabel text={config.availableLabel} spaced />
-          <AvailableRows rows={[...group.tested, ...group.huggingFace]} {...actions} />
+          <AvailableRows rows={group.tested} {...actions} />
+          <Fold rows={group.huggingFace} label={`${plural(group.huggingFace.length, 'more file', 'more files')} from whisper.cpp on Hugging Face`} {...actions} />
         </>
       )}
       <BrowseNotes browse={browse} shown={group.huggingFace.length} searchable={config.searchable} onRetry={retry} />
 
-      <TooLargeFold rows={group.tooLarge} {...actions} />
+      <Fold rows={group.tooLarge} label={`${plural(group.tooLarge.length, 'more needs', 'more need')} more memory than this Mac has`} {...actions} />
     </section>
   )
 }

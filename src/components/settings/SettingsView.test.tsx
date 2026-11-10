@@ -549,17 +549,22 @@ describe('SettingsView', () => {
       expect(cancelDownload).toHaveBeenCalledWith('whisper-large-v3-turbo')
     })
 
-    it('lists official whisper.cpp files with the tested transcription models', () => {
-      const english = hfModel(
-        'ggml-small.en.bin',
-        { kind: 'stt', displayName: 'Whisper small, English', traits: ['Fast', 'English only'], sizeBytes: 466_000_000, minRamGb: 0 },
+    it('folds the other whisper.cpp files away behind the tested transcription models', () => {
+      const tiny = hfModel(
+        'ggml-tiny.en-q5_1.bin',
+        { kind: 'stt', displayName: 'Whisper tiny, English (q5_1)', traits: [], sizeBytes: 32_000_000, minRamGb: 0 },
         { publisher: 'ggerganov' },
       )
-      renderSection('models', { huggingFace: browse({ models: [english] }) })
+      renderSection('models', { huggingFace: browse({ models: [tiny] }) })
       const available = screen.getByRole('heading', { level: 3, name: 'Available to download' }).parentElement?.nextElementSibling as HTMLElement
-      expect(within(available).getByText('Whisper small, English')).toBeInTheDocument()
-      expect(within(available).getByText('Fast · English only · 466 MB')).toBeInTheDocument()
       expect(within(available).getByText('Whisper medium')).toBeInTheDocument()
+      expect(screen.queryByText('Whisper tiny, English (q5_1)')).not.toBeInTheDocument()
+
+      const fold = screen.getByRole('button', { name: /1 more file from whisper\.cpp on Hugging Face/ })
+      expect(fold).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(fold)
+      expect(fold).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('Whisper tiny, English (q5_1)')).toBeInTheDocument()
     })
 
     it('downloads a trusted publisher’s file at once', () => {
