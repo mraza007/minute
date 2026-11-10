@@ -4,9 +4,9 @@
 // transcript is now wired to real `transcript-segment` events, grouped via
 // `state/adapters.ts`'s `groupLiveSegments`). Everything here is a reusable
 // fixture for component tests (Sidebar.test, TranscriptList.test,
-// AiNotesPanel.test, MarkdownCard.test).
+// NoteView.test).
 
-import type { ActionItem, NoteListItem, SttModelInfo, TranscriptSegment } from '../types'
+import type { ActionItem, NoteListItem, TranscriptSegment } from '../types'
 
 export const demoNotes: NoteListItem[] = [
   { id: 'demo-1', title: 'Board prep sync', meta: '32 min · 2 speakers', group: 'Today' },
@@ -63,30 +63,6 @@ export const demoTranscript: TranscriptSegment[] = [
     start: 146,
     end: 170,
     text: "Yes — Markdown export is templated, I'll set one up and share it with the pilot group before Friday.",
-  },
-]
-
-export const sttModels: SttModelInfo[] = [
-  {
-    id: 'small',
-    name: 'Whisper small',
-    desc: '466 MB · 62× realtime · good for meetings',
-    sub: 'Recommended for this Mac',
-    subOn: 'Installed · in use',
-  },
-  {
-    id: 'medium',
-    name: 'Whisper medium',
-    desc: '1.5 GB · 21× realtime · better accents & jargon',
-    sub: 'Installed',
-    subOn: 'Installed · in use',
-  },
-  {
-    id: 'large',
-    name: 'Whisper large-v3',
-    desc: '3.1 GB · 6× realtime · maximum accuracy',
-    sub: 'Not downloaded · 3.1 GB',
-    subOn: 'Installed · in use',
   },
 ]
 

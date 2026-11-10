@@ -36,7 +36,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::catalog;
 use crate::error::{MinuteError, Result};
-use crate::store::{lock_store, SharedStore, StoredSegment};
+use crate::store::{lock_store, SharedStore, Speaker, StoredSegment};
 
 /// Catalog ids of the two models this pipeline needs (downloaded as a pair
 /// by the Settings "Detect speakers" toggle).
@@ -284,13 +284,23 @@ fn renumber_by_first_appearance(spans: &[(f32, f32, i32)]) -> (Vec<DiarSpan>, BT
 }
 
 /// Votes diarized spans onto the transcript: each segment takes the speaker
-/// with the largest temporal overlap, falling back to the nearest span (by
-/// midpoint distance) when a segment overlaps nothing — Whisper and
-/// pyannote disagree slightly at turn boundaries, and "nearest speaker" is
-/// a far better guess for a stranded segment than leaving the placeholder.
-/// Returns one `"Speaker N"` label per segment (1-based), or an empty vec
-/// when there are no spans to vote with.
-pub fn vote_labels(segments: &[StoredSegment], spans: &[DiarSpan]) -> Vec<String> {
+/// with the largest temporal overlap. A segment no diarized speech overlaps
+/// is [`Speaker::Unknown`] (issue #49): the diarizer heard no one there, and
+/// any name would be a guess presented as a fact.
+///
+/// Overlap is the only evidence the diarizer gives per segment (sherpa's
+/// spans carry no score), and its strength is no use as a threshold.
+/// `measure_overlap_share_against_ground_truth` ran Whisper and this
+/// pipeline over six synthetic three-voice meetings with known turns (184
+/// turns): the best cut on the winner's share of the overlap (0.60) caught
+/// 2 of 39 wrong attributions and hid 1 right one, and 34 of the 39 sat at
+/// a share of 0.75 or more. Those errors come from Whisper timestamps that
+/// miss the words and from backchannels pyannote never split out, which
+/// overlap cannot see.
+///
+/// Returns one `"Speaker N"` (1-based) or `Unknown` per segment, or an
+/// empty vec when there are no spans to vote with.
+pub fn vote_labels(segments: &[StoredSegment], spans: &[DiarSpan]) -> Vec<Speaker> {
     if spans.is_empty() {
         return Vec::new();
     }
@@ -305,26 +315,15 @@ pub fn vote_labels(segments: &[StoredSegment], spans: &[DiarSpan]) -> Vec<String
                     *overlap.entry(span.speaker).or_insert(0.0) += o;
                 }
             }
-            let speaker = overlap
+            overlap
                 .iter()
                 // On an exact overlap tie, max_by keeps the *last* maximal
                 // entry — BTreeMap iterates ascending, so ties go to the
                 // higher index; total_cmp makes it deterministic either way.
                 .max_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(&speaker, _)| speaker)
-                .unwrap_or_else(|| {
-                    let mid = (s0 + s1) / 2.0;
-                    spans
-                        .iter()
-                        .min_by(|a, b| {
-                            let da = (mid - (a.start + a.end) / 2.0).abs();
-                            let db = (mid - (b.start + b.end) / 2.0).abs();
-                            da.total_cmp(&db)
-                        })
-                        .expect("spans checked non-empty")
-                        .speaker
-                });
-            format!("Speaker {}", speaker + 1)
+                .map_or(Speaker::Unknown, |(&speaker, _)| {
+                    Speaker::Named(format!("Speaker {}", speaker + 1))
+                })
         })
         .collect()
 }
@@ -689,7 +688,10 @@ fn apply_and_suggest_speaker_names(
     auto_apply: bool,
 ) -> crate::error::Result<()> {
     let guard = lock_store(store);
-    let saved = crate::profiles::load(&guard.voice_profiles_path());
+    let saved: Vec<_> = crate::profiles::load(&guard.voice_profiles_path())
+        .into_iter()
+        .filter(|profile| !crate::store::is_reserved_speaker_name(&profile.name))
+        .collect();
     let mut best_label_for_name: BTreeMap<String, (String, f32)> = BTreeMap::new();
     if !saved.is_empty() {
         for (label, embedding) in embeddings {
@@ -797,7 +799,7 @@ mod tests {
 
     fn seg(speaker: &str, start: f64, end: f64) -> StoredSegment {
         StoredSegment {
-            speaker: speaker.to_string(),
+            speaker: speaker.into(),
             start,
             end,
             text: "hello".to_string(),
@@ -931,6 +933,19 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_saved_as_unknown_speaker_is_never_offered_as_a_name() {
+        let (store, note_id, _dir) = store_with_note();
+        save_profiles(&store, &[("unknown speaker", &unit(&[1.0, 0.0, 0.0]))]);
+
+        let embeddings = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.0, 0.0]))]);
+        apply_and_suggest_speaker_names(&store, &note_id, &embeddings, true).unwrap();
+
+        let (meta, _) = lock_store(&store).get_note(&note_id).unwrap();
+        assert!(meta.speaker_suggestions.is_empty());
+        assert!(meta.speaker_aliases.is_empty());
+    }
+
+    #[test]
     fn suggest_speaker_names_gives_a_name_to_only_its_most_similar_voice() {
         let (store, note_id, _dir) = store_with_note();
         save_profiles(&store, &[("Sarah", &unit(&[1.0, 0.0, 0.0]))]);
@@ -1018,7 +1033,7 @@ mod tests {
                 &note_id,
                 &crate::store::Transcript {
                     segments: vec![crate::store::StoredSegment {
-                        speaker: "Speaker 1".to_string(),
+                        speaker: "Speaker 1".into(),
                         start: 0.0,
                         end: 5.0,
                         text: "Hello.".to_string(),
@@ -1029,7 +1044,7 @@ mod tests {
         let embeddings = BTreeMap::from([("Speaker 1".to_string(), unit(&[1.0, 0.05, 0.0]))]);
         apply_and_suggest_speaker_names(&store, &note_id, &embeddings, true).unwrap();
         lock_store(&store)
-            .update_segment_speakers(&note_id, &["Speaker 1".to_string()])
+            .update_segment_speakers(&note_id, &["Speaker 1".into()])
             .unwrap();
 
         let (_, transcript) = lock_store(&store).get_note(&note_id).unwrap();
@@ -1094,11 +1109,11 @@ mod tests {
         );
     }
 
+    /// Issue #49: a turn in a gap the diarizer heard no one in is unknown,
+    /// not handed to whichever speaker happens to be nearest.
     #[test]
-    fn vote_labels_falls_back_to_nearest_span_for_stranded_segments() {
-        // Segment sits in a silence gap between two spans — nearer to the
-        // second speaker's span.
-        let segments = vec![seg("Speaker 1", 9.0, 10.0)];
+    fn vote_labels_marks_a_turn_with_no_diarized_speech_unknown() {
+        let segments = vec![seg("Speaker 1", 1.0, 3.0), seg("Speaker 1", 9.0, 10.0)];
         let spans = vec![
             DiarSpan {
                 start: 0.0,
@@ -1111,7 +1126,10 @@ mod tests {
                 speaker: 1,
             },
         ];
-        assert_eq!(vote_labels(&segments, &spans), vec!["Speaker 2"]);
+        assert_eq!(
+            vote_labels(&segments, &spans),
+            vec![Speaker::from("Speaker 1"), Speaker::Unknown]
+        );
     }
 
     #[test]
@@ -1203,6 +1221,127 @@ mod tests {
             matched.is_some(),
             "the same dominant voice must match its profile across recordings (similarity {similarity:.3})"
         );
+    }
+
+    /// Re-measures the evidence behind [`vote_labels`] having no confidence
+    /// threshold. Transcribes a WAV the way a live recording does (8 s
+    /// windows, 1 s overlap, dedupe, dead-air drop), diarizes it, and
+    /// prints, for each cut on the winning speaker's share of a turn's
+    /// diarized overlap, how many turns the cut would make unknown that the
+    /// vote got right, and how many it got wrong. `MINUTE_DIAR_GT` is a
+    /// JSON list of `{"speaker", "start", "end"}` ground-truth turns; also
+    /// set `MINUTE_WHISPER_MODEL`, `MINUTE_DIAR_SEG`, `MINUTE_DIAR_EMB`,
+    /// `MINUTE_DIAR_WAV`, and optionally `MINUTE_DIAR_SPEAKERS` (the re-run
+    /// path's fixed count). Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "needs whisper + diarization models and a reference wav via MINUTE_* env vars"]
+    fn measure_overlap_share_against_ground_truth() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name}"));
+        let samples = read_note_samples(Path::new(&var("MINUTE_DIAR_WAV"))).expect("wav");
+        let whisper = PathBuf::from(var("MINUTE_WHISPER_MODEL"));
+
+        let mut chunker = crate::stt::Chunker::new(
+            crate::stt::WINDOW_SECS,
+            crate::stt::OVERLAP_SECS,
+            SAMPLE_RATE,
+        );
+        let mut windows = Vec::new();
+        for piece in samples.chunks(SAMPLE_RATE as usize) {
+            if let Some(window) = chunker.push(piece) {
+                windows.push(window);
+            }
+        }
+        windows.extend(chunker.flush());
+        let mut turns: Vec<(f32, f32)> = Vec::new();
+        let mut emitted_until = 0.0f64;
+        for window in &windows {
+            let raw = crate::stt::transcribe_samples(&whisper, &window.samples).expect("whisper");
+            for seg in crate::stt::dedupe_segments(&raw, window.start_offset_secs, emitted_until) {
+                emitted_until = emitted_until.max(seg.end);
+                if !crate::stt::is_dead_air_text(&seg.text) {
+                    turns.push((seg.start as f32, seg.end as f32));
+                }
+            }
+        }
+        let spans = diarize_samples(
+            Path::new(&var("MINUTE_DIAR_SEG")),
+            Path::new(&var("MINUTE_DIAR_EMB")),
+            &samples,
+            std::env::var("MINUTE_DIAR_SPEAKERS")
+                .ok()
+                .map(|n| n.parse().expect("speaker count")),
+        )
+        .expect("diarization")
+        .spans;
+
+        #[derive(serde::Deserialize)]
+        struct Truth {
+            speaker: String,
+            start: f32,
+            end: f32,
+        }
+        let truth: Vec<Truth> =
+            serde_json::from_str(&std::fs::read_to_string(var("MINUTE_DIAR_GT")).expect("gt"))
+                .expect("gt json");
+        let overlap = |a: (f32, f32), b: (f32, f32)| (a.1.min(b.1) - a.0.max(b.0)).max(0.0);
+        fn top<K: Copy>(totals: &BTreeMap<K, f32>) -> Option<K> {
+            totals
+                .iter()
+                .filter(|(_, &secs)| secs > 0.0)
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(&key, _)| key)
+        }
+
+        // Each cluster stands for the true voice it overlaps most.
+        let mut votes: BTreeMap<usize, BTreeMap<&str, f32>> = BTreeMap::new();
+        for span in &spans {
+            for t in &truth {
+                *votes
+                    .entry(span.speaker)
+                    .or_default()
+                    .entry(t.speaker.as_str())
+                    .or_default() += overlap((span.start, span.end), (t.start, t.end));
+            }
+        }
+        let voice_of: BTreeMap<usize, &str> =
+            votes.iter().filter_map(|(&c, v)| Some((c, top(v)?))).collect();
+
+        // (winner's share of the turn's diarized overlap, vote was right)
+        let mut rows: Vec<(f32, bool)> = Vec::new();
+        for &turn in &turns {
+            let mut diarized: BTreeMap<usize, f32> = BTreeMap::new();
+            for span in &spans {
+                *diarized.entry(span.speaker).or_default() +=
+                    overlap(turn, (span.start, span.end));
+            }
+            let mut spoken: BTreeMap<&str, f32> = BTreeMap::new();
+            for t in &truth {
+                *spoken.entry(t.speaker.as_str()).or_default() += overlap(turn, (t.start, t.end));
+            }
+            let total: f32 = diarized.values().sum();
+            let Some(winner) = top(&diarized) else {
+                rows.push((0.0, false));
+                continue;
+            };
+            let right = voice_of.get(&winner).copied() == top(&spoken);
+            rows.push((diarized[&winner] / total, right));
+        }
+
+        let wrong = rows.iter().filter(|(_, right)| !right).count();
+        let unheard = rows.iter().filter(|(share, _)| *share == 0.0).count();
+        println!(
+            "{} turns, {wrong} attributed wrong, {unheard} with no diarized speech",
+            rows.len()
+        );
+        println!("share cut  right->unknown  wrong->unknown");
+        for cut in [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95] {
+            let below = |want: bool| {
+                rows.iter()
+                    .filter(|&&(share, right)| share < cut && right == want)
+                    .count()
+            };
+            println!("{cut:9.2}  {:14}  {:14}", below(true), below(false));
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@ import type {
   DiarStatusPayload,
   MeetingDetectedEvent,
   MeetingPopupPayloadEvent,
+  MeetingStartEvent,
   ModelDownloadDoneEvent,
   ModelDownloadProgressEvent,
   RecordingStateEvent,
@@ -114,6 +115,6 @@ export function onMeetingPopupPayload(
  * (rather than a bare `() => void` callback) so it can be passed directly
  * to `useTauriEvent`, which is generic over that shape.
  */
-export function onMeetingPopupStart(cb: (payload: null) => void): Promise<UnlistenFn> {
-  return listen<null>('meeting-popup-start', (event) => cb(event.payload))
+export function onMeetingPopupStart(cb: (payload: MeetingStartEvent | null) => void): Promise<UnlistenFn> {
+  return listen<MeetingStartEvent | null>('meeting-popup-start', (event) => cb(event.payload))
 }

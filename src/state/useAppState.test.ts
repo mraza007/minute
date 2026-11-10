@@ -8,6 +8,7 @@ import type {
   ModelStatus,
   NoteMeta,
   NoteWithTranscript,
+  ObsidianExport,
   RecordingStateEvent,
   Recommendation,
   SearchHit,
@@ -21,6 +22,7 @@ import type {
   TranscriptSegmentEvent,
 } from '../ipc/types'
 import { useAppState } from './useAppState'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -42,6 +44,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     compressAudioAfterDays: null,
     speakerProfiles: false,
     autoApplySpeakerNames: true,
+    obsidian: DEFAULT_OBSIDIAN_SETTINGS,
     libraryRoot: null,
     ...overrides,
   }
@@ -52,7 +55,8 @@ function sttModelFixture(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'whisper-small',
     kind: 'stt',
     displayName: 'Whisper small',
-    desc: 'good for meetings',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
     sha256: 'a'.repeat(64),
     sizeBytes: 466_000_000,
@@ -68,7 +72,8 @@ function llmModelFixture(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'qwen3.5-4b',
     kind: 'llm',
     displayName: 'Qwen3.5-4B',
-    desc: 'fast default summarizer',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     sha256: 'b'.repeat(64),
     sizeBytes: 2_600_000_000,
@@ -115,6 +120,12 @@ interface SetupOpts {
   renameNoteResult?: (id: string, title: string) => NoteMeta
   /** `get_settings`'s response — defaults to `settingsFixture()`. */
   settings?: Settings
+  /** `set_settings(patch)`'s response — defaults to the `get_settings` fixture. Throw to simulate a rejected patch. */
+  setSettings?: (patch: Partial<Settings>) => Settings
+  /** `save_note_to_obsidian(id)`'s response; a string rejects with that message. */
+  saveToObsidian?: ObsidianExport | string | Promise<ObsidianExport>
+  /** `check_obsidian_vault(path)` rejects with this message when set. */
+  checkVaultReject?: string
   /** `toggle_action_item(id, index, done)`'s response — defaults to rejecting (tests that need it must supply this). */
   toggleActionItem?: (id: string, index: number, done: boolean) => SummaryDoc | Promise<SummaryDoc>
   /** Forces `toggle_action_item` to reject with this message instead of calling `toggleActionItem`. */
@@ -247,6 +258,39 @@ function setupIPC(opts: SetupOpts = {}) {
             },
           }
         }
+        case 'mark_speaker_unknown': {
+          const { id, speaker } = args as { id: string; speaker: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            transcript: { segments: [] },
+            meta: { ...match, speakers: Math.max(1, match.speakers - 1), unknownTurns: [1] },
+            undo: {
+              from: speaker,
+              into: null,
+              segmentIndices: [1],
+              summaryMentions: [],
+              summaryFingerprint: null,
+              checksum: 'unknown-checksum',
+            },
+          }
+        }
+        case 'assign_unknown_turns': {
+          const { id, to } = args as { id: string; to: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            transcript: { segments: [] },
+            meta: { ...match, speakers: match.speakers + 1, unknownTurns: [] },
+            undo: {
+              from: null,
+              into: to,
+              segmentIndices: [1],
+              pinnedUnknown: [1],
+              summaryMentions: [],
+              summaryFingerprint: null,
+              checksum: 'assign-checksum',
+            },
+          }
+        }
         case 'undo_speaker_merge': {
           const { id } = args as { id: string }
           const match = notes.find(n => n.id === id) ?? notes[0]
@@ -286,7 +330,13 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'get_settings':
           return settings
         case 'set_settings':
-          return settings
+          return opts.setSettings ? opts.setSettings((args as { patch: Partial<Settings> }).patch) : settings
+        case 'save_note_to_obsidian':
+          if (typeof opts.saveToObsidian === 'string') throw opts.saveToObsidian
+          return opts.saveToObsidian ?? {}
+        case 'check_obsidian_vault':
+          if (opts.checkVaultReject) throw opts.checkVaultReject
+          return null
         case 'toggle_action_item': {
           if (opts.toggleActionItemReject) throw opts.toggleActionItemReject
           const { id, index, done } = args as { id: string; index: number; done: boolean }
@@ -356,7 +406,22 @@ describe('useAppState', () => {
     const result = await loaded()
     expect(result.current.sidebarNotes).toHaveLength(2)
     expect(result.current.sidebarNotes[0].title).toBe('Client call — Acme')
-    expect(result.current.statsLine).toBe('2 notes · 800 MB local · nothing synced')
+    expect(result.current.statsLine).toBe('2 notes · 800 MB')
+  })
+
+  it('moves a note from Today to Yesterday when the app stays open past midnight (issue #44)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 7, 13, 16, 0))
+    setupIPC({ notes: [noteFixture({ createdAt: new Date(2026, 7, 13, 15, 0).toISOString() })] })
+    const result = await loaded()
+    expect(result.current.sidebarNotes[0].group).toBe('Today')
+
+    vi.setSystemTime(new Date(2026, 7, 14, 8, 40))
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(result.current.sidebarNotes[0].group).toBe('Yesterday')
   })
 
   it('handles an empty note library', async () => {
@@ -364,7 +429,7 @@ describe('useAppState', () => {
     const result = await loaded()
     expect(result.current.notes).toEqual([])
     expect(result.current.sidebarNotes).toEqual([])
-    expect(result.current.statsLine).toBe('0 notes · 800 MB local · nothing synced')
+    expect(result.current.statsLine).toBe('0 notes · 800 MB')
   })
 
   it('initializes sttModel to the recommendation when it is installed', async () => {
@@ -406,13 +471,12 @@ describe('useAppState', () => {
     act(() => result.current.selectNoteById('note-1'))
     expect(result.current.selectedNoteId).toBe('note-1')
     act(() => result.current.goNotes())
-    expect(result.current.sel).toBeNull()
     expect(result.current.selectedNoteId).toBeNull()
     act(() => result.current.selectNoteById('note-0'))
     expect(result.current.selectedNoteId).toBe('note-0')
   })
 
-  it('selectNoteById updates sel/selectedNoteId to the matching note', async () => {
+  it('selectNoteById selects the matching note, and ignores an id that is not in the list', async () => {
     const notes = [
       noteFixture({ id: 'note-0' }),
       noteFixture({ id: 'note-1' }),
@@ -422,7 +486,9 @@ describe('useAppState', () => {
     setupIPC({ notes })
     const result = await loaded()
     act(() => result.current.selectNoteById('note-3'))
-    expect(result.current.sel).toBe(3)
+    expect(result.current.selectedNoteId).toBe('note-3')
+    expect(result.current.selectedNoteMeta).toEqual(notes[3])
+    act(() => result.current.selectNoteById('gone'))
     expect(result.current.selectedNoteId).toBe('note-3')
   })
 
@@ -664,6 +730,7 @@ describe('useAppState', () => {
         inputSequence: 1,
         inputError: null,
         quietSecs: 0,
+        origin: { kind: 'manual' },
         ...overrides,
       }
     }
@@ -882,6 +949,19 @@ describe('useAppState', () => {
       expect(result.current.paused).toBe(true)
     })
 
+    it('recording-state events carry the origin into recOrigin', async () => {
+      const result = await loadedAndRecording()
+      expect(result.current.recOrigin).toEqual({ kind: 'manual' })
+
+      await act(async () => {
+        await emit(
+          'recording-state',
+          recordingState({ origin: { kind: 'automatic', appName: 'Microsoft Teams' } }),
+        )
+      })
+      expect(result.current.recOrigin).toEqual({ kind: 'automatic', appName: 'Microsoft Teams' })
+    })
+
     it('recording-state events for a different noteId are ignored', async () => {
       const result = await loadedAndRecording()
 
@@ -1071,10 +1151,9 @@ describe('useAppState', () => {
       await waitFor(() => expect(result.current.view).toBe('notes'))
       expect(result.current.stopping).toBe(false)
       expect(result.current.notes).toEqual([newNote, otherNote])
-      expect(result.current.sel).toBe(0)
+      expect(result.current.selectedNoteId).toBe(noteId)
       expect(result.current.liveSegments).toEqual([])
       expect(result.current.processingStage).toBe('idle')
-      expect(result.current.noteTab).toBe('overview')
       expect(result.current.processingFailure).toBeNull()
     })
 
@@ -1106,6 +1185,31 @@ describe('useAppState', () => {
       expect((startCalls[1].args as { includeSystemAudio: boolean }).includeSystemAudio).toBe(true)
     })
 
+    it('restartWithSystemAudio keeps an automatic recording automatic', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const automatic = { kind: 'automatic', appName: 'Zoom' } as const
+      const newNote = noteFixture({ id: noteId, title: 'New recording' })
+      setupIPC({
+        startRecordingId: noteId,
+        notes: [newNote],
+        stopRecording: { result: newNote },
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: automatic })
+      })
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
+
+      act(() => result.current.restartWithSystemAudio())
+      await waitFor(() => expect(calls.filter(c => c.cmd === 'start_recording')).toHaveLength(2))
+      await waitFor(() => expect(result.current.stopping).toBe(false))
+
+      const restart = calls.filter(c => c.cmd === 'start_recording')[1]
+      expect((restart.args as { origin: unknown }).origin).toEqual(automatic)
+      expect(result.current.recOrigin).toEqual(automatic)
+    })
+
     it('stopRec exposes saving and finalizing phases before preparing the completed note', async () => {
       let releaseStop!: () => void
       const wait = new Promise<void>(resolve => {
@@ -1132,7 +1236,7 @@ describe('useAppState', () => {
       expect(result.current.processingStage).toBe('idle')
     })
 
-    it('stopRec selects the correct index when the new note is not first in the refreshed list', async () => {
+    it('stopRec selects the new note when it is not first in the refreshed list', async () => {
       const newNote = noteFixture({ id: noteId, title: 'New recording' })
       const olderNote = noteFixture({ id: 'older-note', title: 'Older note' })
       const result = await loadedAndRecording({
@@ -1142,7 +1246,7 @@ describe('useAppState', () => {
 
       act(() => result.current.stopRec())
       await waitFor(() => expect(result.current.view).toBe('notes'))
-      expect(result.current.sel).toBe(1)
+      expect(result.current.selectedNoteId).toBe(noteId)
     })
 
     it('stopRec rejecting reports lastError, clears stopping, and stays on the recording view', async () => {
@@ -1211,6 +1315,86 @@ describe('useAppState', () => {
       expect(calls.some(c => c.cmd === 'start_recording' && (c.args as { modelId: string }).modelId === 'whisper-small')).toBe(true)
     })
 
+    it('starts with the automatic origin the backend sent, so the recording view can say why', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: { kind: 'automatic', appName: 'Microsoft Teams' } })
+      })
+
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
+      const start = calls.find(c => c.cmd === 'start_recording')
+      expect(start).toBeDefined()
+      expect((start!.args as { origin: unknown }).origin).toEqual({
+        kind: 'automatic',
+        appName: 'Microsoft Teams',
+      })
+      expect(result.current.recOrigin).toEqual({ kind: 'automatic', appName: 'Microsoft Teams' })
+    })
+
+    it('an automatic start leaves the window where the user is', async () => {
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+      })
+      const result = await loaded()
+      act(() => result.current.goSettings())
+
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: { kind: 'automatic', appName: 'Zoom' } })
+      })
+
+      await waitFor(() => expect(result.current.isRecording).toBe(true))
+      expect(result.current.view).toBe('settings')
+    })
+
+    // A re-subscribe leaves a gap, between the old listener going and the
+    // new one arriving over IPC, in which a start is lost. The mock bridge
+    // has no such delay, so this counts subscriptions instead.
+    it('subscribes once, so no start can fall between two subscriptions', async () => {
+      setupIPC({ models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })] })
+      const invoke = vi.spyOn(
+        (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: { event?: string }) => Promise<unknown> } }).__TAURI_INTERNALS__,
+        'invoke',
+      )
+      const subscriptions = () =>
+        invoke.mock.calls.filter(([cmd, args]) => cmd === 'plugin:event|listen' && args?.event === 'meeting-popup-start').length
+      const result = await loaded()
+      await waitFor(() => expect(subscriptions()).toBe(1))
+
+      act(() => result.current.goSettings())
+      act(() => result.current.backToNotes())
+      act(() => result.current.openRecordingPreflight())
+      await waitFor(() => expect(result.current.preflightMicrophoneDevices).toHaveLength(1))
+
+      expect(subscriptions()).toBe(1)
+    })
+
+    it('a plain start has the manual origin', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({
+        models: [sttModelFixture({ id: 'whisper-small', state: 'installed' })],
+        startRecordingId: '20260722-140000',
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+
+      await act(async () => {
+        await emit('meeting-popup-start', { origin: { kind: 'manual' } })
+      })
+
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+      const start = calls.find(c => c.cmd === 'start_recording')
+      expect(start).toBeDefined()
+      expect((start!.args as { origin: unknown }).origin).toEqual({ kind: 'manual' })
+    })
+
     it('navigates to onboarding with an honest error instead of recording when no STT model is installed (and the view is not already onboarding)', async () => {
       // No STT installed would normally already land (and stay) on
       // 'onboarding' via the initial-load gate — which the guard below
@@ -1219,7 +1403,7 @@ describe('useAppState', () => {
       // to be). To exercise this branch's own logic (the actual "no model
       // -> navigate + honest error" behavior) independent of that guard,
       // this moves off onboarding first via `completeOnboarding` — the same
-      // "Start using Minute" bypass a real user could trigger without
+      // "Open Minute" bypass a real user could trigger without
       // actually finishing model setup, landing on 'notes' with no STT
       // model installed regardless.
       const calls: Array<{ cmd: string; args: unknown }> = []
@@ -1553,8 +1737,55 @@ describe('useAppState', () => {
       })
     })
 
+    it('marks a speaker unknown, refreshes the selected transcript, and undoes through the merge undo path', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+      const initialGetCalls = calls.filter(call => call.cmd === 'get_note').length
+
+      let undo!: Awaited<ReturnType<typeof result.current.markSpeakerUnknown>>
+      await act(async () => {
+        undo = await result.current.markSpeakerUnknown('note-a', 'Speaker 2')
+      })
+
+      expect(calls).toContainEqual({ cmd: 'mark_speaker_unknown', args: { id: 'note-a', speaker: 'Speaker 2' } })
+      expect(undo.into).toBeNull()
+      expect(result.current.notes[0].unknownTurns).toEqual([1])
+      expect(calls.filter(call => call.cmd === 'get_note')).toHaveLength(initialGetCalls + 1)
+
+      await act(async () => {
+        await result.current.undoSpeakerMerge('note-a', undo)
+      })
+      expect(calls).toContainEqual({ cmd: 'undo_speaker_merge', args: { id: 'note-a', undo } })
+    })
+
+    it('assigns unknown turns to a speaker, refreshes the selected transcript, and undoes through the merge undo path', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+      const initialGetCalls = calls.filter(call => call.cmd === 'get_note').length
+
+      let undo!: Awaited<ReturnType<typeof result.current.assignUnknownTurns>>
+      await act(async () => {
+        undo = await result.current.assignUnknownTurns('note-a', 'Sam')
+      })
+
+      expect(calls).toContainEqual({ cmd: 'assign_unknown_turns', args: { id: 'note-a', to: 'Sam' } })
+      expect(undo.from).toBeNull()
+      expect(undo.into).toBe('Sam')
+      expect(result.current.notes[0].speakers).toBe(noteA.speakers + 1)
+      expect(calls.filter(call => call.cmd === 'get_note')).toHaveLength(initialGetCalls + 1)
+
+      await act(async () => {
+        await result.current.undoSpeakerMerge('note-a', undo)
+      })
+      expect(calls).toContainEqual({ cmd: 'undo_speaker_merge', args: { id: 'note-a', undo } })
+    })
+
     describe('deleteNote', () => {
-      it('invokes delete_note, refreshes notes, and keeps the same index (selecting the next note)', async () => {
+      it('invokes delete_note, refreshes notes, and selects the next note', async () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         setupIPC({
           notes: [noteA, noteB],
@@ -1570,7 +1801,7 @@ describe('useAppState', () => {
 
         expect(calls.some(c => c.cmd === 'delete_note' && (c.args as { id: string }).id === 'note-a')).toBe(true)
         await waitFor(() => expect(result.current.notes).toEqual([noteB]))
-        expect(result.current.sel).toBe(0)
+        expect(result.current.selectedNoteId).toBe('note-b')
         expect(result.current.deletedNoteUndo).toEqual([
           {
             id: 'note-a',
@@ -1581,7 +1812,7 @@ describe('useAppState', () => {
         ])
       })
 
-      it('clamps the selection index when the deleted note was last in the list', async () => {
+      it('selects the new last note when the deleted note was last in the list', async () => {
         setupIPC({
           notes: [noteA, noteB],
           getNote: getNoteFixture,
@@ -1593,10 +1824,36 @@ describe('useAppState', () => {
 
         act(() => result.current.deleteNote('note-b'))
         await waitFor(() => expect(result.current.notes).toEqual([noteA]))
-        expect(result.current.sel).toBe(0)
+        expect(result.current.selectedNoteId).toBe('note-a')
       })
 
-      it('clamps to 0 when deleting the last remaining note (empty library)', async () => {
+      it('keeps the open note when another note is deleted', async () => {
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteB],
+        })
+        const result = await loaded()
+        act(() => result.current.selectNoteById('note-b'))
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.notes).toEqual([noteB]))
+        expect(result.current.selectedNoteId).toBe('note-b')
+      })
+
+      it('keeps a deselected library deselected', async () => {
+        setupIPC({
+          notes: [noteA, noteB],
+          getNote: getNoteFixture,
+          listNotesAfter: () => [noteB],
+        })
+        const result = await loaded()
+        act(() => result.current.goNotes())
+        act(() => result.current.deleteNote('note-a'))
+        await waitFor(() => expect(result.current.notes).toEqual([noteB]))
+        expect(result.current.selectedNoteId).toBeNull()
+      })
+
+      it('selects nothing when deleting the last remaining note (empty library)', async () => {
         setupIPC({
           notes: [noteA],
           getNote: getNoteFixture,
@@ -1605,7 +1862,7 @@ describe('useAppState', () => {
         const result = await loaded()
         act(() => result.current.deleteNote('note-a'))
         await waitFor(() => expect(result.current.notes).toEqual([]))
-        expect(result.current.sel).toBe(0)
+        expect(result.current.selectedNoteId).toBeNull()
       })
 
       it('reports lastError when delete_note rejects', async () => {
@@ -1845,7 +2102,7 @@ describe('useAppState', () => {
         })
 
         // A confirmed toggle re-fetches the note (rather than trusting the
-        // command's bare SummaryDoc response) so the Markdown tab's
+        // command's bare SummaryDoc response) so the copied Markdown's
         // checkbox stays in sync with the backend's re-rendered note.md.
         await waitFor(() => expect(calls.filter(c => c.cmd === 'get_note')).toHaveLength(2))
       })
@@ -2188,109 +2445,245 @@ describe('useAppState', () => {
       })
     })
   })
+})
 
-  describe('sidebar search filter', () => {
-    afterEach(() => vi.useRealTimers())
+describe('useAppState: Obsidian export (issue #47)', () => {
+  const vaultSettings = {
+    enabled: true,
+    vaultPath: '/Users/me/Vault',
+    folder: 'Work',
+    fileNameTemplate: '{title}',
+    addProperties: false,
+    includeTranscript: true,
+  }
 
-    it('setSidebarQuery debounces a search_notes call and populates sidebarMatchedIds with the matched ids', async () => {
-      const notes = [noteFixture({ id: 'note-a', title: 'Roadmap review' }), noteFixture({ id: 'note-b', title: 'Standup' })]
-      const calls: Array<{ cmd: string; args: unknown }> = []
-      setupIPC({
-        notes,
-        onCmd: (cmd, args) => calls.push({ cmd, args }),
-        searchNotes: () => [{ noteId: 'note-a', title: 'Roadmap review', snippet: 'Roadmap review', segmentStart: null, kind: 'title' }],
-      })
-      const result = await loaded()
-      vi.useFakeTimers()
-      expect(result.current.sidebarMatchedIds).toBeNull()
+  it('seeds tObsidian from get_settings, and defaults it when the backend predates the field', async () => {
+    setupIPC({ settings: settingsFixture({ obsidian: vaultSettings }) })
+    expect((await loaded()).current.tObsidian).toEqual(vaultSettings)
 
-      act(() => result.current.setSidebarQuery('roadmap'))
-      expect(result.current.sidebarQuery).toBe('roadmap')
-      // Not yet called — still inside the debounce window.
-      expect(calls.some(c => c.cmd === 'search_notes')).toBe(false)
+    const legacy = { ...settingsFixture() } as Partial<Settings>
+    delete legacy.obsidian
+    setupIPC({ settings: legacy as Settings })
+    const result = (await loaded()).current.tObsidian
+    expect(result.enabled).toBe(false)
+    expect(result.folder).toBe('Meetings')
+    expect(result.fileNameTemplate).toBe('{date} - {title}')
+    expect(result.addProperties).toBe(true)
+    expect(result.includeTranscript).toBe(false)
+  })
 
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
+  it('saveObsidianSettings sends only the patched fields and adopts the settings the backend returns', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+      setSettings: patch => settingsFixture({ obsidian: { ...vaultSettings, ...patch.obsidian } }),
+    })
+    const result = await loaded()
 
-      expect(result.current.sidebarMatchedIds).toEqual(new Set(['note-a']))
+    let error: string | null = 'unset'
+    await act(async () => {
+      error = await result.current.saveObsidianSettings({ enabled: true, vaultPath: '/Users/me/Vault' })
     })
 
-    it('clearing the query resets sidebarMatchedIds to null synchronously, without a backend call', async () => {
-      const notes = [noteFixture({ id: 'note-a' })]
-      const calls: Array<{ cmd: string; args: unknown }> = []
-      setupIPC({ notes, onCmd: (cmd, args) => calls.push({ cmd, args }), searchNotes: () => [] })
-      const result = await loaded()
-      vi.useFakeTimers()
+    expect(error).toBeNull()
+    const sent = calls.find(c => c.cmd === 'set_settings')
+    expect(sent?.args).toEqual({ patch: { obsidian: { enabled: true, vaultPath: '/Users/me/Vault' } } })
+    expect(result.current.tObsidian.enabled).toBe(true)
+    expect(result.current.tObsidian.vaultPath).toBe('/Users/me/Vault')
+  })
 
-      act(() => result.current.setSidebarQuery('roadmap'))
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-      })
-      const searchCallsAfterFirstQuery = calls.filter(c => c.cmd === 'search_notes').length
+  it('saveObsidianSettings returns the backend message for a bad vault and keeps the old settings', async () => {
+    setupIPC({
+      setSettings: () => {
+        throw 'The vault folder /nope does not exist. Check the path in Settings.'
+      },
+    })
+    const result = await loaded()
 
-      act(() => result.current.setSidebarQuery(''))
-
-      expect(result.current.sidebarMatchedIds).toBeNull()
-      expect(calls.filter(c => c.cmd === 'search_notes').length).toBe(searchCallsAfterFirstQuery)
+    let error: string | null = null
+    await act(async () => {
+      error = await result.current.saveObsidianSettings({ enabled: true, vaultPath: '/nope' })
     })
 
-    it('restarts the debounce on every keystroke rather than firing per keystroke', async () => {
-      const notes = [noteFixture({ id: 'note-a' })]
-      const calls: Array<{ cmd: string; args: unknown }> = []
-      setupIPC({ notes, onCmd: (cmd, args) => calls.push({ cmd, args }), searchNotes: () => [] })
-      const result = await loaded()
-      vi.useFakeTimers()
+    expect(error).toContain('does not exist')
+    expect(result.current.tObsidian.enabled).toBe(false)
+    expect(result.current.lastError).toBeNull()
+  })
 
-      act(() => result.current.setSidebarQuery('r'))
-      act(() => {
-        vi.advanceTimersByTime(100)
-      })
-      act(() => result.current.setSidebarQuery('ro'))
-      act(() => {
-        vi.advanceTimersByTime(100)
-      })
-      expect(calls.some(c => c.cmd === 'search_notes')).toBe(false)
+  it('obsidianLastSave is the newest saved note, and null before any save', async () => {
+    setupIPC({ notes: [noteFixture()] })
+    expect((await loaded()).current.obsidianLastSave).toBeNull()
 
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-      })
-      expect(calls.filter(c => c.cmd === 'search_notes')).toHaveLength(1)
+    const saved = (id: string, title: string, savedAt: string) => noteFixture({ id, title, obsidian: { savedAt } })
+    setupIPC({ notes: [saved('a', 'Older', '2026-07-20T09:00:00Z'), saved('b', 'Newer', '2026-07-22T09:00:00Z')] })
+    expect((await loaded()).current.obsidianLastSave).toEqual({ title: 'Newer', savedAt: '2026-07-22T09:00:00Z' })
+  })
+
+  it('checkObsidianVault resolves null for a folder and the reason otherwise', async () => {
+    setupIPC()
+    expect(await (await loaded()).current.checkObsidianVault('/ok')).toBeNull()
+
+    setupIPC({ checkVaultReject: '/x is not a folder. Choose your vault folder.' })
+    expect(await (await loaded()).current.checkObsidianVault('/x')).toContain('not a folder')
+  })
+
+  it('saveNoteToObsidian calls the command, refreshes the list and the note, and returns the status', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    const note = noteFixture()
+    const status: ObsidianExport = { path: '/Users/me/Vault/Work/a.md', savedAt: '2026-07-23T10:00:00Z' }
+    setupIPC({
+      notes: [note],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+      saveToObsidian: status,
+    })
+    const result = await loaded()
+    const listBefore = calls.filter(c => c.cmd === 'list_notes').length
+
+    let returned: ObsidianExport | null = null
+    await act(async () => {
+      returned = await result.current.saveNoteToObsidian(note.id)
     })
 
-    it('clearing the query while a search is still in flight discards the stale response instead of repopulating sidebarMatchedIds', async () => {
-      const notes = [noteFixture({ id: 'note-a' })]
-      let resolveSearch: (hits: SearchHit[]) => void = () => {}
-      const pending = new Promise<SearchHit[]>(resolve => {
-        resolveSearch = resolve
-      })
-      setupIPC({ notes, searchNotes: () => pending })
-      const result = await loaded()
-      vi.useFakeTimers()
+    expect(returned).toEqual(status)
+    expect(calls.find(c => c.cmd === 'save_note_to_obsidian')?.args).toEqual({ id: note.id })
+    await waitFor(() => expect(calls.filter(c => c.cmd === 'list_notes').length).toBeGreaterThan(listBefore))
+    expect(result.current.obsidianSavingId).toBeNull()
+  })
 
-      act(() => result.current.setSidebarQuery('roadmap'))
-      await act(async () => {
-        vi.advanceTimersByTime(150)
-        await Promise.resolve()
-      })
-      // The debounced call has fired (the promise is pending, unresolved) —
-      // clear the query before it settles.
-      act(() => result.current.setSidebarQuery(''))
-      expect(result.current.sidebarMatchedIds).toBeNull()
-
-      // The stale "roadmap" response resolves only now, after the clear —
-      // it must not repopulate sidebarMatchedIds.
-      await act(async () => {
-        resolveSearch([{ noteId: 'note-a', title: 'note-a', snippet: 'note-a', segmentStart: null, kind: 'title' }])
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-
-      expect(result.current.sidebarMatchedIds).toBeNull()
+  it('saveNoteToObsidian does not reload its note over the one opened while it saved', async () => {
+    const noteA = noteFixture({ id: 'note-a', title: 'A' })
+    const noteB = noteFixture({ id: 'note-b', title: 'B' })
+    const getNoteIds: string[] = []
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>(resolve => {
+      releaseSave = resolve
     })
+    setupIPC({
+      notes: [noteA, noteB],
+      getNote: id => {
+        getNoteIds.push(id)
+        const meta = id === 'note-a' ? noteA : noteB
+        return { meta, transcript: { segments: [] }, summary: null, markdown: '', audioPath: null }
+      },
+      saveToObsidian: saveGate.then(() => ({})),
+    })
+    const result = await loaded()
+    await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-a'))
+
+    let save!: Promise<unknown>
+    act(() => {
+      save = result.current.saveNoteToObsidian('note-a')
+    })
+    act(() => result.current.selectNoteById('note-b'))
+    await waitFor(() => expect(result.current.selectedMeta?.id).toBe('note-b'))
+    getNoteIds.length = 0
+
+    await act(async () => {
+      releaseSave()
+      await save
+    })
+
+    expect(getNoteIds).not.toContain('note-a')
+    expect(result.current.selectedMeta?.id).toBe('note-b')
+  })
+
+  it('saveNoteToObsidian reports an IPC failure on the error banner and resolves null', async () => {
+    const note = noteFixture()
+    setupIPC({ notes: [note], saveToObsidian: 'note vanished' })
+    const result = await loaded()
+
+    let returned: ObsidianExport | null = { path: 'x' }
+    await act(async () => {
+      returned = await result.current.saveNoteToObsidian(note.id)
+    })
+
+    expect(returned).toBeNull()
+    await waitFor(() => expect(result.current.lastError).toContain('note vanished'))
+    expect(result.current.obsidianSavingId).toBeNull()
+  })
+
+  it('selectedObsidian exposes the export status stored on the selected note', async () => {
+    const exported: ObsidianExport = { path: '/v/a.md', savedAt: '2026-07-23T10:00:00Z', error: 'edited in Obsidian' }
+    const note = noteFixture({ status: 'ready', obsidian: exported })
+    setupIPC({ notes: [note] })
+    const result = await loaded()
+
+    act(() => result.current.selectNoteById(note.id))
+    await waitFor(() => expect(result.current.selectedObsidian).toEqual(exported))
+  })
+})
+
+describe('useAppState: per-app meeting policies (issue #46)', () => {
+  const everyAppAsks = { zoom: 'ask', teams: 'ask', webex: 'ask', slack: 'ask', faceTime: 'ask', discord: 'ask', browser: 'ask' } as const
+
+  it('asks for every app until the backend says otherwise', async () => {
+    setupIPC()
+    expect((await loaded()).current.tMeetingPolicies).toEqual(everyAppAsks)
+
+    setupIPC({ settings: settingsFixture({ meetingPolicies: { ...everyAppAsks, teams: 'record' } }) })
+    expect((await loaded()).current.tMeetingPolicies.teams).toBe('record')
+  })
+
+  it('shows a change at once and saves only that app', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+      setSettings: patch => {
+        const change = (patch as { meetingPolicy?: { app: 'zoom'; policy: 'ignore' } }).meetingPolicy
+        return settingsFixture({ meetingPolicies: { ...everyAppAsks, ...(change ? { [change.app]: change.policy } : {}) } })
+      },
+    })
+    const result = await loaded()
+
+    act(() => result.current.setMeetingPolicy('zoom', 'ignore'))
+
+    expect(result.current.tMeetingPolicies.zoom).toBe('ignore')
+    await waitFor(() =>
+      expect(calls.find(c => c.cmd === 'set_settings')?.args).toEqual({ patch: { meetingPolicy: { app: 'zoom', policy: 'ignore' } } }),
+    )
+    expect(result.current.tMeetingPolicies.teams).toBe('ask')
+  })
+
+  it('goes back to the saved policy and reports the error when the save fails', async () => {
+    setupIPC({
+      settings: settingsFixture({ meetingPolicies: { ...everyAppAsks, slack: 'record' } }),
+      setSettings: () => {
+        throw 'could not write settings'
+      },
+    })
+    const result = await loaded()
+
+    act(() => result.current.setMeetingPolicy('slack', 'ignore'))
+
+    await waitFor(() => expect(result.current.lastError).toContain('could not write settings'))
+    await waitFor(() => expect(result.current.tMeetingPolicies.slack).toBe('record'))
+  })
+
+  it('reports it when the saved policy cannot be read back either', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    let getSettingsCalls = 0
+    const settings = settingsFixture()
+    mockIPC(
+      cmd => {
+        if (cmd === 'get_settings') {
+          getSettingsCalls += 1
+          if (getSettingsCalls > 1) throw 'could not read settings'
+          return settings
+        }
+        if (cmd === 'set_settings') throw 'could not write settings'
+        if (cmd === 'list_models' || cmd === 'list_notes') return []
+        return null
+      },
+      { shouldMockEvents: true },
+    )
+    const result = await loaded()
+
+    act(() => result.current.setMeetingPolicy('slack', 'ignore'))
+
+    await waitFor(() => expect(result.current.lastError).toContain('could not read settings'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    process.off('unhandledRejection', unhandled)
+    expect(unhandled).not.toHaveBeenCalled()
   })
 })

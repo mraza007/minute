@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, SpeakerSuggestion, StoredSegment, SummaryDoc, SummaryStatusEvent, SummaryStyle, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -17,7 +17,6 @@ export interface DownloadProgressState {
 export interface ModelCardInfo {
   id: string
   displayName: string
-  desc: string
   sizeBytes: number
   state: InstallState
   inUse: boolean
@@ -25,27 +24,44 @@ export interface ModelCardInfo {
   progressPercent?: number
 }
 
-function startOfUTCDay(d: Date): number {
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+const dayFormatters = new Map<string, Intl.DateTimeFormat>()
+
+/** The calendar date `d` falls on in `timeZone`, as whole days since the epoch. */
+function calendarDay(d: Date, timeZone: string): number {
+  let formatter = dayFormatters.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' })
+    dayFormatters.set(timeZone, formatter)
+  }
+  const parts: Record<string, number> = {}
+  for (const part of formatter.formatToParts(d)) parts[part.type] = Number(part.value)
+  return Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000
+}
+
+function systemTimeZone(): string {
+  return new Intl.DateTimeFormat().resolvedOptions().timeZone
 }
 
 /**
- * Today / Yesterday / Last week / <Month name> — bucketed off whole UTC
- * calendar days (not wall-clock 24h windows) so a note from 11pm yesterday
- * and one from 1am today both land correctly regardless of what time "now"
- * is. UTC (rather than local) keeps the boundary deterministic in tests
- * independent of the machine's timezone.
+ * Today / Yesterday / Last week / <Month name> — bucketed off whole
+ * calendar days in the reader's time zone, not wall-clock 24h windows and
+ * not UTC days: a meeting at 5:30 pm in Los Angeles is already "tomorrow"
+ * in UTC, so UTC buckets showed it under Today for the whole next day
+ * (issue #44).
  */
-function noteGroup(createdAt: Date, now: Date): string {
-  const diffDays = Math.round((startOfUTCDay(now) - startOfUTCDay(createdAt)) / 86_400_000)
+function noteGroup(createdAt: Date, now: Date, timeZone: string): string {
+  // `formatToParts` throws on an invalid date; keep the label the sidebar
+  // showed for one before.
+  if (Number.isNaN(createdAt.getTime())) return 'Invalid Date'
+  const diffDays = calendarDay(now, timeZone) - calendarDay(createdAt, timeZone)
   if (diffDays <= 0) return 'Today'
   if (diffDays === 1) return 'Yesterday'
   if (diffDays < 7) return 'Last week'
-  return createdAt.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })
+  return createdAt.toLocaleString('en-US', { month: 'long', timeZone })
 }
 
-/** Maps one stored note's metadata to the sidebar row shape. */
-export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
+/** Maps one stored note's metadata to the sidebar row shape. `timeZone` defaults to the system zone. */
+export function noteMetaToListItem(meta: NoteMeta, now: Date, timeZone: string = systemTimeZone()): NoteListItem {
   const createdAt = new Date(meta.createdAt)
   const minutes = Math.round(meta.durationSec / 60)
   const speakersPart = meta.speakers > 1 ? ` · ${meta.speakers} speakers` : ''
@@ -53,7 +69,7 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
     id: meta.id,
     title: meta.title,
     meta: `${minutes} min${speakersPart}`,
-    group: noteGroup(createdAt, now),
+    group: noteGroup(createdAt, now, timeZone),
     status: meta.status,
     sources: meta.sources,
     createdAt: meta.createdAt,
@@ -70,10 +86,10 @@ export function noteMetaToListItem(meta: NoteMeta, now: Date): NoteListItem {
  * Notes are expected pre-sorted newest-first (as `list_notes` returns them),
  * so consecutive same-group notes are always adjacent.
  */
-export function notesToSidebarItems(notes: NoteMeta[], now: Date): NoteListItem[] {
+export function notesToSidebarItems(notes: NoteMeta[], now: Date, timeZone: string = systemTimeZone()): NoteListItem[] {
   let prevGroup: string | undefined
   return notes.map(meta => {
-    const item = noteMetaToListItem(meta, now)
+    const item = noteMetaToListItem(meta, now, timeZone)
     if (item.group === prevGroup) {
       return { ...item, group: undefined }
     }
@@ -87,7 +103,7 @@ export function notesToSidebarItems(notes: NoteMeta[], now: Date): NoteListItem[
  * whole bytes under 1 KB, one-decimal KB under 1 MB (trimmed when whole),
  * rounded MB under 1 GB, one-decimal GB at or above (trimmed when whole).
  * The KB/B tiers exist for small values like a markdown export's byte size
- * (MarkdownCard's subtitle) — the MB/GB tiers are what model/storage sizes
+ * (the note menu's size labels) — the MB/GB tiers are what model/storage sizes
  * actually exercise.
  */
 export function formatBytes(bytes: number): string {
@@ -129,7 +145,6 @@ export function modelStatusToSttInfo(
     return {
       id: m.id,
       displayName: m.displayName,
-      desc: m.desc,
       sizeBytes: m.sizeBytes,
       state: 'downloading',
       inUse,
@@ -142,7 +157,6 @@ export function modelStatusToSttInfo(
     return {
       id: m.id,
       displayName: m.displayName,
-      desc: m.desc,
       sizeBytes: m.sizeBytes,
       state: 'installed',
       inUse,
@@ -153,7 +167,6 @@ export function modelStatusToSttInfo(
   return {
     id: m.id,
     displayName: m.displayName,
-    desc: m.desc,
     sizeBytes: m.sizeBytes,
     state: 'notInstalled',
     inUse,
@@ -216,9 +229,8 @@ export function pickInitialLlmModel(
  * Exists because "a summary object came back from `get_note`" is not the
  * same question as "this note has a summary", and the UI cares about the
  * second one. Every recovery affordance is gated on the note having *no*
- * summary (the Overview tab's "Generate summary", `AiNotesPanel`'s
- * `GenerateSummaryButton`) or on an explicit error status (the Overview
- * tab's "Retry summary"). A note carrying a present-but-empty `SummaryDoc`
+ * summary (`NoteSummary`'s "Generate summary") or on an explicit error
+ * status (its "Retry summary"). A note carrying a present-but-empty `SummaryDoc`
  * satisfies neither condition, so before this predicate it rendered a blank
  * Summary section with no way to re-run it at all — issue #13.
  *
@@ -237,6 +249,118 @@ export function pickInitialLlmModel(
 export function hasSummaryContent(summary: SummaryDoc | null | undefined): boolean {
   if (!summary) return false
   return summary.summary.trim() !== '' || summary.decisions.length > 0 || summary.actionItems.length > 0
+}
+
+/**
+ * The line to show under a summary that does not cover the whole meeting,
+ * or `null` when it does. Two limits can cut a summary short: the
+ * transcript did not fit the context window (`truncated`, issue #41), or
+ * the model's answer ran past its response budget (`cutOff`, issue #45).
+ */
+export function summaryCoverageNotice(summary: Pick<SummaryDoc, 'truncated' | 'cutOff'>): string | null {
+  const notices: string[] = []
+  if (summary.truncated) {
+    notices.push(
+      "This meeting was too long for the summary model's memory, so this summary covers only part of it. A larger context window in Settings → Summary gives full coverage.",
+    )
+  }
+  if (summary.cutOff) {
+    notices.push(
+      'This summary was too long for the model to finish, so the last items are missing. A larger context window in Settings → Summary can give it more room.',
+    )
+  }
+  return notices.length > 0 ? notices.join(' ') : null
+}
+
+/**
+ * Folds one `summary-status` event into the per-note "waiting since" map:
+ * a `'queued'` event records when the note joined the queue, every other
+ * state removes the entry. `now` stands in when a queued event carries no
+ * `queuedAt`. Returns `prev` itself when nothing changes.
+ */
+export function nextSummaryQueuedAt(
+  prev: Record<string, number>,
+  event: SummaryStatusEvent,
+  now: number,
+): Record<string, number> {
+  if (event.state === 'queued') {
+    const queuedAt = event.queuedAt ?? prev[event.noteId] ?? now
+    return prev[event.noteId] === queuedAt ? prev : { ...prev, [event.noteId]: queuedAt }
+  }
+  if (!(event.noteId in prev)) return prev
+  const next = { ...prev }
+  delete next[event.noteId]
+  return next
+}
+
+/**
+ * How long a summary has waited, as the words after "has waited":
+ * "less than a minute", "5 minutes", "1 hour", "6 hours", "2 days". Rounds
+ * down, so "6 hours" means at least six. A `queuedAt` in the future (clock
+ * change) reads as no wait.
+ */
+export function formatWait(queuedAt: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - queuedAt) / 60_000)
+  if (minutes < 1) return 'less than a minute'
+  if (minutes < 60) return plural(minutes, 'minute')
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return plural(hours, 'hour')
+  return plural(Math.floor(hours / 24), 'day')
+}
+
+export const SUMMARY_STYLE_NAMES: Record<SummaryStyle, string> = {
+  short: 'Short',
+  standard: 'Standard',
+  detailed: 'Detailed',
+}
+
+/** What holds a queued summary back, as far as the app can see. */
+export type SummaryWaitCause = 'startsNext' | 'recording' | 'otherNote' | 'unknown'
+
+/** A queued summary as the "This summary has waited …" card shows it (issue #44). */
+export interface SummaryWait {
+  /** When the note joined the queue, in ms since the epoch. `null` when no queued event said. */
+  queuedAt: number | null
+  /** The length the summary will be written at. The backend reads the setting when the summary starts, so this is the current setting. */
+  style: SummaryStyle
+  cause: SummaryWaitCause
+}
+
+/**
+ * Why `noteId`'s queued summary has not started. "Summarize now" moves a
+ * note to the front of the queue, where not even a recording holds it, so
+ * `startsNext` wins. A live recording holds the rest of the queue, so it
+ * wins over another note's running summary. Anything else (an Ask, a stuck
+ * queue) is `'unknown'`.
+ */
+export function summaryWaitCause(
+  noteId: string,
+  isRecording: boolean,
+  summaryStatus: Readonly<Record<string, SummaryStatusEvent['state']>>,
+  startsNext = false,
+): SummaryWaitCause {
+  if (startsNext) return 'startsNext'
+  if (isRecording) return 'recording'
+  const otherRunning = Object.entries(summaryStatus).some(([id, state]) => id !== noteId && state === 'running')
+  return otherRunning ? 'otherNote' : 'unknown'
+}
+
+/** The queued-summary card's reason line. */
+export function summaryWaitReason({ style, cause }: SummaryWait): string {
+  if (cause === 'startsNext') {
+    return 'It starts next, when the summary that is running ends. Your recording and transcript are safe.'
+  }
+  const queued = `It was queued as ${SUMMARY_STYLE_NAMES[style]}`
+  const why = {
+    otherNote: `${queued} behind another note and did not start.`,
+    recording: `${queued} and waits for the recording to end.`,
+    unknown: `${queued} and did not start.`,
+  }[cause]
+  return `${why} Your recording and transcript are safe.`
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`
 }
 
 /**
@@ -314,6 +438,43 @@ export function speakerInitials(speaker: string): string {
   return `${first[0]}${second[0]}`.toUpperCase()
 }
 
+/** What every surface prints for an unknown speaker. Mirrors `store::UNKNOWN_SPEAKER_LABEL`. */
+export const UNKNOWN_SPEAKER_LABEL = 'Unknown speaker'
+
+/** One named speaker as the speaker controls show it: "Speaker 3 · 14 turns", plus its "Sounds like …" suggestion. */
+export interface SpeakerRosterEntry {
+  speaker: string
+  turns: number
+  suggestion: SpeakerSuggestion | null
+}
+
+/** A note's speakers for the rename popover (issue #49). Unknown turns are counted but are never an entry: they can't be renamed or merged. */
+export interface SpeakerRoster {
+  speakers: SpeakerRosterEntry[]
+  unknownTurns: number
+}
+
+/** Builds a note's `SpeakerRoster`, speakers in order of first appearance. `suggestions` is `NoteMeta.speakerSuggestions`, keyed by the speaker's current label. */
+export function speakerRoster(
+  segments: StoredSegment[],
+  suggestions: Record<string, SpeakerSuggestion> = {},
+): SpeakerRoster {
+  const turns = new Map<string, number>()
+  let unknownTurns = 0
+  for (const { speaker } of segments) {
+    if (speaker === null) unknownTurns += 1
+    else turns.set(speaker, (turns.get(speaker) ?? 0) + 1)
+  }
+  return {
+    speakers: Array.from(turns, ([speaker, count]) => ({
+      speaker,
+      turns: count,
+      suggestion: suggestions[speaker] ?? null,
+    })),
+    unknownTurns,
+  }
+}
+
 /**
  * Maps a note's stored transcript segments (as persisted by the backend,
  * `{ speaker: "Speaker 1", start, end, text }`) to `TranscriptList`'s
@@ -323,7 +484,7 @@ export function speakerInitials(speaker: string): string {
  */
 export function storedSegmentsToDisplay(segments: StoredSegment[]): TranscriptSegment[] {
   return segments.map(seg => ({
-    initials: speakerInitials(seg.speaker),
+    initials: seg.speaker === null ? '?' : speakerInitials(seg.speaker),
     speaker: seg.speaker,
     time: formatMmSs(seg.start),
     text: seg.text,
@@ -393,7 +554,7 @@ const CITATION_RE = /\[(\d{1,2}):(\d{2})\]/g
 /**
  * Splits an ask-your-notes answer into plain-text and citation parts around
  * every inline `[mm:ss]` timestamp citation the model was instructed to emit
- * (see `llm::build_ask_prompt`) — `AiNotesPanel` renders each citation part
+ * (see `llm::build_ask_prompt`) — `AskPanel` renders each citation part
  * as a clickable seek button (`onSeekCitation(citationSeconds)`) and
  * everything else as plain text, same split-around-matches shape as
  * `splitHighlight` above. `mm` is 1-2 digits, `ss` exactly 2 (matches

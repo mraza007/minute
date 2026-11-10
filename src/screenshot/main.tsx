@@ -10,11 +10,13 @@
 // app, not something this capture tool needs, and it would double-fire the
 // scenario-driving side effects below (button clicks, emitted events).
 
+import './fixedClock'
 import { createRoot } from 'react-dom/client'
 import { mockConvertFileSrc } from '@tauri-apps/api/mocks'
 import '../index.css'
 import App from '../App'
 import { Pill } from '../popup/Pill'
+import { MessageGallery } from './MessageGallery'
 import { installFakeAudio } from './fakeAudio'
 import { installMockIpc, type ScreenshotState } from './mockIpc'
 import { driveScenario } from './scenario'
@@ -52,7 +54,7 @@ if (!root) throw new Error('screenshot harness: #root not found')
 // `popup` mounts the real Pill component directly (see src/popup/main.tsx)
 // instead of `<App/>` — it's the actual popup window's content, not the
 // main app shell, so this harness renders exactly what that window renders.
-createRoot(root).render(state === 'popup' ? <Pill /> : <App />)
+createRoot(root).render(state === 'popup' ? <Pill /> : state === 'messages' ? <MessageGallery /> : <App />)
 
 // Always forced (not just for `theme=dark`) — see themeOverride.ts's docs
 // on why relying on the capturing machine's own OS appearance would make

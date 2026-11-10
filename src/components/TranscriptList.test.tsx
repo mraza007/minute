@@ -1,12 +1,25 @@
+import { useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 import { demoTranscript } from '../data/demo'
 import type { TranscriptSegment } from '../types'
 import { TranscriptList, type TranscriptListProps } from './TranscriptList'
+import { assignSpeakerColors } from './speakerColors'
 
-function makeProps(overrides: Partial<TranscriptListProps> = {}): TranscriptListProps {
+type ListProps = Omit<TranscriptListProps, 'scrollElement'>
+
+/** Stands in for the note page: the scroll container the transcript lives in. */
+function Page(props: ListProps) {
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null)
+  return (
+    <div ref={setScrollElement} data-testid="note-scroll">
+      <TranscriptList {...props} scrollElement={scrollElement} />
+    </div>
+  )
+}
+
+function makeProps(overrides: Partial<ListProps> = {}): ListProps {
   return {
-    noteId: 'note-1',
     segments: demoTranscript,
     activeIndex: -1,
     onSeek: vi.fn(),
@@ -29,32 +42,39 @@ function makeSegments(count: number): TranscriptSegment[] {
 
 describe('TranscriptList', () => {
   it('renders every segment speaker and text', () => {
-    render(<TranscriptList {...makeProps()} />)
+    render(<Page {...makeProps()} />)
     expect(screen.getAllByText('Tom Reyes — Acme').length).toBe(2)
-    expect(screen.getAllByText('You', { selector: '.script-who' }).length).toBe(2)
+    expect(screen.getAllByText('You', { selector: '.turn-who' }).length).toBe(2)
     expect(screen.getByText('Priya Shah')).toBeInTheDocument()
   })
 
+  it('labels a turn with no attributed speaker "Unknown speaker" in grey ink', () => {
+    const [unknown] = makeSegments(1)
+    render(<Page {...makeProps({ segments: [{ ...unknown, speaker: null }] })} />)
+    const label = screen.getByText('Unknown speaker', { selector: '.turn-who' })
+    expect(label.style.getPropertyValue('--speaker-color')).toBe('var(--ink-muted)')
+  })
+
   it('renders nothing but an empty container for an empty segment list', () => {
-    const { container } = render(<TranscriptList {...makeProps({ segments: [] })} />)
-    expect(container.firstChild).toBeEmptyDOMElement()
+    const { container } = render(<Page {...makeProps({ segments: [] })} />)
+    expect(container.querySelector('.transcript')).toBeEmptyDOMElement()
   })
 
   it('renders segment timestamps', () => {
-    render(<TranscriptList {...makeProps()} />)
+    render(<Page {...makeProps()} />)
     expect(screen.getByText('00:41')).toBeInTheDocument()
     expect(screen.getByText('02:26')).toBeInTheDocument()
   })
 
   it('renders timestamps as buttons with a "Play from mm:ss" aria-label', () => {
-    render(<TranscriptList {...makeProps()} />)
+    render(<Page {...makeProps()} />)
     const button = screen.getByRole('button', { name: 'Play from 00:41' })
     expect(button).toBeInTheDocument()
   })
 
   it('clicking a timestamp calls onSeek with that segment’s start time', () => {
     const onSeek = vi.fn()
-    render(<TranscriptList {...makeProps({ onSeek })} />)
+    render(<Page {...makeProps({ onSeek })} />)
     fireEvent.click(screen.getByRole('button', { name: 'Play from 01:34' }))
     expect(onSeek).toHaveBeenCalledWith(94)
   })
@@ -63,15 +83,15 @@ describe('TranscriptList', () => {
   // index.css keys the (quiet) accent treatment off — the filled background
   // block it used to be would fight the ruled-margin layout.
   it('highlights the active segment (per activeIndex) and no other', () => {
-    const { container } = render(<TranscriptList {...makeProps({ activeIndex: 1 })} />)
+    const { container } = render(<Page {...makeProps({ activeIndex: 1 })} />)
     const activeButton = screen.getByRole('button', { name: 'Play from 01:02' })
-    expect(activeButton.closest('.script-line')).toHaveAttribute('data-active', 'true')
-    expect(container.querySelectorAll('.script-line[data-active="true"]')).toHaveLength(1)
+    expect(activeButton.closest('.turn')).toHaveAttribute('data-active', 'true')
+    expect(container.querySelectorAll('.turn[data-active="true"]')).toHaveLength(1)
     expect(activeButton).toHaveAttribute('aria-current', 'true')
   })
 
   it('moves keyboard focus between timestamps with ArrowUp and ArrowDown', () => {
-    render(<TranscriptList {...makeProps()} />)
+    render(<Page {...makeProps()} />)
     const first = screen.getByRole('button', { name: 'Play from 00:41' })
     const second = screen.getByRole('button', { name: 'Play from 01:02' })
     first.focus()
@@ -81,30 +101,21 @@ describe('TranscriptList', () => {
     expect(first).toHaveFocus()
   })
 
-  it('restores each note’s transcript scroll position after switching notes', () => {
-    const { container, rerender } = render(<TranscriptList {...makeProps({ noteId: 'note-a' })} />)
-    const noteA = container.querySelector<HTMLElement>('.script')!
-    noteA.scrollTop = 240
-    fireEvent.scroll(noteA)
-
-    rerender(<TranscriptList {...makeProps({ noteId: 'note-b' })} />)
-    const noteB = container.querySelector<HTMLElement>('.script')!
-    expect(noteB.scrollTop).toBe(0)
-    noteB.scrollTop = 80
-    fireEvent.scroll(noteB)
-
-    rerender(<TranscriptList {...makeProps({ noteId: 'note-a' })} />)
-    expect(container.querySelector<HTMLElement>('.script')!.scrollTop).toBe(240)
+  it('gives each speaker the colour assigned for the whole note', () => {
+    const speakerColors = assignSpeakerColors(['You', 'Tom Reyes — Acme', 'Priya Shah'])
+    render(<Page {...makeProps({ speakerColors })} />)
+    expect(screen.getAllByText('You', { selector: '.turn-who' })[0].style.getPropertyValue('--speaker-color')).toBe('var(--speaker-1)')
+    expect(screen.getByText('Priya Shah').style.getPropertyValue('--speaker-color')).toBe('var(--speaker-3)')
   })
 
   it('highlights nothing when activeIndex is -1', () => {
-    const { container } = render(<TranscriptList {...makeProps({ activeIndex: -1 })} />)
-    expect(container.querySelectorAll('.script-line[data-active="true"]')).toHaveLength(0)
+    const { container } = render(<Page {...makeProps({ activeIndex: -1 })} />)
+    expect(container.querySelectorAll('.turn[data-active="true"]')).toHaveLength(0)
   })
 
   it('disables timestamp buttons and does not call onSeek when not seekable', () => {
     const onSeek = vi.fn()
-    render(<TranscriptList {...makeProps({ onSeek, seekable: false })} />)
+    render(<Page {...makeProps({ onSeek, seekable: false })} />)
     const button = screen.getByRole('button', { name: 'Audio unavailable at 00:41' })
     expect(button).toBeDisabled()
     fireEvent.click(button)
@@ -118,36 +129,36 @@ describe('TranscriptList', () => {
     // in its source) are always 0 by default, which would collapse the
     // virtualizer's whole notion of "visible window" to nothing. Stubbed
     // here (not globally in `src/test/setup.ts` — nothing outside this describe
-    // block needs it) via the scroll container's `data-testid` to tell it
+    // block needs it) via the page scroll container's `data-testid` to tell it
     // apart from an individual row.
     beforeEach(() => {
       Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
         configurable: true,
         get() {
-          return this.dataset.testid === 'transcript-virtual-scroll' ? 600 : 80
+          return this.dataset.testid === 'note-scroll' ? 600 : 80
         },
       })
       Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
         configurable: true,
         get() {
-          return this.dataset.testid === 'transcript-virtual-scroll' ? 700 : 700
+          return this.dataset.testid === 'note-scroll' ? 700 : 700
         },
       })
     })
 
     it('renders the plain (non-virtualized) path at exactly the threshold (150 segments)', () => {
-      const { container } = render(<TranscriptList {...makeProps({ segments: makeSegments(150) })} />)
-      expect(container.querySelector('[data-testid="transcript-virtual-scroll"]')).not.toBeInTheDocument()
+      const { container } = render(<Page {...makeProps({ segments: makeSegments(150) })} />)
+      expect(container.querySelector('[data-virtualized]')).not.toBeInTheDocument()
       expect(screen.getAllByRole('button', { name: /^Play from/ })).toHaveLength(150)
     })
 
     it('switches to the virtualized path just past the threshold (151 segments)', () => {
-      const { container } = render(<TranscriptList {...makeProps({ segments: makeSegments(151) })} />)
-      expect(container.querySelector('[data-testid="transcript-virtual-scroll"]')).toBeInTheDocument()
+      const { container } = render(<Page {...makeProps({ segments: makeSegments(151) })} />)
+      expect(container.querySelector('[data-virtualized]')).toBeInTheDocument()
     })
 
     it('renders only a windowed subset of rows for a long transcript, not all of them', () => {
-      render(<TranscriptList {...makeProps({ segments: makeSegments(300) })} />)
+      render(<Page {...makeProps({ segments: makeSegments(300) })} />)
       const buttons = screen.getAllByRole('button', { name: /^Play from/ })
       // Stub geometry (600px viewport / 80px rows, overscan 8) yields ~7-8
       // rows visible plus overscan on either side — comfortably under 50,
@@ -158,7 +169,7 @@ describe('TranscriptList', () => {
 
     it('a rendered row’s seek button still calls onSeek in the virtualized path', () => {
       const onSeek = vi.fn()
-      render(<TranscriptList {...makeProps({ segments: makeSegments(300), onSeek })} />)
+      render(<Page {...makeProps({ segments: makeSegments(300), onSeek })} />)
       // The very first segment is always within the initial visible window.
       fireEvent.click(screen.getByRole('button', { name: 'Play from 00:00' }))
       expect(onSeek).toHaveBeenCalledWith(0)

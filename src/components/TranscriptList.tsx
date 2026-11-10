@@ -1,9 +1,10 @@
-import { memo, useLayoutEffect, useRef, type KeyboardEvent } from 'react'
+import { memo, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { UNKNOWN_SPEAKER_LABEL } from '../state/adapters'
 import type { TranscriptSegment } from '../types'
+import { EMPTY_SPEAKER_COLORS, speakerColorStyle, type SpeakerColors } from './speakerColors'
 
 export interface TranscriptListProps {
-  noteId: string
   segments: TranscriptSegment[]
   /** Index into `segments` of the one whose `[start, end)` window contains playback's current position, or `-1` when nothing is playing (or the position falls in a gap). Passed as a plain index rather than raw `currentTime` — see the module docs below for why. */
   activeIndex: number
@@ -11,13 +12,21 @@ export interface TranscriptListProps {
   onSeek: (seconds: number) => void
   /** False when this note has no audio to seek into — timestamp buttons stay visually identical but go inert (aria-disabled, no click) rather than a no-op click that looks actionable but silently does nothing. */
   seekable: boolean
+  /**
+   * The note page's scroll container. The transcript scrolls with the rest
+   * of the page, so the virtualized path windows its rows against this
+   * element instead of a scroller of its own. Passed as the element (held in
+   * state by the owner) rather than a ref: an ancestor's ref is still empty
+   * when this component's layout effects run on mount.
+   */
+  scrollElement: HTMLElement | null
+  /** Colour slot per speaker label, computed from the whole note so a filtered transcript keeps its colours. */
+  speakerColors?: SpeakerColors
 }
-
-const transcriptScrollPositions = new Map<string, number>()
 
 function handleTranscriptKeyDown(event: KeyboardEvent<HTMLDivElement>) {
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
-  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('.script-ts:not(:disabled)'))
+  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('.turn-time:not(:disabled)'))
   if (buttons.length === 0) return
   const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
   if (current < 0) return
@@ -26,80 +35,58 @@ function handleTranscriptKeyDown(event: KeyboardEvent<HTMLDivElement>) {
   buttons[Math.max(0, Math.min(buttons.length - 1, current + direction))]?.focus()
 }
 
-/** Above this many segments, `TranscriptList` switches from rendering every row directly to windowed rendering via `@tanstack/react-virtual` (see `VirtualizedRows` below) — a long meeting's transcript can run into the hundreds of segments, and mounting all of them (each with its own timestamp button) is the dominant cost of opening that note. Below the threshold, rendering is unchanged from before virtualization existed: a plain `.map` with no virtualizer involved at all, so short notes (the overwhelming common case) and every test written against that shape keep working exactly as they did. */
+/** Above this many segments, `TranscriptList` switches from rendering every row directly to windowed rendering via `@tanstack/react-virtual` (see `VirtualizedRows` below) — a long meeting's transcript can run into the hundreds of segments, and mounting all of them (each with its own timestamp button) is the dominant cost of opening that note. Below the threshold every row mounts directly, with no virtualizer involved at all. */
 const VIRTUALIZE_THRESHOLD = 150
 
-/** Seeded estimate (px) for a not-yet-measured row's height, before the virtualizer's dynamic `measureElement` mode corrects it against the row's actual rendered height (segment text length varies a lot — a one-line aside vs. a multi-sentence remark — so this is only ever a starting guess, never load-bearing for correctness). Tuned to a typical single-paragraph segment at this component's font size/line-height. */
-const ESTIMATED_ROW_HEIGHT_PX = 96
+/** Seeded estimate (px) for a not-yet-measured row's height, before the virtualizer's dynamic `measureElement` mode corrects it against the row's actual rendered height. Only ever a starting guess. */
+const ESTIMATED_ROW_HEIGHT_PX = 82
 
-/** Vertical rhythm between segments. Lives here rather than as a flex `gap` because the virtualized branch positions rows absolutely (no flex parent to inherit a gap from) and has to carry the same spacing as `paddingBottom`. */
-const ROW_GAP_PX = 21
+/** Vertical rhythm between segments. Lives here rather than only as a flex `gap` because the virtualized branch positions rows absolutely and has to carry the same spacing as `paddingBottom`. */
+const ROW_GAP_PX = 16
 
-/**
- * One transcript segment, set as a manuscript line: the timestamp sits in a
- * right-aligned margin gutter behind the continuous rule drawn by `.script`
- * (see index.css), and the speaker/body occupy the text column beside it.
- *
- * The timestamp *is* the seek control — there's no separate affordance. That
- * merges two things the previous layout kept apart (a decorative avatar
- * circle and a timestamp that happened to be clickable) into the single
- * element a reader already looks at when they want to jump somewhere, and it
- * puts it exactly where a manuscript puts line references.
- */
+/** One transcript turn. The timestamp is the seek control. */
 function Segment({
   segment,
   active,
   seekable,
   onSeek,
+  speakerColors,
 }: {
   segment: TranscriptSegment
   active: boolean
   seekable: boolean
   onSeek: (seconds: number) => void
+  speakerColors: SpeakerColors
 }) {
   return (
-    <div className="script-line" data-active={active ? 'true' : undefined}>
+    <div className="turn" data-active={active ? 'true' : undefined}>
       <button
         onClick={() => seekable && onSeek(segment.start)}
         disabled={!seekable}
         aria-disabled={!seekable}
         aria-label={seekable ? `Play from ${segment.time}` : `Audio unavailable at ${segment.time}`}
         aria-current={active ? 'true' : undefined}
-        className="script-ts"
+        className="turn-time"
         data-seekable={seekable ? 'true' : 'false'}
       >
         {segment.time}
       </button>
-      <div style={{ minWidth: 0 }}>
-        <div className="script-who">{segment.speaker}</div>
-        <p className="script-said">{segment.text}</p>
+      <div className="turn-body">
+        <div className="turn-who" style={speakerColorStyle(speakerColors, segment.speaker)}>
+          {segment.speaker ?? UNKNOWN_SPEAKER_LABEL}
+        </div>
+        <p className="turn-said">{segment.text}</p>
       </div>
     </div>
   )
 }
 
-/**
- * Plain, unvirtualized rendering — every segment mounted directly. Used
- * below [`VIRTUALIZE_THRESHOLD`]; the flex column supplies [`ROW_GAP_PX`]
- * between rows, which the virtualized branch has to reproduce by hand.
- */
-function PlainTranscriptList({ noteId, segments, activeIndex, onSeek, seekable }: TranscriptListProps) {
-  const parentRef = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const element = parentRef.current
-    if (element) element.scrollTop = transcriptScrollPositions.get(noteId) ?? 0
-  }, [noteId])
+/** Plain, unvirtualized rendering — every segment mounted directly. Used at or below [`VIRTUALIZE_THRESHOLD`]. */
+function PlainTranscriptList({ segments, activeIndex, onSeek, seekable, speakerColors = EMPTY_SPEAKER_COLORS }: TranscriptListProps) {
   return (
-    <div
-      ref={parentRef}
-      className="script"
-      data-note-id={noteId}
-      onScroll={event => transcriptScrollPositions.set(noteId, event.currentTarget.scrollTop)}
-      onKeyDown={handleTranscriptKeyDown}
-      style={{ display: 'flex', flexDirection: 'column', gap: ROW_GAP_PX }}
-    >
+    <div className="transcript" onKeyDown={handleTranscriptKeyDown} style={{ display: 'flex', flexDirection: 'column', gap: ROW_GAP_PX }}>
       {segments.map((segment, i) => (
-        <Segment key={i} segment={segment} active={i === activeIndex} seekable={seekable} onSeek={onSeek} />
+        <Segment key={i} segment={segment} active={i === activeIndex} seekable={seekable} onSeek={onSeek} speakerColors={speakerColors} />
       ))}
     </div>
   )
@@ -107,47 +94,47 @@ function PlainTranscriptList({ noteId, segments, activeIndex, onSeek, seekable }
 
 /**
  * Windowed rendering for long transcripts (> [`VIRTUALIZE_THRESHOLD`]
- * segments) via `@tanstack/react-virtual`: only the rows actually within
- * (or just outside) the visible scroll area are ever mounted, regardless of
- * how many hundreds of segments the note has. `measureElement` (dynamic
- * sizing mode) is used rather than a fixed row height — real segments vary
- * from a short one-liner to several sentences, and a fixed height would
- * either waste space or clip/overlap rows — [`ESTIMATED_ROW_HEIGHT_PX`] only
- * seeds the very first layout pass before any row has actually been
- * measured.
+ * segments): only the rows within (or just outside) the visible part of the
+ * page are mounted. Rows are measured (`measureElement`) because real turns
+ * run from one line to several.
  *
- * The margin rule is unaffected by virtualization: it's a background
- * gradient on this scroll container (`.script`), painted against the
- * container's own padding box rather than its scrolled content, so it stays
- * one unbroken vertical line however far the transcript is scrolled and
- * however few rows happen to be mounted.
+ * The list sits below the note header and summary inside the page's scroll
+ * container, so the virtualizer needs the list's offset from the top of that
+ * container (`scrollMargin`). The offset moves whenever the content above
+ * changes height (a summary arrives, a marker form opens), which a
+ * ResizeObserver on the scroll content tracks.
  */
-function VirtualizedRows({ noteId, segments, activeIndex, onSeek, seekable }: TranscriptListProps) {
-  const parentRef = useRef<HTMLDivElement>(null)
+function VirtualizedRows({ segments, activeIndex, onSeek, seekable, scrollElement, speakerColors = EMPTY_SPEAKER_COLORS }: TranscriptListProps) {
+  const listRef = useRef<HTMLDivElement>(null)
+  const [scrollMargin, setScrollMargin] = useState(0)
+
+  useLayoutEffect(() => {
+    const list = listRef.current
+    const scroller = scrollElement
+    if (!list || !scroller) return
+    const measure = () => {
+      setScrollMargin(Math.round(list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop))
+    }
+    measure()
+    const content = scroller.firstElementChild
+    if (typeof ResizeObserver === 'undefined' || !content) return
+    const observer = new ResizeObserver(measure)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [scrollElement])
+
   const virtualizer = useVirtualizer({
     count: segments.length,
-    getScrollElement: () => parentRef.current,
+    getScrollElement: () => scrollElement,
     estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
     overscan: 8,
+    scrollMargin,
   })
 
-  const items = virtualizer.getVirtualItems()
-  useLayoutEffect(() => {
-    const element = parentRef.current
-    if (element) element.scrollTop = transcriptScrollPositions.get(noteId) ?? 0
-  }, [noteId])
-
   return (
-    <div
-      ref={parentRef}
-      data-testid="transcript-virtual-scroll"
-      data-note-id={noteId}
-      className="script"
-      onScroll={event => transcriptScrollPositions.set(noteId, event.currentTarget.scrollTop)}
-      onKeyDown={handleTranscriptKeyDown}
-    >
+    <div ref={listRef} className="transcript" data-virtualized="true" onKeyDown={handleTranscriptKeyDown}>
       <div style={{ position: 'relative', width: '100%', height: virtualizer.getTotalSize() }}>
-        {items.map(item => {
+        {virtualizer.getVirtualItems().map(item => {
           const segment = segments[item.index]
           return (
             <div
@@ -159,11 +146,11 @@ function VirtualizedRows({ noteId, segments, activeIndex, onSeek, seekable }: Tr
                 top: 0,
                 left: 0,
                 width: '100%',
-                transform: `translateY(${item.start}px)`,
+                transform: `translateY(${item.start - scrollMargin}px)`,
                 paddingBottom: ROW_GAP_PX,
               }}
             >
-              <Segment segment={segment} active={item.index === activeIndex} seekable={seekable} onSeek={onSeek} />
+              <Segment segment={segment} active={item.index === activeIndex} seekable={seekable} onSeek={onSeek} speakerColors={speakerColors} />
             </div>
           )
         })}
@@ -172,9 +159,8 @@ function VirtualizedRows({ noteId, segments, activeIndex, onSeek, seekable }: Tr
   )
 }
 
-// Memoized so re-rendering NoteView's containing tabpanel (e.g. a status
-// pill tick elsewhere, or a `currentTime` tick from useAudioPlayer while
-// playing) doesn't re-render every segment row when nothing this component
+// Memoized so re-rendering NoteView (e.g. a status pill tick, or a
+// `currentTime` tick from useAudioPlayer while playing) doesn't re-render every segment row when nothing this component
 // actually reads has changed. This is *why* NoteView passes `activeIndex` (a
 // plain number, computed via a binary search in a `useMemo`) rather than raw
 // `currentTime`: `currentTime` changes at ~4Hz while playing, but

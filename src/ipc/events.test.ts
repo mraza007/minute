@@ -74,6 +74,7 @@ describe('ipc/events', () => {
       inputSequence: 40,
       inputError: null,
       quietSecs: 0,
+      origin: { kind: 'manual' },
     }
     await emit('recording-state', payload)
 
@@ -151,7 +152,7 @@ describe('ipc/events', () => {
     const cb = vi.fn()
 
     await events.onMeetingPopupPayload(cb)
-    const payload: MeetingPopupPayloadEvent = { appName: 'Zoom' }
+    const payload: MeetingPopupPayloadEvent = { kind: 'ask', appName: 'Zoom' }
     await emit('meeting-popup-payload', payload)
 
     expect(cb).toHaveBeenCalledWith(payload)
@@ -166,6 +167,17 @@ describe('ipc/events', () => {
 
     expect(cb).toHaveBeenCalledTimes(1)
     expect(cb).toHaveBeenCalledWith(null)
+  })
+
+  it('onMeetingPopupStart delivers the origin when the backend starts a recording on its own', async () => {
+    enableMockEvents()
+    const cb = vi.fn()
+
+    await events.onMeetingPopupStart(cb)
+    const payload = { origin: { kind: 'automatic', appName: 'Microsoft Teams' } }
+    await emit('meeting-popup-start', payload)
+
+    expect(cb).toHaveBeenCalledWith(payload)
   })
 
   it('the returned unlisten function stops further delivery', async () => {
@@ -185,6 +197,7 @@ describe('ipc/events', () => {
       inputSequence: 90,
       inputError: null,
       quietSecs: 0,
+      origin: { kind: 'manual' },
     })
 
     expect(cb).not.toHaveBeenCalled()

@@ -5,6 +5,7 @@ export type ModelSuitabilityTone =
   | 'comfortable'
   | 'constrained'
   | 'unsupported'
+  | 'unverified'
   | 'unknown'
 
 export interface ModelSuitabilityResult {
@@ -53,6 +54,16 @@ export function assessModelSuitability(
     }
   }
 
+  // Trust outranks memory fit until the file is on this Mac: the user has to
+  // decide about the publisher before the download, not after.
+  if (entry.origin.kind === 'huggingFace' && !entry.origin.trusted && entry.state !== 'installed') {
+    return {
+      tone: 'unverified',
+      label: 'Unknown publisher',
+      detail: `Minute has not checked files from ${entry.origin.publisher}.`,
+    }
+  }
+
   if (entry.id === recommendedId(entry, recommendation)) {
     return {
       tone: 'recommended',
@@ -75,4 +86,11 @@ export function assessModelSuitability(
     label: 'Near memory limit',
     detail: `Meets the ${entry.minRamGb} GB minimum; close other memory-heavy apps.`,
   }
+}
+
+/** "Apple silicon · 16 GB memory · 8 CPU cores", or a placeholder until detection finishes. */
+export function hardwareSpecs(hardware: Hardware | null): string {
+  return hardware
+    ? `${hardware.appleSilicon ? 'Apple silicon' : 'Intel'} · ${hardware.totalRamGb} GB memory · ${hardware.cores} CPU cores`
+    : 'Checking hardware…'
 }

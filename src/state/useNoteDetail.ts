@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onAskAnswer, onAskStatus, onDiarStatus, onSummaryStatus } from '../ipc/events'
-import type { NoteMeta, NoteWithTranscript, StoredSegment, SummaryDoc } from '../ipc/types'
-import { hasSummaryContent } from './adapters'
+import type { NoteMeta, NoteWithTranscript, StoredSegment, SummarizeNowOutcome, SummaryDoc } from '../ipc/types'
+import { hasSummaryContent, nextSummaryQueuedAt } from './adapters'
 import { useTauriEvent } from './useTauriEvent'
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** `record` without `key`. Returns `record` itself when the key is absent, so a state setter bails out. */
+function without<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record
+  const next = { ...record }
+  delete next[key]
+  return next
 }
 
 /**
@@ -20,13 +28,13 @@ function messageOf(err: unknown): string {
 export type SummaryEventState = 'queued' | 'running' | 'done' | 'error'
 
 /**
- * The AI notes panel's (and NoteView's status pill's) simplified view of a
+ * NoteView's (and its status pill's) simplified view of a
  * note's summarization state — `'idle'` covers both "no `summary-status`
  * event seen this session" and "the last one was `'done'`", since `'done'`
  * itself carries no special UI once it's landed (the panel just renders the
  * real summary/decisions/action items normally at that point). `App.tsx`
  * collapses `summaryStatus[id]` (a `SummaryEventState | undefined`) down to
- * this before handing it to `NoteView`/`AiNotesPanel`.
+ * this before handing it to `NoteView`.
  */
 export type SummaryStatus = 'idle' | 'queued' | 'running' | 'error'
 
@@ -46,11 +54,11 @@ export type AskStatus = 'idle' | 'running' | 'error'
  * `ask-answer` event, which is never written to disk either; see
  * `llm::AskAnswerPayload`'s docs). Exactly one of `answer`/`error` is set: a
  * successful ask carries `answer` (with inline `[mm:ss]` citations,
- * rendered by `AiNotesPanel`'s `splitAnswerCitations`), a failed one carries
+ * rendered by `AskPanel` via `splitAnswerCitations`), a failed one carries
  * `error` (and a retry affordance that just re-asks `question`).
  *
  * `id` is a monotonically increasing counter this hook assigns at
- * insertion (see `nextAskEntryId`) — a stable React list key `AiNotesPanel`
+ * insertion (see `nextAskEntryId`) — a stable React list key `AskPanel`
  * uses instead of the entry's array index: history is newest-first, so
  * every existing entry's *index* shifts by one on every prepend, which
  * would make an index-keyed list re-key (and, worse, potentially
@@ -107,7 +115,7 @@ export function useNoteDetail(params: {
   // --- transcript/summary/markdown/audio loading, LRU-cached -------------
   //
   // `selectedMeta`/`selectedTranscript`/`selectedSummary`/`selectedMarkdown`
-  // back NoteView's Transcript/Markdown tabs and the AI notes panel once a
+  // back NoteView's transcript, summary, and Markdown copy once a
   // note is actually selected — fetched via `get_note` (the notes list
   // itself only carries `NoteMeta`, no segments/summary/markdown). Cached
   // per id in `transcriptCache` (LRU-capped — see `cacheGet`/`cacheSet`) so
@@ -127,6 +135,10 @@ export function useNoteDetail(params: {
   // request — guards against an out-of-order resolution (e.g. quickly
   // selecting note A then B) clobbering newer state with a stale response.
   const transcriptRequestId = useRef(0)
+  // What a callback that resolves later reads, so it reloads a note only if
+  // it is the one on screen then, not the one that was when it started.
+  const selectedNoteIdRef = useRef(selectedNoteId)
+  selectedNoteIdRef.current = selectedNoteId
 
   /**
    * Reads a cache entry, marking it most-recently-used (moves it to the end
@@ -175,6 +187,9 @@ export function useNoteDetail(params: {
    */
   const loadNoteTranscript = useCallback(
     (id: string, opts: { force?: boolean } = {}) => {
+      // Every load takes a new id, a cached one too: a slow fetch for the
+      // note opened before this one must not land on top of it.
+      const requestId = ++transcriptRequestId.current
       if (!opts.force) {
         const cached = cacheGet(id)
         if (cached) {
@@ -187,7 +202,6 @@ export function useNoteDetail(params: {
           return
         }
       }
-      const requestId = ++transcriptRequestId.current
       setTranscriptLoading(true)
       ipc
         .getNote(id)
@@ -219,8 +233,23 @@ export function useNoteDetail(params: {
     [cacheGet, cacheSet, reportError],
   )
 
+  /**
+   * For a note whose content just changed on disk: drops its cache entry
+   * and, if it is the note on screen now, fetches it again. A caller that
+   * awaited a command first may be many renders old, so the check reads the
+   * current selection, never the one the caller closed over.
+   */
+  const reloadNote = useCallback(
+    (id: string) => {
+      invalidateNoteCache(id)
+      if (id === selectedNoteIdRef.current) loadNoteTranscript(id, { force: true })
+    },
+    [invalidateNoteCache, loadNoteTranscript],
+  )
+
   useEffect(() => {
     if (!selectedNoteId) {
+      transcriptRequestId.current++
       setSelectedMeta(null)
       setSelectedTranscript([])
       setSelectedSummary(null)
@@ -244,11 +273,21 @@ export function useNoteDetail(params: {
   // `running`/`done` event supersedes it.
   const [summaryStatus, setSummaryStatus] = useState<Record<string, SummaryEventState>>({})
   const [summaryError, setSummaryError] = useState<Record<string, string>>({})
+  // When each waiting note joined the queue (epoch ms). Holds an entry only
+  // while that note's status is `'queued'`, so the note view can say how
+  // long a summary has waited (issue #44).
+  const [summaryQueuedAt, setSummaryQueuedAt] = useState<Record<string, number>>({})
+  // The waiting notes that "Summarize now" moved to the front of the queue.
+  // Kept here, per note, so the queued card still says so after the user
+  // opens another note and comes back.
+  const [summaryStartsNext, setSummaryStartsNext] = useState<Record<string, true>>({})
 
   useTauriEvent(
     onSummaryStatus,
     payload => {
       setSummaryStatus(prev => ({ ...prev, [payload.noteId]: payload.state }))
+      setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, payload, Date.now()))
+      if (payload.state !== 'queued') setSummaryStartsNext(prev => without(prev, payload.noteId))
 
       if (payload.state === 'error') {
         setSummaryError(prev => ({ ...prev, [payload.noteId]: payload.error ?? 'Summarization failed' }))
@@ -265,13 +304,10 @@ export function useNoteDetail(params: {
       if (payload.state === 'done') {
         // The note's summary/markdown/status just changed on disk —
         // invalidate its cache entry, refetch it if it's the one currently
-        // on screen (so the AI notes panel picks up the real summary
+        // on screen (so the note page picks up the real summary
         // without a manual reselect), and refresh the notes list so its
         // status flips transcribed -> ready in the sidebar/header pill.
-        invalidateNoteCache(payload.noteId)
-        if (payload.noteId === selectedNoteId) {
-          loadNoteTranscript(payload.noteId, { force: true })
-        }
+        reloadNote(payload.noteId)
         refreshNotes()
       }
     },
@@ -306,10 +342,7 @@ export function useNoteDetail(params: {
       })
 
       if (payload.state === 'done') {
-        invalidateNoteCache(payload.noteId)
-        if (payload.noteId === selectedNoteId) {
-          loadNoteTranscript(payload.noteId, { force: true })
-        }
+        reloadNote(payload.noteId)
         refreshNotes()
       }
     },
@@ -368,21 +401,35 @@ export function useNoteDetail(params: {
   }, [])
 
   /**
-   * AI notes panel checkbox click: flips one action item's `done` state.
+   * "Summarize now" on a waiting summary (issue #44): starts it without
+   * waiting for a live recording to end. Resolves with what the backend
+   * did, so the caller can tell "started" from "starts after the summary
+   * that is running". State still arrives through `summary-status`.
+   */
+  const summarizeNow = useCallback(async (id: string): Promise<SummarizeNowOutcome | null> => {
+    try {
+      const outcome = await ipc.summarizeNow(id)
+      if (outcome === 'next') setSummaryStartsNext(prev => ({ ...prev, [id]: true }))
+      return outcome
+    } catch (err) {
+      setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
+      setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
+      setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, { noteId: id, state: 'error', error: null }, Date.now()))
+      return null
+    }
+  }, [])
+
+  /**
+   * Action item checkbox click: flips one action item's `done` state.
    * Optimistic — updates the cached `SummaryDoc` (and, if `id` is the
    * selected note, `selectedSummary`) immediately, then confirms via
    * `toggle_action_item`. On success the cache entry is dropped and (if
    * selected) force-refetched rather than merged from the command's
    * response — `toggle_action_item` only returns the updated `SummaryDoc`,
    * not a fresh `markdown` rendering, and `note.md`'s checkbox did change
-   * server-side, so a full refetch is what keeps the Markdown tab honest.
+   * server-side, so a full refetch is what keeps the copied Markdown honest.
    * On failure, reverts the optimistic edit and reports the error.
    *
-   * `useCallback` (deps: `selectedNoteId`, `cacheGet`, `cacheSet`,
-   * `loadNoteTranscript`, `reportError`) — `cacheGet`/`cacheSet`/
-   * `loadNoteTranscript` are each independently stable (see their own docs
-   * above), so this only actually gets a fresh identity when the selected
-   * note changes.
    */
   const toggleActionItem = useCallback(
     (id: string, index: number, done: boolean) => {
@@ -394,15 +441,12 @@ export function useNoteDetail(params: {
           actionItems: before.summary.actionItems.map((item, i) => (i === index ? { ...item, done } : item)),
         }
         cacheSet(id, { ...before, summary: optimisticSummary })
-        if (id === selectedNoteId) setSelectedSummary(optimisticSummary)
+        if (id === selectedNoteIdRef.current) setSelectedSummary(optimisticSummary)
       }
 
       ipc
         .toggleActionItem(id, index, done)
-        .then(() => {
-          invalidateNoteCache(id)
-          if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
-        })
+        .then(() => reloadNote(id))
         .catch(err => {
           // Scoped revert: flip only *this* toggle's field back, applied
           // against whatever the cache holds right now — not the
@@ -422,14 +466,14 @@ export function useNoteDetail(params: {
               actionItems: current.summary.actionItems.map((item, i) => (i === index ? { ...item, done: previousDone } : item)),
             }
             cacheSet(id, { ...current, summary: revertedSummary })
-            if (id === selectedNoteId) setSelectedSummary(revertedSummary)
-          } else if (id === selectedNoteId) {
-            loadNoteTranscript(id, { force: true })
+            if (id === selectedNoteIdRef.current) setSelectedSummary(revertedSummary)
+          } else {
+            reloadNote(id)
           }
           reportError(err)
         })
     },
-    [selectedNoteId, cacheGet, cacheSet, invalidateNoteCache, loadNoteTranscript, reportError],
+    [cacheGet, cacheSet, reloadNote, reportError],
   )
 
   // --- ask-your-notes -------------------------------------------------------
@@ -553,7 +597,7 @@ export function useNoteDetail(params: {
    * flag (see `llm.rs`'s docs — at most one generation runs app-wide at a
    * time), so at most one of these two `.some(...)` checks is ever true at
    * once in practice; both are checked anyway rather than assuming which.
-   * `AiNotesPanel` uses this to disable the ask input (and show "Waiting
+   * `AskPanel` uses this to disable the ask input (and show "Waiting
    * for the current generation…") even when it's some *other* note that's
    * busy, honestly reflecting that submitting right now would just be
    * rejected server-side.
@@ -588,6 +632,8 @@ export function useNoteDetail(params: {
       delete next[id]
       return next
     })
+    setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, { noteId: id, state: 'error', error: null }, Date.now()))
+    setSummaryStartsNext(prev => without(prev, id))
     setDiarStatus(prev => {
       if (!(id in prev)) return prev
       const next = { ...prev }
@@ -621,13 +667,16 @@ export function useNoteDetail(params: {
     selectedMarkdown,
     selectedAudioPath,
     transcriptLoading,
-    loadNoteTranscript,
     invalidateNoteCache,
+    reloadNote,
     pruneNoteDetail,
     summaryStatus,
     summaryError,
+    summaryQueuedAt,
+    summaryStartsNext,
     regenerateSummary,
     cancelSummary,
+    summarizeNow,
     diarStatus,
     diarError,
     detectSpeakers,

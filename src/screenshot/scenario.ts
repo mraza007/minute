@@ -6,7 +6,7 @@
 // honest: if a capture looks right, the real app produces that screen too.
 
 import { emit } from '@tauri-apps/api/event'
-import { AURORA_ASK_ENTRIES, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID } from './demoData'
+import { AURORA_ASK_ENTRIES, AURORA_NOTE_ID, PRICING_NOTE_ID, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID, SAM_NOTE_ID } from './demoData'
 import type { ScreenshotState } from './mockIpc'
 
 function sleep(ms: number): Promise<void> {
@@ -23,21 +23,6 @@ async function waitFor(predicate: () => boolean, { timeoutMs = 4000, intervalMs 
   return predicate()
 }
 
-function closestScrollable(el: HTMLElement | null): HTMLElement | null {
-  let node = el?.parentElement ?? null
-  while (node) {
-    if (node.scrollHeight > node.clientHeight && getComputedStyle(node).overflowY !== 'visible') return node
-    node = node.parentElement
-  }
-  return null
-}
-
-function scrollAskSectionIntoView(): void {
-  const askInput = document.querySelector<HTMLElement>('input[aria-label="Ask about this meeting"]')
-  const scrollContainer = closestScrollable(askInput)
-  if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight
-}
-
 function findButtonByText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes(text)) as HTMLButtonElement | undefined
 }
@@ -52,17 +37,44 @@ function setNativeInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+/** One `recording-state` tick as the backend sends it, shaped by the harness parameters. */
+function recordingTick(params: URLSearchParams, elapsed: number, overrides: Record<string, unknown> = {}) {
+  return {
+    noteId: RECORDING_NOTE_ID,
+    state: 'recording',
+    elapsed,
+    systemAudioActive: params.get('sysaudio') === '1',
+    microphoneName: 'MacBook Pro Microphone',
+    inputRms: 0.08,
+    inputPeak: 0.42,
+    inputSequence: 120,
+    inputError: null,
+    quietSecs: 0,
+    origin: params.get('origin') === 'auto' ? { kind: 'automatic', appName: 'Microsoft Teams' } : { kind: 'manual' },
+    ...overrides,
+  }
+}
+
+/**
+ * `?state=recording`, with:
+ * - `sysaudio=1`: system audio is part of the recording.
+ * - `origin=auto`: the recording was started by a detected call.
+ * - `message=silent|autostop|disconnected|lag|failed`: the condition behind one status message.
+ * - `restart=confirm`: press "Add system audio" and hold on its confirm step.
+ * - `title=`, `marker=`: rename the recording, add a marker.
+ * - `processing=saving|finalizing`: press Stop and hold on that stage.
+ * - `processing=note`: press Stop and land on the note while speakers are found.
+ */
 async function driveRecording(params: URLSearchParams): Promise<void> {
   const startButton = await waitForButtonByText('New recording')
   startButton?.click()
   const confirmButton = await waitForButtonByText('Start recording')
   confirmButton?.click()
 
-  await waitFor(() => document.querySelector('[data-testid="waveform-bars"]') !== null)
+  await waitFor(() => document.querySelector('[data-testid="level-indicator"]') !== null)
 
   // Stream the demo dialogue in as individual transcript-segment events,
-  // exactly like the real stt worker would, then report the elapsed time
-  // the recording pill/title bar should show.
+  // exactly like the real stt worker would, then report the elapsed time.
   for (const turn of RECORDING_LIVE_TURNS) {
     // eslint-disable-next-line no-await-in-loop
     await emit('transcript-segment', {
@@ -74,45 +86,27 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
     })
   }
   await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'ready', error: null })
+  const message = params.get('message')
   const latestSegmentEnd = RECORDING_LIVE_TURNS[RECORDING_LIVE_TURNS.length - 1]?.end ?? 0
-  const elapsed = params.get('lag') === 'delayed'
-    ? Math.max(RECORDING_ELAPSED_SECONDS, latestSegmentEnd + 45)
-    : RECORDING_ELAPSED_SECONDS
-  await emit('recording-state', {
-    noteId: RECORDING_NOTE_ID,
-    state: 'recording',
-    elapsed,
-    systemAudioActive: false,
-    microphoneName: 'MacBook Pro Microphone',
-    inputRms: 0.08,
-    inputPeak: 0.42,
-    inputSequence: 120,
-    inputError: null,
-  })
+  const elapsed = message === 'lag' ? latestSegmentEnd + 45 : RECORDING_ELAPSED_SECONDS
+  await emit('recording-state', recordingTick(params, elapsed))
 
-  if (params.get('health') === 'silent') {
-    await emit('recording-state', {
-      noteId: RECORDING_NOTE_ID,
-      state: 'recording',
-      elapsed: elapsed + 1,
-      systemAudioActive: false,
-      microphoneName: 'MacBook Pro Microphone',
-      inputRms: 0,
-      inputPeak: 0.12,
-      inputSequence: 121,
-      inputError: null,
-    })
-    await emit('recording-state', {
-      noteId: RECORDING_NOTE_ID,
-      state: 'recording',
-      elapsed: elapsed + 11,
-      systemAudioActive: false,
-      microphoneName: 'MacBook Pro Microphone',
-      inputRms: 0,
-      inputPeak: 0.1,
-      inputSequence: 122,
-      inputError: null,
-    })
+  if (message === 'silent') {
+    await emit('recording-state', recordingTick(params, elapsed + 1, { inputRms: 0, inputPeak: 0.12, inputSequence: 121 }))
+    await emit('recording-state', recordingTick(params, elapsed + 11, { inputRms: 0, inputPeak: 0.1, inputSequence: 122, quietSecs: 40 }))
+  } else if (message === 'autostop') {
+    await emit('recording-state', recordingTick(params, elapsed + 1, { inputRms: 0, inputPeak: 0, inputSequence: 121, quietSecs: 120 }))
+    await emit('auto-stop-state', { noteId: RECORDING_NOTE_ID, state: 'pending', secondsRemaining: 108 })
+  } else if (message === 'disconnected') {
+    await emit('recording-state', recordingTick(params, elapsed + 1, { inputSequence: 121, inputError: 'device disconnected' }))
+  } else if (message === 'failed') {
+    await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'error', error: 'The transcription model stopped.' })
+  }
+  if (message) await waitFor(() => document.querySelector('.recording-message') !== null)
+
+  if (params.get('restart') === 'confirm') {
+    findButtonByText('Add system audio')?.click()
+    await waitFor(() => document.querySelector('[aria-label="Confirm restart with system audio"]') !== null)
   }
 
   const title = params.get('title')
@@ -127,7 +121,7 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
         bubbles: true,
         cancelable: true,
       }))
-      await waitFor(() => document.querySelector('.recording-title-value h1')?.textContent === title)
+      await waitFor(() => document.querySelector('.recording-head h1')?.textContent === title)
     }
   }
 
@@ -139,23 +133,19 @@ async function driveRecording(params: URLSearchParams): Promise<void> {
       setNativeInputValue(markerInput, marker)
       await waitFor(() => findButtonByText('Save marker')?.disabled === false)
       findButtonByText('Save marker')?.click()
-      await waitFor(() => document.body.textContent?.includes(marker) ?? false)
+      await waitFor(() => document.querySelector('.live-marker') !== null)
     }
   }
 
-  const details = params.get('details')
-  if (details === 'closed') {
-    findButtonByText('Hide details')?.click()
-    await waitFor(() => findButtonByText('Show details') !== undefined)
-  } else if (details === 'open') {
-    findButtonByText('Show details')?.click()
-    await waitFor(() => document.querySelector('#recording-details-panel:not([hidden])') !== null)
-  }
-
   const processing = params.get('processing')
-  if (processing) {
-    findButtonByText('Stop & transcribe')?.click()
-    await waitFor(() => document.body.textContent?.includes('Turning your recording into notes') ?? false)
+  if (processing === 'note') {
+    findButtonByText('Stop and')?.click()
+    await waitFor(() => document.querySelector('.note-scroll') !== null)
+    await emit('diar-status', { noteId: SAM_NOTE_ID, state: 'running', error: null })
+    await waitFor(() => document.querySelector('.processing-list') !== null)
+  } else if (processing) {
+    findButtonByText('Stop and')?.click()
+    await waitFor(() => document.querySelector('.processing-list') !== null)
     if (processing === 'finalizing') {
       await emit('stt-status', { noteId: RECORDING_NOTE_ID, state: 'finalizing', error: null })
     }
@@ -209,34 +199,127 @@ async function waitForSelector<T extends Element>(selector: string): Promise<T |
   return found
 }
 
-async function drivePopup(): Promise<void> {
-  await waitFor(() => document.querySelector('[role="dialog"][aria-label="Meeting detected"]') !== null)
-  // Same event the real detector (detect.rs) fires into the popup webview —
-  // see src/ipc/events.ts's `onMeetingPopupPayload`. "Zoom" mirrors the
-  // allowlisted app named in the detection engine's own bundle-id list.
-  await emit('meeting-popup-payload', { appName: 'Zoom' })
-  await waitFor(() => document.body.textContent?.includes('Zoom is using the microphone') ?? false)
+async function drivePopup(params: URLSearchParams): Promise<void> {
+  await waitFor(() => document.querySelector('[role="dialog"]') !== null)
+  // Same events the backend sends the popup webview: the payload from
+  // popup.rs, and for the auto-started pill the recorder's clock. The app
+  // names mirror the detector's own list.
+  if (params.get('kind') === 'started') {
+    await emit('meeting-popup-payload', { kind: 'started', appName: 'Microsoft Teams' })
+    const tick = {
+      noteId: 'demo-note',
+      state: 'recording',
+      elapsed: 4,
+      systemAudioActive: true,
+      microphoneName: 'MacBook Pro Microphone',
+      inputRms: 0.08,
+      inputPeak: 0.4,
+      inputSequence: 1,
+      inputError: null,
+      quietSecs: 0,
+      origin: { kind: 'automatic', appName: 'Microsoft Teams' },
+    }
+    // The pill subscribes to the recorder clock after its payload renders,
+    // so keep sending the tick until it lands.
+    await waitFor(() => {
+      void emit('recording-state', tick)
+      return document.body.textContent?.includes('Started automatically · 0:04') ?? false
+    })
+  } else {
+    await emit('meeting-popup-payload', { kind: 'ask', appName: 'Zoom' })
+    await waitFor(() => document.body.textContent?.includes('Zoom meeting started') ?? false)
+  }
 }
 
-async function driveSettings(): Promise<void> {
+const SETTINGS_SECTION_LABELS: Record<string, string> = {
+  recording: 'Recording',
+  summaries: 'Summaries',
+  speakers: 'Speakers',
+  models: 'Models',
+  integrations: 'Integrations',
+  storage: 'Storage',
+  about: 'About',
+}
+
+/**
+ * `?section=<id>` picks the Settings page. On Models, `&downloading=1` puts
+ * one whisper.cpp file mid-download and `&consent=1` opens the
+ * unknown-publisher confirm.
+ */
+async function driveSettings(params: URLSearchParams): Promise<void> {
   const settingsButton = await waitForButtonByText('Settings')
   settingsButton?.click()
-  await waitFor(() => document.querySelector('[role="radiogroup"][aria-label="Transcription model"]') !== null)
+  await waitFor(() => document.querySelector('nav[aria-label="Settings sections"]') !== null)
+  const section = params.get('section') ?? 'recording'
+  const label = SETTINGS_SECTION_LABELS[section]
+  const navButton = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-nav-item')).find(b => b.textContent === label)
+  navButton?.click()
+  await waitFor(() => document.querySelector('.st-title')?.textContent?.startsWith(label) ?? false)
+
+  if (section === 'models') {
+    await waitFor(() => /Granite 4\.0 H Tiny|Could not reach Hugging Face/.test(document.body.textContent ?? ''))
+  }
+  if (section === 'models' && params.get('downloading') === '1') {
+    await emit('model-download-progress', { modelId: 'hf:ggerganov/whisper.cpp/ggml-small.en.bin', downloaded: 302_000_000, total: 487_614_201 })
+    await waitFor(() => document.querySelector('[role="progressbar"]') !== null)
+  }
+  if (section === 'models' && params.get('consent') === '1') {
+    document.querySelector<HTMLButtonElement>('button[aria-label^="Download Llama 3.1 8B Instruct"]')?.click()
+    await waitFor(() => findButtonByText('Download anyway') !== undefined)
+  }
+  if (section === 'integrations') {
+    // The vault check runs on mount; wait for it so the capture shows its verdict.
+    await sleep(150)
+  }
+}
+
+/** `?downloading=1` starts the recommended transcription model's download part way. */
+async function driveOnboarding(params: URLSearchParams): Promise<void> {
+  await waitFor(() => document.body.textContent?.includes('Open Minute') ?? false)
+  if (params.get('downloading') === '1') {
+    await emit('model-download-progress', { modelId: 'whisper-large-v3-turbo', downloaded: 1_000_000_000, total: 1_624_555_275 })
+    await waitFor(() => document.querySelector('[role="progressbar"]') !== null)
+  }
+}
+
+async function driveEmpty(): Promise<void> {
+  await waitFor(() => document.body.textContent?.includes('Record your first meeting') ?? false)
+}
+
+async function openFilterMenu(): Promise<void> {
+  document.querySelector<HTMLButtonElement>('button[aria-label="Sort and filter notes"]')?.click()
+  await waitFor(() => document.querySelector('[role="menu"][aria-label="Sort and filter notes"]') !== null)
+}
+
+async function driveSidebar(params: URLSearchParams): Promise<void> {
+  if (params.get('summarizing') === '1') {
+    await emit('summary-status', { noteId: PRICING_NOTE_ID, state: 'running', error: null })
+    await waitFor(() => document.querySelector('.side-row-status[data-tone="blue"]') !== null)
+  }
+
+  if (params.get('menu') === 'open') {
+    await openFilterMenu()
+  }
+
+  const selected = Number(params.get('select') ?? 0)
+  if (selected > 0) {
+    await openFilterMenu()
+    findButtonByText('Select notes')?.click()
+    await waitFor(() => document.querySelector('.side-row-check') !== null)
+    const boxes = Array.from(document.querySelectorAll<HTMLInputElement>('.side-row-check')).slice(0, selected)
+    for (const box of boxes) box.click()
+    await waitFor(() => document.querySelectorAll('.side-row-check:checked').length === selected)
+  }
 }
 
 async function driveNote(params: URLSearchParams): Promise<void> {
-  await waitFor(() => document.querySelector('[role="tablist"][aria-label="Note content"]') !== null)
-
-  const tab = params.get('tab')
-  if (tab === 'overview') {
-    findButtonByText('Overview')?.click()
-    await waitFor(() => document.querySelector('#note-panel-overview') !== null)
-  }
+  await waitFor(() => document.querySelector('.note-scroll') !== null)
+  await waitFor(() => document.querySelector('.speaker-chip') !== null)
 
   if (params.get('markerAction') === 'edit') {
     const editButton = await waitForSelector<HTMLButtonElement>('button[aria-label^="Edit marker"]')
     editButton?.click()
-    await waitFor(() => document.querySelector('input[aria-label="Marker label"]') !== null)
+    await waitFor(() => document.querySelector('input[aria-label^="Marker label at"]') !== null)
   }
 
   if (params.get('markerAction') === 'add') {
@@ -245,70 +328,106 @@ async function driveNote(params: URLSearchParams): Promise<void> {
     await waitFor(() => document.querySelector('input[aria-label^="New marker label at"]') !== null)
   }
 
+  await driveSidebar(params)
+
+  // `?summary=queued`: Aurora's summary has waited six hours behind the
+  // summary running for the 1:1 with Sam.
+  if (params.get('summary') === 'queued') {
+    await emit('summary-status', { noteId: SAM_NOTE_ID, state: 'running', error: null })
+    await emit('summary-status', { noteId: AURORA_NOTE_ID, state: 'queued', error: null, queuedAt: Date.now() - 6 * 3_600_000 })
+    await waitFor(() => document.querySelector('.summary-wait') !== null)
+  }
+
   const filter = params.get('filter')
   if (filter) {
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Filter by status"]')
-    if (select) {
-      select.value = filter
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    }
+    await openFilterMenu()
+    document.querySelector<HTMLElement>('[role="group"][aria-label="Show"]')
+      ?.querySelectorAll<HTMLElement>('[role="menuitemradio"]')
+      .forEach(item => {
+        if (item.textContent === filter) item.click()
+      })
   }
 
   if (params.get('sidebar') === 'collapsed') {
     document.querySelector<HTMLButtonElement>('button[aria-label="Collapse library sidebar"]')?.click()
-    await waitFor(() => document.querySelector('.library-sidebar')?.getAttribute('data-collapsed') === 'true')
+    await waitFor(() => document.querySelector('button[aria-label="Show notes"]') !== null)
   }
 
-  const speaker = params.get('speaker')
-  if (speaker) {
+  const speakerFilter = params.get('speaker')
+  if (speakerFilter) {
     const select = document.querySelector<HTMLSelectElement>('select[aria-label="Filter transcript by speaker"]')
     if (select) {
-      select.value = speaker
+      select.value = speakerFilter
       select.dispatchEvent(new Event('change', { bubbles: true }))
-      await waitFor(() => findButtonByText('Rename speaker') !== undefined)
     }
   }
 
-  const speakerMerge = params.get('speakerMerge')
-  if (speakerMerge && speaker) {
-    findButtonByText('Merge speaker')?.click()
-    const target = await waitForSelector<HTMLSelectElement>('select[aria-label="Merge into speaker"]')
+  // `?rename=<speaker>` opens that speaker's popover; `&mergeInto=<speaker>`
+  // goes on to merge, and `&speakerMerge=done` confirms it. `&markUnknown=done`
+  // marks that speaker's turns as unknown instead, and `&assignUnknown=open`
+  // then opens the Unknown speaker chip's popover.
+  const rename = params.get('rename')
+  if (rename) {
+    const chip = await waitForSelector<HTMLButtonElement>(`.speaker-chip[data-speaker="${rename}"]`)
+    chip?.click()
+    await waitFor(() => document.querySelector('.speaker-popover') !== null)
     const mergeInto = params.get('mergeInto')
-    if (target && mergeInto) {
-      target.value = mergeInto
-      target.dispatchEvent(new Event('change', { bubbles: true }))
+    if (mergeInto) {
+      findButtonByText('Merge with another speaker')?.click()
+      const target = await waitForSelector<HTMLSelectElement>('select[aria-label="Merge into speaker"]')
+      if (target) {
+        target.value = mergeInto
+        target.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      if (params.get('speakerMerge') === 'done') {
+        document.querySelector<HTMLButtonElement>('.speaker-popover-merge button')?.click()
+        await waitFor(() => findButtonByText('Undo') !== undefined)
+      }
     }
-    if (speakerMerge === 'done') {
-      document.querySelector<HTMLButtonElement>('.speaker-merge-form button[type="submit"]')?.click()
+    if (params.get('markUnknown') === 'done') {
+      findButtonByText('Mark these turns as unknown')?.click()
       await waitFor(() => findButtonByText('Undo') !== undefined)
+      // Closing the popover returns focus to "Rename speakers", which scrolls
+      // it into view. Let that land first: on a slower machine it otherwise
+      // arrives after the transcript scroll below and undoes it.
+      await waitFor(() => document.activeElement === findButtonByText('Rename speakers'))
+      if (params.get('assignUnknown') === 'open') {
+        const unknownChip = await waitForSelector<HTMLButtonElement>('.speaker-chip[aria-label="Assign unknown turns"]')
+        unknownChip?.click()
+        await waitFor(() => document.querySelector('.speaker-popover') !== null)
+      }
     }
   }
 
-  // Populate ask-your-notes' session history — session-only state, only
-  // ever produced by real `ask-answer` events (see useNoteDetail.ts), so
-  // there's no IPC field to seed this from; emitted in order so the second
-  // question ends up on top (history is newest-first). Awaited + settled
-  // one at a time — `emit`'s promise resolves once the mocked IPC dispatch
-  // has run, not once React has necessarily flushed and painted the
-  // resulting state update, so each iteration gets a short settle beat too.
-  for (const entry of AURORA_ASK_ENTRIES) {
-    // eslint-disable-next-line no-await-in-loop
-    await emit('ask-answer', { noteId: 'note-aurora', question: entry.question, answer: entry.answer })
-    // eslint-disable-next-line no-await-in-loop
-    await sleep(50)
+  if (params.get('scroll') === 'transcript') {
+    document.querySelector('.note-transcript')?.scrollIntoView({ block: 'start' })
   }
 
-  if (params.get('focus') === 'ask') {
-    // 3 total citation buttons across both demo answers (1 + 2) — the
-    // precise count, not just ">0", so this doesn't race ahead of the
-    // second (topmost) entry still rendering.
-    await waitFor(() => document.querySelectorAll('button[aria-label^="Play from"]').length >= 3)
-    await sleep(50)
-    scrollAskSectionIntoView()
-    // One more pass after a layout settle beat, in case the first scroll
-    // landed before the panel's final content height (fonts/reflow).
-    await sleep(120)
-    scrollAskSectionIntoView()
+  const menu = params.get('menu')
+  if (menu === 'note' || menu === 'markdown') {
+    document.querySelector<HTMLButtonElement>('button[aria-label="More note actions"]')?.click()
+    await waitFor(() => document.querySelector('.note-menu') !== null)
+  }
+  if (menu === 'markdown') {
+    findButtonByText('View Markdown')?.click()
+    await waitFor(() => document.querySelector('.markdown-panel') !== null)
+  }
+
+  if (params.get('ask') === 'open') {
+    // Ask history is session-only state that only real `ask-answer` events
+    // produce, so there is no IPC field to seed it from. `emit` resolves
+    // once the mocked dispatch has run, not once React has painted, hence
+    // the short settle after each one.
+    for (const entry of AURORA_ASK_ENTRIES) {
+      // eslint-disable-next-line no-await-in-loop
+      await emit('ask-answer', { noteId: 'note-aurora', question: entry.question, answer: entry.answer })
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(50)
+    }
+    document.querySelector<HTMLButtonElement>('.toolbar-btn[aria-haspopup="dialog"]')?.click()
+    await waitFor(() => document.querySelector('.ask-panel') !== null)
+    // 3 citations across both demo answers (1 + 2).
+    await waitFor(() => document.querySelectorAll('.ask-panel button[aria-label^="Play from"]').length >= 3)
   }
 }
 
@@ -320,14 +439,18 @@ export async function driveScenario(state: ScreenshotState, params: URLSearchPar
     await driveRecording(params)
   } else if (state === 'preflight') {
     await drivePreflight(params)
+  } else if (state === 'messages') {
+    await waitFor(() => document.querySelector('.recording-message') !== null)
   } else if (state === 'palette') {
     await drivePalette()
   } else if (state === 'settings') {
-    await driveSettings()
+    await driveSettings(params)
   } else if (state === 'onboarding') {
-    await waitFor(() => document.body.textContent?.includes('Start using Minute') ?? false)
+    await driveOnboarding(params)
   } else if (state === 'popup') {
-    await drivePopup()
+    await drivePopup(params)
+  } else if (state === 'empty') {
+    await driveEmpty()
   } else {
     await driveNote(params)
   }

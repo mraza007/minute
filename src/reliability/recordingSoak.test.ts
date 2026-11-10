@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks'
-import type { TranscriptSegmentEvent } from '../ipc/types'
+import type { RecordingStateEvent, TranscriptSegmentEvent } from '../ipc/types'
 import { groupLiveSegments } from '../state/adapters'
 import { INITIAL_CAPTURE_HEALTH_TRACKER, nextCaptureHealth } from '../components/recordingDiagnostics'
 
@@ -30,6 +30,7 @@ describe('logical three-hour recording soak', () => {
         inputSequence: index + 1,
         inputError: null,
         quietSecs: 0,
+        origin: { kind: 'manual' },
       }).tracker
     }
 
@@ -42,7 +43,7 @@ describe('logical three-hour recording soak', () => {
 
   it('reports a callback gap after sleep or disconnect and recovers on the next real sample', () => {
     let tracker = INITIAL_CAPTURE_HEALTH_TRACKER
-    const event = (elapsed: number, inputSequence: number) => ({
+    const event = (elapsed: number, inputSequence: number): RecordingStateEvent => ({
       noteId: 'sleep-wake-note',
       state: 'recording' as const,
       elapsed,
@@ -53,6 +54,7 @@ describe('logical three-hour recording soak', () => {
       inputSequence,
       inputError: null,
       quietSecs: 0,
+      origin: { kind: 'manual' },
     })
 
     tracker = nextCaptureHealth(tracker, event(10, 100)).tracker

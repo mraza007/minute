@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it } from 'vitest'
 import App from './App'
 import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats } from './ipc/types'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './state/obsidian'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -24,6 +25,7 @@ const settings: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
@@ -31,7 +33,8 @@ function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'whisper-small',
     kind: 'stt',
     displayName: 'Whisper small',
-    desc: 'good for meetings',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
     sha256: 'a'.repeat(64),
     sizeBytes: 466_000_000,
@@ -47,7 +50,8 @@ function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'qwen3.5-4b',
     kind: 'llm',
     displayName: 'Qwen3.5-4B',
-    desc: 'fast default summarizer',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     sha256: 'b'.repeat(64),
     sizeBytes: 2_600_000_000,
@@ -83,6 +87,8 @@ interface SetupOpts {
   getNote?: (id: string) => NoteWithTranscript
   /** Overrides `list_notes`'s response, evaluated fresh on every call (so it can reflect state mutated after the initial render, e.g. a note flipping to `ready`) — defaults to the static `notes` fixture. */
   listNotes?: () => NoteMeta[]
+  /** What `summarize_now` resolves with. Defaults to `null`. */
+  summarizeNow?: 'started' | 'next' | 'notQueued'
   /** Overrides `audio_input_status`'s response, evaluated fresh on every call (so a test can make a later re-check hang or change its answer) — defaults to one authorized built-in microphone. */
   audioInputStatus?: () => unknown
 }
@@ -158,6 +164,8 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'get_settings':
         case 'set_settings':
           return settings
+        case 'summarize_now':
+          return opts.summarizeNow ?? null
         default:
           return null
       }
@@ -169,7 +177,7 @@ function setupIPC(opts: SetupOpts = {}) {
 async function startRecordingFromTitle() {
   await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
   fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-  await waitFor(() => screen.getByRole('dialog', { name: 'Ready to record' }))
+  await waitFor(() => screen.getByRole('dialog', { name: 'New recording' }))
   fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
 }
 
@@ -191,13 +199,13 @@ describe('App', () => {
     setupIPC()
     const { container } = render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: /new recording/i })).toBeInTheDocument())
-    expect(container.querySelector('.app-paper')).toHaveStyle({ minWidth: 'min(1180px, 100vw)' })
+    expect(container.querySelector('.app-paper')).toHaveStyle({ minWidth: 'min(860px, 100vw)' })
   })
 
   it('boots to the onboarding gate when no STT model is installed', async () => {
     setupIPC({ models: [sttModel({ state: 'notInstalled' }), llmModel()] })
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Minute runs entirely on this Mac.')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Meeting notes that never leave your Mac')).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /new recording/i })).not.toBeInTheDocument()
   })
 
@@ -206,12 +214,14 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'New recording' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Microphone' })).toHaveValue('built-in')
-    expect(screen.queryByText('Live transcript — audio never leaves this machine')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
-    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
-    expect(screen.getByText('REC 00:00')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument())
+    const recordingRow = screen.getByRole('button', { name: 'Return to recording' })
+    expect(recordingRow).toHaveTextContent('Recording')
+    expect(recordingRow).toHaveTextContent('00:00')
   })
 
   it('keeps Start clickable with the previous devices while a reopened preflight re-checks', async () => {
@@ -231,13 +241,13 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Ready to record' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New recording' })).not.toBeInTheDocument())
 
     // The re-check on this reopen never resolves — the sheet must still be
     // immediately usable with the devices it already knows.
     holdRefresh = true
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'New recording' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Microphone' })).toHaveValue('built-in')
     expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled()
     expect(screen.queryByText('Checking microphones…')).not.toBeInTheDocument()
@@ -279,74 +289,216 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'New recording' })).toBeInTheDocument()
 
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
 
     expect(screen.queryByRole('dialog', { name: 'Search notes' })).not.toBeInTheDocument()
-    expect(screen.getByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'New recording' })).toBeInTheDocument()
   })
 
-  it('opens the shortcut reference with Command-slash and restores invoking focus on close', async () => {
+  it('opens the shortcut list in Settings > About with Command-slash', async () => {
     setupIPC()
     render(<App />)
-    const trigger = await screen.findByRole('button', { name: 'Keyboard shortcuts' })
-    trigger.focus()
+    await screen.findByRole('button', { name: 'Settings' })
     fireEvent.keyDown(window, { key: '/', metaKey: true })
-    expect(await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
-    fireEvent.keyDown(window, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument())
-    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(await screen.findByRole('list', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'About' })).toHaveAttribute('aria-current', 'page')
   })
 
-  it('returns to the notes view when "Stop & transcribe" is clicked', async () => {
+  it('returns to the notes view when Stop is clicked', async () => {
     setupIPC()
     render(<App />)
     await startRecordingFromTitle()
-    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
-    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
   })
 
-  it('shows SettingsView when Settings is clicked in the sidebar, and returns to notes via "All notes"', async () => {
+  it('shows the Settings sections in place of the sidebar and returns to the notes via the back link', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Recording' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Notes' })).not.toBeInTheDocument()
 
-    // "All notes" leaves Settings *and* deselects (issue #24) — the main
-    // pane shows the pick-a-note state, not the last-open note.
-    fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
-    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Client call — Acme' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    expect(screen.getByRole('heading', { level: 1, name: 'Models' })).toBeInTheDocument()
+
+    // Back returns to the note that was open, not the pick-a-note state.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+    expect(screen.queryByRole('navigation', { name: 'Settings sections' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'All notes' })).not.toBeInTheDocument()
   })
 
-  it('starts a recording from the Settings view and navigates to RecordingView', async () => {
+  it('keeps the open note open when the list refreshes during a recording', async () => {
+    const older = noteFixture({ id: 'n0', title: 'Older call', createdAt: '2026-07-20T12:00:00.000Z' })
+    const newer = noteFixture({ id: 'n1', title: 'Newer call', createdAt: '2026-07-21T12:00:00.000Z' })
+    const live = noteFixture({ id: 'rec1', title: 'New recording', status: 'recording' })
+    let recording = false
+    setupIPC({
+      notes: [newer, older, live],
+      listNotes: () => (recording ? [live, newer, older] : [newer, older]),
+      startRecordingId: 'rec1',
+    })
+    render(<App />)
+    await startRecordingFromTitle()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument())
+    recording = true
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Notes' })).getByText('Older call'))
+    await screen.findByRole('heading', { name: 'Older call' })
+
+    // Its summary finishes, which refreshes the list. The live note now sits at index 0.
+    await act(async () => {
+      await emit('summary-status', { noteId: 'n0', state: 'done', error: null })
+    })
+    await waitFor(() =>
+      expect(within(screen.getByRole('navigation', { name: 'Notes' })).getByText('New recording')).toBeInTheDocument(),
+    )
+    expect(screen.getByRole('heading', { name: 'Older call' })).toBeInTheDocument()
+  })
+
+  // Each control unmounts when it is pressed, so focus moves to the one
+  // that undoes it instead of falling to <body>.
+  it('moves focus to the toolbar "Notes" button when the sidebar collapses, and to the collapse control when it returns', async () => {
     setupIPC()
     render(<App />)
-    await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    await screen.findByRole('heading', { name: 'Client call — Acme' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse library sidebar' }))
+    expect(screen.getByRole('button', { name: 'Show notes' })).toHaveFocus()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show notes' }))
+    expect(screen.getByRole('button', { name: 'Collapse library sidebar' })).toHaveFocus()
+    window.localStorage.clear()
+  })
+
+  it('opens Settings > Recording from the empty library\'s meeting detection link', async () => {
+    setupIPC({ notes: [] })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Meeting detection settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Meeting detection settings' }))
+    expect(screen.getByRole('button', { name: 'Recording' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('still says a summary starts next after the user leaves the note and comes back', async () => {
+    const waiting = noteFixture({ id: 'n-wait', title: 'Waiting call' })
+    const other = noteFixture({ id: 'n-other', title: 'Other call', createdAt: '2026-07-21T12:00:00.000Z' })
+    setupIPC({ models: [sttModel({ state: 'installed' }), llmModel({ state: 'installed' })], notes: [waiting, other], summarizeNow: 'next' })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Waiting call' })
+    await act(async () => {
+      await emit('summary-status', { noteId: 'n-other', state: 'running', error: null })
+      await emit('summary-status', { noteId: 'n-wait', state: 'queued', error: null })
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Summarize now' }))
+    expect(await screen.findByRole('button', { name: 'Starts next' })).toBeDisabled()
+
+    const sidebar = within(screen.getByRole('navigation', { name: 'Notes' }))
+    fireEvent.click(sidebar.getByText('Other call'))
+    await screen.findByRole('heading', { name: 'Other call' })
+    fireEvent.click(sidebar.getByText('Waiting call'))
+    await screen.findByRole('heading', { name: 'Waiting call' })
+
+    expect(screen.getByRole('button', { name: 'Starts next' })).toBeDisabled()
+    expect(screen.getByText(/It starts next, when the summary that is running ends/)).toBeInTheDocument()
+  })
+
+  it('ignores Command-slash during onboarding', async () => {
+    setupIPC({ models: [sttModel({ state: 'notInstalled' }), llmModel()] })
+    render(<App />)
+    await screen.findByText('Meeting notes that never leave your Mac')
+    fireEvent.keyDown(window, { key: '/', metaKey: true })
+    expect(screen.getByText('Meeting notes that never leave your Mac')).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument()
+  })
+
+  it('ignores Command-slash while loading', async () => {
+    setupIPC()
+    render(<App />)
+    fireEvent.keyDown(window, { key: '/', metaKey: true })
+    await screen.findByRole('heading', { name: 'Client call — Acme' })
+    expect(screen.queryByRole('list', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument()
+  })
+
+  it('opens Settings > Models from "Download a summary model", whatever section was open last', async () => {
+    setupIPC()
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Client call — Acme' })
+    fireEvent.keyDown(window, { key: '/', metaKey: true })
+    await screen.findByRole('list', { name: 'Keyboard shortcuts' })
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download a summary model' }))
+    expect(screen.getByRole('button', { name: 'Models' })).toHaveAttribute('aria-current', 'page')
+
+    // The Ask panel's link goes to the same section.
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Ask about this meeting' })).getByRole('button', { name: 'Download a summary model' }))
+    expect(screen.getByRole('button', { name: 'Models' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('opens Settings > Models from the preflight, whatever section was open last', async () => {
+    setupIPC()
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Client call — Acme' })
+    fireEvent.keyDown(window, { key: '/', metaKey: true })
+    await screen.findByRole('list', { name: 'Keyboard shortcuts' })
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
 
     fireEvent.click(screen.getByRole('button', { name: /new recording/i }))
-    expect(await screen.findByRole('dialog', { name: 'Ready to record' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
-    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
-    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+    await screen.findByRole('dialog', { name: 'New recording' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Get more models in Settings' }))
+    expect(screen.getByRole('button', { name: 'Models' })).toHaveAttribute('aria-current', 'page')
   })
 
-  it('leaves Settings when a note is selected from the sidebar', async () => {
+  it('opens Settings > Recording from the automatic-start notice, and keeps the recording automatic', async () => {
+    setupIPC()
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Client call — Acme' })
+    fireEvent.keyDown(window, { key: '/', metaKey: true })
+    await screen.findByRole('list', { name: 'Keyboard shortcuts' })
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+
+    await act(async () => {
+      await emit('meeting-popup-start', { origin: { kind: 'automatic', appName: 'Zoom' } })
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Return to recording' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Change' }))
+    expect(screen.getByRole('button', { name: 'Recording' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('starts a recording after going back from Settings', async () => {
     setupIPC()
     render(<App />)
     await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
 
-    fireEvent.click(screen.getByText('Client call — Acme'))
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Notes' })).getByRole('button', { name: /new recording/i }))
+    expect(await screen.findByRole('dialog', { name: 'New recording' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument())
+  })
+
+  it('leaves Settings when a note is selected after going back', async () => {
+    setupIPC()
+    render(<App />)
+    await waitFor(() => screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Notes' })).getByText('Client call — Acme'))
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument())
-    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Recording' })).not.toBeInTheDocument()
   })
 
   describe('note right-click menu', () => {
@@ -389,9 +541,10 @@ describe('App', () => {
       setupIPC()
       render(<App />)
       await screen.findByRole('button', { name: /new recording/i })
-      const onHeading = fireEvent.contextMenu(screen.getByRole('button', { name: /new recording/i }))
-      expect(onHeading).toBe(false)
-      const onInput = fireEvent.contextMenu(screen.getByLabelText('Search notes'))
+      const onButton = fireEvent.contextMenu(screen.getByRole('button', { name: /new recording/i }))
+      expect(onButton).toBe(false)
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+      const onInput = fireEvent.contextMenu(await screen.findByPlaceholderText(/search/i))
       expect(onInput).toBe(true)
     })
   })
@@ -399,13 +552,14 @@ describe('App', () => {
   it('shows the sidebar and NoteView empty states when the note library is empty', async () => {
     setupIPC({ notes: [] })
     render(<App />)
-    await waitFor(() => screen.getByRole('button', { name: /new recording/i }))
-    expect(screen.getAllByText(/no notes yet/i).length).toBeGreaterThan(0)
+    await screen.findByText('Your notes appear here.')
+    expect(screen.getByText('Your notes appear here.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Record your first meeting' })).toBeInTheDocument()
   })
 
   it('clears the "Finalizing transcript…" pill once stop resolves, showing the Transcribed pill instead', async () => {
     // Deliberately not titled "New recording" — that text collides with
-    // the title bar's own "New recording" button, which would make the
+    // the sidebar's own "New recording" button, which would make the
     // `/new recording/i` role query below ambiguous.
     const finishedNote = noteFixture({ id: '20260722-130000', title: 'Finished smoke test note', status: 'transcribed' })
     setupIPC({
@@ -415,7 +569,7 @@ describe('App', () => {
     })
     render(<App />)
     await startRecordingFromTitle()
-    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
 
     // The backend's tail-window flush is still in flight when the user
     // hits stop — the pill should reflect that while stopRecording()'s
@@ -424,7 +578,7 @@ describe('App', () => {
       await emit('stt-status', { noteId: '20260722-130000', state: 'finalizing', error: null })
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Finished smoke test note' })).toBeInTheDocument())
     expect(screen.queryByText('Finalizing transcript…')).not.toBeInTheDocument()
@@ -435,7 +589,7 @@ describe('App', () => {
     setupIPC()
     render(<App />)
     await startRecordingFromTitle()
-    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument())
 
     await act(async () => {
       await emit('transcript-segment', { noteId: '20260722-130000', speaker: 'Speaker 1', start: 0, end: 1, text: 'Hello there' })
@@ -446,7 +600,7 @@ describe('App', () => {
     // recording") must still be showing, proving `isRecording` survived
     // the view change instead of collapsing back to false.
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Recording' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /new recording/i })).not.toBeInTheDocument()
 
@@ -457,17 +611,17 @@ describe('App', () => {
     })
 
     // Also navigate through Notes mid-recording — allowed, and still
-    // doesn't lose the recording. "All notes" lands on the deselected
-    // pick-a-note state (issue #24), REC pill intact.
-    fireEvent.click(screen.getByRole('button', { name: 'All notes' }))
-    expect(screen.getByRole('heading', { name: 'All notes' })).toBeInTheDocument()
+    // doesn't lose the recording. Back lands on the note that was open,
+    // REC pill intact.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to notes' }))
+    expect(screen.getByRole('heading', { name: 'Client call — Acme' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
 
     // Clicking the REC pill returns to the live recording view with every
     // segment accumulated so far — including the one that arrived while on
     // Settings — visible and merged.
     fireEvent.click(screen.getByRole('button', { name: 'Return to recording' }))
-    await waitFor(() => expect(screen.getByText('Live transcript — audio never leaves this machine')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument())
     expect(screen.getByText('Hello there how are you')).toBeInTheDocument()
   })
 
@@ -478,8 +632,8 @@ describe('App', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
     await startRecordingFromTitle()
-    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
-    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('wav writer thread panicked'))
   })
@@ -489,7 +643,7 @@ describe('App', () => {
     setupIPC({ startRecordingId: noteId })
     render(<App />)
     await startRecordingFromTitle()
-    await screen.findByText('Live transcript — audio never leaves this machine')
+    await screen.findByRole('button', { name: 'Pause' })
 
     await act(async () => {
       await emit('recording-state', {
@@ -510,14 +664,31 @@ describe('App', () => {
       })
     })
 
-    expect(await screen.findByText('Microphone stopped responding')).toBeInTheDocument()
-    expect(screen.getAllByText('Transcript unavailable').length).toBeGreaterThan(0)
-    expect(screen.getByText('model worker exited unexpectedly')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /stop & transcribe/i })).toBeInTheDocument()
+    // One message at a time: the lost microphone outranks the lost transcript.
+    expect(await screen.findByText('USB Podcast Mic stopped responding')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop and save' })).toBeInTheDocument()
+    expect(screen.queryByText('The live transcript stopped')).not.toBeInTheDocument()
+
+    await act(async () => {
+      await emit('recording-state', {
+        noteId,
+        state: 'recording',
+        elapsed: 43,
+        systemAudioActive: false,
+        microphoneName: 'USB Podcast Mic',
+        inputRms: 0.08,
+        inputPeak: 0.4,
+        inputSequence: 3,
+        inputError: null,
+      })
+    })
+    expect(await screen.findByText('The live transcript stopped')).toBeInTheDocument()
+    expect(screen.getByText('Audio is still recording. model worker exited unexpectedly')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /stop and (summarize|transcribe)/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return to recording' })).toBeInTheDocument()
   })
 
-  it('auto-trigger simulation: record, stop, summary-status running then done shows the real summary in the AI notes panel', async () => {
+  it('auto-trigger simulation: record, stop, summary-status running then done shows the real summary on the note page', async () => {
     const noteId = '20260722-130000'
     const finishedNote = noteFixture({ id: noteId, title: 'Auto-summarized note', status: 'transcribed' })
     const readyNote = { ...finishedNote, status: 'ready' as const }
@@ -541,8 +712,8 @@ describe('App', () => {
 
     render(<App />)
     await startRecordingFromTitle()
-    await waitFor(() => screen.getByRole('button', { name: /stop & transcribe/i }))
-    fireEvent.click(screen.getByRole('button', { name: /stop & transcribe/i }))
+    await waitFor(() => screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
+    fireEvent.click(screen.getByRole('button', { name: /stop and (summarize|transcribe)/i }))
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Auto-summarized note' })).toBeInTheDocument())
 
@@ -551,7 +722,11 @@ describe('App', () => {
     await act(async () => {
       await emit('summary-status', { noteId, state: 'running', error: null })
     })
-    expect(screen.getByText('Summarizing…')).toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Notes' })).getByText('Summarizing…')).toBeInTheDocument()
+    // The note that just stopped shows what is still running on it.
+    const finishing = screen.getByRole('region', { name: 'Finishing this note' })
+    expect(within(finishing).getByText('Audio saved')).toBeInTheDocument()
+    expect(within(finishing).getByRole('button', { name: 'Skip summary' })).toBeInTheDocument()
 
     summarized = true
     await act(async () => {
@@ -561,6 +736,7 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText('Auto-generated summary of the call.')).toBeInTheDocument())
     expect(screen.getByText('Ready')).toBeInTheDocument()
     expect(screen.queryByText('Summarizing…')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Finishing this note' })).not.toBeInTheDocument()
   })
 
   describe('⌘K / ⌘F search palette shortcut', () => {

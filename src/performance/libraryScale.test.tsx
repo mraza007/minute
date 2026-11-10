@@ -33,17 +33,19 @@ describe('large synthetic library', () => {
         onGoNotes={noop}
         onGoSettings={noop}
         statsLine="2,000 notes"
-        searchQuery=""
-        onSearchQueryChange={noop}
-        matchedNoteIds={null}
         onOpenPalette={noop}
         onStartRecording={noop}
+        isRecording={false}
+        recTime="00:00"
+        onReturnToRecording={noop}
+        summaryStatus={{}}
         onTogglePinned={noop}
-        onOpenShortcuts={noop}
         onBulkExport={noopAsync}
         onBulkDelete={noopAsync}
         onRenameNote={noop}
         onRevealNote={noop}
+        collapsed={false}
+        onSetCollapsed={noop}
       />,
     )
     const elapsedMs = performance.now() - started

@@ -9,10 +9,18 @@ import type {
   DeletedNoteUndo,
   Hardware,
   LibraryInfo,
+  MeetingApp,
+  MeetingPolicies,
+  MeetingPolicy,
   MicrophonePermission,
+  RecordingOrigin,
   NoteMarker,
   NoteMeta,
   NoteStorageStats,
+  ObsidianExport,
+  ObsidianPatch,
+  ObsidianSettings,
+  SpeakerMergeResult,
   SpeakerMergeUndo,
   StorageStats,
   SummaryStyle,
@@ -20,7 +28,7 @@ import type {
   VoiceProfile,
   TranscriptSegmentEvent,
 } from '../ipc/types'
-import type { NoteTab, SttStatus, View } from '../types'
+import type { SttStatus, View } from '../types'
 import type { RecordingProcessingStage } from '../types'
 import {
   INITIAL_CAPTURE_HEALTH_TRACKER,
@@ -28,6 +36,9 @@ import {
   type CaptureHealth,
 } from '../components/recordingDiagnostics'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
+import { ASK_FOR_EVERY_APP } from '../ipc/meetingPolicy'
+import { DEFAULT_OBSIDIAN_SETTINGS, latestObsidianSave } from './obsidian'
+import { useToday } from './useToday'
 import { useModelManager } from './useModelManager'
 import { useNoteDetail } from './useNoteDetail'
 import { useTauriEvent } from './useTauriEvent'
@@ -54,8 +65,7 @@ function mergeNoteUpdate(current: NoteMeta, updated: NoteMeta): NoteMeta {
 
 const LAST_ERROR_TIMEOUT_MS = 5000
 
-/** Debounce window (ms) between a keystroke in the sidebar search input and the `search_notes` call it triggers — same value the ⌘K palette (`SearchPalette`) debounces its own input at. */
-const SIDEBAR_SEARCH_DEBOUNCE_MS = 150
+const MANUAL_ORIGIN: RecordingOrigin = { kind: 'manual' }
 
 export interface ProcessingFailure {
   stage: 'saving' | 'preparing'
@@ -76,12 +86,11 @@ export function useAppState() {
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null)
   const [lastError, setLastErrorState] = useState<string | null>(null)
 
-  // The selected note's index in `notes`, or `null` after an explicit
-  // deselect — the sidebar's "All notes" (issue #24), which used to only
-  // switch views and so appeared to do nothing. `null` renders the notes
-  // view's pick-a-note state instead of falling back to the newest note.
-  const [sel, setSel] = useState<number | null>(0)
-  const [noteTab, setNoteTab] = useState<NoteTab>('transcript')
+  // The selected note's id, or `null` for none: an empty library, or an
+  // explicit deselect (the sidebar's "All notes", issue #24), which renders
+  // the pick-a-note state. An id, not a list index: the list reorders under
+  // an open note whenever a refresh brings in a live recording.
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // Recording slice — entirely backend-event-driven (no local interval
   // timer): `activeNoteId` is what every recording/segment event handler
@@ -95,6 +104,8 @@ export function useAppState() {
   const [stopping, setStopping] = useState(false)
   const [processingStage, setProcessingStage] = useState<RecordingProcessingStage>('idle')
   const [processingFailure, setProcessingFailure] = useState<ProcessingFailure | null>(null)
+  // The note the last recording became. Its page shows what is still running on it.
+  const [lastRecordedNoteId, setLastRecordedNoteId] = useState<string | null>(null)
   const [recordingPreflightOpen, setRecordingPreflightOpen] = useState(false)
   const [preflightMicrophoneDevices, setPreflightMicrophoneDevices] = useState<AudioInputDevice[]>([])
   const [selectedPreflightMicrophoneId, setSelectedPreflightMicrophoneId] = useState<string | null>(null)
@@ -122,6 +133,8 @@ export function useAppState() {
   // in `startRec`/`stopRec`.
   const [systemAudioActive, setSystemAudioActive] = useState(false)
   const [microphoneName, setMicrophoneName] = useState('Default microphone')
+  // Issue #46: why the current recording started. The backend confirms it on every `recording-state` event.
+  const [recOrigin, setRecOrigin] = useState<RecordingOrigin>(MANUAL_ORIGIN)
   const [recordingTitle, setRecordingTitle] = useState('New recording')
   const [recordingMarkers, setRecordingMarkers] = useState<NoteMarker[]>([])
   const [sttStatus, setSttStatus] = useState<SttStatus>('idle')
@@ -195,6 +208,9 @@ export function useAppState() {
   const [tAutoStopRecording, setTAutoStopRecording] = useState(true)
   const [tSpeakerProfiles, setTSpeakerProfiles] = useState(false)
   const [tAutoApplySpeakerNames, setTAutoApplySpeakerNames] = useState(true)
+  const [tObsidian, setTObsidian] = useState<ObsidianSettings>(DEFAULT_OBSIDIAN_SETTINGS)
+  const [obsidianSavingId, setObsidianSavingId] = useState<string | null>(null)
+  const [tMeetingPolicies, setTMeetingPolicies] = useState<MeetingPolicies>(ASK_FOR_EVERY_APP)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
   /** Issue #42: seconds of the current quiet run, from `recording-state` — the pre-arm "Quiet for M:SS" feedback. */
   const [quietSecs, setQuietSecs] = useState(0)
@@ -217,8 +233,8 @@ export function useAppState() {
   // `searchOpen` gates SearchPalette's mount in App.tsx. `pendingSeek` is a
   // one-shot "open this note, then seek to this position once its audio is
   // ready" request (see `requestSeek`'s docs below) — deliberately separate
-  // from `sel`/`selectedNoteId` because note *selection* is synchronous (an
-  // index into the already-loaded `notes` list) while a note's `audioPath`
+  // from `selectedNoteId` because note *selection* is synchronous (an id
+  // in the already-loaded `notes` list) while a note's `audioPath`
   // only becomes known once its `get_note` fetch resolves; NoteView applies
   // the pending seek itself once that's ready, via `clearPendingSeek`. Two
   // effects further down (once `selectedNoteId`/`view` are in scope)
@@ -229,23 +245,6 @@ export function useAppState() {
   // seek+autoplay whenever that note is later reselected normally.
   const [searchOpen, setSearchOpen] = useState(false)
   const [pendingSeek, setPendingSeek] = useState<{ noteId: string; seconds: number } | null>(null)
-
-  // Sidebar filter input: `sidebarQuery` is the raw text box value (kept
-  // even while empty, for the input's own display); `sidebarMatchedIds` is
-  // `null` when no filter is active (Sidebar renders every note, grouped as
-  // normal) or a `Set` of matching note ids once a debounced `search_notes`
-  // call has resolved for the current (non-blank) query — see
-  // `setSidebarQuery` below.
-  const [sidebarQuery, setSidebarQueryState] = useState('')
-  const [sidebarMatchedIds, setSidebarMatchedIds] = useState<Set<string> | null>(null)
-  const sidebarSearchTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // Bumped on every debounced sidebar search call and captured per in-flight
-  // request — same stale-response guard as `transcriptRequestId` above, so
-  // a slow response to an abandoned query can never clobber a newer one's
-  // result.
-  const sidebarSearchSeq = useRef(0)
-
-  useEffect(() => () => clearTimeout(sidebarSearchTimeout.current), [])
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
 
@@ -261,7 +260,17 @@ export function useAppState() {
 
   useEffect(() => () => clearTimeout(errorTimeout.current), [])
 
-  const selectedNoteId = sel === null ? null : (notes[sel]?.id ?? null)
+  const selectedNoteMeta = useMemo(
+    () => (selectedId === null ? null : (notes.find(note => note.id === selectedId) ?? null)),
+    [notes, selectedId],
+  )
+  const selectedNoteId = selectedNoteMeta?.id ?? null
+  // What a callback that resolves later reads, so it acts on the list and
+  // the selection as they are then, not as they were when it started.
+  const notesRef = useRef(notes)
+  notesRef.current = notes
+  const selectedNoteIdRef = useRef(selectedNoteId)
+  selectedNoteIdRef.current = selectedNoteId
 
   useEffect(() => {
     let cancelled = false
@@ -317,15 +326,28 @@ export function useAppState() {
   )
 
   const noteDetail = useNoteDetail({ selectedNoteId, reportError, refreshNotes })
-  const { loadNoteTranscript, invalidateNoteCache, pruneNoteDetail } = noteDetail
+  const { invalidateNoteCache, reloadNote, pruneNoteDetail } = noteDetail
+
+  /**
+   * Applies a list that no longer holds some notes. A selected note that is
+   * still there stays selected. One that is gone hands the selection to the
+   * note now at its old position (the next note), or the last one.
+   */
+  const applyNotesAfterRemoval = useCallback((freshNotes: NoteMeta[]) => {
+    const selected = selectedNoteIdRef.current
+    const oldIndex = notesRef.current.findIndex(note => note.id === selected)
+    setNotes(freshNotes)
+    if (selected === null || freshNotes.some(note => note.id === selected)) return
+    setSelectedId(freshNotes[Math.min(Math.max(oldIndex, 0), freshNotes.length - 1)]?.id ?? null)
+  }, [])
 
   // Invalidates a still-pending seek the instant it's no longer for the
-  // note currently on screen — covers every way `sel` can change
+  // note currently on screen — covers every way the selection can change
   // (`selectNoteById`, the search palette's own `requestSeek`,
-  // `stopRec`/`deleteNote`'s index adjustments, ...) from one place, rather
+  // `stopRec`/`deleteNote`'s adjustments, ...) from one place, rather
   // than threading a "clear pendingSeek if it doesn't match" check through
   // each of those individually. `requestSeek` itself is not a special case
-  // here: it sets `sel` and `pendingSeek` together in the same synchronous
+  // here: it sets the selection and `pendingSeek` together in the same synchronous
   // call, so by the time this effect runs after that render, `selectedNoteId`
   // already equals the fresh `pendingSeek.noteId` and nothing is cleared.
   // The functional update returns `prev` itself (same reference) when
@@ -349,26 +371,17 @@ export function useAppState() {
   }, [view])
 
   /**
-   * Selects a note by id rather than list index — what the sidebar rows,
-   * the ⌘K search palette, and `requestSeek` below use, since a search hit
-   * only carries a `noteId`, not the note's current position in `notes`.
-   * A no-op if `id` isn't found in the current list. Also navigates to the
-   * notes view: every caller is a "show me this note" gesture, and without
-   * this a note picked from the sidebar (or a search hit) while Settings is
-   * open would change the selection invisibly behind the Settings pane.
-   * `useCallback` (deps: `notes`) — a fresh identity only when the note
-   * list itself changes.
+   * Selects a note: what the sidebar rows, the ⌘K search palette, and
+   * `requestSeek` below use. A no-op for the selection if `id` isn't in the
+   * current list. Also navigates to the notes view: every caller is a "show
+   * me this note" gesture, and without this a note picked from the sidebar
+   * (or a search hit) while Settings is open would change the selection
+   * invisibly behind the Settings pane.
    */
-  const selectNoteById = useCallback(
-    (id: string) => {
-      setSel(prevSel => {
-        const idx = notes.findIndex(n => n.id === id)
-        return idx >= 0 ? idx : prevSel
-      })
-      setView('notes')
-    },
-    [notes],
-  )
+  const selectNoteById = useCallback((id: string) => {
+    if (notesRef.current.some(note => note.id === id)) setSelectedId(id)
+    setView('notes')
+  }, [])
 
   const openSearch = useCallback(() => setSearchOpen(true), [])
   const closeSearch = useCallback(() => setSearchOpen(false), [])
@@ -377,8 +390,7 @@ export function useAppState() {
    * ⌘K palette "open this transcript hit" action: selects the hit's note
    * (by id — see `selectNoteById`) and records the timestamp to seek to
    * once that note's audio is actually loaded — see `pendingSeek`'s docs
-   * above. `useCallback` (deps: `selectNoteById`, itself only refreshing
-   * when `notes` changes).
+   * above.
    */
   const requestSeek = useCallback(
     (noteId: string, seconds: number) => {
@@ -411,74 +423,22 @@ export function useAppState() {
   const searchNotes = useCallback((query: string) => ipc.searchNotes(query), [])
 
   /**
-   * Sidebar search input's `onChange` handler: updates the raw text value
-   * immediately, then (re)starts a debounced `search_notes` call — cleared
-   * and restarted on every keystroke, same debounce shape as
-   * `SearchPalette`'s own input. A blank (or whitespace-only) query clears
-   * `sidebarMatchedIds` back to `null` (no filter — every note shows,
-   * grouped as normal) synchronously, without ever hitting the backend, so
-   * clearing the search box restores the full list instantly rather than
-   * waiting out a debounce window. `useCallback` with no deps (only touches
-   * stable setters/refs) — permanently stable, so Sidebar's memo isn't
-   * defeated by this prop.
-   */
-  const setSidebarQuery = useCallback((query: string) => {
-    setSidebarQueryState(query)
-    clearTimeout(sidebarSearchTimeout.current)
-    // Bumped unconditionally — including the blank-query clear branch below
-    // — so a response for whatever query was previously in flight can never
-    // land after this call, even though the clear branch itself doesn't
-    // start a new debounced search. Without this, clearing the box while a
-    // search is still in flight would leave that stale request's id
-    // current, and its eventual `.then`/`.catch` would repopulate
-    // `sidebarMatchedIds` right after this call just set it back to `null`.
-    const requestId = ++sidebarSearchSeq.current
-
-    const trimmed = query.trim()
-    if (trimmed === '') {
-      setSidebarMatchedIds(null)
-      return
-    }
-
-    sidebarSearchTimeout.current = setTimeout(() => {
-      ipc
-        .searchNotes(trimmed)
-        .then(hits => {
-          if (sidebarSearchSeq.current !== requestId) return
-          setSidebarMatchedIds(new Set(hits.map(h => h.noteId)))
-        })
-        .catch(() => {
-          if (sidebarSearchSeq.current !== requestId) return
-          // Honest degrade: a failed search shows "no matches" rather than
-          // silently falling back to the unfiltered list (which would look
-          // like the search box has no effect) or a stale result set.
-          setSidebarMatchedIds(new Set())
-        })
-    }, SIDEBAR_SEARCH_DEBOUNCE_MS)
-  }, [])
-
-  /**
    * Header pencil → inline-edit commit: renames on disk, refreshes the notes
    * list, and (if still selected) reloads this note's transcript with its
-   * fresh title. `useCallback` (deps: `selectedNoteId`, `loadNoteTranscript`,
-   * `reportError`) — same stable-identity rationale as `startRec`/
-   * `togglePause`/`stopRec` above.
+   * fresh title.
    */
   const renameNote = useCallback(
     (id: string, title: string) => {
       ipc
         .renameNote(id, title)
-        .then(() => {
-          invalidateNoteCache(id)
-          return ipc.listNotes()
-        })
+        .then(() => ipc.listNotes())
         .then(freshNotes => {
           setNotes(freshNotes)
-          if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
+          reloadNote(id)
         })
         .catch(reportError)
     },
-    [selectedNoteId, loadNoteTranscript, invalidateNoteCache, reportError],
+    [reloadNote, reportError],
   )
 
   const setNotePinned = useCallback(
@@ -499,14 +459,13 @@ export function useAppState() {
       try {
         const updated = await ipc.addNoteMarker(id, seconds, label)
         setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
-        invalidateNoteCache(id)
-        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        reloadNote(id)
       } catch (error) {
         reportError(error)
         throw error
       }
     },
-    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+    [reloadNote, reportError],
   )
 
   const updateNoteMarker = useCallback(
@@ -514,14 +473,13 @@ export function useAppState() {
       try {
         const updated = await ipc.updateNoteMarker(id, index, label)
         setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
-        invalidateNoteCache(id)
-        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        reloadNote(id)
       } catch (error) {
         reportError(error)
         throw error
       }
     },
-    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+    [reloadNote, reportError],
   )
 
   const deleteNoteMarker = useCallback(
@@ -529,14 +487,13 @@ export function useAppState() {
       try {
         const updated = await ipc.deleteNoteMarker(id, index)
         setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, updated) : note))
-        invalidateNoteCache(id)
-        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        reloadNote(id)
       } catch (error) {
         reportError(error)
         throw error
       }
     },
-    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+    [reloadNote, reportError],
   )
 
   const renameSpeaker = useCallback(
@@ -544,8 +501,7 @@ export function useAppState() {
       ipc
         .renameSpeaker(id, from, to)
         .then(() => {
-          invalidateNoteCache(id)
-          loadNoteTranscript(id, { force: true })
+          reloadNote(id)
           // Issue #22: the rename may have saved/refined a voice profile
           // and answered a suggestion — refresh both views of that state.
           refreshNotes()
@@ -553,8 +509,7 @@ export function useAppState() {
         })
         .catch(reportError)
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [invalidateNoteCache, loadNoteTranscript, reportError],
+    [refreshNotes, refreshVoiceProfiles, reloadNote, reportError],
   )
 
   /**
@@ -569,24 +524,40 @@ export function useAppState() {
         .then(() => refreshNotes())
         .catch(reportError)
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [reportError],
+    [refreshNotes, reportError],
   )
 
-  const mergeSpeakers = useCallback(
-    async (id: string, from: string, into: string): Promise<SpeakerMergeUndo> => {
+  /** Runs one speaker reassignment and resolves to the undo token `undoSpeakerMerge` takes. */
+  const reassignSpeaker = useCallback(
+    async (id: string, run: () => Promise<SpeakerMergeResult>): Promise<SpeakerMergeUndo> => {
       try {
-        const result = await ipc.mergeSpeakers(id, from, into)
+        const result = await run()
         setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
-        invalidateNoteCache(id)
-        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        reloadNote(id)
         return result.undo
       } catch (error) {
         reportError(error)
         throw error
       }
     },
-    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+    [reloadNote, reportError],
+  )
+
+  const mergeSpeakers = useCallback(
+    (id: string, from: string, into: string) => reassignSpeaker(id, () => ipc.mergeSpeakers(id, from, into)),
+    [reassignSpeaker],
+  )
+
+  /** "Mark these turns as unknown" (issue #49). */
+  const markSpeakerUnknown = useCallback(
+    (id: string, speaker: string) => reassignSpeaker(id, () => ipc.markSpeakerUnknown(id, speaker)),
+    [reassignSpeaker],
+  )
+
+  /** Gives the note's unknown turns to `to`, a speaker it has or a new name (issue #49). */
+  const assignUnknownTurns = useCallback(
+    (id: string, to: string) => reassignSpeaker(id, () => ipc.assignUnknownTurns(id, to)),
+    [reassignSpeaker],
   )
 
   const undoSpeakerMerge = useCallback(
@@ -594,23 +565,18 @@ export function useAppState() {
       try {
         const result = await ipc.undoSpeakerMerge(id, undo)
         setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
-        invalidateNoteCache(id)
-        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        reloadNote(id)
       } catch (error) {
         reportError(error)
         throw error
       }
     },
-    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+    [reloadNote, reportError],
   )
 
   /**
-   * Header trash (after 4s-arm confirm) → deletes on disk, refreshes the
-   * notes list, and clamps the selection onto whatever note now sits at the
-   * same index (i.e. "the next note"). `useCallback` (deps: `reportError`
-   * only) — doesn't close over `selectedNoteId`/`sel` at all (the post-delete
-   * selection is derived functionally off the fresh list), so this has a
-   * permanently stable identity.
+   * Deletes on disk, refreshes the notes list, and moves a selection that
+   * was on the deleted note to the next one (see `applyNotesAfterRemoval`).
    */
   const deleteNote = useCallback(
     (id: string) => {
@@ -627,15 +593,10 @@ export function useAppState() {
           pruneNoteDetail(id)
           return ipc.listNotes()
         })
-        .then(freshNotes => {
-          setNotes(freshNotes)
-          // A deselected library (issue #24) stays deselected — clamping is
-          // only for keeping an actual selection on "the next note".
-          setSel(prevSel => (prevSel === null ? null : Math.min(prevSel, Math.max(freshNotes.length - 1, 0))))
-        })
+        .then(applyNotesAfterRemoval)
         .catch(reportError)
     },
-    [invalidateNoteCache, pruneNoteDetail, reportError],
+    [applyNotesAfterRemoval, invalidateNoteCache, pruneNoteDetail, reportError],
   )
 
   const deleteNotes = useCallback(
@@ -648,15 +609,13 @@ export function useAppState() {
           invalidateNoteCache(id)
           pruneNoteDetail(id)
         }
-        const freshNotes = await ipc.listNotes()
-        setNotes(freshNotes)
-        setSel(previous => (previous === null ? null : Math.min(previous, Math.max(freshNotes.length - 1, 0))))
+        applyNotesAfterRemoval(await ipc.listNotes())
       } catch (error) {
         reportError(error)
         throw error
       }
     },
-    [invalidateNoteCache, pruneNoteDetail, reportError],
+    [applyNotesAfterRemoval, invalidateNoteCache, pruneNoteDetail, reportError],
   )
 
   const undoDeletedNotes = useCallback(async () => {
@@ -666,9 +625,7 @@ export function useAppState() {
       const freshNotes = await ipc.listNotes()
       setNotes(freshNotes)
       const restoredId = restored[0]?.id
-      if (restoredId) {
-        setSel(Math.max(0, freshNotes.findIndex(note => note.id === restoredId)))
-      }
+      if (restoredId) setSelectedId(freshNotes.some(note => note.id === restoredId) ? restoredId : (freshNotes[0]?.id ?? null))
       setDeletedNoteUndo(null)
       setLibraryNotice(`${restored.length === 1 ? 'Note' : `${restored.length} notes`} restored.`)
     } catch (error) {
@@ -730,25 +687,26 @@ export function useAppState() {
   }, [movingLibrary, libraryInfo, reportError])
 
   const deleteSelectedNoteAudio = useCallback(async () => {
-    if (!selectedNoteId) return
+    const id = selectedNoteId
+    if (!id) return
     try {
-      const updated = await ipc.deleteNoteAudio(selectedNoteId)
+      const updated = await ipc.deleteNoteAudio(id)
       setNotes(current => current.map(note => note.id === updated.id ? mergeNoteUpdate(note, updated) : note))
-      invalidateNoteCache(selectedNoteId)
-      await loadNoteTranscript(selectedNoteId, { force: true })
-      setSelectedNoteStorage(await ipc.noteStorageStats(selectedNoteId))
+      reloadNote(id)
+      const stats = await ipc.noteStorageStats(id)
+      if (selectedNoteIdRef.current === id) setSelectedNoteStorage(stats)
       setLibraryNotice('Original audio removed. Transcript and notes were kept.')
     } catch (error) {
       reportError(error)
       throw error
     }
-  }, [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId])
+  }, [reloadNote, reportError, selectedNoteId])
 
   /**
    * Markdown card "Reveal in Finder" → reveals the note's audio.wav (or its
    * folder) in Finder. `useCallback` (deps: `reportError` only) — closes
    * over nothing else, so this has a permanently stable identity; passed
-   * straight through to MarkdownCard as `onReveal`.
+   * straight through to NoteView as `onReveal`.
    */
   const revealNote = useCallback(
     (id: string) => {
@@ -783,6 +741,7 @@ export function useAppState() {
           if (cancelled) return
           modelManager.applyInitialLoad(loadedModels, loadedRecommendation, loadedSettings)
           setNotes(loadedNotes)
+          setSelectedId(loadedNotes[0]?.id ?? null)
           setHardware(loadedHardware)
           setStorage(loadedStorage)
           // Same defensive `?? null` as sys-audio below: a harness that
@@ -804,6 +763,8 @@ export function useAppState() {
           setTAutoStopRecording(loadedSettings.autoStopRecording ?? true)
           setTSpeakerProfiles(loadedSettings.speakerProfiles ?? false)
           setTAutoApplySpeakerNames(loadedSettings.autoApplySpeakerNames ?? true)
+          setTObsidian({ ...DEFAULT_OBSIDIAN_SETTINGS, ...loadedSettings.obsidian })
+          setTMeetingPolicies({ ...ASK_FOR_EVERY_APP, ...loadedSettings.meetingPolicies })
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -857,6 +818,7 @@ export function useAppState() {
       setPaused(payload.state === 'paused')
       setSystemAudioActive(payload.systemAudioActive)
       setMicrophoneName(payload.microphoneName || 'Default microphone')
+      setRecOrigin(payload.origin ?? MANUAL_ORIGIN)
       setQuietSecs(payload.quietSecs ?? 0)
       const nextHealth = nextCaptureHealth(captureHealthTracker.current, payload)
       captureHealthTracker.current = nextHealth.tracker
@@ -899,11 +861,12 @@ export function useAppState() {
     [],
   )
 
-  const sidebarNotes = useMemo(() => notesToSidebarItems(notes, new Date()), [notes])
+  const today = useToday()
+  const sidebarNotes = useMemo(() => notesToSidebarItems(notes, today), [notes, today])
 
   const statsLine = useMemo(() => {
     const totalBytes = storage ? storage.modelsBytes + storage.audioBytes + storage.notesBytes : 0
-    return `${notes.length} notes · ${formatBytes(totalBytes)} local · nothing synced`
+    return `${notes.length} notes · ${formatBytes(totalBytes)}`
   }, [notes, storage])
 
   const liveSegments = useMemo(() => groupLiveSegments(liveSegmentsRaw), [liveSegmentsRaw])
@@ -918,7 +881,7 @@ export function useAppState() {
     [modelManager.models, modelManager.llmModel],
   )
 
-  /** Whether the currently selected summary model is actually installed — what the AI notes panel's empty state (a "Generate summary" button vs. a "download a model" prompt) branches on. */
+  /** Whether the currently selected summary model is actually installed — what the Summary section's empty state (a "Generate summary" button vs. a "download a model" prompt) branches on. */
   const llmInstalled = useMemo(
     () => modelManager.llmModel !== null && modelManager.models.some(m => m.kind === 'llm' && m.id === modelManager.llmModel && m.state === 'installed'),
     [modelManager.models, modelManager.llmModel],
@@ -1003,7 +966,7 @@ export function useAppState() {
    * backend's settings read. A ref closes the sub-render gap where two
    * rapid clicks could otherwise issue two start commands.
    */
-  const startRec = useCallback(() => {
+  const beginRecording = useCallback((origin: RecordingOrigin) => {
     if (recordingStartInFlight.current) return
     recordingStartInFlight.current = true
     setRecordingStarting(true)
@@ -1012,7 +975,7 @@ export function useAppState() {
       device => device.id === selectedPreflightMicrophoneId,
     )
     ipc
-      .startRecording(modelManager.sttModel, includeSystemAudio, selectedPreflightMicrophoneId)
+      .startRecording(modelManager.sttModel, includeSystemAudio, selectedPreflightMicrophoneId, origin)
       .then(noteId => {
         setActiveNoteId(noteId)
         setLiveSegmentsRaw([])
@@ -1033,10 +996,14 @@ export function useAppState() {
         // between "we have a note id" and that event arriving.
         setSystemAudioActive(false)
         setMicrophoneName(selectedMicrophone?.name ?? 'Default microphone')
+        setRecOrigin(origin)
         setRecordingTitle('New recording')
         setRecordingMarkers([])
         setRecordingPreflightOpen(false)
-        setView('recording')
+        // A recording the user did not ask for must not take the window
+        // away from what they are doing (an unsaved draft in Settings, a
+        // note they are reading). The sidebar shows the way to it.
+        if (origin.kind !== 'automatic') setView('recording')
       })
       .catch(error => {
         reportError(error)
@@ -1056,6 +1023,8 @@ export function useAppState() {
     sysAudioAvailability,
     tCaptureSystemAudio,
   ])
+
+  const startRec = useCallback(() => beginRecording(MANUAL_ORIGIN), [beginRecording])
 
   /**
    * The meeting-popup's "Start recording" click (`popup::popup_start`'s
@@ -1097,17 +1066,19 @@ export function useAppState() {
    */
   useTauriEvent(
     onMeetingPopupStart,
-    () => {
+    payload => {
       if (activeNoteId !== null || view === 'onboarding') return
       const hasInstalledStt = modelManager.models.some(m => m.kind === 'stt' && m.state === 'installed')
       if (hasInstalledStt) {
-        startRec()
+        beginRecording(payload?.origin ?? MANUAL_ORIGIN)
       } else {
         setView('onboarding')
         reportError('Install a transcription model in onboarding before Minute can start recording.')
       }
     },
-    [activeNoteId, view, modelManager.models, startRec, reportError],
+    // Subscribed once. A re-subscribe leaves a gap in which a start is lost,
+    // and the handler already reads the latest state on every event.
+    [],
   )
 
   /**
@@ -1210,6 +1181,7 @@ export function useAppState() {
    */
   const finishStop = useCallback((stoppedNoteId: string) => {
     setProcessingStage('preparing')
+    setLastRecordedNoteId(stoppedNoteId)
     // Returned so callers that must not release their own in-flight guards
     // early (restartWithSystemAudio's failure path) can chain on the full
     // transition, not just its kickoff.
@@ -1218,8 +1190,7 @@ export function useAppState() {
         setNotes(freshNotes)
         setStorage(freshStorage)
         invalidateNoteCache(stoppedNoteId)
-        const idx = freshNotes.findIndex(n => n.id === stoppedNoteId)
-        setSel(idx >= 0 ? idx : 0)
+        setSelectedId(freshNotes.some(n => n.id === stoppedNoteId) ? stoppedNoteId : (freshNotes[0]?.id ?? null))
       })
       .catch(error => {
         setProcessingFailure({ stage: 'preparing', message: messageOf(error) })
@@ -1240,7 +1211,6 @@ export function useAppState() {
         setCaptureHealth('checking')
         setProcessingStage('idle')
         setStopping(false)
-        setNoteTab('overview')
       })
   }, [reportError, invalidateNoteCache])
 
@@ -1300,7 +1270,7 @@ export function useAppState() {
           })
           .catch(reportError)
         return ipc
-          .startRecording(modelManager.sttModel, true, selectedPreflightMicrophoneId)
+          .startRecording(modelManager.sttModel, true, selectedPreflightMicrophoneId, recOrigin)
           .then(noteId => {
             setActiveNoteId(noteId)
             setLiveSegmentsRaw([])
@@ -1316,6 +1286,7 @@ export function useAppState() {
             // Reconciled by the first `recording-state` event — same safe
             // starting point as `startRec`'s.
             setSystemAudioActive(false)
+            setRecOrigin(recOrigin)
             setRecordingTitle('New recording')
             setRecordingMarkers([])
             setView('recording')
@@ -1338,7 +1309,7 @@ export function useAppState() {
         recordingStartInFlight.current = false
         setStopping(false)
       })
-  }, [finishStop, invalidateNoteCache, modelManager.sttModel, reportError, selectedPreflightMicrophoneId])
+  }, [finishStop, invalidateNoteCache, modelManager.sttModel, recOrigin, reportError, selectedPreflightMicrophoneId])
 
   const retryProcessingFailure = useCallback(() => {
     if (processingFailure?.stage === 'saving') {
@@ -1367,8 +1338,11 @@ export function useAppState() {
   // just kept showing whatever note was already open.
   const goNotes = useCallback(() => {
     setView('notes')
-    setSel(null)
+    setSelectedId(null)
   }, [])
+  // Settings' "Back to notes": the notes view as the user left it, with the
+  // note they came from still open.
+  const backToNotes = useCallback(() => setView('notes'), [])
   const goSettings = useCallback(() => setView('settings'), [])
   // The REC pill's "return to recording" action — navigating to Settings or
   // the notes list mid-recording is legitimate (goNotes/goSettings above
@@ -1483,6 +1457,83 @@ export function useAppState() {
       return flipped
     })
   }, [reportError])
+
+  /**
+   * Saves a partial Obsidian settings change (issue #47). The backend
+   * rejects a vault path that is missing or not a folder, so this resolves
+   * with that message (and leaves the shown settings alone) instead of
+   * raising the global error banner. Resolves `null` on success.
+   */
+  const saveObsidianSettings = useCallback(async (patch: ObsidianPatch): Promise<string | null> => {
+    try {
+      const updated = await ipc.setSettings({ obsidian: patch })
+      setTObsidian({ ...DEFAULT_OBSIDIAN_SETTINGS, ...updated.obsidian })
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }, [])
+
+  /** Resolves `null` when `path` is an existing folder, else the reason. */
+  const checkObsidianVault = useCallback(async (path: string): Promise<string | null> => {
+    try {
+      await ipc.checkObsidianVault(path)
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }, [])
+
+  /** Changes one app's meeting policy: shown at once, saved in the background, and reset to the saved value if the save fails. */
+  const setMeetingPolicy = useCallback((app: MeetingApp, policy: MeetingPolicy) => {
+    setTMeetingPolicies(current => ({ ...current, [app]: policy }))
+    ipc.setSettings({ meetingPolicy: { app, policy } })
+      .then(updated => setTMeetingPolicies({ ...ASK_FOR_EVERY_APP, ...updated.meetingPolicies }))
+      .catch(error => {
+        reportError(error)
+        ipc.getSettings()
+          .then(saved => setTMeetingPolicies({ ...ASK_FOR_EVERY_APP, ...saved.meetingPolicies }))
+          .catch(reportError)
+      })
+  }, [reportError])
+
+  /** Opens the folder picker for the Obsidian vault. Resolves `null` when the picker is cancelled, and rejects when the picker cannot open; the Integrations section shows that under the Vault field. */
+  const chooseObsidianVault = useCallback(async (): Promise<string | null> => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: 'Choose your Obsidian vault',
+      defaultPath: tObsidian.vaultPath || undefined,
+    })
+    return typeof picked === 'string' ? picked : null
+  }, [tObsidian.vaultPath])
+
+  const obsidianLastSave = useMemo(() => latestObsidianSave(notes), [notes])
+
+  /**
+   * "Save to Obsidian again" for one note. The export status lives in the
+   * note's meta, so on return the cached detail and the list are refreshed
+   * to show the new path or error. A failed save arrives as `error` on the
+   * resolved status; only an IPC failure goes to the error banner.
+   */
+  const saveNoteToObsidian = useCallback(
+    async (id: string): Promise<ObsidianExport | null> => {
+      setObsidianSavingId(id)
+      try {
+        const status = await ipc.saveNoteToObsidian(id)
+        reloadNote(id)
+        refreshNotes()
+        return status
+      } catch (err) {
+        reportError(err)
+        return null
+      } finally {
+        setObsidianSavingId(current => (current === id ? null : current))
+      }
+    },
+    [refreshNotes, reloadNote, reportError],
+  )
 
   // Issue #22: load the saved profiles once at startup so Settings has
   // them ready; rename/delete refresh the list as they go.
@@ -1638,7 +1689,7 @@ export function useAppState() {
   /**
    * Persists the recommended pair as the user's explicit selections for
    * whichever of the two actually finished installing during onboarding
-   * (the STT one always did, by construction — "Start using Minute" is
+   * (the STT one always did, by construction — "Open Minute" is
    * disabled otherwise; the LLM one is optional) — `modelManager.sttModel`/
    * `llmModel` are already set to these in-memory (via the re-gate effect
    * reacting to the download completing), but that reassignment doesn't
@@ -1654,7 +1705,7 @@ export function useAppState() {
   const { recommendation: modelRecommendation, models: modelCatalog, setSttModel: setSttModelOnComplete, setLlmModel: setLlmModelOnComplete } = modelManager
 
   /**
-   * "Start using Minute" — persists whichever of the recommended STT/LLM
+   * "Open Minute" — persists whichever of the recommended STT/LLM
    * pair actually finished installing (unchanged from before), and now also
    * `meetingDetectionOptIn`: the onboarding opt-in row's checked state (see
    * `OnboardingView`'s `onStart` prop). Only actually calls `set_settings`
@@ -1720,12 +1771,12 @@ export function useAppState() {
     llmModel: modelManager.llmModel,
     llmModelDisplayName,
     llmInstalled,
-    sel,
     recElapsed,
     paused,
     stopping,
     processingStage,
     processingFailure,
+    lastRecordedNoteId,
     sttStatus,
     sttError,
     sttStatusNoteId,
@@ -1734,7 +1785,7 @@ export function useAppState() {
     // `...noteDetail` spread) so this hook's return shape stays exactly what
     // it was before that extraction, plus the new ask-your-notes fields
     // (`askHistory`/`askStatus`/`askQuestion`/`llmBusy`) it now also owns —
-    // `loadNoteTranscript`/`invalidateNoteCache`/`pruneNoteDetail` are
+    // `reloadNote`/`invalidateNoteCache`/`pruneNoteDetail` are
     // `useNoteDetail`'s own internal seam (used above by `renameNote`/
     // `deleteNote`/`stopRec`), not part of this hook's public surface.
     selectedTranscript: noteDetail.selectedTranscript,
@@ -1744,6 +1795,9 @@ export function useAppState() {
     selectedAudioPath: noteDetail.selectedAudioPath,
     summaryStatus: noteDetail.summaryStatus,
     summaryError: noteDetail.summaryError,
+    summaryQueuedAt: noteDetail.summaryQueuedAt,
+    summaryStartsNext: noteDetail.summaryStartsNext,
+    summarizeNow: noteDetail.summarizeNow,
     diarStatus: noteDetail.diarStatus,
     diarError: noteDetail.diarError,
     detectSpeakers: noteDetail.detectSpeakers,
@@ -1797,10 +1851,10 @@ export function useAppState() {
     recordingStarting,
     systemAudioActive,
     microphoneName,
+    recOrigin,
     recordingTitle,
     recordingMarkers,
     captureHealth,
-    noteTab,
     sidebarNotes,
     statsLine,
     searchOpen,
@@ -1811,12 +1865,11 @@ export function useAppState() {
     clearPendingSeek,
     selectNoteById,
     searchNotes,
-    sidebarQuery,
-    setSidebarQuery,
-    sidebarMatchedIds,
     selectedNoteId,
+    selectedNoteMeta,
     recTime: formatMmSs(recElapsed),
     goNotes,
+    backToNotes,
     goSettings,
     goRecording,
     openRecordingPreflight,
@@ -1828,13 +1881,13 @@ export function useAppState() {
     togglePause,
     renameActiveRecording,
     addRecordingMarker,
-    setNoteTab,
     setSttModel: modelManager.setSttModel,
     setLlmModel: modelManager.setLlmModel,
     toggleDel,
     downloadModel: modelManager.downloadModel,
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,
+    huggingFace: modelManager.huggingFace,
     completeOnboarding,
     renameNote,
     setNotePinned,
@@ -1850,7 +1903,19 @@ export function useAppState() {
     toggleSpeakerProfiles,
     tAutoApplySpeakerNames,
     toggleAutoApplySpeakerNames,
+    tObsidian,
+    saveObsidianSettings,
+    checkObsidianVault,
+    chooseObsidianVault,
+    obsidianLastSave,
+    tMeetingPolicies,
+    setMeetingPolicy,
+    saveNoteToObsidian,
+    obsidianSavingId,
+    selectedObsidian: noteDetail.selectedMeta?.obsidian ?? null,
     mergeSpeakers,
+    markSpeakerUnknown,
+    assignUnknownTurns,
     undoSpeakerMerge,
     deleteNote,
     deleteNotes,

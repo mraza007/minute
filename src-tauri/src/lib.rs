@@ -4,7 +4,11 @@ mod detect;
 mod diar;
 mod download;
 mod error;
+mod hf;
 mod llm;
+mod local_time;
+mod obsidian;
+mod mentions;
 mod popup;
 mod profiles;
 mod settings;
@@ -31,7 +35,8 @@ fn hardware_info() -> Hardware {
     catalog::detect_hardware()
 }
 
-/// Lists every catalog entry with its current install state. A model's
+/// Lists every built-in entry, plus each Hugging Face entry the user has
+/// downloaded or started downloading, with its current install state. A model's
 /// state is `Downloading` iff the download registry has an active
 /// cancellation flag for it right now — not merely because a `.part` file
 /// exists on disk. A `.part` with no active registry entry means an idle,
@@ -47,7 +52,7 @@ fn list_models(
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let entries = catalog::load_catalog().map_err(|e| e.to_string())?;
+    let entries = catalog::merged_catalog(&models_root).map_err(|e| e.to_string())?;
     Ok(entries
         .into_iter()
         .map(|entry| {
@@ -257,6 +262,33 @@ fn merge_speakers(
 ) -> Result<SpeakerMergeResult, String> {
     lock_store(&state)
         .merge_speakers(&id, &from, &into)
+        .map_err(|e| e.to_string())
+}
+
+/// "Mark these turns as unknown" (issue #49). Returns the same result as
+/// `merge_speakers`, and `undo_speaker_merge` reverses it.
+#[tauri::command]
+fn mark_speaker_unknown(
+    state: State<SharedStore>,
+    id: String,
+    speaker: String,
+) -> Result<SpeakerMergeResult, String> {
+    lock_store(&state)
+        .mark_speaker_unknown(&id, &speaker)
+        .map_err(|e| e.to_string())
+}
+
+/// Gives a note's unknown turns to a speaker, existing or new (issue #49).
+/// Returns the same result as `merge_speakers`, and `undo_speaker_merge`
+/// reverses it.
+#[tauri::command]
+fn assign_unknown_turns(
+    state: State<SharedStore>,
+    id: String,
+    to: String,
+) -> Result<SpeakerMergeResult, String> {
+    lock_store(&state)
+        .assign_unknown_turns(&id, &to)
         .map_err(|e| e.to_string())
 }
 
@@ -514,6 +546,27 @@ fn set_settings(
     Ok(updated)
 }
 
+/// "Save to Obsidian again": writes note `id` into the vault now, replacing
+/// the file Minute saved earlier. Resolves with the note's new export
+/// status. A save failure is reported inside that status (`error`), not as
+/// a rejection. Rejects only when the note cannot be read.
+#[tauri::command]
+async fn save_note_to_obsidian(
+    store: State<'_, SharedStore>,
+    settings: State<'_, SharedSettings>,
+    id: String,
+) -> Result<obsidian::ObsidianExport, String> {
+    obsidian::export_note(&store, &settings, &id, obsidian::Trigger::Manual)
+        .map_err(|e| e.to_string())
+}
+
+/// Checks that `path` is an existing folder, for the vault picker. Resolves
+/// with the user-facing reason when it is not.
+#[tauri::command]
+fn check_obsidian_vault(path: String) -> Result<(), String> {
+    obsidian::check_vault(&path).map(|_| ())
+}
+
 #[tauri::command]
 fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
     // Clone the root path out from under a brief lock, then run the
@@ -729,10 +782,13 @@ pub fn run() {
             list_voice_profiles,
             delete_voice_profile,
             merge_speakers,
+            mark_speaker_unknown,
+            assign_unknown_turns,
             undo_speaker_merge,
             toggle_action_item,
             llm::summarize_note,
             llm::cancel_summarize,
+            llm::summarize_now,
             llm::ask_note,
             diar::diarize_note,
             diar::dismiss_speaker_suggestion,
@@ -750,9 +806,12 @@ pub fn run() {
             reveal_note,
             get_settings,
             set_settings,
+            save_note_to_obsidian,
+            check_obsidian_vault,
             download::download_model,
             download::cancel_download,
             download::delete_model,
+            hf::browse_models,
             audio::audio_input_status,
             audio::request_microphone_permission,
             audio::start_audio_input_preview,
@@ -764,6 +823,7 @@ pub fn run() {
             audio::dismiss_auto_stop,
             popup::popup_start,
             popup::popup_dismiss,
+            popup::popup_stop,
             syscap::sys_audio_status,
             syscap::request_sys_audio_permission
         ])
@@ -964,6 +1024,7 @@ pub fn run() {
             // `download::DownloadRegistry`.
             let download_registry: DownloadRegistry = download::open_registry();
             app.manage(download_registry);
+            app.manage(hf::BrowseIndex::default());
 
             // Tracks the single in-progress recording (if any) so pause/resume/
             // stop commands can reach the active `Recorder` — see
@@ -1116,15 +1177,20 @@ mod acl_tests {
     }
 
     #[test]
-    fn the_popup_capability_grants_exactly_its_own_two_commands_plus_core_event() {
+    fn the_popup_capability_grants_exactly_its_own_three_commands_plus_core_event() {
         let capabilities = resolved_capabilities();
         let popup = &capabilities["popup"];
         let mut permissions = permissions_of(popup);
         permissions.sort_unstable();
         assert_eq!(
       permissions,
-      vec!["allow-popup-dismiss", "allow-popup-start", "core:event:default"],
-      "the popup window's capability must grant nothing beyond its own two commands and core event listening"
+      vec![
+          "allow-popup-dismiss",
+          "allow-popup-start",
+          "allow-popup-stop",
+          "core:event:default"
+      ],
+      "the popup window's capability must grant nothing beyond its own three commands and core event listening"
     );
     }
 
@@ -1161,8 +1227,10 @@ mod acl_tests {
         let default = &capabilities["default"];
         let permissions = permissions_of(default);
         assert!(
-      !permissions.contains(&"allow-popup-start") && !permissions.contains(&"allow-popup-dismiss"),
-      "the main window has no business calling popup_start/popup_dismiss — got: {permissions:?}"
+      !permissions.contains(&"allow-popup-start")
+        && !permissions.contains(&"allow-popup-dismiss")
+        && !permissions.contains(&"allow-popup-stop"),
+      "the main window has no business calling popup_start/popup_dismiss/popup_stop — got: {permissions:?}"
     );
     }
 
@@ -1189,7 +1257,7 @@ mod acl_tests {
             // commands.ts serves both windows; the popup pair belongs to the
             // meeting-popup capability alone, and a separate test above
             // asserts main does NOT get it.
-            .filter(|command| !matches!(*command, "popup_start" | "popup_dismiss"))
+            .filter(|command| !matches!(*command, "popup_start" | "popup_dismiss" | "popup_stop"))
             .collect();
         assert!(
             called.len() >= 40,

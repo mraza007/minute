@@ -1,0 +1,326 @@
+[
+ {
+  "type": "directory",
+  "oid": "d2e12782b484a0f84e2c9920389035750652f1c8",
+  "size": 0,
+  "path": "layouts"
+ },
+ {
+  "type": "file",
+  "oid": "5b18eb55e0fff6733953b561baffc6a798dee706",
+  "size": 3366,
+  "path": ".gitattributes"
+ },
+ {
+  "type": "file",
+  "oid": "7e861b845b5ee53069049c9b645366f899396f45",
+  "size": 3536901664,
+  "lfs": {
+   "oid": "d5f703d1bf31c2d790a20e14df1e5a118b74cbf28995f60ebf734c32e2046d82",
+   "size": 3536901664,
+   "pointerSize": 135
+  },
+  "xetHash": "74cbc46b2556070f509c50a6deb508f1205fe8612248e00e722c08e702fd561f",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-IQ2_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "507de9db01cd21272802ab200578aca76e4d5616",
+  "size": 4846458400,
+  "lfs": {
+   "oid": "e2638eb0a3751b530c0b91c70292d961687d5ff993c1125a867461564d341724",
+   "size": 4846458400,
+   "pointerSize": 135
+  },
+  "xetHash": "32b12e16fed570ffb8f229ef01a07b91dd5e26ff827fc54e627e1f4d38e721e7",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-IQ3_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "6fea89054b4109c3e2d54cac5fa8c582289d8722",
+  "size": 4268037664,
+  "lfs": {
+   "oid": "12e213f5aab8ee66706eebc795d8c9f50acd43318538bca8411b584cad7d8132",
+   "size": 4268037664,
+   "pointerSize": 135
+  },
+  "xetHash": "26e880c4ebd92048f958c62d69db4e4f82984253898d99045969a522b87261ce",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-IQ3_XS.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "456d6dc62b063ee11f6e39b9116f333972f04c02",
+  "size": 4138833440,
+  "lfs": {
+   "oid": "83d6383197adda49ed71fd6764f5d22c7993b5bc5554b5e8fd5151bc987ff04b",
+   "size": 4138833440,
+   "pointerSize": 135
+  },
+  "xetHash": "cf1c6f1451af3e498c001b121c1518fae84e278b188c488d4c135f541886bef7",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-IQ3_XXS.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "2e96c9af6627ec5260c4cd608270fcf87c674798",
+  "size": 5825058336,
+  "lfs": {
+   "oid": "9b3a443818d653af7c2a0c56aebc51668a7048ef72f8c1d77d669f544c28f6a7",
+   "size": 5825058336,
+   "pointerSize": 135
+  },
+  "xetHash": "28886e1129520f8d3eb9945fd7322b323d6f47aa3ebea49bd4fb3db5b3dd8f51",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-IQ4_NL.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "844cca24a7998006ee0739bdc3458d6ff1ed7d04",
+  "size": 5227304480,
+  "lfs": {
+   "oid": "eccfbc188e71dec8350fbdd5af898d2a50691ac67e077327c52baa9da1e91d90",
+   "size": 5227304480,
+   "pointerSize": 135
+  },
+  "xetHash": "0de1d8480dc31b12268dbf63c02dbcb1a470a3fd1256db9151dbe417413f4b48",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-IQ4_XS.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "77c95722a74e25c3bd91f3c634d6751c34cd5a39",
+  "size": 3644380704,
+  "lfs": {
+   "oid": "1878a8f3eec5accd93ea22c46155d51c461b463ccb816cd44084ed555c81b909",
+   "size": 3644380704,
+   "pointerSize": 135
+  },
+  "xetHash": "4848086ecfedffd52274f676aa304cf41a6a6775cc0b9fc1ee60cc7b2905e658",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q2_K.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "b3d7d2f6ff3489211e29f68c307d5ffcc3c91f38",
+  "size": 4659156512,
+  "lfs": {
+   "oid": "b51b85fd3bc9d060017a66ffa2d8b13ab0f743c614c06355a20bd73d03d7f627",
+   "size": 4659156512,
+   "pointerSize": 135
+  },
+  "xetHash": "81e9817cac7fcd61a154e1bc491b738981f836fe21fba7790153ec0d4311aa11",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q3_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "b0e34e64afc728637e91f257e8a970cf5a5973fe",
+  "size": 4479948320,
+  "lfs": {
+   "oid": "d98e54ec9650b6554cfdeea531e2420009207d50471170d0c3640483df8e87eb",
+   "size": 4479948320,
+   "pointerSize": 135
+  },
+  "xetHash": "d56adaf7e074e352732b4e27e63b17ee81f7d30cbf440b4258f6a2bad8c62e6d",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q3_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "cec0388e6c74dfee44617739d51dd178f1d37d41",
+  "size": 4260304416,
+  "lfs": {
+   "oid": "bebb948e54d473ee212eb529b5a4a47ae9645da2ae19a52bcb10ad147d09065f",
+   "size": 4260304416,
+   "pointerSize": 135
+  },
+  "xetHash": "95a6bf536550928fae44e4b826d97b0f9e900e68a44df2cbc764e05e050254b0",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q3_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "eb7d9cbd1db24f88cd11b9aecf042f523b6045f0",
+  "size": 5482829344,
+  "lfs": {
+   "oid": "0dadc6593e5fe790a510fcb7fcd1dc6993664db562b2e8ec7b34825e99d52f4f",
+   "size": 5482829344,
+   "pointerSize": 135
+  },
+  "xetHash": "ed08fa7f1d9712c09b36be3141131e99345b7dd3729ae77f8c4fd6bfe1a98094",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q4_0.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "eb5b9cdc071f0e8ee620be1a19af2b5b0a11ab40",
+  "size": 5944858144,
+  "lfs": {
+   "oid": "b50ab7a1ba4b195e8d7c1ec84f4babf00207bb14c506066d3e151dd435b02b4a",
+   "size": 5944858144,
+   "pointerSize": 135
+  },
+  "xetHash": "34ee32f13aeb0f89cab9072ca55ad7d4208765ceff86803822e2f6441de4a96c",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q4_1.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "cc118e098d48cc01a08ceb9b94553e6cd343f15f",
+  "size": 6202021408,
+  "lfs": {
+   "oid": "db6b5e7b5d25525da87f4a3899555215693e8cf4ab1be9fff90ea5dee4ba957d",
+   "size": 6202021408,
+   "pointerSize": 135
+  },
+  "xetHash": "63f7d206985d79861a90b1702feb6e33a170aeb9215c470fa7039c4b45b0ae10",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q4_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "fe4a7f565742de40c941dbc85ab1f1ca07feb231",
+  "size": 5841049120,
+  "lfs": {
+   "oid": "4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81",
+   "size": 5841049120,
+   "pointerSize": 135
+  },
+  "xetHash": "a81673857f08b79db632ea0290dcdd38253fc37fcbb66d541cdc6c7c8bed97e9",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "ed79860d7729cd86053d1e223cb1a379a207a389",
+  "size": 5483255328,
+  "lfs": {
+   "oid": "db48a409bf4c11033ab4bd24ff3b1ee028578a5acc62e0b34887edbed9708253",
+   "size": 5483255328,
+   "pointerSize": 135
+  },
+  "xetHash": "b8bef9c470363685a4e137254c1ce661501239fc404da3a18de5db5b5e4df565",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q4_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "d9ba7c69ef2581ac6e1b79568de932a01847b8e5",
+  "size": 6876124704,
+  "lfs": {
+   "oid": "04cf46f2b5584ef922697d6c063f94879434fb86c467f1a09e52daf0cddaf35f",
+   "size": 6876124704,
+   "pointerSize": 135
+  },
+  "xetHash": "ebcba5b2845dd2863fef111fcdf4b7568adeb382b23818f2ea30a6ca84bb539b",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q5_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "d7c0698edee1b01d23da6956545e027e700e074a",
+  "size": 6496015904,
+  "lfs": {
+   "oid": "f81aa5e3e5dc6f108dd7fd37c0738976994b62929f21e2e3a3bb2ed70fb92355",
+   "size": 6496015904,
+   "pointerSize": 135
+  },
+  "xetHash": "378fce6fbb0f1363ed8c2ade6894056e738db2224ac8e71a327b60a364a01959",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q5_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "f8e12949c161752a1068cff33c34aead16eb32ba",
+  "size": 7793710624,
+  "lfs": {
+   "oid": "ef96d05a2ddf2cbb450d1af1ac3860ec769d3575bafa70692ee5609bda3fad7d",
+   "size": 7793710624,
+   "pointerSize": 135
+  },
+  "xetHash": "9454f6143e4d2d268aca5249089dda2e1c534d3876c499b472c0a778cc60083a",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q6_K.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "f9ff60d2b7b4c7b9e1ad478db412c7b02ac6c619",
+  "size": 8106579488,
+  "lfs": {
+   "oid": "556d51c9f191fc06a1fd751fdb4b4082f4add0023d9ac8b7198dcecfb772cd99",
+   "size": 8106579488,
+   "pointerSize": 135
+  },
+  "xetHash": "b97cc366000eae7edb382a056a389ca996942eed48846d890b779d60e684f403",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q6_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "a26fcbbe3e012679188706865831142ed9d65850",
+  "size": 7509284384,
+  "lfs": {
+   "oid": "df3b6b6be2477f280a6fa89ebb5fb455523849c20dd943b416ad43e076206f06",
+   "size": 7509284384,
+   "pointerSize": 135
+  },
+  "xetHash": "9b65d7244cfddbb0e9d383b3cb4158b94b27083a1b6756308668fcae329f1fb4",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q6_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "390c67cdaf7313daa4ffb79acb50a123080e13fe",
+  "size": 9545979424,
+  "lfs": {
+   "oid": "2fad0aa11bb9e7aa491ff12f768954f9dd0a6e7d4ce4a897ca73ec420f3b90ae",
+   "size": 9545979424,
+   "pointerSize": 135
+  },
+  "xetHash": "aac0b2a3f997a9057c040510e17bb17c0c3b60e0693fd0ba04fe3164b3912396",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "ec50fe69bc40a37a7a4bd3de2b2dba4baa16204f",
+  "size": 17920693440,
+  "lfs": {
+   "oid": "5e4a50f5e41abb867585bfddd808997bc195bdd8f0df78210cd97ba406dc328e",
+   "size": 17920693440,
+   "pointerSize": 136
+  },
+  "xetHash": "63901f6ca1e80926124c99211c4c45751d795d5c28f0785bd65806a61a43876f",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-bf16.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "707cdea72dcc5e182b741270db5cc185028510a5",
+  "size": 1114791,
+  "path": "MiMo-V2.6-Distill-Qwen-9B-calibration-v6.txt"
+ },
+ {
+  "type": "file",
+  "oid": "109a43478b5381929e1d4850936f022768cfde53",
+  "size": 5150240,
+  "lfs": {
+   "oid": "946b69b405f8b1efb291fe9caacf4207d7d83fc36e9901478b67edb9f95cc735",
+   "size": 5150240,
+   "pointerSize": 132
+  },
+  "xetHash": "6e2dcc2fe7b0d6d63f4640c8aa15ba856db4c44f9d40db1d6b1738eb145dccc9",
+  "path": "MiMo-V2.6-Distill-Qwen-9B-imatrix.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "32a389f87255f3a862e96cd60fe88da9142ee481",
+  "size": 18495,
+  "path": "README.md"
+ },
+ {
+  "type": "file",
+  "oid": "349971e43a3122105aff809440962d3fa35def40",
+  "size": 921704992,
+  "lfs": {
+   "oid": "197656f5ea308d2e9e008c5c1cb239b0297d7d1c7b4c0769cee3b46c2b891714",
+   "size": 921704992,
+   "pointerSize": 134
+  },
+  "xetHash": "39dce388d045903c383dd5b9f24cab5f6a9fb785d8620f585a8f34fe554582f0",
+  "path": "mmproj-MiMo-V2.6-Distill-Qwen-9B-bf16.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "74fc6e4b4b8d9b1a0e1b86373a28678793259da4",
+  "size": 918166048,
+  "lfs": {
+   "oid": "ff348f3180a63188aa7285db85f550fe38acb61dd013c599eb8bad08d2cc2576",
+   "size": 918166048,
+   "pointerSize": 134
+  },
+  "xetHash": "6f387e506ce8d7e59b7b95570e6b64bb3f42e0405b49138f3fdb0391d300933e",
+  "path": "mmproj-MiMo-V2.6-Distill-Qwen-9B-f16.gguf"
+ }
+]

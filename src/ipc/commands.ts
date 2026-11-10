@@ -7,6 +7,8 @@
 import { invoke, type InvokeArgs } from '@tauri-apps/api/core'
 import type {
   AudioInputStatus,
+  BrowseKind,
+  ModelBrowse,
   DeletedNoteUndo,
   Hardware,
   LibraryInfo,
@@ -21,9 +23,12 @@ import type {
   NoteWithTranscript,
   Recommendation,
   SearchHit,
+  ObsidianExport,
+  RecordingOrigin,
   Settings,
   SettingsPatch,
   StorageStats,
+  SummarizeNowOutcome,
   SummaryDoc,
   SysAudioStatus,
   VoiceProfile,
@@ -51,7 +56,18 @@ export const listModels = (): Promise<ModelStatus[]> => invokeCmd('list_models')
 
 export const recommendedModels = (): Promise<Recommendation> => invokeCmd('recommended_models')
 
-export const downloadModel = (id: string): Promise<void> => invokeCmd('download_model', { id })
+/**
+ * Newer models on Hugging Face for one kind. Minute calls this only when the
+ * Models page opens, or when the user searches or refreshes. A null `query`
+ * lists the trusted publishers' models; a query searches any public repo.
+ * `refresh` skips the backend's cached list.
+ */
+export const browseModels = (kind: BrowseKind, query: string | null, refresh: boolean): Promise<ModelBrowse> =>
+  invokeCmd('browse_models', { kind, query, refresh })
+
+/** `allowUnknownPublisher` must be true for a Hugging Face file from a publisher Minute has not checked. */
+export const downloadModel = (id: string, allowUnknownPublisher = false): Promise<void> =>
+  invokeCmd('download_model', { id, allowUnknownPublisher })
 
 export const cancelDownload = (id: string): Promise<void> => invokeCmd('cancel_download', { id })
 
@@ -104,6 +120,17 @@ export const deleteVoiceProfile = (name: string): Promise<void> =>
 
 export const mergeSpeakers = (id: string, from: string, into: string): Promise<SpeakerMergeResult> =>
   invokeCmd('merge_speakers', { id, from, into })
+
+/** "Mark these turns as unknown" (issue #49). Reversed by `undoSpeakerMerge` with the returned `undo`. */
+export const markSpeakerUnknown = (id: string, speaker: string): Promise<SpeakerMergeResult> =>
+  invokeCmd('mark_speaker_unknown', { id, speaker })
+
+/**
+ * Gives a note's unknown turns to `to`, a speaker it has or a new name (issue #49).
+ * Reversed by `undoSpeakerMerge` with the returned `undo`, whose `from` is `null`.
+ */
+export const assignUnknownTurns = (id: string, to: string): Promise<SpeakerMergeResult> =>
+  invokeCmd('assign_unknown_turns', { id, to })
 
 export const undoSpeakerMerge = (id: string, undo: SpeakerMergeUndo): Promise<SpeakerMergeUndoResult> =>
   invokeCmd('undo_speaker_merge', { id, undo })
@@ -167,8 +194,9 @@ export const startRecording = (
   modelId: string,
   includeSystemAudio: boolean,
   inputDeviceId: string | null = null,
+  origin: RecordingOrigin = { kind: 'manual' },
 ): Promise<string> =>
-  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId })
+  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId, origin })
 
 export const pauseRecording = (): Promise<void> => invokeCmd('pause_recording')
 
@@ -198,11 +226,26 @@ export const popupStart = (): Promise<void> => invokeCmd('popup_start')
 export const popupDismiss = (timedOut: boolean): Promise<void> =>
   invokeCmd('popup_dismiss', { timedOut })
 
+/** Stops the active recording from the "Recording <app>" pill (`popup::popup_stop`). */
+export const popupStop = (): Promise<void> => invokeCmd('popup_stop')
+
 export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
 
 /** Merges `patch` into the persisted settings and resolves with the updated settings. */
 export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
   invokeCmd('set_settings', { patch })
+
+/**
+ * "Save to Obsidian again": writes the note into the vault now, replacing
+ * the file saved earlier. Resolves with the note's export status; a failed
+ * save is reported in `status.error`, not as a rejection.
+ */
+export const saveNoteToObsidian = (id: string): Promise<ObsidianExport> =>
+  invokeCmd('save_note_to_obsidian', { id })
+
+/** Rejects with a readable reason when `path` is not an existing folder. */
+export const checkObsidianVault = (path: string): Promise<void> =>
+  invokeCmd('check_obsidian_vault', { path })
 
 /**
  * Triggers (or re-triggers — this is also what "Regenerate" calls)
@@ -220,6 +263,15 @@ export const summarizeNote = (id: string): Promise<void> => invokeCmd('summarize
  * note is neither queued nor running any more) resolves as a no-op.
  */
 export const cancelSummarize = (id: string): Promise<void> => invokeCmd('cancel_summarize', { id })
+
+/**
+ * Starts a waiting summary without waiting for a live recording to end
+ * (issue #44). A summary requested during a recording normally waits for
+ * the recording to stop; this is the user saying "now". Only one generation
+ * runs at a time, so when the engine is busy the note moves to the front of
+ * the queue instead — see `SummarizeNowOutcome`.
+ */
+export const summarizeNow = (id: string): Promise<SummarizeNowOutcome> => invokeCmd('summarize_now', { id })
 
 /**
  * Flips one action item's `done` state in a note's summary (read-modify-

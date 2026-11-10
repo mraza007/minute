@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, type KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef } from 'react'
+import { handleMenuKeyDown } from './menuKeys'
 
 export interface NoteContextMenuAction {
   label: string
@@ -38,36 +39,6 @@ export function NoteContextMenu({ x, y, label, actions, onClose }: NoteContextMe
     menu.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
   }, [x, y])
 
-  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
-    if (items.length === 0) return
-    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
-    const focusAt = (index: number) => items[(index + items.length) % items.length]?.focus()
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault()
-        focusAt(currentIndex + 1)
-        break
-      case 'ArrowUp':
-        e.preventDefault()
-        focusAt(currentIndex - 1)
-        break
-      case 'Home':
-        e.preventDefault()
-        focusAt(0)
-        break
-      case 'End':
-        e.preventDefault()
-        focusAt(items.length - 1)
-        break
-      case 'Escape':
-      case 'Tab':
-        e.preventDefault()
-        onClose()
-        break
-    }
-  }
-
   return (
     <>
       {/* Click-away layer: any press outside the menu dismisses it — including
@@ -87,7 +58,7 @@ export function NoteContextMenu({ x, y, label, actions, onClose }: NoteContextMe
         role="menu"
         aria-label={label}
         style={{ left: x, top: y }}
-        onKeyDown={handleKeyDown}
+        onKeyDown={e => handleMenuKeyDown(e, onClose)}
       >
         {actions.map(action => (
           <button

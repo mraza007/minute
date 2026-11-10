@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppState } from './state/useAppState'
+import { summaryWaitCause, type SummaryWait } from './state/adapters'
+import { useSidebarCollapsed } from './state/useSidebarCollapsed'
+import { AppToolbar, SidebarReopen } from './components/AppToolbar'
 import { ErrorBanner } from './components/ErrorBanner'
-import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { NoteView } from './components/NoteView'
 import { OnboardingView } from './components/OnboardingView'
 import { RecordingView } from './components/RecordingView'
 import { RecordingPreflight } from './components/RecordingPreflight'
-import { SettingsView } from './components/SettingsView'
+import { SettingsNav } from './components/settings/SettingsNav'
+import { SettingsView } from './components/settings/SettingsView'
+import type { SettingsSectionId } from './components/settings/sections'
 import { SearchPalette } from './components/SearchPalette'
-import { ShortcutReference } from './components/ShortcutReference'
+import { useFocusAfterCommit } from './components/useFocusAfterCommit'
+import { transcriptionModeOptions } from './components/transcriptionModes'
 
 export default function App() {
   const s = useAppState()
@@ -20,18 +25,25 @@ export default function App() {
     closeRecordingPreflight: closeRecordingPreflightState,
     startRec,
   } = s
-  const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const shortcutReturnFocusRef = useRef<HTMLElement | null>(null)
+  const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = useSidebarCollapsed()
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('recording')
+  const { goSettings } = s
+  /** Opens Settings on `section`. Every link that names a setting goes to the section that holds it. */
+  const openSettings = useCallback((section: SettingsSectionId) => {
+    setSettingsSection(section)
+    goSettings()
+  }, [goSettings])
+  // Hiding or showing the sidebar unmounts the control that was pressed, so
+  // focus moves to the control that undoes it.
+  const showNotesButtonRef = useRef<HTMLButtonElement>(null)
+  const collapseSidebarButtonRef = useRef<HTMLButtonElement>(null)
+  const requestFocus = useFocusAfterCommit()
+  const setSidebarCollapsedByUser = useCallback((collapsed: boolean) => {
+    requestFocus(() => (collapsed ? showNotesButtonRef.current : collapseSidebarButtonRef.current))
+    setSidebarCollapsed(collapsed)
+  }, [requestFocus, setSidebarCollapsed])
   const searchReturnFocusRef = useRef<HTMLElement | null>(null)
   const preflightReturnFocusRef = useRef<HTMLElement | null>(null)
-  const openShortcuts = useCallback(() => {
-    shortcutReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    setShortcutsOpen(true)
-  }, [])
-  const closeShortcuts = useCallback(() => {
-    setShortcutsOpen(false)
-    requestAnimationFrame(() => shortcutReturnFocusRef.current?.focus())
-  }, [])
   const openSearch = useCallback(() => {
     searchReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     openSearchState()
@@ -48,10 +60,22 @@ export default function App() {
     closeRecordingPreflightState()
     requestAnimationFrame(() => preflightReturnFocusRef.current?.focus())
   }, [closeRecordingPreflightState])
+  const { exportNotes, saveNoteToObsidian } = s
+  const exportNote = useCallback((id: string) => {
+    // A failure is already on the error banner.
+    exportNotes([id]).catch(() => {})
+  }, [exportNotes])
+  const saveToObsidian = useCallback((id: string) => {
+    void saveNoteToObsidian(id)
+  }, [saveNoteToObsidian])
   const startRecording = useCallback(() => {
     preflightReturnFocusRef.current = null
     startRec()
   }, [startRec])
+  const transcriptionModes = useMemo(
+    () => transcriptionModeOptions(s.models, s.sttModel, s.hardware, s.recommendation),
+    [s.models, s.sttModel, s.hardware, s.recommendation],
+  )
 
   // ⌘K / ⌘F anywhere opens the search palette — the palette steals focus
   // (autofocuses its input) rather than checking what's currently focused,
@@ -97,30 +121,29 @@ export default function App() {
     return () => document.removeEventListener('contextmenu', handleContextMenu)
   }, [])
 
+  // ⌘/ opens the shortcut list, which lives under Settings > About. Not
+  // before the app is open: Settings from onboarding would lead into an app
+  // with no transcription model.
+  const appOpen = s.view !== 'loading' && s.view !== 'onboarding'
   useEffect(() => {
-    function handleShortcutReference(event: KeyboardEvent) {
+    function handleShortcutList(event: KeyboardEvent) {
       if (!event.metaKey || event.key !== '/') return
       event.preventDefault()
-      if (s.recordingPreflightOpen || s.searchOpen) return
-      if (shortcutsOpen) closeShortcuts()
-      else openShortcuts()
+      if (!appOpen || s.recordingPreflightOpen || s.searchOpen) return
+      openSettings('about')
     }
-    window.addEventListener('keydown', handleShortcutReference)
-    return () => window.removeEventListener('keydown', handleShortcutReference)
-  }, [closeShortcuts, openShortcuts, s.recordingPreflightOpen, s.searchOpen, shortcutsOpen])
+    window.addEventListener('keydown', handleShortcutList)
+    return () => window.removeEventListener('keydown', handleShortcutList)
+  }, [appOpen, openSettings, s.recordingPreflightOpen, s.searchOpen])
 
-  // The selected note's list-level metadata — the same "notes[sel], falling
-  // back to notes[0]" rule NoteView used to apply internally before its
-  // narrow-props refactor (Stage 3 Task 5); computed once here since
-  // several of the props below (summaryStatus/summaryError) key off its id.
-  // `sel === null` is an *explicit* deselect ("All notes", issue #24) — no
-  // newest-note fallback there, that's the pick-a-note state.
-  const selectedNoteMeta = s.sel === null ? null : (s.notes[s.sel] ?? s.notes[0] ?? null)
+  // `null` is the pick-a-note state: an empty library, or an explicit
+  // deselect ("All notes", issue #24).
+  const selectedNoteMeta = s.selectedNoteMeta
 
-  // NoteView/AiNotesPanel distinguish 'idle' | 'queued' | 'running' |
+  // NoteView distinguishes 'idle' | 'queued' | 'running' |
   // 'error' — `summaryStatus`'s `'done'` (and "no event seen this session")
   // both collapse to 'idle' here, since 'done' carries no special UI once
-  // it's landed (the panel just shows the real summary at that point).
+  // it's landed (the note just shows the real summary at that point).
   // `'queued'` (issue #11) does pass through: a note waiting its turn looks
   // identical to an un-summarized one otherwise, and offering Generate for
   // work that's already scheduled is how you get it summarized twice.
@@ -129,6 +152,18 @@ export default function App() {
     rawSummaryEventState === 'queued' || rawSummaryEventState === 'running' || rawSummaryEventState === 'error'
       ? rawSummaryEventState
       : 'idle'
+  const selectedSummaryWait: SummaryWait | null = selectedNoteMeta && selectedSummaryStatus === 'queued'
+    ? {
+        queuedAt: s.summaryQueuedAt[selectedNoteMeta.id] ?? null,
+        style: s.tSummaryStyle,
+        cause: summaryWaitCause(
+          selectedNoteMeta.id,
+          s.isRecording,
+          s.summaryStatus,
+          s.summaryStartsNext[selectedNoteMeta.id] === true,
+        ),
+      }
+    : null
 
   // Same collapse for speaker detection (`diar-status`): 'done' and "no
   // event" are both 'idle' — a finished pass just shows the relabeled
@@ -141,6 +176,24 @@ export default function App() {
   // `every` alone would be vacuously true on a catalog without them.
   const diarModels = s.models.filter(m => m.kind === 'diarization')
   const canDetectSpeakers = diarModels.length > 0 && diarModels.every(m => m.state === 'installed')
+
+  // The Obsidian file name preview uses the newest note, so it shows a name the user recognizes.
+  const obsidianPreviewNote = s.notes.reduce<(typeof s.notes)[number] | null>(
+    (newest, note) => (newest === null || note.createdAt > newest.createdAt ? note : newest),
+    null,
+  )
+
+  // While the sidebar is hidden (a narrow window, or the manual collapse),
+  // the toolbar carries the way back to it and the record button it held.
+  const toolbarLead = sidebarCollapsed ? (
+    <SidebarReopen
+      isRecording={s.isRecording}
+      showNotesButtonRef={showNotesButtonRef}
+      onShowNotes={() => setSidebarCollapsedByUser(false)}
+      onStartRecording={openRecordingPreflight}
+      onReturnToRecording={s.goRecording}
+    />
+  ) : undefined
 
   if (s.view === 'loading') {
     return (
@@ -172,43 +225,51 @@ export default function App() {
 
   return (
     <>
-      {/* The native window still enforces its 1180px minimum. Capping the
+      {/* The native window still enforces its 860px minimum. Capping the
           document minimum at 100vw lets browser zoom and enlarged-text
           layouts reflow instead of creating a second horizontal canvas. */}
-      <div className="app-paper" style={{ height: '100vh', minWidth: 'min(1180px, 100vw)', display: 'flex', flexDirection: 'column', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
+      <div className="app-paper" style={{ height: '100vh', minWidth: 'min(860px, 100vw)', display: 'flex', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
         {/* "Quiet by default, loud when recording" (.impeccable.md), spent in
             one place: a single accent hairline along the very top edge of the
             window. It's visible from the corner of the eye no matter which
             view is open or where the window sits, and it costs no layout —
             which is what lets the rest of the recording UI stay calm. */}
-        {s.isRecording && <div className="rec-edge" aria-hidden="true" />}
-        <TitleBar
+        {s.isRecording && !s.stopping && <div className="rec-edge" aria-hidden="true" />}
+        <Sidebar
+          notes={s.sidebarNotes}
+          selectedNoteId={s.selectedNoteId}
+          onSelect={s.selectNoteById}
+          view={s.view}
+          onGoNotes={s.goNotes}
+          onGoSettings={s.goSettings}
+          statsLine={s.statsLine}
+          onOpenPalette={openSearch}
+          onStartRecording={openRecordingPreflight}
           isRecording={s.isRecording}
+          stopping={s.stopping}
           recTime={s.recTime}
-          onStartRec={openRecordingPreflight}
           onReturnToRecording={s.goRecording}
+          summaryStatus={s.summaryStatus}
+          onTogglePinned={s.setNotePinned}
+          onBulkExport={s.exportNotes}
+          onBulkDelete={s.deleteNotes}
+          onRenameNote={s.renameNote}
+          onRevealNote={s.revealNote}
+          collapsed={sidebarCollapsed || s.view === 'settings'}
+          onSetCollapsed={setSidebarCollapsedByUser}
+          collapseButtonRef={collapseSidebarButtonRef}
         />
-        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <Sidebar
-            notes={s.sidebarNotes}
-            selectedNoteId={s.selectedNoteId}
-            onSelect={s.selectNoteById}
-            view={s.view}
-            onGoNotes={s.goNotes}
-            onGoSettings={s.goSettings}
-            statsLine={s.statsLine}
-            searchQuery={s.sidebarQuery}
-            onSearchQueryChange={s.setSidebarQuery}
-            matchedNoteIds={s.sidebarMatchedIds}
-            onOpenPalette={openSearch}
-            onStartRecording={openRecordingPreflight}
-            onTogglePinned={s.setNotePinned}
-            onOpenShortcuts={openShortcuts}
-            onBulkExport={s.exportNotes}
-            onBulkDelete={s.deleteNotes}
-            onRenameNote={s.renameNote}
-            onRevealNote={s.revealNote}
+        {s.view === 'settings' && (
+          <SettingsNav
+            section={settingsSection}
+            onSelect={setSettingsSection}
+            onBack={s.backToNotes}
+            recordingTime={s.isRecording ? s.recTime : null}
+            onReturnToRecording={s.goRecording}
           />
+        )}
+        <div className="app-main">
+          {s.view === 'settings' && <AppToolbar />}
           {s.view === 'notes' && (
             <NoteView
               meta={selectedNoteMeta}
@@ -222,12 +283,11 @@ export default function App() {
               transcriptLoading={s.transcriptLoading}
               pendingSeek={s.pendingSeek}
               onPendingSeekApplied={s.clearPendingSeek}
-              noteTab={s.noteTab}
-              setNoteTab={s.setNoteTab}
               sttStatus={s.sttStatus}
               sttStatusNoteId={s.sttStatusNoteId}
               summaryStatus={selectedSummaryStatus}
               summaryError={selectedNoteMeta ? s.summaryError[selectedNoteMeta.id] : undefined}
+              summaryWait={selectedSummaryWait}
               diarStatus={selectedDiarStatus}
               diarError={selectedNoteMeta ? s.diarError[selectedNoteMeta.id] : undefined}
               canDetectSpeakers={canDetectSpeakers}
@@ -240,12 +300,18 @@ export default function App() {
               onRename={s.renameNote}
               onDelete={s.deleteNote}
               onReveal={s.revealNote}
+              onExport={exportNote}
+              obsidianEnabled={s.tObsidian.enabled}
+              obsidianSaving={selectedNoteMeta !== null && s.obsidianSavingId === selectedNoteMeta.id}
+              onSaveToObsidian={saveToObsidian}
+              toolbarLead={toolbarLead}
               onCopyError={s.reportError}
               onToggleActionItem={s.toggleActionItem}
               onRegenerateSummary={s.regenerateSummary}
               onCancelSummary={s.cancelSummary}
+              onSummarizeNow={s.summarizeNow}
               onAsk={s.askQuestion}
-              onGoSettings={s.goSettings}
+              onOpenSettings={openSettings}
               onSetPinned={s.setNotePinned}
               onAddMarker={s.addNoteMarker}
               onUpdateMarker={s.updateNoteMarker}
@@ -253,12 +319,16 @@ export default function App() {
               onRenameSpeaker={s.renameSpeaker}
               onDismissSpeakerSuggestion={s.dismissSpeakerSuggestion}
               onMergeSpeakers={s.mergeSpeakers}
+              onMarkSpeakerUnknown={s.markSpeakerUnknown}
+              onAssignUnknownTurns={s.assignUnknownTurns}
               onUndoSpeakerMerge={s.undoSpeakerMerge}
               onDeleteAudio={s.deleteSelectedNoteAudio}
               onStartRecording={openRecordingPreflight}
               processingFailure={s.processingFailure}
               onRetryProcessing={s.retryProcessingFailure}
               onDismissProcessing={s.dismissProcessingFailure}
+              justRecorded={selectedNoteMeta !== null && selectedNoteMeta.id === s.lastRecordedNoteId}
+              summaryStyle={s.tSummaryStyle}
             />
           )}
           {s.view === 'recording' && (
@@ -288,10 +358,25 @@ export default function App() {
               quietSecs={s.quietSecs}
               canRestartWithSystemAudio={s.sysAudioAvailability === 'ready'}
               onRestartWithSystemAudio={s.restartWithSystemAudio}
+              origin={s.recOrigin}
+              onOpenSettings={openSettings}
+              speakersExpected={s.tDetectSpeakers && canDetectSpeakers}
+              summaryExpected={s.llmInstalled}
+              summaryStyle={s.tSummaryStyle}
+              toolbarLead={toolbarLead}
             />
           )}
           {s.view === 'settings' && (
             <SettingsView
+              section={settingsSection}
+              meetingPolicies={s.tMeetingPolicies}
+              onSetMeetingPolicy={s.setMeetingPolicy}
+              obsidian={s.tObsidian}
+              onSaveObsidian={s.saveObsidianSettings}
+              onCheckObsidianVault={s.checkObsidianVault}
+              onChooseObsidianVault={s.chooseObsidianVault}
+              obsidianLastSave={s.obsidianLastSave}
+              obsidianPreviewNote={obsidianPreviewNote}
               models={s.models}
               hardware={s.hardware}
               recommendation={s.recommendation}
@@ -303,6 +388,7 @@ export default function App() {
               downloadModel={s.downloadModel}
               cancelDownload={s.cancelDownload}
               deleteModel={s.deleteModel}
+              huggingFace={s.huggingFace}
               storage={s.storage}
               libraryPath={s.libraryInfo?.displayPath ?? null}
               libraryTitle={s.libraryInfo?.path ?? null}
@@ -370,19 +456,23 @@ export default function App() {
           microphoneLoading={s.preflightMicrophoneLoading}
           microphonePermission={s.preflightMicrophonePermission}
           requestingMicrophonePermission={s.requestingMicrophonePermission}
-          modelName={s.sttModelDisplayName}
+          transcriptionModes={transcriptionModes}
           systemAudioEnabled={s.tCaptureSystemAudio}
           sysAudioAvailability={s.sysAudioAvailability}
           starting={s.recordingStarting}
           onSelectMicrophone={s.selectPreflightMicrophone}
           onRequestMicrophonePermission={s.requestMicrophonePermission}
+          onSelectTranscriptionModel={s.setSttModel}
+          onOpenSettings={() => {
+            closeRecordingPreflightState()
+            openSettings('models')
+          }}
           onToggleSystemAudio={s.toggleCaptureSystemAudio}
           onRequestSysAudioPermission={s.requestSysAudioPermission}
           onClose={closeRecordingPreflight}
           onStart={startRecording}
         />
       )}
-      {shortcutsOpen && <ShortcutReference onClose={closeShortcuts} />}
       {s.deletedNoteUndo && (
         <div className="action-toast" role="status">
           <span>

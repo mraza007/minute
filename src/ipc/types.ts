@@ -15,12 +15,36 @@ export interface Hardware {
 /** `catalog::ModelKind` — `#[serde(rename_all = "lowercase")]`. */
 export type ModelKind = 'stt' | 'llm' | 'diarization'
 
+/**
+ * Where a model comes from: Minute's built-in tested list, or one GGUF/bin
+ * file on Hugging Face. A Hugging Face model's id is `hf:<repo>/<file>`.
+ * `trusted` is true for publishers on Minute's allowlist; any other
+ * publisher's file downloads only with `allowUnknownPublisher`.
+ * `parameters` is the raw parameter count; `updatedAt` is an ISO 8601 time.
+ */
+export type ModelOrigin =
+  | { kind: 'tested' }
+  | {
+      kind: 'huggingFace'
+      repo: string
+      file: string
+      publisher: string
+      trusted: boolean
+      architecture: string | null
+      parameters: number | null
+      quantization: string | null
+      updatedAt: string | null
+      downloads: number | null
+    }
+
 /** `catalog::CatalogEntry` — `#[serde(rename_all = "camelCase")]`. */
 export interface CatalogEntry {
   id: string
   kind: ModelKind
   displayName: string
-  desc: string
+  /** Editorial labels, such as `["Most accurate", "99 languages"]`. Never the size: that is `sizeBytes`. */
+  traits: string[]
+  origin: ModelOrigin
   url: string
   sha256: string
   sizeBytes: number
@@ -46,6 +70,23 @@ export type InstallState = 'notInstalled' | 'downloading' | 'installed'
  */
 export interface ModelStatus extends CatalogEntry {
   state: InstallState
+}
+
+/** The two model kinds Hugging Face is browsed for. */
+export type BrowseKind = 'stt' | 'llm'
+
+/**
+ * `browse_models`'s answer. `entries` leaves out every model `list_models`
+ * already returns, and keeps models too big for this Mac (the UI folds them
+ * away). `unsupportedCount` counts newer models this Minute version cannot
+ * run. `error` is set when Hugging Face could not be reached; `fetchedAt` is
+ * when the list was last fetched from Hugging Face.
+ */
+export interface ModelBrowse {
+  entries: ModelStatus[]
+  fetchedAt: string | null
+  unsupportedCount: number
+  error: string | null
 }
 
 /** `catalog::Recommendation` — no `rename_all`, but fields are already lowercase. */
@@ -99,17 +140,34 @@ export interface NoteMeta {
   speakerSuggestions?: Record<string, SpeakerSuggestion>
   /** Issue #32: names the diarization pass applied on its own (confident voice-profile matches), keyed by the raw label they replaced — rendered as an "auto-renamed — Undo" notice. */
   speakerAutoApplied?: Record<string, SpeakerSuggestion>
+  /** Issue #49: indices of turns the user marked unknown. A re-run keeps them unknown. */
+  unknownTurns?: number[]
   /**
    * Whether `summary.json` exists on disk (issue #18). Only `list_notes`
    * computes it — commands that return a single updated `NoteMeta` omit
    * it, so merges into the notes list must keep the previous value.
    */
   hasSummary?: boolean
+  /** Obsidian export status (issue #47); absent until the first export attempt. */
+  obsidian?: ObsidianExport
+}
+
+/**
+ * `obsidian::ObsidianExport`. `path`/`savedAt` are the last good save and
+ * survive a later failure; `error` is the last failure and clears on the
+ * next good save. `contentHash` is internal (edit detection).
+ */
+export interface ObsidianExport {
+  path?: string
+  savedAt?: string
+  error?: string
+  contentHash?: string
 }
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */
 export interface StoredSegment {
-  speaker: string
+  /** `null` is `store::Speaker::Unknown` (issue #49): speech Minute could not place. Never a name. */
+  speaker: string | null
   start: number
   end: number
   text: string
@@ -120,11 +178,20 @@ export interface Transcript {
   segments: StoredSegment[]
 }
 
-/** `store::SpeakerMergeUndo` — exact turn indices changed by one merge. */
+/**
+ * `store::SpeakerMergeUndo` — exact turn indices changed by one merge.
+ * Opaque to the frontend: pass it back to `undoSpeakerMerge` unchanged.
+ * `into` is `null` when the merge was "mark these turns as unknown", and
+ * `from` is `null` when it gave the unknown turns to a speaker.
+ */
 export interface SpeakerMergeUndo {
-  from: string
-  into: string
+  from: string | null
+  into: string | null
   segmentIndices: number[]
+  /** Present only when `from` is `null`. */
+  pinnedUnknown?: number[]
+  summaryMentions: number[]
+  summaryFingerprint: string | null
   checksum: string
 }
 
@@ -216,6 +283,8 @@ export interface SummaryDoc {
   summary: string
   /** Issue #41: the transcript was cut to fit the model's context window, so this summary covers only part of the recording. Optional so cached pre-#41 fixtures/payloads stay valid; absent means false. */
   truncated?: boolean
+  /** Issue #45: the model's answer stopped before it was finished, so the last items of this summary are missing. Absent means false. */
+  cutOff?: boolean
   /**
    * Per-topic breakdown, empty unless the note was summarized under the
    * Detailed style (issue #14). Always present in JSON from `get_note`
@@ -225,6 +294,8 @@ export interface SummaryDoc {
   topics: SummaryTopic[]
   decisions: string[]
   actionItems: ActionItem[]
+  /** The length setting the summary was written at. Absent for summaries written before Minute kept it. */
+  style?: SummaryStyle
 }
 
 /** `store::StorageStats` — `#[serde(rename_all = "camelCase")]`. */
@@ -319,7 +390,40 @@ export interface Settings {
   speakerProfiles: boolean
   /** Issue #32: write confident voice-profile matches into the transcript (and summary) automatically. Only acts while `speakerProfiles` is on; every application shows an Undo. */
   autoApplySpeakerNames: boolean
+  /** Issue #47: save finished summaries into an Obsidian vault (opt-in). */
+  obsidian: ObsidianSettings
+  /** Issue #46: what to do per app when a meeting is detected. Only used while `meetingDetection` is on. */
+  meetingPolicies?: MeetingPolicies
 }
+
+/** `settings::ObsidianSettings`. */
+export interface ObsidianSettings {
+  enabled: boolean
+  /** Absolute vault folder; empty until chosen. */
+  vaultPath: string
+  /** Folder inside the vault, `/`-separated; empty = vault root. */
+  folder: string
+  /** File name without extension; tokens `{date}` (YYYY-MM-DD) and `{title}`. */
+  fileNameTemplate: string
+  /** Write date, title, duration and speakers as YAML frontmatter. */
+  addProperties: boolean
+  includeTranscript: boolean
+}
+
+/** `settings::ObsidianPatch` — omitted fields are left unchanged. */
+export type ObsidianPatch = Partial<ObsidianSettings>
+
+/** What Minute does when the detector sees a meeting in one app: show the pill, record at once, or do nothing. */
+export type MeetingPolicy = 'ask' | 'record' | 'ignore'
+
+/** The apps the detector tells apart. `browser` covers Safari, Chrome, Arc, Edge and Firefox. */
+export type MeetingApp = 'zoom' | 'teams' | 'webex' | 'slack' | 'faceTime' | 'discord' | 'browser'
+
+/** `settings::MeetingPolicies` — one policy per app, always all present. */
+export type MeetingPolicies = Record<MeetingApp, MeetingPolicy>
+
+/** `audio::RecordingOrigin` — why a recording started. */
+export type RecordingOrigin = { kind: 'manual' } | { kind: 'automatic'; appName: string }
 
 /**
  * `settings::SettingsPatch` — `#[serde(rename_all = "camelCase")]`. Every
@@ -345,6 +449,10 @@ export interface SettingsPatch {
   compressAudioAfterDays?: number
   speakerProfiles?: boolean
   autoApplySpeakerNames?: boolean
+  /** Rejected with a readable message when the vault path is missing or not a folder. */
+  obsidian?: ObsidianPatch
+  /** Changes one app's meeting policy and leaves the other apps as they are. */
+  meetingPolicy?: { app: MeetingApp; policy: MeetingPolicy }
 }
 
 // --- events ----------------------------------------------------------------
@@ -408,6 +516,8 @@ export interface RecordingStateEvent {
   inputError: string | null
   /** Issue #42: seconds of the current quiet run (max of the sound-level and no-transcribed-words counters) — shows "Quiet for M:SS" before the auto-stop countdown arms. */
   quietSecs: number
+  /** Issue #46: why this recording started. Fixed for the whole session. */
+  origin: RecordingOrigin
 }
 
 /** `stt.rs::TranscriptSegmentPayload` — event `transcript-segment`. */
@@ -433,12 +543,26 @@ export interface SttStatusEvent {
  * generation and will start on its own — never a terminal state, always
  * followed by `'running'` when its turn comes. Emitted by whoever enqueued
  * rather than by a worker, since no worker exists for that note yet.
+ *
+ * `queuedAt` is set only on `'queued'`: when the note joined the queue, in
+ * milliseconds since the Unix epoch. A repeat request for a note that is
+ * already waiting keeps the original time.
  */
 export interface SummaryStatusEvent {
   noteId: string
   state: 'queued' | 'running' | 'done' | 'error'
   error: string | null
+  queuedAt?: number | null
 }
+
+/**
+ * `llm.rs::SummarizeNowOutcome` — what `summarize_now` did. `'started'`: the
+ * engine was free and the summary is running. `'next'`: another generation
+ * is running, so the note moved to the front of the queue and starts when
+ * that one ends, even during a recording. `'notQueued'`: the note was not
+ * waiting (it already started, or was cancelled).
+ */
+export type SummarizeNowOutcome = 'started' | 'next' | 'notQueued'
 
 /**
  * `llm.rs::AskStatusPayload` — event `ask-status`. Ask-your-notes'
@@ -489,7 +613,14 @@ export interface MeetingDetectedEvent {
  * particular showing.
  */
 export interface MeetingPopupPayloadEvent {
+  /** `ask`: "<app> meeting started", Dismiss and Record. `started`: "Recording <app>", with Stop. */
+  kind: 'ask' | 'started'
   appName: string
+}
+
+/** `popup.rs::MeetingStartPayload` — event `meeting-popup-start`, sent to the main window. */
+export interface MeetingStartEvent {
+  origin: RecordingOrigin
 }
 
 // --- syscap.rs ---------------------------------------------------------

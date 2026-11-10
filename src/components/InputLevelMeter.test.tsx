@@ -60,13 +60,13 @@ describe('InputLevelMeter', () => {
     const sessionId = mocks.start.mock.calls[0][1]
     expect(screen.getByRole('meter', { name: 'Microphone input level' })).toHaveAttribute(
       'aria-valuetext',
-      'Speak to check your level',
+      'Speak to check the level',
     )
 
     act(() => {
       mocks.levelCallback?.({ sessionId, rms: 0.1, peak: 0.4, error: null })
     })
-    expect(screen.getByText('Input level looks good')).toBeInTheDocument()
+    expect(screen.getByText('Level is good')).toBeInTheDocument()
     expect(screen.getByRole('meter')).toHaveAttribute('aria-valuenow', '30')
 
     unmount()
@@ -82,12 +82,12 @@ describe('InputLevelMeter', () => {
     act(() => {
       mocks.levelCallback?.({ sessionId: 'stale', rms: 0.5, peak: 0.7, error: null })
     })
-    expect(screen.queryByText('Input level looks good')).not.toBeInTheDocument()
+    expect(screen.queryByText('Level is good')).not.toBeInTheDocument()
 
     act(() => {
       mocks.levelCallback?.({ sessionId, rms: 0, peak: 0, error: 'device disconnected' })
     })
-    expect(screen.getByText('Input preview unavailable')).toBeInTheDocument()
+    expect(screen.getByText('Level check unavailable')).toBeInTheDocument()
   })
 
   it('token-scopes cleanup when the selected microphone changes', async () => {

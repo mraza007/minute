@@ -1,0 +1,23 @@
+.dl-progress { display: flex; flex-direction: column; gap: 5px; width: 100%; }
+.dl-progress-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-muted);
+  font: 400 12px/16px var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+.dl-bar {
+  display: flex;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+.dl-bar > span {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width var(--motion-standard);
+}

@@ -3,9 +3,10 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
+import type { BrowseKind, ModelBrowse, ModelStatus, Recommendation, Settings } from '../ipc/types'
 import type { View } from '../types'
 import { useModelManager } from './useModelManager'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
 
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 
@@ -25,6 +26,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     compressAudioAfterDays: null,
     speakerProfiles: false,
     autoApplySpeakerNames: true,
+    obsidian: DEFAULT_OBSIDIAN_SETTINGS,
     libraryRoot: null,
     ...overrides,
   }
@@ -35,7 +37,8 @@ function sttModelFixture(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'whisper-small',
     kind: 'stt',
     displayName: 'Whisper small',
-    desc: 'good for meetings',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
     sha256: 'a'.repeat(64),
     sizeBytes: 466_000_000,
@@ -51,7 +54,8 @@ function llmModelFixture(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'qwen3.5-4b',
     kind: 'llm',
     displayName: 'Qwen3.5-4B',
-    desc: 'fast default summarizer',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     sha256: 'b'.repeat(64),
     sizeBytes: 2_600_000_000,
@@ -345,6 +349,37 @@ describe('useModelManager', () => {
     expect(result.current.sttModel).toBe('whisper-small')
   })
 
+  it('re-gate: removing the selected Hugging Face transcription model reassigns sttModel to an installed one', async () => {
+    const small = sttModelFixture({ state: 'installed' })
+    const tiny = hfModelFixture('whisper-tiny', { kind: 'stt', state: 'installed' })
+    // The backend forgets a removed Hugging Face file, so the refetch no longer lists it.
+    setupIPC(cmd => (cmd === 'list_models' ? [small] : undefined))
+    const { result } = renderHook(() => useHarness('settings'))
+    act(() => result.current.seed([small, tiny], recommendation, settingsFixture({ sttModel: tiny.id })))
+    expect(result.current.sttModel).toBe(tiny.id)
+
+    act(() => result.current.deleteModel(tiny.id))
+    await waitFor(() => expect(result.current.models).toEqual([small]))
+
+    expect(result.current.sttModel).toBe('whisper-small')
+    expect(result.current.view).toBe('settings')
+  })
+
+  it('re-gate: removing the selected Hugging Face summary model reassigns llmModel to an installed one', async () => {
+    const small = sttModelFixture({ state: 'installed' })
+    const qwen = llmModelFixture({ state: 'installed' })
+    const llama = hfModelFixture('llama', { state: 'installed' })
+    setupIPC(cmd => (cmd === 'list_models' ? [small, qwen] : undefined))
+    const { result } = renderHook(() => useHarness('settings'))
+    act(() => result.current.seed([small, qwen, llama], recommendation, settingsFixture({ llmModel: llama.id })))
+    expect(result.current.llmModel).toBe(llama.id)
+
+    act(() => result.current.deleteModel(llama.id))
+    await waitFor(() => expect(result.current.models).toEqual([small, qwen]))
+
+    expect(result.current.llmModel).toBe('qwen3.5-4b')
+  })
+
   it('does not force a redundant setView call once already on the onboarding view', async () => {
     let listModelsCalls = 0
     setupIPC(cmd => {
@@ -375,5 +410,186 @@ describe('useModelManager', () => {
     const setViewSpy = vi.fn()
     renderHook(() => useModelManager({ view: 'notes', setView: setViewSpy, loaded: false }))
     expect(setViewSpy).not.toHaveBeenCalled()
+  })
+})
+
+function hfModelFixture(name: string, overrides: Partial<ModelStatus> = {}): ModelStatus {
+  return llmModelFixture({
+    id: `hf:jdoe/${name}-GGUF/${name}-Q4_K_M.gguf`,
+    displayName: name,
+    origin: {
+      kind: 'huggingFace',
+      repo: `jdoe/${name}-GGUF`,
+      file: `${name}-Q4_K_M.gguf`,
+      publisher: 'jdoe',
+      trusted: false,
+      architecture: 'llama',
+      parameters: 8_000_000_000,
+      quantization: 'Q4_K_M',
+      updatedAt: '2026-11-04T12:00:00Z',
+      downloads: 120,
+    },
+    sizeBytes: 4_900_000_000,
+    ...overrides,
+  })
+}
+
+function answer(entries: ModelStatus[], overrides: Partial<ModelBrowse> = {}): ModelBrowse {
+  return { entries, fetchedAt: '2026-11-10T08:00:00Z', unsupportedCount: 0, error: null, ...overrides }
+}
+
+interface BrowseCall {
+  kind: BrowseKind
+  query: string | null
+  refresh: boolean
+}
+
+/** Answers `browse_models` through `respond` and `list_models` through `listed`, and records every call. */
+function setupBrowse(respond: (call: BrowseCall) => ModelBrowse | Promise<ModelBrowse>, listed: () => ModelStatus[] = () => []) {
+  const calls: BrowseCall[] = []
+  const all: Array<{ cmd: string; args: unknown }> = []
+  setupIPC((cmd, args) => {
+    all.push({ cmd, args })
+    if (cmd === 'list_models') return listed()
+    if (cmd !== 'browse_models') return undefined
+    const call = args as BrowseCall
+    calls.push(call)
+    return respond(call)
+  })
+  return { calls, all }
+}
+
+async function flush() {
+  await act(async () => {
+    for (let i = 0; i < 5; i += 1) await Promise.resolve()
+  })
+}
+
+describe('useModelManager Hugging Face browsing', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('does not contact Hugging Face until the Models page opens, then asks for both kinds', async () => {
+    const { calls } = setupBrowse(call => answer(call.kind === 'llm' ? [hfModelFixture('llama')] : []))
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.seed([sttModelFixture({ state: 'installed' })], recommendation))
+    await flush()
+    expect(calls).toEqual([])
+
+    act(() => result.current.huggingFace.open())
+    expect(result.current.huggingFace.state.llm.loading).toBe(true)
+    await flush()
+
+    expect(calls).toEqual([
+      { kind: 'stt', query: null, refresh: false },
+      { kind: 'llm', query: null, refresh: false },
+    ])
+    expect(result.current.huggingFace.state.llm).toMatchObject({ loading: false, result: answer([hfModelFixture('llama')]) })
+    expect(result.current.huggingFace.models.map(m => m.displayName)).toEqual(['llama'])
+  })
+
+  it('searches once typing pauses, and at once on Enter', async () => {
+    vi.useFakeTimers()
+    const { calls } = setupBrowse(() => answer([]))
+    const { result } = renderHook(() => useHarness())
+
+    act(() => {
+      result.current.huggingFace.setQuery('llm', 'gr')
+      result.current.huggingFace.setQuery('llm', 'gran')
+      result.current.huggingFace.setQuery('llm', 'granite ')
+    })
+    expect(result.current.huggingFace.state.llm.query).toBe('granite ')
+    act(() => vi.advanceTimersByTime(299))
+    expect(calls).toEqual([])
+    act(() => vi.advanceTimersByTime(1))
+    expect(calls).toEqual([{ kind: 'llm', query: 'granite', refresh: false }])
+
+    act(() => {
+      result.current.huggingFace.setQuery('llm', 'qwen')
+      result.current.huggingFace.search('llm')
+    })
+    act(() => vi.advanceTimersByTime(1000))
+    expect(calls.slice(1)).toEqual([{ kind: 'llm', query: 'qwen', refresh: false }])
+
+    act(() => {
+      result.current.huggingFace.setQuery('llm', '  ')
+      result.current.huggingFace.search('llm')
+    })
+    expect(calls.at(-1)).toEqual({ kind: 'llm', query: null, refresh: false })
+  })
+
+  it('refresh skips the backend cache for the current search', async () => {
+    const { calls } = setupBrowse(() => answer([]))
+    const { result } = renderHook(() => useHarness())
+    act(() => {
+      result.current.huggingFace.setQuery('llm', 'granite')
+      result.current.huggingFace.refresh('llm')
+    })
+    await flush()
+    expect(calls).toEqual([{ kind: 'llm', query: 'granite', refresh: true }])
+  })
+
+  it('keeps the newest search when an older answer arrives late', async () => {
+    const pending: Array<(value: ModelBrowse) => void> = []
+    setupBrowse(() => new Promise<ModelBrowse>(resolve => pending.push(resolve)))
+    const { result } = renderHook(() => useHarness())
+
+    act(() => {
+      result.current.huggingFace.setQuery('llm', 'llama')
+      result.current.huggingFace.search('llm')
+      result.current.huggingFace.setQuery('llm', 'qwen')
+      result.current.huggingFace.search('llm')
+    })
+    await flush()
+    act(() => pending[1](answer([hfModelFixture('qwen')])))
+    await flush()
+    act(() => pending[0](answer([hfModelFixture('llama')])))
+    await flush()
+
+    expect(result.current.huggingFace.state.llm.result?.entries.map(m => m.displayName)).toEqual(['qwen'])
+    expect(result.current.huggingFace.state.llm.loading).toBe(false)
+  })
+
+  it('turns a failed request into an answer with an error, so tested models stay usable', async () => {
+    setupBrowse(() => Promise.reject('network is offline'))
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.huggingFace.open())
+    await flush()
+
+    expect(result.current.huggingFace.state.llm).toMatchObject({
+      loading: false,
+      result: { entries: [], fetchedAt: null, unsupportedCount: 0, error: 'network is offline' },
+    })
+    expect(result.current.lastError).toBeNull()
+  })
+
+  it('downloads a Hugging Face file with consent and keeps it listed until it lands on this Mac', async () => {
+    const llama = hfModelFixture('llama')
+    let listed: ModelStatus[] = []
+    const { all } = setupBrowse(
+      call => answer(call.query === 'qwen' ? [hfModelFixture('qwen')] : call.kind === 'llm' ? [llama] : []),
+      () => listed,
+    )
+    const { result } = renderHook(() => useHarness())
+    act(() => result.current.huggingFace.open())
+    await flush()
+
+    act(() => result.current.downloadModel(llama.id, true))
+    expect(all.find(c => c.cmd === 'download_model')?.args).toEqual({ id: llama.id, allowUnknownPublisher: true })
+    expect(result.current.downloads[llama.id]).toEqual({ downloaded: 0, total: 4_900_000_000 })
+
+    act(() => {
+      result.current.huggingFace.setQuery('llm', 'qwen')
+      result.current.huggingFace.search('llm')
+    })
+    await flush()
+    expect(result.current.huggingFace.models.map(m => m.displayName)).toEqual(['qwen', 'llama'])
+
+    listed = [{ ...llama, state: 'installed' }]
+    await act(async () => {
+      await emit('model-download-done', { modelId: llama.id, ok: true, cancelled: false, error: null })
+    })
+    await flush()
+    expect(result.current.models).toEqual(listed)
+    expect(result.current.huggingFace.models.map(m => m.displayName)).toEqual(['qwen'])
   })
 })

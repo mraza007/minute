@@ -205,8 +205,8 @@ use crate::store::{lock_store, SharedStore, StoredSegment};
 
 /// The chunking window/overlap used by `SttWorker` — 8s windows with a 1s
 /// overlap tail, per the plan's tuning.
-const WINDOW_SECS: f32 = 8.0;
-const OVERLAP_SECS: f32 = 1.0;
+pub(crate) const WINDOW_SECS: f32 = 8.0;
+pub(crate) const OVERLAP_SECS: f32 = 1.0;
 
 /// Placeholder speaker label — diarization is out of scope for Stage 2;
 /// every segment is attributed to this one constant "speaker" for now.
@@ -473,7 +473,7 @@ fn handle_window_segments(
         }
 
         let stored = StoredSegment {
-            speaker: SPEAKER_PLACEHOLDER.to_string(),
+            speaker: SPEAKER_PLACEHOLDER.into(),
             start: seg.start,
             end: seg.end,
             text: seg.text.clone(),
@@ -1039,6 +1039,103 @@ mod tests {
         assert!(
             full_transcript.to_lowercase().contains("fox"),
             "expected transcript to contain \"fox\", got: {full_transcript:?}"
+        );
+    }
+
+    fn normalize_words(text: &str) -> Vec<String> {
+        text.to_lowercase()
+            .split_whitespace()
+            .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+
+    fn word_errors(reference: &[String], hypothesis: &[String]) -> usize {
+        let mut prev: Vec<usize> = (0..=hypothesis.len()).collect();
+        for (i, r) in reference.iter().enumerate() {
+            let mut cur = vec![i + 1];
+            for (j, h) in hypothesis.iter().enumerate() {
+                let sub = prev[j] + usize::from(r != h);
+                cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
+            }
+            prev = cur;
+        }
+        prev[hypothesis.len()]
+    }
+
+    /// Eval harness for candidate STT models. Runs the app's real path
+    /// (Chunker windows, `run_full_and_extract`, `dedupe_segments`) with
+    /// one model load, then prints the text, load time, realtime factor,
+    /// and word errors against the reference script.
+    ///
+    /// ```sh
+    /// MINUTE_EVAL_STT_PATH=/path/to/ggml-x.bin \
+    ///   cargo test --manifest-path src-tauri/Cargo.toml --lib \
+    ///   real_stt_eval_from_env -- --ignored --nocapture
+    /// ```
+    ///
+    /// Optional: `MINUTE_EVAL_STT_WAV` (16 kHz mono WAV, default
+    /// `tests/fixtures/meeting.wav`) and `MINUTE_EVAL_STT_REF` (reference
+    /// text, default `tests/fixtures/meeting.txt`).
+    #[test]
+    #[ignore]
+    fn real_stt_eval_from_env() {
+        let model_path = std::path::PathBuf::from(
+            std::env::var("MINUTE_EVAL_STT_PATH").expect("set MINUTE_EVAL_STT_PATH"),
+        );
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let wav = std::env::var("MINUTE_EVAL_STT_WAV")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| fixtures.join("meeting.wav"));
+        let reference_path = std::env::var("MINUTE_EVAL_STT_REF")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| fixtures.join("meeting.txt"));
+        let samples = read_wav_as_f32(&wav);
+        let audio_secs = samples.len() as f64 / SR as f64;
+
+        ensure_whisper_logging_redirected();
+        let load_start = Instant::now();
+        let ctx = WhisperContext::new_with_params(&model_path, WhisperContextParameters::default())
+            .expect("model failed to load");
+        let mut state = ctx.create_state().expect("state failed");
+        let load_secs = load_start.elapsed().as_secs_f64();
+
+        let mut chunker = Chunker::new(WINDOW_SECS, OVERLAP_SECS, TARGET_SAMPLE_RATE);
+        let mut windows: Vec<ChunkOut> = Vec::new();
+        for chunk in samples.chunks(1600) {
+            let mut window = chunker.push(chunk);
+            while let Some(w) = window {
+                windows.push(w);
+                window = chunker.push(&[]);
+            }
+        }
+        windows.extend(chunker.flush());
+
+        let infer_start = Instant::now();
+        let mut emitted_until = 0.0;
+        let mut kept = Vec::new();
+        for window in &windows {
+            let raw = run_full_and_extract(&mut state, &window.samples).expect("inference failed");
+            for seg in dedupe_segments(&raw, window.start_offset_secs, emitted_until) {
+                emitted_until = emitted_until.max(seg.end);
+                kept.push(seg.text);
+            }
+        }
+        let infer_secs = infer_start.elapsed().as_secs_f64();
+        let transcript = kept.join(" ");
+
+        let reference = std::fs::read_to_string(&reference_path).expect("reference text");
+        let ref_words = normalize_words(&reference);
+        let errors = word_errors(&ref_words, &normalize_words(&transcript));
+
+        eprintln!("model: {model_path:?}");
+        eprintln!("transcript: {transcript}");
+        eprintln!(
+            "EVAL load={load_secs:.2}s audio={audio_secs:.1}s infer={infer_secs:.2}s \
+             rtf={:.1}x word_errors={errors}/{} windows={}",
+            audio_secs / infer_secs,
+            ref_words.len(),
+            windows.len()
         );
     }
 }

@@ -29,6 +29,113 @@ pub enum SummaryStyle {
     Detailed,
 }
 
+/// What Minute does when the detector sees a meeting in one app. Serialized
+/// lowercase (`"ask"`/`"record"`/`"ignore"`) in `settings.json` and over IPC.
+/// `Ask` is the default so every pre-policy install keeps showing the pill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingPolicy {
+    /// Show the "Minute is not recording" pill.
+    #[default]
+    Ask,
+    /// Start a recording at once and show the "Recording <app>" pill.
+    Record,
+    /// Do nothing for this app: no pill, no recording.
+    Ignore,
+}
+
+/// The apps the detector tells apart. The five browsers it recognises share
+/// one entry, since a browser's mic use is a weak signal and the user's
+/// choice is about "calls in a browser", not about which browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MeetingApp {
+    Zoom,
+    Teams,
+    Webex,
+    Slack,
+    FaceTime,
+    Discord,
+    Browser,
+}
+
+impl MeetingApp {
+    /// Maps the friendly name the detector reports (`detect.rs`'s
+    /// `MEETING_APPS` and `BROWSERS` tables) to its policy key.
+    pub fn from_detected_name(name: &str) -> Option<Self> {
+        match name {
+            "Zoom" => Some(Self::Zoom),
+            "Microsoft Teams" => Some(Self::Teams),
+            "Webex" => Some(Self::Webex),
+            "Slack" => Some(Self::Slack),
+            "FaceTime" => Some(Self::FaceTime),
+            "Discord" => Some(Self::Discord),
+            "Safari" | "Chrome" | "Arc" | "Microsoft Edge" | "Firefox" => Some(Self::Browser),
+            _ => None,
+        }
+    }
+}
+
+/// One policy per detectable app. A struct with one field per app (not a
+/// map) so an app cannot be missing and a typo cannot create a phantom key.
+/// Every field defaults to `Ask`, which is also the migration: a
+/// `settings.json` from before this field existed loads as "Ask for every
+/// app", exactly today's behaviour when detection is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MeetingPolicies {
+    pub zoom: MeetingPolicy,
+    pub teams: MeetingPolicy,
+    pub webex: MeetingPolicy,
+    pub slack: MeetingPolicy,
+    pub face_time: MeetingPolicy,
+    pub discord: MeetingPolicy,
+    pub browser: MeetingPolicy,
+}
+
+impl MeetingPolicies {
+    pub fn get(&self, app: MeetingApp) -> MeetingPolicy {
+        match app {
+            MeetingApp::Zoom => self.zoom,
+            MeetingApp::Teams => self.teams,
+            MeetingApp::Webex => self.webex,
+            MeetingApp::Slack => self.slack,
+            MeetingApp::FaceTime => self.face_time,
+            MeetingApp::Discord => self.discord,
+            MeetingApp::Browser => self.browser,
+        }
+    }
+
+    pub fn set(&mut self, app: MeetingApp, policy: MeetingPolicy) {
+        match app {
+            MeetingApp::Zoom => self.zoom = policy,
+            MeetingApp::Teams => self.teams = policy,
+            MeetingApp::Webex => self.webex = policy,
+            MeetingApp::Slack => self.slack = policy,
+            MeetingApp::FaceTime => self.face_time = policy,
+            MeetingApp::Discord => self.discord = policy,
+            MeetingApp::Browser => self.browser = policy,
+        }
+    }
+
+    /// The policy for an app the detector named. A name the detector does
+    /// not know falls back to `Ask`, the safe default.
+    pub fn resolve(&self, detected_name: &str) -> MeetingPolicy {
+        MeetingApp::from_detected_name(detected_name)
+            .map(|app| self.get(app))
+            .unwrap_or_default()
+    }
+}
+
+/// A single-app policy change, so a settings screen that is out of date can
+/// never overwrite another app's policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPolicyChange {
+    pub app: MeetingApp,
+    pub policy: MeetingPolicy,
+}
+
 /// Persisted settings, stored as `<app-data-root>/settings.json`.
 ///
 /// `sttModel`/`llmModel` are `None` until the user (or onboarding) actually
@@ -158,6 +265,57 @@ pub struct Settings {
     /// as enabled.
     #[serde(default = "default_true")]
     pub auto_apply_speaker_names: bool,
+    /// Issue #46: what to do per app when the detector sees a meeting. Only
+    /// consulted while `meetingDetection` is on; that switch stays the
+    /// master.
+    #[serde(default)]
+    pub meeting_policies: MeetingPolicies,
+    /// Issue #47: save finished summaries into an Obsidian vault. Opt-in.
+    /// `#[serde(default)]` so older `settings.json` files load as off.
+    #[serde(default)]
+    pub obsidian: ObsidianSettings,
+}
+
+/// Where and how Minute writes notes into an Obsidian vault. See
+/// `obsidian.rs` for the export itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ObsidianSettings {
+    pub enabled: bool,
+    /// Absolute path of the vault folder. Empty until the user picks one.
+    pub vault_path: String,
+    /// Folder inside the vault, `/`-separated. Empty means the vault root.
+    pub folder: String,
+    /// File name without extension. Tokens: `{date}` (YYYY-MM-DD) and `{title}`.
+    pub file_name_template: String,
+    /// Write date, title, duration and speakers as YAML frontmatter.
+    pub add_properties: bool,
+    pub include_transcript: bool,
+}
+
+impl Default for ObsidianSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vault_path: String::new(),
+            folder: crate::obsidian::DEFAULT_FOLDER.to_string(),
+            file_name_template: crate::obsidian::DEFAULT_FILE_NAME_TEMPLATE.to_string(),
+            add_properties: true,
+            include_transcript: false,
+        }
+    }
+}
+
+/// Partial update to [`ObsidianSettings`]; `None` leaves a field unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianPatch {
+    pub enabled: Option<bool>,
+    pub vault_path: Option<String>,
+    pub folder: Option<String>,
+    pub file_name_template: Option<String>,
+    pub add_properties: Option<bool>,
+    pub include_transcript: Option<bool>,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -186,6 +344,8 @@ impl Default for Settings {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
         }
     }
 }
@@ -227,6 +387,8 @@ pub struct SettingsPatch {
     pub compress_audio_after_days: Option<u32>,
     pub speaker_profiles: Option<bool>,
     pub auto_apply_speaker_names: Option<bool>,
+    pub obsidian: Option<ObsidianPatch>,
+    pub meeting_policy: Option<MeetingPolicyChange>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -274,6 +436,30 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.auto_apply_speaker_names {
         settings.auto_apply_speaker_names = v;
+    }
+    if let Some(p) = patch.obsidian {
+        let o = &mut settings.obsidian;
+        if let Some(v) = p.enabled {
+            o.enabled = v;
+        }
+        if let Some(v) = p.vault_path {
+            o.vault_path = v.trim().to_string();
+        }
+        if let Some(v) = p.folder {
+            o.folder = v.trim().to_string();
+        }
+        if let Some(v) = p.file_name_template {
+            o.file_name_template = v;
+        }
+        if let Some(v) = p.add_properties {
+            o.add_properties = v;
+        }
+        if let Some(v) = p.include_transcript {
+            o.include_transcript = v;
+        }
+    }
+    if let Some(change) = patch.meeting_policy {
+        settings.meeting_policies.set(change.app, change.policy);
     }
 }
 
@@ -374,7 +560,16 @@ pub fn apply_and_save(
 ) -> Result<Settings> {
     let mut guard = lock_settings(state);
     let mut candidate = guard.clone();
+    let changes_vault_path = patch
+        .obsidian
+        .as_ref()
+        .is_some_and(|o| o.vault_path.is_some());
+    let touches_obsidian = patch.obsidian.is_some();
     apply_patch(&mut candidate, patch);
+    if touches_obsidian {
+        crate::obsidian::validate_settings(&candidate.obsidian, changes_vault_path)
+            .map_err(MinuteError::Other)?;
+    }
     save_settings(root, &candidate)?;
     *guard = candidate.clone();
     Ok(candidate)
@@ -414,6 +609,8 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -462,6 +659,8 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+                obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
             }
         );
     }
@@ -505,6 +704,8 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+                obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
             }
         );
     }
@@ -549,6 +750,8 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+                obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
             }
         );
     }
@@ -589,6 +792,8 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -639,9 +844,15 @@ mod tests {
             compress_audio_after_days: Some(14),
             speaker_profiles: Some(true),
             auto_apply_speaker_names: Some(false),
+            obsidian: None,
+            meeting_policy: Some(MeetingPolicyChange {
+                app: MeetingApp::Slack,
+                policy: MeetingPolicy::Record,
+            }),
         };
 
         apply_patch(&mut settings, patch);
+        assert_eq!(settings.meeting_policies.slack, MeetingPolicy::Record);
 
         assert_eq!(settings.stt_model, Some("whisper-medium".to_string()));
         assert_eq!(settings.llm_model, Some("gemma-4-e4b".to_string()));
@@ -841,6 +1052,8 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -874,6 +1087,8 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
+            meeting_policies: MeetingPolicies::default(),
         };
         let mut settings = original.clone();
 
@@ -1014,5 +1229,113 @@ mod tests {
         // The in-memory settings must be exactly what they were before the
         // failed call — not the patched candidate that never made it to disk.
         assert_eq!(*lock_settings(&shared), original);
+    }
+
+    // --- issue #46: per-app meeting policies ---------------------------------
+
+    #[test]
+    fn settings_json_from_before_meeting_policies_loads_as_ask_for_every_app() {
+        let dir = tempdir().unwrap();
+        let legacy = serde_json::json!({
+            "sttModel": "whisper-medium",
+            "deleteAudioAfter30d": false,
+            "meetingDetection": true,
+        });
+        fs::write(
+            settings_path(dir.path()),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_settings(dir.path());
+
+        assert!(loaded.meeting_detection);
+        assert_eq!(loaded.stt_model.as_deref(), Some("whisper-medium"));
+        for name in [
+            "Zoom",
+            "Microsoft Teams",
+            "Webex",
+            "Slack",
+            "FaceTime",
+            "Discord",
+            "Chrome",
+        ] {
+            assert_eq!(loaded.meeting_policies.resolve(name), MeetingPolicy::Ask, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_partial_meeting_policies_object_keeps_the_rest_at_ask() {
+        let dir = tempdir().unwrap();
+        let json = serde_json::json!({
+            "deleteAudioAfter30d": true,
+            "meetingPolicies": { "teams": "record", "slack": "ignore" }
+        });
+        fs::write(settings_path(dir.path()), serde_json::to_string(&json).unwrap()).unwrap();
+
+        let policies = load_settings(dir.path()).meeting_policies;
+
+        assert_eq!(policies.resolve("Microsoft Teams"), MeetingPolicy::Record);
+        assert_eq!(policies.resolve("Slack"), MeetingPolicy::Ignore);
+        assert_eq!(policies.resolve("Zoom"), MeetingPolicy::Ask);
+    }
+
+    #[test]
+    fn resolve_maps_every_detected_name_to_its_own_app() {
+        let mut policies = MeetingPolicies::default();
+        policies.set(MeetingApp::Teams, MeetingPolicy::Record);
+        policies.set(MeetingApp::Browser, MeetingPolicy::Ignore);
+
+        assert_eq!(policies.resolve("Microsoft Teams"), MeetingPolicy::Record);
+        assert_eq!(policies.resolve("Zoom"), MeetingPolicy::Ask);
+        for browser in ["Safari", "Chrome", "Arc", "Microsoft Edge", "Firefox"] {
+            assert_eq!(policies.resolve(browser), MeetingPolicy::Ignore, "{browser}");
+        }
+    }
+
+    #[test]
+    fn resolve_falls_back_to_ask_for_a_name_the_detector_does_not_know() {
+        let policies = MeetingPolicies {
+            zoom: MeetingPolicy::Record,
+            ..MeetingPolicies::default()
+        };
+        assert_eq!(policies.resolve("Some New App"), MeetingPolicy::Ask);
+    }
+
+    #[test]
+    fn a_policy_patch_changes_one_app_and_persists_it() {
+        let dir = tempdir().unwrap();
+        let shared: SharedSettings = Arc::new(Mutex::new(Settings::default()));
+        let patch = SettingsPatch {
+            meeting_policy: Some(MeetingPolicyChange {
+                app: MeetingApp::Teams,
+                policy: MeetingPolicy::Record,
+            }),
+            ..SettingsPatch::default()
+        };
+
+        let returned = apply_and_save(dir.path(), &shared, patch).unwrap();
+
+        assert_eq!(returned.meeting_policies.teams, MeetingPolicy::Record);
+        assert_eq!(returned.meeting_policies.zoom, MeetingPolicy::Ask);
+        assert_eq!(
+            load_settings(dir.path()).meeting_policies.teams,
+            MeetingPolicy::Record
+        );
+    }
+
+    #[test]
+    fn a_policy_patch_parses_from_the_frontend_wire_shape() {
+        let patch: SettingsPatch = serde_json::from_value(
+            serde_json::json!({ "meetingPolicy": { "app": "faceTime", "policy": "ignore" } }),
+        )
+        .unwrap();
+        assert_eq!(
+            patch.meeting_policy,
+            Some(MeetingPolicyChange {
+                app: MeetingApp::FaceTime,
+                policy: MeetingPolicy::Ignore
+            })
+        );
     }
 }

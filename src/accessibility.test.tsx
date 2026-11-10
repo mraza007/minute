@@ -11,6 +11,7 @@ import type {
   Settings,
   StorageStats,
 } from './ipc/types'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './state/obsidian'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -31,6 +32,7 @@ const settings: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {
@@ -39,7 +41,8 @@ function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {
     id: stt ? 'whisper-small' : 'qwen3.5-4b',
     kind,
     displayName: stt ? 'Whisper small' : 'Qwen3.5-4B',
-    desc: stt ? 'good for meetings' : 'fast default summarizer',
+    traits: [],
+    origin: { kind: 'tested' },
     url: `https://example.com/${kind}.bin`,
     sha256: (stt ? 'a' : 'b').repeat(64),
     sizeBytes: stt ? 466_000_000 : 2_600_000_000,
@@ -163,24 +166,40 @@ describe('core flow accessibility', () => {
     await expectNoAccessibilityViolations(view)
   })
 
-  it('checks the post-recording overview and marker actions', async () => {
+  it('checks the note page with a marker editor open', async () => {
     installIpc()
     const view = render(<App />)
     await screen.findByRole('heading', { name: note.title })
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
-    await screen.findByText('Pricing decision')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit marker Pricing decision' }))
+    await screen.findByRole('textbox', { name: /^Marker label at/ })
     await expectNoAccessibilityViolations(view)
   })
 
-  it('checks the inline speaker merge confirmation', async () => {
+  it('checks the speaker popover with its merge form open', async () => {
     installIpc()
     const view = render(<App />)
     await screen.findByRole('heading', { name: note.title })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Filter transcript by speaker' }), {
-      target: { value: 'You' },
-    })
-    fireEvent.click(await screen.findByRole('button', { name: 'Merge speaker' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename You' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Merge with another speaker…' }))
     await screen.findByRole('combobox', { name: 'Merge into speaker' })
+    await expectNoAccessibilityViolations(view)
+  })
+
+  it('checks the note menu', async () => {
+    installIpc()
+    const view = render(<App />)
+    await screen.findByRole('heading', { name: note.title })
+    fireEvent.click(screen.getByRole('button', { name: 'More note actions' }))
+    await screen.findByRole('menu')
+    await expectNoAccessibilityViolations(view)
+  })
+
+  it('checks the Ask panel', async () => {
+    installIpc()
+    const view = render(<App />)
+    await screen.findByRole('heading', { name: note.title })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+    await screen.findByRole('dialog', { name: 'Ask about this meeting' })
     await expectNoAccessibilityViolations(view)
   })
 
@@ -188,7 +207,7 @@ describe('core flow accessibility', () => {
     installIpc()
     const view = render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'New recording' }))
-    await screen.findByRole('dialog', { name: 'Ready to record' })
+    await screen.findByRole('dialog', { name: 'New recording' })
     await expectNoAccessibilityViolations(view)
   })
 
@@ -197,7 +216,7 @@ describe('core flow accessibility', () => {
     const view = render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'New recording' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Start recording' }))
-    await screen.findByText('Live transcript — audio never leaves this machine')
+    await screen.findByRole('button', { name: 'Pause' })
     await expectNoAccessibilityViolations(view)
   })
 
@@ -205,23 +224,27 @@ describe('core flow accessibility', () => {
     installIpc()
     const view = render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
-    await screen.findByRole('radiogroup', { name: 'Transcription model' })
-    await expectNoAccessibilityViolations(view)
+    for (const section of ['Recording', 'Summaries', 'Speakers', 'Models', 'Integrations', 'Storage', 'About']) {
+      fireEvent.click(await screen.findByRole('button', { name: section }))
+      await screen.findByRole('heading', { level: 1 })
+      // eslint-disable-next-line no-await-in-loop
+      await expectNoAccessibilityViolations(view)
+    }
   })
 
-  it('checks the keyboard shortcut reference dialog', async () => {
+  it('checks the keyboard shortcut list', async () => {
     installIpc()
     const view = render(<App />)
     await screen.findByRole('heading', { name: note.title })
     fireEvent.keyDown(window, { key: '/', metaKey: true })
-    await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+    await screen.findByRole('list', { name: 'Keyboard shortcuts' })
     await expectNoAccessibilityViolations(view)
   })
 
   it('checks onboarding', async () => {
     installIpc({ installed: false })
     const view = render(<App />)
-    await waitFor(() => expect(screen.getByText('Minute runs entirely on this Mac.')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Meeting notes that never leave your Mac')).toBeInTheDocument())
     await expectNoAccessibilityViolations(view)
   })
 })

@@ -60,13 +60,18 @@
 //! without evaluating any Jinja. Confirmed effective: the same test dropped
 //! from ~20s (mostly spent reasoning, then failing to finish before the
 //! token cap) to ~3.3s producing a clean, complete JSON summary with no
-//! `<think>` block at all. [`NO_THINK_TAG`] (harmless if ignored) is
-//! applied for every model; [`NO_THINK_PREFILL`] is only applied when the
-//! loaded model's id looks like a Qwen model (see
-//! [`apply_no_think_prefill`]) — it was verified against Qwen3.5-4B's
-//! specific baked template only, and blindly prefilling another family's
-//! (Gemma, etc.) template with this exact literal string is as likely to
-//! corrupt its structure as help it.
+//! `<think>` block at all. Both are applied only when the loaded GGUF's
+//! architecture is `qwen35` (see [`PromptFamily`]) — the prefill was
+//! verified against Qwen3.5-4B's specific baked template only, and blindly
+//! prefilling another family's (Gemma, etc.) template with this exact
+//! literal string is as likely to corrupt its structure as help it.
+//!
+//! **Prompt handling is keyed on the GGUF, not the model id.**
+//! [`PromptFamily`] is derived at load time from `general.architecture`
+//! and, where one architecture has builds that behave differently, from the
+//! baked chat template. Each family was added after a real GGUF failed on
+//! the generic path; run `tests::real_llm_eval_from_env` to check a new
+//! one.
 
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
@@ -87,7 +92,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::catalog;
 use crate::error::{MinuteError, Result};
 use crate::settings::{self, SharedSettings, SummaryStyle};
-use crate::store::{lock_store, SharedStore, StoredSegment, DEFAULT_NOTE_TITLE};
+use crate::store::{
+    lock_store, SharedStore, StoredSegment, DEFAULT_NOTE_TITLE, UNKNOWN_SPEAKER_LABEL,
+};
 
 /// One action item extracted from a summary: its text and whether the user
 /// has checked it off. Models never produce `done: true` themselves — every
@@ -141,6 +148,22 @@ pub struct SummaryDoc {
     /// files omit it and must keep parsing.
     #[serde(default)]
     pub truncated: bool,
+    /// Issue #45: the model's answer stopped before its JSON ended (it hit
+    /// the response token cap), so the tail of this summary is missing —
+    /// usually the last action items, sometimes the last topics. Same
+    /// `#[serde(default)]` rationale as `topics`.
+    #[serde(default)]
+    pub cut_off: bool,
+    /// Issue #49: where the text above names a transcript speaker, so a
+    /// rename can rewrite exactly those spans (see `mentions.rs`). Filled
+    /// by the store when it saves a fresh summary; a model never writes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speaker_mentions: Vec<crate::mentions::SpeakerMention>,
+    /// The summary length setting the model wrote this at, so the note can
+    /// name it. `None` in every `summary.json` written before it was kept;
+    /// those notes name no length rather than guess one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<SummaryStyle>,
 }
 
 /// Formats a segment's start time as `mm:ss` for the transcript rendered
@@ -179,7 +202,7 @@ fn format_transcript_lines(segments: &[StoredSegment]) -> String {
             format!(
                 "[{}] {}: {}",
                 format_mm_ss(seg.start),
-                seg.speaker,
+                seg.speaker.display(),
                 seg.text
             )
         })
@@ -332,6 +355,21 @@ pub fn build_summary_prompt(
     // on. Deliberately NOT wrapped in the transcript's data-not-
     // instructions guard: these come from the app's owner, not from
     // whatever was said in the room.
+    // Issue #49: ask for owners only when the transcript tells speakers
+    // apart. With one label (the placeholder every undiarized recording
+    // carries) the rule would have the model credit every task to it.
+    let mut named = segments.iter().filter_map(|seg| seg.speaker.name());
+    let first_named = named.next();
+    let attribution_rule = if named.any(|name| Some(name) != first_named) {
+        format!(
+            "- When the transcript shows who decided something or owns a task, name that \
+             speaker exactly as the transcript writes the name. Lines from \
+             \"{UNKNOWN_SPEAKER_LABEL}\" could not be attributed: never credit them to a \
+             named speaker.\n"
+        )
+    } else {
+        String::new()
+    };
     let user_rules = if custom_instructions.trim().is_empty() {
         String::new()
     } else {
@@ -353,6 +391,7 @@ pub fn build_summary_prompt(
          {topics_rule}\
          - \"decisions\": things that were agreed or resolved during the meeting.\n\
          - \"action_items\": concrete follow-up tasks that came out of the meeting.\n\
+         {attribution_rule}\
          {coverage_rule}\
          {user_rules}\
          Respond with the JSON object only — no prose, no markdown fences, no reasoning.\n\
@@ -541,6 +580,95 @@ fn balanced_json_object_at(s: &str, start: usize) -> Option<&str> {
     None
 }
 
+/// Rebuilds a JSON object that stops before its end (issue #45), or `None`
+/// when nothing complete can be kept.
+///
+/// Generation stops at the response token cap wherever the model happens to
+/// be, so a long answer ends mid-string or mid-array. This cuts the text
+/// back to the last comma that separates two top-level members or two
+/// elements of a top-level array, then closes what is still open. Every
+/// member and element before that comma is complete; the one the cut landed
+/// in is dropped whole, so no half-written topic or action item survives.
+///
+/// `s[start]` must be the `{` of an object [`balanced_json_object_at`]
+/// found unbalanced. The result is valid JSON only if the text before the
+/// cut was, so the caller still has to parse it.
+fn close_cut_off_json(s: &str, start: usize) -> Option<String> {
+    let (comma, closers) = scan_open_json(s, start).last_kept_comma?;
+    let mut closed = s[start..comma].to_string();
+    closed.extend(closers.iter().rev());
+    Some(closed)
+}
+
+/// Closes a JSON object whose text stops after a complete value, keeping
+/// every value, unlike [`close_cut_off_json`]. A model that ends its answer
+/// one `}` short (seen from Gemma 4 E4B and Qwen3.5 9B on long meetings)
+/// lost nothing. The returned flag says the answer may be incomplete: it
+/// stopped inside a list or a nested object, or before `action_items`, the
+/// schema's last member, which is where a token cap would leave it. `None`
+/// when the text stops inside a string or right after a comma or colon.
+fn close_missing_brackets(s: &str, start: usize) -> Option<(String, bool)> {
+    let scan = scan_open_json(s, start);
+    let text = s[start..].trim_end();
+    if scan.in_string || scan.closers.is_empty() || text.ends_with([',', ':']) {
+        return None;
+    }
+    let mut closed = text.to_string();
+    closed.extend(scan.closers.iter().rev());
+    let ends_with_action_items = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&closed)
+        .is_ok_and(|object| object.contains_key("action_items"));
+    let cut_off = scan.closers.len() > 1 || !ends_with_action_items;
+    Some((closed, cut_off))
+}
+
+/// Where an unbalanced JSON object stands at the end of `s`.
+struct OpenJson {
+    /// The brackets still open, innermost last, as the characters that close them.
+    closers: Vec<char>,
+    in_string: bool,
+    /// The last comma between two top-level members or two elements of a
+    /// top-level array, with the brackets open there.
+    last_kept_comma: Option<(usize, Vec<char>)>,
+}
+
+fn scan_open_json(s: &str, start: usize) -> OpenJson {
+    // The deepest comma kept: 1 is between the object's own members, 2 is
+    // between the elements of one of its arrays.
+    const KEEP_DEPTH: usize = 2;
+
+    let mut scan = OpenJson {
+        closers: Vec::new(),
+        in_string: false,
+        last_kept_comma: None,
+    };
+    let mut escape = false;
+    for (i, c) in s[start..].char_indices() {
+        if scan.in_string {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                scan.in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => scan.in_string = true,
+            '{' => scan.closers.push('}'),
+            '[' => scan.closers.push(']'),
+            '}' | ']' => {
+                scan.closers.pop();
+            }
+            ',' if scan.closers.len() <= KEEP_DEPTH => {
+                scan.last_kept_comma = Some((start + i, scan.closers.clone()));
+            }
+            _ => {}
+        }
+    }
+    scan
+}
+
 /// Truncates `raw` to at most 200 chars (char-safe) for embedding in an
 /// extraction error message/event — long raw model output shouldn't blow up
 /// the error surfaced to the frontend.
@@ -690,10 +818,13 @@ fn raw_to_summary_doc(parsed: RawSummary) -> SummaryDoc {
         .collect();
     SummaryDoc {
         truncated: false,
+        cut_off: false,
         summary: parsed.summary,
         topics,
         decisions: parsed.decisions,
         action_items,
+        speaker_mentions: Vec::new(),
+        style: None,
     }
 }
 
@@ -853,6 +984,16 @@ pub struct SummaryExtraction {
     pub suggested_title: String,
 }
 
+impl SummaryExtraction {
+    fn from_raw(mut parsed: RawSummary) -> Self {
+        let suggested_title = std::mem::take(&mut parsed.title);
+        Self {
+            doc: raw_to_summary_doc(parsed),
+            suggested_title,
+        }
+    }
+}
+
 /// Tolerantly extracts a [`SummaryExtraction`] from a model's raw
 /// generation output. Handles, in order:
 ///
@@ -867,9 +1008,17 @@ pub struct SummaryExtraction {
 ///    prose), or balances *and* parses but converts to an empty
 ///    [`SummaryDoc`] (see [`is_nonempty_summary`] — e.g. an incidental
 ///    `{"status": "open", "id": 42}` object with no summary-shaped keys at
-///    all), the scan resumes just past that `{` and tries the next one, up
-///    to [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on (or
+///    all), the scan moves on and tries the next one, up to
+///    [`MAX_JSON_CANDIDATES`] attempts — rather than giving up on (or
 ///    settling for) the first candidate.
+///
+/// An object nested in a failed candidate is not the answer (issue #45): a
+/// Detailed answer's topics are objects with a `title` and a `summary`, so
+/// the first one parses as a whole summary. Two rules keep it out. A
+/// candidate that never balances is an answer that stopped early, so it is
+/// closed with [`close_cut_off_json`] and kept, marked
+/// [`SummaryDoc::cut_off`]. A candidate that balances but is not valid JSON
+/// is skipped whole, nested objects included.
 ///
 /// A valid-but-empty candidate is remembered (only the first one — later
 /// empty candidates don't overwrite it) rather than discarded outright: if
@@ -941,21 +1090,38 @@ fn extract_summary_parts(raw: &str) -> Result<SummaryExtraction> {
 
         match balanced_json_object_at(&cleaned, start) {
             Some(candidate) => match serde_json::from_str::<RawSummary>(candidate) {
-                Ok(mut parsed) => {
-                    let suggested_title = std::mem::take(&mut parsed.title);
-                    let extraction = SummaryExtraction {
-                        doc: raw_to_summary_doc(parsed),
-                        suggested_title,
-                    };
+                Ok(parsed) => {
+                    let extraction = SummaryExtraction::from_raw(parsed);
                     if is_nonempty_summary(&extraction.doc) {
                         break extraction;
                     }
                     first_empty_candidate.get_or_insert(extraction);
                     search_from = start + 1;
                 }
-                Err(_) => search_from = start + 1,
+                Err(_) => search_from = start + candidate.len(),
             },
-            None => search_from = start + 1,
+            None => {
+                let closed = close_missing_brackets(&cleaned, start).and_then(|(closed, cut_off)| {
+                    let raw = serde_json::from_str::<RawSummary>(&closed).ok()?;
+                    let mut extraction = SummaryExtraction::from_raw(raw);
+                    extraction.doc.cut_off = cut_off;
+                    Some(extraction)
+                });
+                if let Some(extraction) = closed.filter(|extraction| is_nonempty_summary(&extraction.doc)) {
+                    break extraction;
+                }
+                let cut_off = close_cut_off_json(&cleaned, start)
+                    .and_then(|closed| serde_json::from_str::<RawSummary>(&closed).ok())
+                    .map(SummaryExtraction::from_raw)
+                    .filter(|extraction| is_nonempty_summary(&extraction.doc));
+                if let Some(mut extraction) = cut_off {
+                    extraction.doc.cut_off = true;
+                    break extraction;
+                }
+                // Not a cut-off answer: a stray `{` in prose ahead of the
+                // real object. Keep looking inside it.
+                search_from = start + 1;
+            }
         }
     };
 
@@ -978,6 +1144,7 @@ fn extract_summary_parts(raw: &str) -> Result<SummaryExtraction> {
 /// automatically rather than requiring every call site to remember to.
 struct LoadedModel {
     model_id: String,
+    family: PromptFamily,
     backend: LlamaBackend,
     model: LlamaModel,
     /// Context window this model's generations run with — decided once at
@@ -1075,11 +1242,9 @@ pub struct GenerationCancel(pub Arc<AtomicBool>);
 /// [`GenerationCancel`]) so `app.manage` can hold a third bare
 /// `Arc<AtomicBool>` without colliding with [`LlmBusy`].
 ///
-/// Deliberately not consulted by [`drain_summarize_queue`]: the drain
-/// runs when a generation just *finished*, and skipping it there would
-/// strand the queue with nothing scheduled to drain it later —
-/// `stop_recording`'s own drain call is the recording-aware entry point.
-/// Asks are also exempt: an ask during a recording is an explicit user
+/// [`drain_summarize_queue`] honors it too, so a generation that ends
+/// mid-recording does not start the next note; `stop_recording` drains
+/// once the gate is down. Asks are exempt: an ask during a recording is an explicit user
 /// action, and the generation timeout bounds it either way.
 pub struct RecordingGate(pub Arc<AtomicBool>);
 
@@ -1189,6 +1354,25 @@ fn try_claim_busy(busy: &LlmBusy) -> bool {
         .is_ok()
 }
 
+/// One note waiting in the [`SummarizeQueue`].
+pub struct QueuedSummarize {
+    pub ctx: SummarizeWorkerCtx,
+    /// When the note joined the queue, in milliseconds since the Unix
+    /// epoch. A repeat request keeps it: the note has waited since the
+    /// first one. Sent to the frontend so it can say how long (issue #44).
+    pub queued_at_ms: u64,
+    /// Set by [`start_queued_summarize_now`]: the user asked for this note
+    /// now, so a live recording no longer holds it back.
+    pub ignore_recording: bool,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since_epoch| since_epoch.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Notes waiting for the engine, oldest first (issue #11).
 ///
 /// Holds whole [`SummarizeWorkerCtx`] values rather than note ids, which is
@@ -1205,7 +1389,7 @@ fn try_claim_busy(busy: &LlmBusy) -> bool {
 ///
 /// Type alias plus free functions rather than a method-bearing struct, to
 /// match `store::SharedStore` and `download::DownloadRegistry`.
-pub type SummarizeQueue = Arc<Mutex<VecDeque<SummarizeWorkerCtx>>>;
+pub type SummarizeQueue = Arc<Mutex<VecDeque<QueuedSummarize>>>;
 
 /// Creates an empty, ready-to-`app.manage()` summarize queue.
 pub(crate) fn open_summarize_queue() -> SummarizeQueue {
@@ -1215,7 +1399,7 @@ pub(crate) fn open_summarize_queue() -> SummarizeQueue {
 /// Locks the queue, recovering from poisoning instead of propagating it —
 /// same rationale as `store::lock_store`: one panicking worker must not
 /// brick every later summarization for the rest of the session.
-fn lock_summarize_queue(queue: &SummarizeQueue) -> MutexGuard<'_, VecDeque<SummarizeWorkerCtx>> {
+fn lock_summarize_queue(queue: &SummarizeQueue) -> MutexGuard<'_, VecDeque<QueuedSummarize>> {
     queue
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1242,49 +1426,88 @@ pub enum SummarizeDisposition {
 /// dropped on the floor.
 ///
 /// Deduplicates on note id. Three Regenerate clicks against a blocked note
-/// enqueue once and report [`SummarizeDisposition::AlreadyQueued`] twice —
-/// the caller re-emits `Queued` either way, so the UI stays correct without
-/// the note being summarized three times in a row.
+/// enqueue once and report [`SummarizeDisposition::AlreadyQueued`] twice.
+/// A re-request replaces the stored context in place, keeping its position
+/// and its `queued_at_ms` (issue #41): the newest request carries the
+/// freshest model snapshot.
+///
 /// `defer` (issue #35): `true` while a recording is live — the request
 /// joins the queue even when the engine is free, so the LLM never loads
 /// onto the GPU next to the recording's Whisper context. Callers read it
 /// from [`RecordingGate`]; a plain `bool` here keeps this function pure
 /// and testable.
+///
+/// Emits the `queued` status itself, through `ctx.emit`, while it holds the
+/// queue lock. A drain cannot see the entry until the lock is released, so
+/// the note's `running` event can never arrive before its `queued` one.
+///
+/// The queue lock is held across the busy claim (issue #44). Checking
+/// `busy` first and locking the queue second left a gap: the running
+/// worker could release `busy` and drain an empty queue inside it, and the
+/// note then sat in the queue with an idle engine and nothing left to
+/// start it. [`drain_summarize_queue`] takes the same lock for its own
+/// claim, so one of the two always sees the other's effect.
 pub fn spawn_or_enqueue_summarize(
     queue: &SummarizeQueue,
     ctx: SummarizeWorkerCtx,
     defer: bool,
 ) -> SummarizeDisposition {
+    let mut pending = lock_summarize_queue(queue);
+    let waiting = pending
+        .iter()
+        .position(|queued| queued.ctx.note_id == ctx.note_id);
+
     if !defer && try_claim_busy(&ctx.busy) {
+        // The note may still hold a place in line from a request that was
+        // deferred behind a recording; starting it now uses that place up.
+        if let Some(index) = waiting {
+            pending.remove(index);
+        }
+        drop(pending);
         SummarizeWorker::spawn(ctx);
         return SummarizeDisposition::Started;
     }
-    let mut pending = lock_summarize_queue(queue);
-    // Issue #41: a re-request of an already-waiting note replaces the
-    // stored context in place (keeping its FIFO position) — the newest
-    // request carries the freshest model snapshot, and silently dropping
-    // it made a post-settings-change Regenerate a no-op.
-    if let Some(slot) = pending.iter_mut().find(|queued| queued.note_id == ctx.note_id) {
-        *slot = ctx;
-        return SummarizeDisposition::AlreadyQueued;
+
+    let queued_at_ms = match waiting {
+        Some(index) => pending[index].queued_at_ms,
+        None => now_ms(),
+    };
+    (ctx.emit)(SummaryEvent::SummaryStatus(SummaryStatusPayload {
+        note_id: ctx.note_id.clone(),
+        state: SummaryStatusState::Queued,
+        error: None,
+        queued_at: Some(queued_at_ms),
+    }));
+    match waiting {
+        Some(index) => {
+            pending[index].ctx = ctx;
+            SummarizeDisposition::AlreadyQueued
+        }
+        None => {
+            pending.push_back(QueuedSummarize {
+                ctx,
+                queued_at_ms,
+                ignore_recording: false,
+            });
+            SummarizeDisposition::Queued
+        }
     }
-    pending.push_back(ctx);
-    SummarizeDisposition::Queued
 }
 
 /// Starts the next queued summarization if the engine is free. Called by
 /// every worker on its way out, *after* its [`BusyGuard`] has released.
 ///
-/// Losing the claim puts the context back at the front rather than
-/// dropping or retrying it: whoever won is itself a generation, and will
-/// call this same function when it finishes. So the queue always has a
-/// scheduled drain in flight and nothing is stranded — without this
-/// function ever needing to hold `busy` and the queue lock together.
+/// Losing the claim leaves the note where it is: whoever won is itself a
+/// generation, and will call this same function when it finishes. So the
+/// queue always has a scheduled drain in flight and nothing is stranded.
+/// The claim is made under the queue lock for the reason
+/// [`spawn_or_enqueue_summarize`] gives.
 ///
 /// Not done in [`BusyGuard`]'s `Drop`: spawning a thread while unwinding a
 /// panic is how a crash becomes a hang.
 pub fn drain_summarize_queue(queue: &SummarizeQueue, busy: &LlmBusy) {
-    let Some(ctx) = lock_summarize_queue(queue).pop_front() else {
+    let mut pending = lock_summarize_queue(queue);
+    let Some(front) = pending.front() else {
         return;
     };
     // Issue #35: a worker finishing mid-recording must not start the next
@@ -1292,28 +1515,76 @@ pub fn drain_summarize_queue(queue: &SummarizeQueue, busy: &LlmBusy) {
     // contention the queue entry was deferred to avoid. Every entry's
     // `recording` is a clone of the one app-wide [`RecordingGate`], so the
     // front entry speaks for all of them; `stop_recording` re-drains once
-    // the gate is down.
-    if ctx.recording.load(Ordering::SeqCst) {
-        lock_summarize_queue(queue).push_front(ctx);
+    // the gate is down. A note the user asked for now is at the front and
+    // does not wait.
+    let held_by_recording = !front.ignore_recording && front.ctx.recording.load(Ordering::SeqCst);
+    if held_by_recording || !try_claim_busy(busy) {
         return;
     }
-    if try_claim_busy(busy) {
-        SummarizeWorker::spawn(ctx);
-    } else {
-        lock_summarize_queue(queue).push_front(ctx);
+    let next = pending.pop_front();
+    drop(pending);
+    if let Some(next) = next {
+        SummarizeWorker::spawn(next.ctx);
     }
 }
 
 /// Removes `note_id`'s waiting entry from the queue, if it has one —
-/// `cancel_summarize`'s queued-note path. Returning the removed context
+/// `cancel_summarize`'s queued-note path. Returning the removed entry
 /// (rather than a bool) is what lets the command emit the terminal
 /// `summary-status` event through the same `emit` closure the worker
 /// would have used, so a cancelled queued note resolves exactly like a
 /// failed one from the frontend's point of view.
-pub fn remove_queued_summarize(queue: &SummarizeQueue, note_id: &str) -> Option<SummarizeWorkerCtx> {
+pub fn remove_queued_summarize(queue: &SummarizeQueue, note_id: &str) -> Option<QueuedSummarize> {
     let mut pending = lock_summarize_queue(queue);
-    let index = pending.iter().position(|queued| queued.note_id == note_id)?;
+    let index = pending
+        .iter()
+        .position(|queued| queued.ctx.note_id == note_id)?;
     pending.remove(index)
+}
+
+/// What [`start_queued_summarize_now`] did with a waiting note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SummarizeNowOutcome {
+    /// The engine was free — the note is running.
+    Started,
+    /// Another generation is running. The note moved to the front of the
+    /// queue and starts when that one ends, recording or not.
+    Next,
+    /// The note was not waiting: it already started, or was cancelled.
+    NotQueued,
+}
+
+/// Starts a waiting note on the user's say-so (issue #44), without waiting
+/// for a live recording to end. Waiting behind a recording is the one wait
+/// with no bound, and the user may rather have the summary than the
+/// protection from a slow generation. Asks are exempt from the recording
+/// gate for the same reason.
+///
+/// Only one generation runs at a time, so a busy engine still wins: the
+/// note moves to the front instead and no longer waits for the recording.
+pub fn start_queued_summarize_now(
+    queue: &SummarizeQueue,
+    busy: &LlmBusy,
+    note_id: &str,
+) -> SummarizeNowOutcome {
+    let mut pending = lock_summarize_queue(queue);
+    let waiting = pending
+        .iter()
+        .position(|queued| queued.ctx.note_id == note_id)
+        .and_then(|index| pending.remove(index));
+    let Some(mut entry) = waiting else {
+        return SummarizeNowOutcome::NotQueued;
+    };
+    if try_claim_busy(busy) {
+        drop(pending);
+        SummarizeWorker::spawn(entry.ctx);
+        SummarizeNowOutcome::Started
+    } else {
+        entry.ignore_recording = true;
+        pending.push_front(entry);
+        SummarizeNowOutcome::Next
+    }
 }
 
 /// Floor context window (tokens) — what machines under 16 GB of RAM get,
@@ -1391,6 +1662,7 @@ const SAMPLER_SEED: u32 = 1_746_312_558;
 const ASK_GENERATION_PARAMS: GenerationParams = GenerationParams {
     temperature: 0.2,
     max_tokens: 512,
+    max_tokens_with_room: 512,
 };
 
 impl LlmEngineState {
@@ -1437,14 +1709,24 @@ impl LlmEngineState {
 
         let n_ctx_train = model.n_ctx_train();
         let ctx_tokens = resolve_context_tokens(preferred_context, n_ctx_train);
+        let architecture = model
+            .meta_val_str("general.architecture")
+            .unwrap_or_default();
+        let chat_template = model
+            .chat_template(None)
+            .ok()
+            .and_then(|t| t.to_string().ok())
+            .unwrap_or_default();
+        let family = PromptFamily::from_model(&architecture, &chat_template);
         log::info!(
             "llm: loaded {model_id} ({model_path:?}) in {:?}, context {ctx_tokens} tokens \
-             (trained ctx {n_ctx_train})",
+             (trained ctx {n_ctx_train}), architecture {architecture:?} ({family:?})",
             load_start.elapsed()
         );
 
         self.loaded = Some(LoadedModel {
             model_id: model_id.to_string(),
+            family,
             backend,
             model,
             ctx_tokens,
@@ -1682,7 +1964,34 @@ pub fn spawn_janitor(engine: SharedLlmEngine, busy: LlmBusy) -> std::thread::Joi
 #[derive(Debug, Clone, Copy)]
 pub struct GenerationParams {
     pub temperature: f32,
+    /// Response room that is always reserved: a prompt must leave this
+    /// much of the context free, or it is shrunk to fit.
     pub max_tokens: usize,
+    /// How far the response may run when the context has room left after
+    /// the prompt (issue #45) — see [`response_token_limit`]. Equal to
+    /// `max_tokens` for a response that never needs more.
+    pub max_tokens_with_room: usize,
+}
+
+/// Response room a Detailed summary may use when the context has it.
+/// Measured with Qwen3.5-4B on a 36-topic, one-hour meeting: the full
+/// answer was 15,100 bytes, about 3,300 tokens, and at the 2,560 reserved
+/// it stopped inside the action items. Twice the reservation covers that
+/// with margin, and a model stuck repeating itself still stops here.
+const DETAILED_MAX_TOKENS_WITH_ROOM: usize = 5_120;
+
+/// How many tokens one generation may produce: the reserved `max_tokens`,
+/// stretched toward `max_tokens_with_room` by whatever the context has
+/// left after the prompt. Reserving the larger number up front instead
+/// would cut that much more transcript out of every long meeting; this way
+/// a short prompt gets the room and a long one keeps its transcript.
+fn response_token_limit(
+    params: GenerationParams,
+    prompt_tokens: usize,
+    context_tokens: usize,
+) -> usize {
+    let room = context_tokens.saturating_sub(prompt_tokens);
+    params.max_tokens_with_room.min(room).max(params.max_tokens)
 }
 
 impl Default for GenerationParams {
@@ -1693,6 +2002,7 @@ impl Default for GenerationParams {
         Self {
             temperature: 0.3,
             max_tokens: MAX_GENERATION_TOKENS,
+            max_tokens_with_room: MAX_GENERATION_TOKENS,
         }
     }
 }
@@ -1704,25 +2014,34 @@ impl Default for GenerationParams {
 /// [`GenerationParams::default`] exactly, so the default style behaves
 /// byte-for-byte like the app did before styles existed.
 pub(crate) const fn generation_params_for(style: SummaryStyle) -> GenerationParams {
+    let max_tokens = reserved_response_tokens(style);
     GenerationParams {
         temperature: 0.3,
-        max_tokens: match style {
-            SummaryStyle::Short => 512,
-            SummaryStyle::Standard => MAX_GENERATION_TOKENS,
-            // Raised from 1536 for issue #14's topic breakdown. Not free:
-            // `run_summarize` derives the transcript budget as
-            // `ctx_tokens - max_tokens`, so on the 8k floor context this is
-            // 1024 fewer tokens of transcript — more truncation of the very
-            // meeting we're trying to cover topic by topic. 2560 is the
-            // balance point: a typical breakdown (overview + ~6 topics +
-            // decisions + actions) runs 700-900 tokens, and this leaves
-            // headroom for a dozen topics without over-reserving.
-            // `generate_fitting_transcript` shrinks the transcript rather
-            // than failing when it doesn't fit, and Detailed is opt-in —
-            // both are why this cost is acceptable here and would not be as
-            // a default.
-            SummaryStyle::Detailed => 2_560,
+        max_tokens,
+        max_tokens_with_room: match style {
+            SummaryStyle::Detailed => DETAILED_MAX_TOKENS_WITH_ROOM,
+            SummaryStyle::Short | SummaryStyle::Standard => max_tokens,
         },
+    }
+}
+
+const fn reserved_response_tokens(style: SummaryStyle) -> usize {
+    match style {
+        SummaryStyle::Short => 512,
+        SummaryStyle::Standard => MAX_GENERATION_TOKENS,
+        // Raised from 1536 for issue #14's topic breakdown. Not free:
+        // `run_summarize` derives the transcript budget as
+        // `ctx_tokens - max_tokens`, so on the 8k floor context this is
+        // 1024 fewer tokens of transcript — more truncation of the very
+        // meeting we're trying to cover topic by topic. 2560 is the
+        // balance point: a typical breakdown (overview + ~6 topics +
+        // decisions + actions) runs 700-900 tokens, and this leaves
+        // headroom for a dozen topics without over-reserving.
+        // `generate_fitting_transcript` shrinks the transcript rather
+        // than failing when it doesn't fit, and Detailed is opt-in —
+        // both are why this cost is acceptable here and would not be as
+        // a default.
+        SummaryStyle::Detailed => 2_560,
     }
 }
 
@@ -1753,10 +2072,67 @@ const NO_THINK_TAG: &str = "/no_think";
 /// preamble, but this prefill does.
 const NO_THINK_PREFILL: &str = "<think>\n\n</think>\n\n";
 
+/// The prompt conventions a loaded model needs, chosen from the GGUF's own
+/// `general.architecture` metadata. The model id cannot decide this: ids
+/// are arbitrary Hugging Face file names once the catalog is pulled live,
+/// while the architecture is written into the file by the converter.
+///
+/// An architecture gets a variant only when the generic path
+/// (`apply_chat_template`, then the ChatML fallback) was shown to fail for
+/// it against a real GGUF. Everything else is [`PromptFamily::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptFamily {
+    /// `qwen35`: Qwen3.5 and its fine-tunes. Thinks unless prefilled.
+    Qwen35,
+    /// `gemma4`: llama.cpp cannot format its `<|turn>` template.
+    Gemma4,
+    /// `gemma4` builds whose baked template ends the non-thinking generation
+    /// prompt with an empty thought channel (Gemma 4 12B). Without it the
+    /// model writes those markers itself, and they leak into Ask answers.
+    Gemma4EmptyThought,
+    /// `lfm2`/`lfm2moe` builds whose baked template opens a `<think>` block
+    /// in the generation prompt (LFM2.5-2.6B). They reason until the token
+    /// cap unless prefilled. Other LFM2 builds (LFM2-2.6B-Transcript) have
+    /// no such template and stay [`PromptFamily::Other`].
+    Lfm2Reasoning,
+    Other,
+}
+
+/// How the reasoning LFM2.5 templates end their generation prompt, as it is
+/// spelled in the Jinja source (the `\n` is the two-character escape).
+const LFM2_REASONING_TEMPLATE_MARKER: &str = r"assistant\n<think>";
+
+/// Closes the `<think>` block for [`PromptFamily::Lfm2Reasoning`]. Verified
+/// against the real LFM2.5-2.6B GGUF: without it every generation ended at
+/// the token cap still reasoning, with it the answer starts at once.
+const LFM2_NO_THINK_PREFILL: &str = "<think>\n</think>\n";
+
+/// The empty thought channel of the newer Gemma 4 templates, as spelled in
+/// the Jinja source and as emitted.
+const GEMMA4_EMPTY_THOUGHT_TEMPLATE_MARKER: &str = r"<|channel>thought\n<channel|>";
+const GEMMA4_EMPTY_THOUGHT: &str = "<|channel>thought\n<channel|>";
+
+impl PromptFamily {
+    /// `chat_template` is the GGUF's baked `tokenizer.chat_template` source,
+    /// used only to tell apart builds that share one architecture.
+    fn from_model(architecture: &str, chat_template: &str) -> Self {
+        match architecture {
+            "qwen35" => Self::Qwen35,
+            "gemma4" if chat_template.contains(GEMMA4_EMPTY_THOUGHT_TEMPLATE_MARKER) => {
+                Self::Gemma4EmptyThought
+            }
+            "gemma4" => Self::Gemma4,
+            "lfm2" | "lfm2moe" if chat_template.contains(LFM2_REASONING_TEMPLATE_MARKER) => {
+                Self::Lfm2Reasoning
+            }
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Appends [`NO_THINK_PREFILL`] after `templated`'s trailing
-/// `<|im_start|>assistant\n` — but only when `model_id` looks like a Qwen
-/// model (`starts_with("qwen")`, matching the catalog's id convention, e.g.
-/// `qwen3.5-4b`/`qwen3.5-9b`). The prefill was verified (see
+/// `<|im_start|>assistant\n` — but only for [`PromptFamily::Qwen35`]
+/// (the catalog's `qwen3.5-4b`/`qwen3.5-9b`). The prefill was verified (see
 /// [`NO_THINK_PREFILL`]'s docs and [`tests::real_llm_summarizes_transcript`])
 /// against Qwen3.5-4B's specific baked chat template only — its exact
 /// content (`<think>\n\n</think>\n\n`) is read directly out of *that*
@@ -1764,13 +2140,16 @@ const NO_THINK_PREFILL: &str = "<think>\n\n</think>\n\n";
 /// constant. Another model family (Gemma, etc.) has an entirely different
 /// template and no reason to expect this same literal string reproduces
 /// *its* non-thinking branch — it could just as easily corrupt that
-/// template's structure as help, so non-Qwen model ids get the templated
+/// template's structure as help, so other families get the templated
 /// prompt untouched instead of a blind guess.
-fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
-    if model_id.starts_with("qwen") {
-        format!("{templated}{NO_THINK_PREFILL}")
-    } else {
-        templated.to_string()
+fn apply_no_think_prefill(templated: &str, family: PromptFamily) -> String {
+    match family {
+        PromptFamily::Qwen35 => format!("{templated}{NO_THINK_PREFILL}"),
+        PromptFamily::Lfm2Reasoning => format!("{templated}{LFM2_NO_THINK_PREFILL}"),
+        // Both Gemma 4 families are formatted by `manual_chat_prompt`.
+        PromptFamily::Gemma4 | PromptFamily::Gemma4EmptyThought | PromptFamily::Other => {
+            templated.to_string()
+        }
     }
 }
 
@@ -1793,14 +2172,19 @@ fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
 /// content, `<turn|>\n`, then `<|turn>model\n`. Other unrecognized
 /// families fall back to plain ChatML — the same shape llama.cpp itself
 /// used as a fallback in versions that had one.
-fn manual_chat_prompt(model_id: &str, content: &str) -> String {
-    if model_id.starts_with("gemma") {
-        format!("<|turn>user\n{}<turn|>\n<|turn>model\n", content.trim())
-    } else {
-        format!(
+fn manual_chat_prompt(family: PromptFamily, content: &str) -> String {
+    match family {
+        PromptFamily::Gemma4 => {
+            format!("<|turn>user\n{}<turn|>\n<|turn>model\n", content.trim())
+        }
+        PromptFamily::Gemma4EmptyThought => format!(
+            "<|turn>user\n{}<turn|>\n<|turn>model\n{GEMMA4_EMPTY_THOUGHT}",
+            content.trim()
+        ),
+        PromptFamily::Qwen35 | PromptFamily::Lfm2Reasoning | PromptFamily::Other => format!(
             "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
             content.trim()
-        )
+        ),
     }
 }
 
@@ -1853,10 +2237,10 @@ fn generate_with_loaded(
     params: &GenerationParams,
     cancel: &AtomicBool,
 ) -> Result<String> {
-    // Qwen's `/no_think` suffix is only appended for Qwen ids — it's that
+    // Qwen's `/no_think` suffix is only appended for Qwen models — it's that
     // family's own convention; to any other model it's just a stray line
     // of user content.
-    let content = if loaded.model_id.starts_with("qwen") {
+    let content = if loaded.family == PromptFamily::Qwen35 {
         format!("{prompt}\n{NO_THINK_TAG}")
     } else {
         prompt.to_string()
@@ -1877,14 +2261,14 @@ fn generate_with_loaded(
                 .apply_chat_template(&tmpl, &messages, true)
                 .map_err(|e| e.to_string())
         }) {
-        Ok(templated) => apply_no_think_prefill(&templated, &loaded.model_id),
+        Ok(templated) => apply_no_think_prefill(&templated, loaded.family),
         Err(e) => {
             log::warn!(
                 "llm: chat template application failed for {} ({e}); using the built-in \
                  fallback format",
                 loaded.model_id
             );
-            manual_chat_prompt(&loaded.model_id, &content)
+            manual_chat_prompt(loaded.family, &content)
         }
     };
 
@@ -1963,6 +2347,7 @@ fn generate_with_loaded(
     let mut output_bytes: Vec<u8> = Vec::new();
     let mut n_cur = batch.n_tokens();
     let mut generated = 0usize;
+    let token_limit = response_token_limit(*params, prompt_tokens.len(), context_budget);
 
     loop {
         generation_gate(cancel, deadline, Instant::now())?;
@@ -1979,7 +2364,7 @@ fn generate_with_loaded(
         output_bytes.extend_from_slice(&piece);
 
         generated += 1;
-        if generated >= params.max_tokens {
+        if generated >= token_limit {
             break;
         }
 
@@ -2142,6 +2527,9 @@ pub struct SummaryStatusPayload {
     pub note_id: String,
     pub state: SummaryStatusState,
     pub error: Option<String>,
+    /// Set only on `queued`: when the note joined the queue, in
+    /// milliseconds since the Unix epoch (see [`QueuedSummarize`]).
+    pub queued_at: Option<u64>,
 }
 
 /// Events a summarization worker emits — captured directly by tests via an
@@ -2175,20 +2563,7 @@ pub fn emit_summary_status_error(app: &AppHandle, note_id: &str, error: &str) {
         note_id: note_id.to_string(),
         state: SummaryStatusState::Error,
         error: Some(error.to_string()),
-    }));
-}
-
-/// Emits a one-shot `summary-status` queued event (issue #11) — the note is
-/// waiting behind another generation and will start on its own.
-///
-/// Emitted by whoever *enqueued*, not by a worker: the whole point is that
-/// no worker exists for this note yet. The `Running` event still comes from
-/// the worker when its turn arrives.
-pub fn emit_summary_status_queued(app: &AppHandle, note_id: &str) {
-    tauri_emit(app.clone())(SummaryEvent::SummaryStatus(SummaryStatusPayload {
-        note_id: note_id.to_string(),
-        state: SummaryStatusState::Queued,
-        error: None,
+        queued_at: None,
     }));
 }
 
@@ -2523,7 +2898,7 @@ pub async fn ask_note(
         let guard = settings::lock_settings(&settings);
         (guard.llm_model.clone(), guard.llm_context_tokens)
     };
-    let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
+    let installed_entry = catalog::merged_catalog(&models_root).ok().and_then(|catalog| {
         let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
         catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
     });
@@ -2682,6 +3057,7 @@ fn run_summarize_worker_with(
             note_id: ctx.note_id.clone(),
             state: SummaryStatusState::Running,
             error: None,
+            queued_at: None,
         }));
 
         // Issue #21: a panic (realistically: inside llama.cpp's FFI) must
@@ -2705,6 +3081,7 @@ fn run_summarize_worker_with(
                     note_id: ctx.note_id.clone(),
                     state: SummaryStatusState::Error,
                     error: Some(e.to_string()),
+                    queued_at: None,
                 }));
             }
             Ok(()) => {
@@ -2712,6 +3089,7 @@ fn run_summarize_worker_with(
                     note_id: ctx.note_id.clone(),
                     state: SummaryStatusState::Done,
                     error: None,
+                    queued_at: None,
                 }));
             }
         }
@@ -2801,7 +3179,8 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
     // Issue #41: carry the fitting loop's verdict onto the persisted doc
     // so the panel can say "this covers only part of the recording".
     summary.truncated = transcript_truncated;
-    lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary)?;
+    summary.style = Some(summary_style);
+    lock_store(&ctx.store).write_summary_and_finalize(&ctx.note_id, &summary, &transcript)?;
 
     // Issue #12: a note the user never named takes the title the model
     // suggested. Deliberately after the summary is safely on disk, and
@@ -2827,6 +3206,10 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
             );
         }
     }
+
+    // Issue #47: after the rename, so the file name uses the final title.
+    // Infallible by construction; an export failure never fails the summary.
+    crate::obsidian::export_after_summary(&ctx.store, &ctx.settings, &ctx.note_id);
     Ok(())
 }
 
@@ -2844,8 +3227,9 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
 ///   `Err("no summary model installed")`; the note's `meta.json` is
 ///   untouched either way.
 /// - Engine free -> spawns a [`SummarizeWorker`] and returns `Ok(())`.
-/// - Engine busy -> queues the note and emits `summary-status` `queued`,
-///   still returning `Ok(())` (issue #11). There is deliberately no
+/// - Engine busy, or a recording is live -> queues the note, which emits
+///   `summary-status` `queued` with the time it joined the queue, still
+///   returning `Ok(())` (issue #11). There is deliberately no
 ///   busy `Err` any more: a rejected summary is one the user has to
 ///   remember to re-request, which is the whole complaint.
 ///
@@ -2874,7 +3258,7 @@ pub async fn summarize_note(
     // (issue #41), so a queued note honors the settings current when it
     // actually runs.
     let model_id = settings::lock_settings(&settings).llm_model.clone();
-    let installed_entry = catalog::load_catalog().ok().and_then(|catalog| {
+    let installed_entry = catalog::merged_catalog(&models_root).ok().and_then(|catalog| {
         let recommendation = catalog::recommend(&catalog, &catalog::detect_hardware());
         catalog::resolve_llm_entry(&catalog, &recommendation, model_id.as_deref(), &models_root)
     });
@@ -2888,11 +3272,11 @@ pub async fn summarize_note(
     let model_path = catalog::installed_path(&entry, &models_root);
     let emit = Box::new(tauri_emit(app.clone()));
 
-    let disposition = spawn_or_enqueue_summarize(
+    spawn_or_enqueue_summarize(
         &queue,
         SummarizeWorkerCtx {
             recording: recording.0.clone(),
-            note_id: id.clone(),
+            note_id: id,
             store: store.inner().clone(),
             engine: engine.inner().clone(),
             busy: busy.inner().clone(),
@@ -2905,15 +3289,6 @@ pub async fn summarize_note(
         // Issue #35: a Regenerate during a live recording waits its turn.
         recording.0.load(Ordering::SeqCst),
     );
-
-    // `AlreadyQueued` re-emits too: the caller clicked Regenerate again, and
-    // the honest answer to "what is this note doing" is still "waiting".
-    if matches!(
-        disposition,
-        SummarizeDisposition::Queued | SummarizeDisposition::AlreadyQueued
-    ) {
-        emit_summary_status_queued(&app, &id);
-    }
     Ok(())
 }
 
@@ -2943,7 +3318,7 @@ pub async fn cancel_summarize(
     id: String,
 ) -> std::result::Result<(), String> {
     if let Some(removed) = remove_queued_summarize(&queue, &id) {
-        emit_summary_status_error(&app, &removed.note_id, "summary cancelled");
+        emit_summary_status_error(&app, &removed.ctx.note_id, "summary cancelled");
         return Ok(());
     }
     if busy.load(Ordering::SeqCst) {
@@ -2952,9 +3327,31 @@ pub async fn cancel_summarize(
     Ok(())
 }
 
+/// Starts note `id`'s waiting summary now (issue #44) — the "Summarize
+/// now" button beside a summary that has waited. See
+/// [`start_queued_summarize_now`] for what each outcome means. A note that
+/// is not waiting resolves `notQueued` (a stale click), never an error.
+#[tauri::command]
+pub async fn summarize_now(
+    queue: State<'_, SummarizeQueue>,
+    busy: State<'_, LlmBusy>,
+    id: String,
+) -> std::result::Result<SummarizeNowOutcome, String> {
+    Ok(start_queued_summarize_now(&queue, &busy, &id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A queue entry as a plain request leaves it.
+    fn waiting(ctx: SummarizeWorkerCtx) -> QueuedSummarize {
+        QueuedSummarize {
+            ctx,
+            queued_at_ms: now_ms(),
+            ignore_recording: false,
+        }
+    }
 
     /// [`extract_summary_parts`] with the suggested title dropped.
     ///
@@ -2978,7 +3375,7 @@ mod tests {
 
     fn seg(speaker: &str, start: f64, text: &str) -> StoredSegment {
         StoredSegment {
-            speaker: speaker.to_string(),
+            speaker: speaker.into(),
             start,
             end: start + 1.0,
             text: text.to_string(),
@@ -3215,6 +3612,38 @@ mod tests {
     }
 
     #[test]
+    fn a_detailed_summary_may_run_past_its_reservation_when_the_context_has_room() {
+        let detailed = generation_params_for(SummaryStyle::Detailed);
+        // A 9k-token prompt in a 32k context leaves far more than the cap.
+        assert_eq!(
+            response_token_limit(detailed, 9_000, 32_768),
+            DETAILED_MAX_TOKENS_WITH_ROOM
+        );
+        // 4,000 tokens of room: more than the reservation, less than the cap.
+        assert_eq!(response_token_limit(detailed, 4_192, 8_192), 4_000);
+        // A prompt that fills the context gets exactly the reservation.
+        assert_eq!(
+            response_token_limit(detailed, 8_192 - detailed.max_tokens, 8_192),
+            detailed.max_tokens
+        );
+    }
+
+    #[test]
+    fn the_other_generations_keep_their_fixed_response_cap() {
+        for params in [
+            generation_params_for(SummaryStyle::Short),
+            generation_params_for(SummaryStyle::Standard),
+            GenerationParams::default(),
+            ASK_GENERATION_PARAMS,
+        ] {
+            assert_eq!(
+                response_token_limit(params, 1_000, 32_768),
+                params.max_tokens
+            );
+        }
+    }
+
+    #[test]
     fn short_and_detailed_styles_scale_the_response_reservation() {
         assert!(
             generation_params_for(SummaryStyle::Short).max_tokens
@@ -3224,6 +3653,32 @@ mod tests {
             generation_params_for(SummaryStyle::Detailed).max_tokens
                 > generation_params_for(SummaryStyle::Standard).max_tokens
         );
+    }
+
+    /// Issue #49: the model reads unplaced speech as "Unknown speaker",
+    /// never as a name and never as a blank.
+    #[test]
+    fn summary_prompt_shows_unknown_turns_as_unknown_speaker() {
+        let mut unknown = seg("Speaker 1", 65.0, "I can get it into the next build.");
+        unknown.speaker = crate::store::Speaker::Unknown;
+        let segments = vec![seg("Speaker 1", 0.0, "Hello."), unknown];
+        let prompt =
+            build_summary_prompt("Standup", &segments, usize::MAX, SummaryStyle::Standard, "");
+        assert!(prompt.contains("[00:00] Speaker 1: Hello.\n[01:05] Unknown speaker: I can get it"));
+    }
+
+    /// Issue #49: an undiarized transcript says "Speaker 1" for everyone,
+    /// so the prompt must not ask the model to credit tasks to speakers.
+    #[test]
+    fn summary_prompt_asks_for_owners_only_when_speakers_differ() {
+        let rule = "name that speaker exactly as the transcript writes the name";
+        let prompt = |segments: &[StoredSegment]| {
+            build_summary_prompt("Standup", segments, usize::MAX, SummaryStyle::Standard, "")
+        };
+        let one = vec![seg("Speaker 1", 0.0, "Hi."), seg("Speaker 1", 4.0, "Bye.")];
+        let two = vec![seg("Speaker 1", 0.0, "Hi."), seg("Sarah", 4.0, "Bye.")];
+        assert!(!prompt(&one).contains(rule));
+        assert!(prompt(&two).contains(rule));
     }
 
     #[test]
@@ -3832,6 +4287,42 @@ mod tests {
         assert_eq!(doc.topics.len(), 1);
     }
 
+    /// Real Detailed answers from Gemma 4 E4B and Qwen3.5 9B that stop one
+    /// `}` short. Before, the outer object failed to balance and a single
+    /// inner topic won as the whole summary.
+    #[test]
+    fn an_answer_missing_only_its_final_brace_keeps_every_member() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/llm");
+        for (file, topics, decisions) in [
+            ("missing-final-brace-gemma.txt", 4, 3),
+            ("missing-final-brace-qwen.txt", 3, 4),
+        ] {
+            let raw = std::fs::read_to_string(fixtures.join(file)).unwrap();
+            let parts = extract_summary_parts(&raw).unwrap();
+            assert_eq!(parts.doc.topics.len(), topics, "{file}: topics");
+            assert_eq!(parts.doc.decisions.len(), decisions, "{file}: decisions");
+            assert_eq!(parts.doc.action_items.len(), 4, "{file}: action items");
+            assert!(!parts.doc.cut_off, "{file}: nothing was lost");
+            assert!(!parts.suggested_title.is_empty(), "{file}: title");
+        }
+    }
+
+    #[test]
+    fn an_answer_that_stops_before_its_action_items_says_it_was_cut_off() {
+        let raw = r#"{"summary": "They set the date.", "decisions": ["Ship on the 14th"]"#;
+        let parts = extract_summary_parts(raw).unwrap();
+        assert_eq!(parts.doc.decisions, ["Ship on the 14th"]);
+        assert!(parts.doc.cut_off, "action items never arrived");
+    }
+
+    #[test]
+    fn an_answer_that_stops_inside_a_list_keeps_its_items_and_says_it_was_cut_off() {
+        let raw = r#"{"summary": "They set the date.", "decisions": ["Ship on the 14th", "Keep the 17th as fallback""#;
+        let parts = extract_summary_parts(raw).unwrap();
+        assert_eq!(parts.doc.decisions, ["Ship on the 14th", "Keep the 17th as fallback"]);
+        assert!(parts.doc.cut_off, "later members may be missing");
+    }
+
     // --- suggested title extraction (issue #12) ---------------------------------
 
     #[test]
@@ -4033,6 +4524,86 @@ mod tests {
         let raw = "prefix { unbalanced then {\"summary\": \"Found it.\", \"decisions\": [], \"action_items\": []}";
         let doc = extract_summary_json(raw).unwrap();
         assert_eq!(doc.summary, "Found it.");
+    }
+
+    // --- extract_summary_parts: answers that stop early (issue #45) -------------
+    //
+    // Generation stops at the response token cap without closing the JSON.
+    // A Detailed answer is the long one, so it is the one that gets cut. The
+    // scan then used to move on to the next `{`, which is the first topic,
+    // and a topic (`title` + `summary`) parses as a whole summary: the note
+    // got one topic's paragraph as its summary, that topic's name as its
+    // title, and no topics, decisions, or action items.
+
+    const CUT_OFF_DETAILED_ANSWER: &str = concat!(
+        r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+        r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}, "#,
+        r#"{"title": "Rollout", "summary": "Enterprise customers go first."}], "#,
+        r#""decisions": ["Ship on the 14th"], "#,
+        r#""action_items": [{"text": "Write the pricing page"}, {"text": "Email the bet"#,
+    );
+
+    #[test]
+    fn a_cut_off_detailed_answer_is_not_mistaken_for_its_first_topic() {
+        let extraction = extract_summary_parts(CUT_OFF_DETAILED_ANSWER).unwrap();
+        assert_eq!(extraction.suggested_title, "Launch planning");
+        assert_eq!(extraction.doc.summary, "The team planned the launch.");
+    }
+
+    #[test]
+    fn a_cut_off_detailed_answer_keeps_everything_that_was_finished() {
+        let doc = extract_summary_json(CUT_OFF_DETAILED_ANSWER).unwrap();
+        let topics: Vec<&str> = doc.topics.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(topics, ["Pricing", "Rollout"]);
+        assert_eq!(doc.decisions, ["Ship on the 14th"]);
+        let actions: Vec<&str> = doc.action_items.iter().map(|a| a.text.as_str()).collect();
+        assert_eq!(actions, ["Write the pricing page"]);
+    }
+
+    #[test]
+    fn only_an_answer_that_stopped_early_is_marked_cut_off() {
+        assert!(
+            extract_summary_json(CUT_OFF_DETAILED_ANSWER)
+                .unwrap()
+                .cut_off
+        );
+
+        let complete = format!(r#"{CUT_OFF_DETAILED_ANSWER}a team"}}]}}"#);
+        let doc = extract_summary_json(&complete).unwrap();
+        assert!(!doc.cut_off);
+        assert_eq!(doc.action_items.len(), 2);
+    }
+
+    #[test]
+    fn an_answer_cut_off_before_its_summary_ends_is_still_an_error() {
+        let raw = r#"{"title": "Launch planning", "summary": "The team planned the lau"#;
+        let err = extract_summary_json(raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
+    }
+
+    #[test]
+    fn an_answer_cut_off_inside_a_topic_drops_only_that_topic() {
+        let raw = concat!(
+            r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+            r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}, "#,
+            r#"{"title": "Rollout", "summary": "Enterprise custo"#,
+        );
+        let doc = extract_summary_json(raw).unwrap();
+        assert_eq!(doc.summary, "The team planned the launch.");
+        let topics: Vec<&str> = doc.topics.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(topics, ["Pricing"]);
+    }
+
+    #[test]
+    fn a_detailed_answer_that_is_not_valid_json_is_an_error_not_its_first_topic() {
+        // A trailing comma makes the whole object unparseable.
+        let raw = concat!(
+            r#"{"title": "Launch planning", "summary": "The team planned the launch.", "#,
+            r#""topics": [{"title": "Pricing", "summary": "They settled on three tiers."}], "#,
+            r#""decisions": ["Ship on the 14th",], "action_items": []}"#,
+        );
+        let err = extract_summary_json(raw).unwrap_err();
+        assert!(err.to_string().contains("no JSON object found"));
     }
 
     // --- extract_summary_json: shapeless-but-valid JSON candidates (rider) -----
@@ -4379,7 +4950,8 @@ mod tests {
 
     /// Issue #11's core behavior change: a busy engine queues instead of
     /// rejecting. Nothing is spawned (so no worker events fire), but the
-    /// note is now waiting rather than dropped.
+    /// note is now waiting rather than dropped, and says so with the time
+    /// it joined the queue.
     #[test]
     fn spawn_or_enqueue_summarize_queues_when_already_busy_and_spawns_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -4410,9 +4982,19 @@ mod tests {
         );
 
         assert_eq!(disposition, SummarizeDisposition::Queued);
-        assert_eq!(lock_summarize_queue(&queue).len(), 1);
-        // Nothing spawned — no worker ever ran, so no events fired either.
-        assert!(events.lock().unwrap().is_empty());
+        let pending = lock_summarize_queue(&queue);
+        assert_eq!(pending.len(), 1);
+        // Nothing spawned — no worker ever ran, so the only event is the
+        // enqueue's own.
+        assert_eq!(
+            *events.lock().unwrap(),
+            [SummaryEvent::SummaryStatus(SummaryStatusPayload {
+                note_id: "some-note".to_string(),
+                state: SummaryStatusState::Queued,
+                error: None,
+                queued_at: Some(pending[0].queued_at_ms),
+            })]
+        );
     }
 
     /// Repeat Regenerate clicks on a blocked note must not stack duplicate
@@ -4456,8 +5038,8 @@ mod tests {
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 2);
         // FIFO: the order they were asked for is the order they run in.
-        assert_eq!(pending[0].note_id, "note-a");
-        assert_eq!(pending[1].note_id, "note-b");
+        assert_eq!(pending[0].ctx.note_id, "note-a");
+        assert_eq!(pending[1].ctx.note_id, "note-b");
     }
 
     /// `drain_summarize_queue` must leave the queue untouched when it can't
@@ -4472,7 +5054,7 @@ mod tests {
         let queue = open_summarize_queue();
         busy.store(true, Ordering::SeqCst);
 
-        lock_summarize_queue(&queue).push_back(SummarizeWorkerCtx {
+        lock_summarize_queue(&queue).push_back(waiting(SummarizeWorkerCtx {
             recording: Arc::new(AtomicBool::new(false)),
             note_id: "waiting-note".to_string(),
             store,
@@ -4483,13 +5065,13 @@ mod tests {
             settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
-        });
+        }));
 
         drain_summarize_queue(&queue, &busy);
 
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 1, "the queued note must not be dropped");
-        assert_eq!(pending[0].note_id, "waiting-note");
+        assert_eq!(pending[0].ctx.note_id, "waiting-note");
     }
 
     #[test]
@@ -4519,7 +5101,7 @@ mod tests {
         let queue = open_summarize_queue();
         let gate = Arc::new(AtomicBool::new(true));
 
-        lock_summarize_queue(&queue).push_back(SummarizeWorkerCtx {
+        lock_summarize_queue(&queue).push_back(waiting(SummarizeWorkerCtx {
             recording: gate.clone(),
             note_id: "deferred-note".to_string(),
             store,
@@ -4530,13 +5112,13 @@ mod tests {
             settings: crate::settings::open_shared(dir.path()),
             queue: queue.clone(),
             emit: Box::new(|_| {}),
-        });
+        }));
 
         drain_summarize_queue(&queue, &busy);
         {
             let pending = lock_summarize_queue(&queue);
             assert_eq!(pending.len(), 1, "the deferred note must be put back");
-            assert_eq!(pending[0].note_id, "deferred-note");
+            assert_eq!(pending[0].ctx.note_id, "deferred-note");
         }
         assert!(
             !busy.load(Ordering::SeqCst),
@@ -4586,7 +5168,7 @@ mod tests {
         );
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].note_id, "mid-recording-note");
+        assert_eq!(pending[0].ctx.note_id, "mid-recording-note");
     }
 
     // --- cancel_summarize building blocks (issue #30) ---------------------
@@ -4618,11 +5200,11 @@ mod tests {
         assert!(remove_queued_summarize(&queue, "not-queued").is_none());
 
         let removed = remove_queued_summarize(&queue, "note-a").expect("note-a was queued");
-        assert_eq!(removed.note_id, "note-a");
+        assert_eq!(removed.ctx.note_id, "note-a");
 
         let pending = lock_summarize_queue(&queue);
         assert_eq!(pending.len(), 1, "only the matching note is removed");
-        assert_eq!(pending[0].note_id, "note-b");
+        assert_eq!(pending[0].ctx.note_id, "note-b");
     }
 
     #[test]
@@ -4887,7 +5469,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
         let queued_id = queued.note_id.clone();
-        lock_summarize_queue(&queue).push_back(queued);
+        lock_summarize_queue(&queue).push_back(waiting(queued));
 
         busy.store(true, Ordering::SeqCst);
         run_summarize_worker(first_ctx);
@@ -4901,6 +5483,241 @@ mod tests {
             "the drained note must not still be queued"
         );
     }
+
+    // --- waiting summaries: how long, and "Summarize now" (issue #44) -----------
+
+    /// A context for `note_id` that records every event it emits.
+    fn recording_ctx(
+        dir: &tempfile::TempDir,
+        queue: &SummarizeQueue,
+        busy: &LlmBusy,
+        note_id: &str,
+    ) -> (SummarizeWorkerCtx, Arc<Mutex<Vec<SummaryEvent>>>) {
+        let events: Arc<Mutex<Vec<SummaryEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let ctx = SummarizeWorkerCtx {
+            recording: Arc::new(AtomicBool::new(false)),
+            note_id: note_id.to_string(),
+            store: crate::store::open_shared(dir.path().to_path_buf()),
+            engine: open_shared(),
+            busy: busy.clone(),
+            model_id: "qwen3.5-4b".to_string(),
+            model_path: dir.path().join("does-not-exist.gguf"),
+            settings: crate::settings::open_shared(dir.path()),
+            queue: queue.clone(),
+            emit: Box::new(move |event| events_for_emit.lock().unwrap().push(event)),
+        };
+        (ctx, events)
+    }
+
+    fn queued_at_of(events: &Arc<Mutex<Vec<SummaryEvent>>>) -> Vec<Option<u64>> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|SummaryEvent::SummaryStatus(payload)| {
+                assert_eq!(payload.state, SummaryStatusState::Queued);
+                payload.queued_at
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_repeat_request_reports_the_time_the_note_first_started_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+        busy.store(true, Ordering::SeqCst);
+
+        let (first, first_events) = recording_ctx(&dir, &queue, &busy, "note-a");
+        spawn_or_enqueue_summarize(&queue, first, false);
+        // Backdate the entry, so a repeat that restarted the clock shows.
+        lock_summarize_queue(&queue)[0].queued_at_ms = 1_000;
+
+        let (second, second_events) = recording_ctx(&dir, &queue, &busy, "note-a");
+        let disposition = spawn_or_enqueue_summarize(&queue, second, false);
+
+        assert_eq!(disposition, SummarizeDisposition::AlreadyQueued);
+        assert!(queued_at_of(&first_events)[0].is_some());
+        assert_eq!(queued_at_of(&second_events), [Some(1_000)]);
+    }
+
+    /// A note deferred behind a recording still holds its place in line
+    /// after the recording ends, until `stop_recording` drains. A Regenerate
+    /// in that gap starts the note; the old place must go with it, or the
+    /// drain summarizes the note a second time.
+    #[test]
+    fn a_waiting_note_that_a_new_request_starts_leaves_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let deferred = queued_ctx_signaling(&queue, &busy, &dir, tx.clone());
+        let note_id = deferred.note_id.clone();
+        assert_eq!(
+            spawn_or_enqueue_summarize(&queue, deferred, true),
+            SummarizeDisposition::Queued
+        );
+
+        let mut again = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        again.note_id = note_id;
+        assert_eq!(
+            spawn_or_enqueue_summarize(&queue, again, false),
+            SummarizeDisposition::Started
+        );
+
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the new request never started the note");
+        assert!(lock_summarize_queue(&queue).is_empty());
+    }
+
+    #[test]
+    fn summarize_now_starts_a_note_that_is_waiting_for_a_recording_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let deferred = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        deferred.recording.store(true, Ordering::SeqCst);
+        let note_id = deferred.note_id.clone();
+        spawn_or_enqueue_summarize(&queue, deferred, true);
+
+        // The recording is still live, so an ordinary drain leaves it.
+        drain_summarize_queue(&queue, &busy);
+        assert_eq!(lock_summarize_queue(&queue).len(), 1);
+
+        assert_eq!(
+            start_queued_summarize_now(&queue, &busy, &note_id),
+            SummarizeNowOutcome::Started
+        );
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), note_id);
+        assert!(lock_summarize_queue(&queue).is_empty());
+    }
+
+    #[test]
+    fn summarize_now_behind_a_running_generation_goes_next_even_while_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+        busy.store(true, Ordering::SeqCst);
+
+        let (first, _first_events) = recording_ctx(&dir, &queue, &busy, "first-in-line");
+        spawn_or_enqueue_summarize(&queue, first, false);
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let wanted = queued_ctx_signaling(&queue, &busy, &dir, tx);
+        wanted.recording.store(true, Ordering::SeqCst);
+        let wanted_id = wanted.note_id.clone();
+        spawn_or_enqueue_summarize(&queue, wanted, false);
+
+        assert_eq!(
+            start_queued_summarize_now(&queue, &busy, &wanted_id),
+            SummarizeNowOutcome::Next
+        );
+        {
+            let pending = lock_summarize_queue(&queue);
+            let order: Vec<&str> = pending.iter().map(|q| q.ctx.note_id.as_str()).collect();
+            assert_eq!(order, [wanted_id.as_str(), "first-in-line"]);
+        }
+
+        // The running generation ends: what its worker does on the way out.
+        busy.store(false, Ordering::SeqCst);
+        drain_summarize_queue(&queue, &busy);
+
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), wanted_id);
+    }
+
+    #[test]
+    fn summarize_now_on_a_note_that_is_not_waiting_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = open_summarize_queue();
+        let busy = open_busy_flag();
+        let (other, _events) = recording_ctx(&dir, &queue, &busy, "other-note");
+        spawn_or_enqueue_summarize(&queue, other, true);
+
+        assert_eq!(
+            start_queued_summarize_now(&queue, &busy, "not-waiting"),
+            SummarizeNowOutcome::NotQueued
+        );
+        assert_eq!(lock_summarize_queue(&queue).len(), 1);
+        assert!(!busy.load(Ordering::SeqCst));
+    }
+
+    // --- a request racing a finishing worker (issue #44) ------------------------
+
+    /// A request that arrives as the running generation ends must not be
+    /// left in the queue with an idle engine: nothing would ever start it.
+    ///
+    /// Each round replays the two halves of that moment on two threads. One
+    /// does what a worker does on its way out (release `busy`, then drain).
+    /// The other asks for a summary. Whatever the interleaving, the note
+    /// must start.
+    #[test]
+    fn a_request_racing_a_finishing_worker_is_never_stranded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_shared(dir.path().to_path_buf());
+        let note_id = lock_store(&store)
+            .create_note_now("Racing note", "whisper-small")
+            .unwrap()
+            .id;
+        let engine = open_shared();
+        let settings = crate::settings::open_shared(dir.path());
+
+        for round in 0..RACE_ROUNDS {
+            let queue = open_summarize_queue();
+            let busy = open_busy_flag();
+            busy.store(true, Ordering::SeqCst);
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let ctx = SummarizeWorkerCtx {
+                recording: Arc::new(AtomicBool::new(false)),
+                note_id: note_id.clone(),
+                store: store.clone(),
+                engine: engine.clone(),
+                busy: busy.clone(),
+                model_id: "qwen3.5-4b".to_string(),
+                model_path: dir.path().join("does-not-exist.gguf"),
+                settings: settings.clone(),
+                queue: queue.clone(),
+                emit: Box::new(move |event| {
+                    let SummaryEvent::SummaryStatus(payload) = &event;
+                    if payload.state == SummaryStatusState::Running {
+                        let _ = tx.send(());
+                    }
+                }),
+            };
+
+            let go = Arc::new(AtomicBool::new(false));
+            let finishing_worker = std::thread::spawn({
+                let (queue, busy, go) = (queue.clone(), busy.clone(), go.clone());
+                move || {
+                    while !go.load(Ordering::Acquire) {
+                        std::hint::spin_loop();
+                    }
+                    busy.store(false, Ordering::SeqCst);
+                    drain_summarize_queue(&queue, &busy);
+                }
+            });
+            // Vary which side leads, so the rounds cover both orders and
+            // the overlap between them.
+            for _ in 0..(round % 64) {
+                std::hint::spin_loop();
+            }
+            go.store(true, Ordering::Release);
+            spawn_or_enqueue_summarize(&queue, ctx, false);
+            finishing_worker.join().unwrap();
+
+            assert!(
+                rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+                "round {round}: the note is waiting in the queue ({} queued, busy = {}) and \
+                 nothing is left to start it",
+                lock_summarize_queue(&queue).len(),
+                busy.load(Ordering::SeqCst),
+            );
+        }
+    }
+
+    const RACE_ROUNDS: usize = 20_000;
 
     // --- worker panic containment (issue #21) -----------------------------------
     //
@@ -4949,7 +5766,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
         let queued_id = queued.note_id.clone();
-        lock_summarize_queue(&queue).push_back(queued);
+        lock_summarize_queue(&queue).push_back(waiting(queued));
 
         busy.store(true, Ordering::SeqCst);
         run_summarize_worker_with(first_ctx, |_| panic!("boom"));
@@ -5001,7 +5818,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let queued = queued_ctx_signaling(&queue, &busy, &dir, tx);
         let queued_id = queued.note_id.clone();
-        lock_summarize_queue(&queue).push_back(queued);
+        lock_summarize_queue(&queue).push_back(waiting(queued));
 
         busy.store(true, Ordering::SeqCst);
         run_ask_worker(ask_ctx);
@@ -5175,34 +5992,65 @@ mod tests {
     // --- apply_no_think_prefill: gated per model family -------------------------
 
     #[test]
-    fn no_think_prefill_applied_for_qwen_model_ids() {
-        let templated = "<|im_start|>assistant\n";
-        let out = apply_no_think_prefill(templated, "qwen3.5-4b");
-        assert_eq!(out, format!("{templated}{NO_THINK_PREFILL}"));
+    fn prompt_family_comes_from_the_gguf_architecture() {
+        assert_eq!(PromptFamily::from_model("qwen35", ""), PromptFamily::Qwen35);
+        assert_eq!(PromptFamily::from_model("gemma4", ""), PromptFamily::Gemma4);
+        // A real allowlist: an unknown or missing architecture gets no
+        // family-specific handling.
+        assert_eq!(PromptFamily::from_model("granite", ""), PromptFamily::Other);
+        assert_eq!(PromptFamily::from_model("", ""), PromptFamily::Other);
     }
 
     #[test]
-    fn no_think_prefill_applied_for_other_qwen_ids_too() {
-        let out = apply_no_think_prefill("prefix", "qwen3.5-9b");
-        assert!(out.ends_with(NO_THINK_PREFILL));
-    }
-
-    #[test]
-    fn no_think_prefill_not_applied_for_gemma_model_ids() {
-        let templated = "<|im_start|>assistant\n";
-        let out = apply_no_think_prefill(templated, "gemma-4-e4b");
+    fn lfm2_is_a_reasoning_family_only_when_its_template_opens_a_think_block() {
+        // The generation prompts of LFM2.5-2.6B and LFM2-2.6B-Transcript, as
+        // spelled in their baked Jinja source.
+        let reasoning = r#"{{- "<|im_start|>assistant\n<think>" -}}"#;
+        let plain = r#"{{- "<|im_start|>assistant\n" -}}"#;
+        for architecture in ["lfm2", "lfm2moe"] {
+            assert_eq!(
+                PromptFamily::from_model(architecture, reasoning),
+                PromptFamily::Lfm2Reasoning
+            );
+            assert_eq!(
+                PromptFamily::from_model(architecture, plain),
+                PromptFamily::Other
+            );
+        }
+        // The marker alone does not make another architecture an LFM2.
         assert_eq!(
-            out, templated,
-            "non-Qwen models must get the templated prompt untouched"
+            PromptFamily::from_model("granite", reasoning),
+            PromptFamily::Other
         );
     }
 
     #[test]
-    fn no_think_prefill_not_applied_for_whisper_ids() {
-        // Nonsensical in practice (whisper is never the summarizer), but
-        // pins that the gate is a real allowlist, not just "not gemma".
-        let out = apply_no_think_prefill("prefix", "whisper-small");
-        assert_eq!(out, "prefix");
+    fn no_think_prefill_closes_the_think_block_for_reasoning_lfm2() {
+        let out = apply_no_think_prefill("<|im_start|>assistant\n", PromptFamily::Lfm2Reasoning);
+        assert_eq!(out, "<|im_start|>assistant\n<think>\n</think>\n");
+    }
+
+    #[test]
+    fn no_think_prefill_applied_for_qwen35() {
+        let templated = "<|im_start|>assistant\n";
+        let out = apply_no_think_prefill(templated, PromptFamily::Qwen35);
+        assert_eq!(out, format!("{templated}{NO_THINK_PREFILL}"));
+    }
+
+    #[test]
+    fn no_think_prefill_not_applied_for_other_families() {
+        let templated = "<|im_start|>assistant\n";
+        for family in [
+            PromptFamily::Gemma4,
+            PromptFamily::Gemma4EmptyThought,
+            PromptFamily::Other,
+        ] {
+            assert_eq!(
+                apply_no_think_prefill(templated, family),
+                templated,
+                "{family:?} must get the templated prompt untouched"
+            );
+        }
     }
 
     // --- manual_chat_prompt: the unrecognized-template fallback (issue #8) ---
@@ -5212,13 +6060,26 @@ mod tests {
         // Byte-for-byte what Gemma 4's baked template emits for one user
         // turn plus a generation prompt (bos comes from AddBos::Always at
         // tokenization, not from this string).
-        let out = manual_chat_prompt("gemma-4-e4b", "  Summarize this.  ");
+        let out = manual_chat_prompt(PromptFamily::Gemma4, "  Summarize this.  ");
         assert_eq!(out, "<|turn>user\nSummarize this.<turn|>\n<|turn>model\n");
     }
 
     #[test]
+    fn gemma4_with_an_empty_thought_template_gets_the_thought_channel_closed() {
+        // The non-thinking generation prompt of Gemma 4 12B, as spelled in
+        // its baked Jinja source.
+        let template = r"{{- '<|turn>model\n' -}}{{- '<|channel>thought\n<channel|>' -}}";
+        let family = PromptFamily::from_model("gemma4", template);
+        assert_eq!(family, PromptFamily::Gemma4EmptyThought);
+        assert_eq!(
+            manual_chat_prompt(family, "Summarize this."),
+            "<|turn>user\nSummarize this.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+        );
+    }
+
+    #[test]
     fn manual_chat_prompt_falls_back_to_chatml_for_unknown_families() {
-        let out = manual_chat_prompt("some-future-model", "Summarize this.");
+        let out = manual_chat_prompt(PromptFamily::Other, "Summarize this.");
         assert_eq!(
             out,
             "<|im_start|>user\nSummarize this.<|im_end|>\n<|im_start|>assistant\n"
@@ -5386,7 +6247,7 @@ mod tests {
         lines
             .iter()
             .map(|(speaker, start, text)| StoredSegment {
-                speaker: speaker.to_string(),
+                speaker: (*speaker).into(),
                 start: *start,
                 end: *start + 6.0,
                 text: text.to_string(),
@@ -5442,7 +6303,7 @@ mod tests {
             .map(|i| {
                 let start = i as f64 * 2.5;
                 StoredSegment {
-                    speaker: "Speaker 1".to_string(),
+                    speaker: "Speaker 1".into(),
                     start,
                     end: start + 2.4,
                     text: format!(
@@ -5534,7 +6395,7 @@ mod tests {
             .map(|i| {
                 let start = i as f64 * 2.5;
                 StoredSegment {
-                    speaker: "Speaker 1".to_string(),
+                    speaker: "Speaker 1".into(),
                     start,
                     end: start + 2.4,
                     text: format!("ターン{i}: {sentence}"),
@@ -5618,7 +6479,7 @@ mod tests {
             .map(|i| {
                 let start = i as f64 * 2.5;
                 StoredSegment {
-                    speaker: "Speaker 1".to_string(),
+                    speaker: "Speaker 1".into(),
                     start,
                     end: start + 2.4,
                     text: format!(
@@ -5634,7 +6495,7 @@ mod tests {
         segments.extend((0..9_000).map(|i| {
             let start = dead_air_start + i as f64 * 7.0;
             StoredSegment {
-                speaker: "Speaker 1".to_string(),
+                speaker: "Speaker 1".into(),
                 start,
                 end: start + 6.9,
                 text: ".".to_string(),
@@ -6121,5 +6982,235 @@ mod tests {
             contains_mm_ss_citation(&answer),
             "expected the answer to contain at least one [mm:ss]-shaped citation, got: {answer:?}"
         );
+    }
+
+    /// Transcript for [`real_llm_eval_from_env`]: the file named by
+    /// `MINUTE_EVAL_TRANSCRIPT` (one `speaker<TAB>start seconds<TAB>text`
+    /// line per segment) when set, else [`fake_product_launch_transcript`].
+    fn eval_transcript_from_env() -> Vec<StoredSegment> {
+        let Ok(path) = std::env::var("MINUTE_EVAL_TRANSCRIPT") else {
+            return fake_product_launch_transcript();
+        };
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read MINUTE_EVAL_TRANSCRIPT {path:?}: {e}"))
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let speaker = fields.next().expect("speaker field");
+                let start: f64 = fields
+                    .next()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or_else(|| panic!("bad start seconds in line {line:?}"));
+                let text = fields
+                    .next()
+                    .unwrap_or_else(|| panic!("no text in line {line:?}"));
+                StoredSegment {
+                    speaker: speaker.into(),
+                    start,
+                    end: start + 6.0,
+                    text: text.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    /// One timed generation for [`real_llm_eval_from_env`]. Prints the
+    /// prompt and output token counts, the wall time, and the generation
+    /// speed, then the raw output. The prompt decode is timed by a separate
+    /// one-token run and subtracted, so tokens/s covers sampling only.
+    fn eval_generate(
+        state: &LlmEngineState,
+        label: &str,
+        prompt: &str,
+        params: GenerationParams,
+    ) -> Result<String> {
+        let prompt_start = Instant::now();
+        state.generate_with_params(
+            prompt,
+            GenerationParams {
+                max_tokens: 1,
+                ..params
+            },
+        )?;
+        let prompt_secs = prompt_start.elapsed().as_secs_f64();
+
+        let total_start = Instant::now();
+        let raw = state.generate_with_params(prompt, params)?;
+        let total_secs = total_start.elapsed().as_secs_f64();
+
+        let model = &state.loaded.as_ref().expect("model is loaded").model;
+        let count = |text: &str| {
+            model
+                .str_to_token(text, AddBos::Never)
+                .map(|t| t.len())
+                .unwrap_or(0)
+        };
+        let out_tokens = count(&raw);
+        let gen_secs = (total_secs - prompt_secs).max(0.001);
+        eprintln!(
+            "[{label}] prompt ~{} tokens in {prompt_secs:.2}s, output {out_tokens} tokens, \
+             total {total_secs:.2}s, generation {:.1} tokens/s (cap {})",
+            count(prompt),
+            out_tokens as f64 / gen_secs,
+            params.max_tokens
+        );
+        eprintln!("[{label}] raw output:\n{raw}\n[{label}] end of raw output");
+        Ok(raw)
+    }
+
+    /// Evaluates any GGUF through the app's real load and generation path,
+    /// so a catalog candidate can be proven before it is added. Runs the
+    /// Standard summary, the Detailed summary, and one Ask question, prints
+    /// timings and raw outputs, and fails with every problem it found.
+    ///
+    /// `MINUTE_EVAL_LLM_ID` is a label for the output. `MINUTE_EVAL_LLM_PATH`
+    /// is the GGUF file. `MINUTE_EVAL_TRANSCRIPT` optionally replaces the
+    /// built-in transcript. `MINUTE_EVAL_GENERIC`, when set, drops the
+    /// architecture-specific prompt handling, to show whether an
+    /// architecture works on the generic path alone.
+    ///
+    /// ```sh
+    /// MINUTE_EVAL_LLM_ID=qwen3.5-4b MINUTE_EVAL_LLM_PATH=/path/to/model.gguf \
+    ///     cargo test --manifest-path src-tauri/Cargo.toml --lib \
+    ///     real_llm_eval_from_env -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_llm_eval_from_env() {
+        let model_id = std::env::var("MINUTE_EVAL_LLM_ID").expect("set MINUTE_EVAL_LLM_ID");
+        let model_path =
+            PathBuf::from(std::env::var("MINUTE_EVAL_LLM_PATH").expect("set MINUTE_EVAL_LLM_PATH"));
+        assert!(model_path.exists(), "no model file at {model_path:?}");
+        let segments = eval_transcript_from_env();
+        // A custom transcript gets the title a fresh note has, so the model
+        // must name the meeting itself.
+        let title = if std::env::var("MINUTE_EVAL_TRANSCRIPT").is_ok() {
+            DEFAULT_NOTE_TITLE
+        } else {
+            "Aurora launch planning"
+        };
+
+        let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
+            loaded: None,
+            last_used: Instant::now(),
+        };
+        let load_start = Instant::now();
+        state
+            .ensure_loaded(&model_id, &model_path, None)
+            .unwrap_or_else(|e| panic!("failed to load {model_id}: {e}"));
+        eprintln!(
+            "[load] {model_id} in {:.2}s, context {:?} tokens",
+            load_start.elapsed().as_secs_f64(),
+            state.loaded_context_tokens()
+        );
+
+        {
+            let loaded = state.loaded.as_mut().expect("model is loaded");
+            eprintln!(
+                "[load] architecture {:?}, family {:?}",
+                loaded.model.meta_val_str("general.architecture"),
+                loaded.family
+            );
+            if std::env::var("MINUTE_EVAL_GENERIC").is_ok() {
+                loaded.family = PromptFamily::Other;
+                eprintln!("[load] MINUTE_EVAL_GENERIC set, family forced to Other");
+            }
+            let family = loaded.family;
+            let probe = vec![
+                LlamaChatMessage::new("user".to_string(), "PROBE".to_string())
+                    .expect("chat message"),
+            ];
+            let native = loaded
+                .model
+                .chat_template(None)
+                .map_err(|e| e.to_string())
+                .and_then(|tmpl| {
+                    loaded
+                        .model
+                        .apply_chat_template(&tmpl, &probe, true)
+                        .map_err(|e| e.to_string())
+                });
+            match native {
+                Ok(text) => eprintln!(
+                    "[template] native: {:?}",
+                    apply_no_think_prefill(&text, family)
+                ),
+                Err(e) => eprintln!(
+                    "[template] fallback ({e}): {:?}",
+                    manual_chat_prompt(family, "PROBE")
+                ),
+            }
+        }
+
+        let mut problems: Vec<String> = Vec::new();
+
+        let standard =
+            build_summary_prompt(title, &segments, usize::MAX, SummaryStyle::Standard, "");
+        match eval_generate(&state, "standard", &standard, GenerationParams::default())
+            .and_then(|raw| extract_summary_parts(&raw))
+        {
+            Ok(parts) => {
+                eprintln!("[standard] title: {:?}", parts.suggested_title);
+                eprintln!("[standard] doc: {:#?}", parts.doc);
+                if parts.doc.summary.trim().is_empty() {
+                    problems.push("standard: empty summary".to_string());
+                }
+                if rename_target(DEFAULT_NOTE_TITLE, &parts.suggested_title).is_none() {
+                    problems.push(format!(
+                        "standard: unusable title {:?}",
+                        parts.suggested_title
+                    ));
+                }
+                if parts.doc.decisions.is_empty() && parts.doc.action_items.is_empty() {
+                    problems.push("standard: no decisions and no action items".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("standard: {e}")),
+        }
+
+        let detailed =
+            build_summary_prompt(title, &segments, usize::MAX, SummaryStyle::Detailed, "");
+        match eval_generate(
+            &state,
+            "detailed",
+            &detailed,
+            generation_params_for(SummaryStyle::Detailed),
+        )
+        .and_then(|raw| extract_summary_parts(&raw))
+        {
+            Ok(parts) => {
+                eprintln!("[detailed] doc: {:#?}", parts.doc);
+                if parts.doc.topics.len() < 2 {
+                    problems.push(format!("detailed: {} topics", parts.doc.topics.len()));
+                }
+                if parts.doc.topics.iter().any(|t| t.title.trim().is_empty()) {
+                    problems.push("detailed: a topic has no title".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("detailed: {e}")),
+        }
+
+        let question = "What did they discuss and decide?";
+        let ask = build_ask_prompt(title, &segments, question, usize::MAX);
+        match eval_generate(&state, "ask", &ask, ASK_GENERATION_PARAMS)
+            .and_then(|raw| extract_ask_answer(&raw))
+        {
+            Ok(answer) => {
+                eprintln!("[ask] answer: {answer}");
+                if !contains_mm_ss_citation(&answer) {
+                    problems.push("ask: no [mm:ss] citation".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("ask: {e}")),
+        }
+
+        assert!(
+            problems.is_empty(),
+            "{model_id} failed the eval:\n{}",
+            problems.join("\n")
+        );
+        eprintln!("[result] {model_id} passed");
     }
 }
