@@ -15,6 +15,7 @@ import type {
   StoredSegment,
   SummaryDoc,
 } from '../ipc/types'
+import { DEFAULT_OBSIDIAN_SETTINGS } from '../state/obsidian'
 
 const HOUR = 3_600_000
 const DAY = 86_400_000
@@ -318,6 +319,7 @@ export const SETTINGS: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
 }
 export const STORAGE: StorageStats = { modelsBytes: 4_762_339_000, audioBytes: 612_400_000, notesBytes: 18_200_000 }
 

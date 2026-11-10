@@ -105,6 +105,20 @@ export interface NoteMeta {
    * it, so merges into the notes list must keep the previous value.
    */
   hasSummary?: boolean
+  /** Obsidian export status (issue #47); absent until the first export attempt. */
+  obsidian?: ObsidianExport
+}
+
+/**
+ * `obsidian::ObsidianExport`. `path`/`savedAt` are the last good save and
+ * survive a later failure; `error` is the last failure and clears on the
+ * next good save. `contentHash` is internal (edit detection).
+ */
+export interface ObsidianExport {
+  path?: string
+  savedAt?: string
+  error?: string
+  contentHash?: string
 }
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */
@@ -319,7 +333,26 @@ export interface Settings {
   speakerProfiles: boolean
   /** Issue #32: write confident voice-profile matches into the transcript (and summary) automatically. Only acts while `speakerProfiles` is on; every application shows an Undo. */
   autoApplySpeakerNames: boolean
+  /** Issue #47: save finished summaries into an Obsidian vault (opt-in). */
+  obsidian: ObsidianSettings
 }
+
+/** `settings::ObsidianSettings`. */
+export interface ObsidianSettings {
+  enabled: boolean
+  /** Absolute vault folder; empty until chosen. */
+  vaultPath: string
+  /** Folder inside the vault, `/`-separated; empty = vault root. */
+  folder: string
+  /** File name without extension; tokens `{date}` (YYYY-MM-DD) and `{title}`. */
+  fileNameTemplate: string
+  /** Write date, title, duration and speakers as YAML frontmatter. */
+  addProperties: boolean
+  includeTranscript: boolean
+}
+
+/** `settings::ObsidianPatch` — omitted fields are left unchanged. */
+export type ObsidianPatch = Partial<ObsidianSettings>
 
 /**
  * `settings::SettingsPatch` — `#[serde(rename_all = "camelCase")]`. Every
@@ -345,6 +378,8 @@ export interface SettingsPatch {
   compressAudioAfterDays?: number
   speakerProfiles?: boolean
   autoApplySpeakerNames?: boolean
+  /** Rejected with a readable message when the vault path is missing or not a folder. */
+  obsidian?: ObsidianPatch
 }
 
 // --- events ----------------------------------------------------------------

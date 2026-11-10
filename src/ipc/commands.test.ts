@@ -2,6 +2,7 @@ import { mockIPC } from '@tauri-apps/api/mocks'
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as commands from './commands'
 import type { AudioInputStatus, Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, SearchHit, Settings, StorageStats, SummaryDoc, SysAudioStatus } from './types'
+import { DEFAULT_OBSIDIAN_SETTINGS } from '../state/obsidian'
 
 /** Captures the last `(cmd, args)` pair the mocked IPC bridge saw. */
 function captureIPC(response: (cmd: string, args: unknown) => unknown = () => null) {
@@ -462,6 +463,7 @@ describe('ipc/commands', () => {
       compressAudioAfterDays: null,
       speakerProfiles: false,
       autoApplySpeakerNames: true,
+      obsidian: DEFAULT_OBSIDIAN_SETTINGS,
     }
     const calls = captureIPC(() => settings)
 
@@ -489,6 +491,7 @@ describe('ipc/commands', () => {
       compressAudioAfterDays: null,
       speakerProfiles: false,
       autoApplySpeakerNames: true,
+      obsidian: DEFAULT_OBSIDIAN_SETTINGS,
     }
     const calls = captureIPC(() => updated)
 

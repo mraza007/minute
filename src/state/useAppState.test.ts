@@ -8,6 +8,7 @@ import type {
   ModelStatus,
   NoteMeta,
   NoteWithTranscript,
+  ObsidianExport,
   RecordingStateEvent,
   Recommendation,
   SearchHit,
@@ -21,6 +22,7 @@ import type {
   TranscriptSegmentEvent,
 } from '../ipc/types'
 import { useAppState } from './useAppState'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -42,6 +44,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     compressAudioAfterDays: null,
     speakerProfiles: false,
     autoApplySpeakerNames: true,
+    obsidian: DEFAULT_OBSIDIAN_SETTINGS,
     libraryRoot: null,
     ...overrides,
   }
@@ -115,6 +118,12 @@ interface SetupOpts {
   renameNoteResult?: (id: string, title: string) => NoteMeta
   /** `get_settings`'s response — defaults to `settingsFixture()`. */
   settings?: Settings
+  /** `set_settings(patch)`'s response — defaults to the `get_settings` fixture. Throw to simulate a rejected patch. */
+  setSettings?: (patch: Partial<Settings>) => Settings
+  /** `save_note_to_obsidian(id)`'s response; a string rejects with that message. */
+  saveToObsidian?: ObsidianExport | string
+  /** `check_obsidian_vault(path)` rejects with this message when set. */
+  checkVaultReject?: string
   /** `toggle_action_item(id, index, done)`'s response — defaults to rejecting (tests that need it must supply this). */
   toggleActionItem?: (id: string, index: number, done: boolean) => SummaryDoc | Promise<SummaryDoc>
   /** Forces `toggle_action_item` to reject with this message instead of calling `toggleActionItem`. */
@@ -286,7 +295,13 @@ function setupIPC(opts: SetupOpts = {}) {
         case 'get_settings':
           return settings
         case 'set_settings':
-          return settings
+          return opts.setSettings ? opts.setSettings((args as { patch: Partial<Settings> }).patch) : settings
+        case 'save_note_to_obsidian':
+          if (typeof opts.saveToObsidian === 'string') throw opts.saveToObsidian
+          return opts.saveToObsidian ?? {}
+        case 'check_obsidian_vault':
+          if (opts.checkVaultReject) throw opts.checkVaultReject
+          return null
         case 'toggle_action_item': {
           if (opts.toggleActionItemReject) throw opts.toggleActionItemReject
           const { id, index, done } = args as { id: string; index: number; done: boolean }
@@ -2292,5 +2307,125 @@ describe('useAppState', () => {
 
       expect(result.current.sidebarMatchedIds).toBeNull()
     })
+  })
+})
+
+describe('useAppState: Obsidian export (issue #47)', () => {
+  const vaultSettings = {
+    enabled: true,
+    vaultPath: '/Users/me/Vault',
+    folder: 'Work',
+    fileNameTemplate: '{title}',
+    addProperties: false,
+    includeTranscript: true,
+  }
+
+  it('seeds tObsidian from get_settings, and defaults it when the backend predates the field', async () => {
+    setupIPC({ settings: settingsFixture({ obsidian: vaultSettings }) })
+    expect((await loaded()).current.tObsidian).toEqual(vaultSettings)
+
+    const legacy = { ...settingsFixture() } as Partial<Settings>
+    delete legacy.obsidian
+    setupIPC({ settings: legacy as Settings })
+    const result = (await loaded()).current.tObsidian
+    expect(result.enabled).toBe(false)
+    expect(result.folder).toBe('Meetings')
+    expect(result.fileNameTemplate).toBe('{date} - {title}')
+    expect(result.addProperties).toBe(true)
+    expect(result.includeTranscript).toBe(false)
+  })
+
+  it('saveObsidianSettings sends only the patched fields and adopts the settings the backend returns', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    setupIPC({
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+      setSettings: patch => settingsFixture({ obsidian: { ...vaultSettings, ...patch.obsidian } }),
+    })
+    const result = await loaded()
+
+    let error: string | null = 'unset'
+    await act(async () => {
+      error = await result.current.saveObsidianSettings({ enabled: true, vaultPath: '/Users/me/Vault' })
+    })
+
+    expect(error).toBeNull()
+    const sent = calls.find(c => c.cmd === 'set_settings')
+    expect(sent?.args).toEqual({ patch: { obsidian: { enabled: true, vaultPath: '/Users/me/Vault' } } })
+    expect(result.current.tObsidian.enabled).toBe(true)
+    expect(result.current.tObsidian.vaultPath).toBe('/Users/me/Vault')
+  })
+
+  it('saveObsidianSettings returns the backend message for a bad vault and keeps the old settings', async () => {
+    setupIPC({
+      setSettings: () => {
+        throw 'The vault folder /nope does not exist. Check the path in Settings.'
+      },
+    })
+    const result = await loaded()
+
+    let error: string | null = null
+    await act(async () => {
+      error = await result.current.saveObsidianSettings({ enabled: true, vaultPath: '/nope' })
+    })
+
+    expect(error).toContain('does not exist')
+    expect(result.current.tObsidian.enabled).toBe(false)
+    expect(result.current.lastError).toBeNull()
+  })
+
+  it('checkObsidianVault resolves null for a folder and the reason otherwise', async () => {
+    setupIPC()
+    expect(await (await loaded()).current.checkObsidianVault('/ok')).toBeNull()
+
+    setupIPC({ checkVaultReject: '/x is not a folder. Choose your vault folder.' })
+    expect(await (await loaded()).current.checkObsidianVault('/x')).toContain('not a folder')
+  })
+
+  it('saveNoteToObsidian calls the command, refreshes the list and the note, and returns the status', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    const note = noteFixture()
+    const status: ObsidianExport = { path: '/Users/me/Vault/Work/a.md', savedAt: '2026-07-23T10:00:00Z' }
+    setupIPC({
+      notes: [note],
+      onCmd: (cmd, args) => calls.push({ cmd, args }),
+      saveToObsidian: status,
+    })
+    const result = await loaded()
+    const listBefore = calls.filter(c => c.cmd === 'list_notes').length
+
+    let returned: ObsidianExport | null = null
+    await act(async () => {
+      returned = await result.current.saveNoteToObsidian(note.id)
+    })
+
+    expect(returned).toEqual(status)
+    expect(calls.find(c => c.cmd === 'save_note_to_obsidian')?.args).toEqual({ id: note.id })
+    await waitFor(() => expect(calls.filter(c => c.cmd === 'list_notes').length).toBeGreaterThan(listBefore))
+    expect(result.current.obsidianSavingId).toBeNull()
+  })
+
+  it('saveNoteToObsidian reports an IPC failure on the error banner and resolves null', async () => {
+    const note = noteFixture()
+    setupIPC({ notes: [note], saveToObsidian: 'note vanished' })
+    const result = await loaded()
+
+    let returned: ObsidianExport | null = { path: 'x' }
+    await act(async () => {
+      returned = await result.current.saveNoteToObsidian(note.id)
+    })
+
+    expect(returned).toBeNull()
+    await waitFor(() => expect(result.current.lastError).toContain('note vanished'))
+    expect(result.current.obsidianSavingId).toBeNull()
+  })
+
+  it('selectedObsidian exposes the export status stored on the selected note', async () => {
+    const exported: ObsidianExport = { path: '/v/a.md', savedAt: '2026-07-23T10:00:00Z', error: 'edited in Obsidian' }
+    const note = noteFixture({ status: 'ready', obsidian: exported })
+    setupIPC({ notes: [note] })
+    const result = await loaded()
+
+    act(() => result.current.selectNoteById(note.id))
+    await waitFor(() => expect(result.current.selectedObsidian).toEqual(exported))
   })
 })
