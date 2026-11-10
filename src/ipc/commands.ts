@@ -24,6 +24,7 @@ import type {
   Settings,
   SettingsPatch,
   StorageStats,
+  SummarizeNowOutcome,
   SummaryDoc,
   SysAudioStatus,
   VoiceProfile,
@@ -220,6 +221,15 @@ export const summarizeNote = (id: string): Promise<void> => invokeCmd('summarize
  * note is neither queued nor running any more) resolves as a no-op.
  */
 export const cancelSummarize = (id: string): Promise<void> => invokeCmd('cancel_summarize', { id })
+
+/**
+ * Starts a waiting summary without waiting for a live recording to end
+ * (issue #44). A summary requested during a recording normally waits for
+ * the recording to stop; this is the user saying "now". Only one generation
+ * runs at a time, so when the engine is busy the note moves to the front of
+ * the queue instead — see `SummarizeNowOutcome`.
+ */
+export const summarizeNow = (id: string): Promise<SummarizeNowOutcome> => invokeCmd('summarize_now', { id })
 
 /**
  * Flips one action item's `done` state in a note's summary (read-modify-

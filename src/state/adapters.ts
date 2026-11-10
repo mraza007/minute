@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, SummaryStatusEvent, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -254,6 +254,67 @@ export function pickInitialLlmModel(
 export function hasSummaryContent(summary: SummaryDoc | null | undefined): boolean {
   if (!summary) return false
   return summary.summary.trim() !== '' || summary.decisions.length > 0 || summary.actionItems.length > 0
+}
+
+/**
+ * The line to show under a summary that does not cover the whole meeting,
+ * or `null` when it does. Two limits can cut a summary short: the
+ * transcript did not fit the context window (`truncated`, issue #41), or
+ * the model's answer ran past its response budget (`cutOff`, issue #45).
+ */
+export function summaryCoverageNotice(summary: Pick<SummaryDoc, 'truncated' | 'cutOff'>): string | null {
+  const notices: string[] = []
+  if (summary.truncated) {
+    notices.push(
+      "This meeting was too long for the summary model's memory, so this summary covers only part of it. A larger context window in Settings → Summary gives full coverage.",
+    )
+  }
+  if (summary.cutOff) {
+    notices.push(
+      'This summary was too long for the model to finish, so the last items are missing. A larger context window in Settings → Summary can give it more room.',
+    )
+  }
+  return notices.length > 0 ? notices.join(' ') : null
+}
+
+/**
+ * Folds one `summary-status` event into the per-note "waiting since" map:
+ * a `'queued'` event records when the note joined the queue, every other
+ * state removes the entry. `now` stands in when a queued event carries no
+ * `queuedAt`. Returns `prev` itself when nothing changes.
+ */
+export function nextSummaryQueuedAt(
+  prev: Record<string, number>,
+  event: SummaryStatusEvent,
+  now: number,
+): Record<string, number> {
+  if (event.state === 'queued') {
+    const queuedAt = event.queuedAt ?? prev[event.noteId] ?? now
+    return prev[event.noteId] === queuedAt ? prev : { ...prev, [event.noteId]: queuedAt }
+  }
+  if (!(event.noteId in prev)) return prev
+  const next = { ...prev }
+  delete next[event.noteId]
+  return next
+}
+
+/**
+ * How long a summary has waited, as the words after "has waited":
+ * "less than a minute", "5 minutes", "1 hour", "6 hours", "2 days". Rounds
+ * down, so "6 hours" means at least six. A `queuedAt` in the future (clock
+ * change) reads as no wait.
+ */
+export function formatWait(queuedAt: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - queuedAt) / 60_000)
+  if (minutes < 1) return 'less than a minute'
+  if (minutes < 60) return plural(minutes, 'minute')
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return plural(hours, 'hour')
+  return plural(Math.floor(hours / 24), 'day')
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`
 }
 
 /**

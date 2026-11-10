@@ -1746,6 +1746,8 @@ export function useAppState() {
     selectedAudioPath: noteDetail.selectedAudioPath,
     summaryStatus: noteDetail.summaryStatus,
     summaryError: noteDetail.summaryError,
+    summaryQueuedAt: noteDetail.summaryQueuedAt,
+    summarizeNow: noteDetail.summarizeNow,
     diarStatus: noteDetail.diarStatus,
     diarError: noteDetail.diarError,
     detectSpeakers: noteDetail.detectSpeakers,

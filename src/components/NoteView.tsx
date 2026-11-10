@@ -8,7 +8,7 @@ import type {
   SummaryDoc,
 } from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
-import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
+import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, storedSegmentsToDisplay, summaryCoverageNotice } from '../state/adapters'
 import { useAudioPlayer } from '../state/useAudioPlayer'
 import type { ProcessingFailure, SummaryStatus } from '../state/useAppState'
 import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
@@ -276,12 +276,7 @@ function NoteOverview({
             {/* Issue #41: the Overview tab is the first screen after a
                 recording — a truncated summary must say so HERE, not only
                 in the side panel. */}
-            {summary.truncated && (
-              <p className="overview-empty">
-                This meeting was too long for the summary model's memory, so this summary covers only part of it. A
-                larger context window in Settings → Summary gives full coverage.
-              </p>
-            )}
+            {summaryCoverageNotice(summary) && <p className="overview-empty">{summaryCoverageNotice(summary)}</p>}
           </section>
           {/* Issue #14: only present for notes summarized under Detailed. */}
           {summary.topics.length > 0 && (

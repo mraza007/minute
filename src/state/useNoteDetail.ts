@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onAskAnswer, onAskStatus, onDiarStatus, onSummaryStatus } from '../ipc/events'
-import type { NoteMeta, NoteWithTranscript, StoredSegment, SummaryDoc } from '../ipc/types'
-import { hasSummaryContent } from './adapters'
+import type { NoteMeta, NoteWithTranscript, StoredSegment, SummarizeNowOutcome, SummaryDoc } from '../ipc/types'
+import { hasSummaryContent, nextSummaryQueuedAt } from './adapters'
 import { useTauriEvent } from './useTauriEvent'
 
 function messageOf(err: unknown): string {
@@ -244,11 +244,16 @@ export function useNoteDetail(params: {
   // `running`/`done` event supersedes it.
   const [summaryStatus, setSummaryStatus] = useState<Record<string, SummaryEventState>>({})
   const [summaryError, setSummaryError] = useState<Record<string, string>>({})
+  // When each waiting note joined the queue (epoch ms). Holds an entry only
+  // while that note's status is `'queued'`, so the note view can say how
+  // long a summary has waited (issue #44).
+  const [summaryQueuedAt, setSummaryQueuedAt] = useState<Record<string, number>>({})
 
   useTauriEvent(
     onSummaryStatus,
     payload => {
       setSummaryStatus(prev => ({ ...prev, [payload.noteId]: payload.state }))
+      setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, payload, Date.now()))
 
       if (payload.state === 'error') {
         setSummaryError(prev => ({ ...prev, [payload.noteId]: payload.error ?? 'Summarization failed' }))
@@ -365,6 +370,23 @@ export function useNoteDetail(params: {
       setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
       setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
     })
+  }, [])
+
+  /**
+   * "Summarize now" on a waiting summary (issue #44): starts it without
+   * waiting for a live recording to end. Resolves with what the backend
+   * did, so the caller can tell "started" from "starts after the summary
+   * that is running". State still arrives through `summary-status`.
+   */
+  const summarizeNow = useCallback(async (id: string): Promise<SummarizeNowOutcome | null> => {
+    try {
+      return await ipc.summarizeNow(id)
+    } catch (err) {
+      setSummaryStatus(prev => ({ ...prev, [id]: 'error' }))
+      setSummaryError(prev => ({ ...prev, [id]: messageOf(err) }))
+      setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, { noteId: id, state: 'error', error: null }, Date.now()))
+      return null
+    }
   }, [])
 
   /**
@@ -588,6 +610,7 @@ export function useNoteDetail(params: {
       delete next[id]
       return next
     })
+    setSummaryQueuedAt(prev => nextSummaryQueuedAt(prev, { noteId: id, state: 'error', error: null }, Date.now()))
     setDiarStatus(prev => {
       if (!(id in prev)) return prev
       const next = { ...prev }
@@ -626,8 +649,10 @@ export function useNoteDetail(params: {
     pruneNoteDetail,
     summaryStatus,
     summaryError,
+    summaryQueuedAt,
     regenerateSummary,
     cancelSummary,
+    summarizeNow,
     diarStatus,
     diarError,
     detectSpeakers,

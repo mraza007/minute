@@ -4,15 +4,18 @@ import {
   findActiveSegmentIndex,
   formatBytes,
   formatMmSs,
+  formatWait,
   groupLiveSegments,
   hasSummaryContent,
   modelDisplayName,
   modelStatusToSttInfo,
+  nextSummaryQueuedAt,
   noteMetaToListItem,
   notesToSidebarItems,
   pickInitialLlmModel,
   pickInitialSttModel,
   speakerInitials,
+  summaryCoverageNotice,
   splitAnswerCitations,
   splitHighlight,
   storedSegmentsToDisplay,
@@ -121,6 +124,80 @@ describe('notesToSidebarItems', () => {
 
   it('returns an empty array for an empty note list', () => {
     expect(notesToSidebarItems([], now)).toEqual([])
+  })
+})
+
+describe('summaryCoverageNotice', () => {
+  it('says nothing for a summary that covers the whole meeting', () => {
+    expect(summaryCoverageNotice({})).toBeNull()
+    expect(summaryCoverageNotice({ truncated: false, cutOff: false })).toBeNull()
+  })
+
+  it('says the meeting was too long when the transcript was cut', () => {
+    expect(summaryCoverageNotice({ truncated: true })).toMatch(/covers only part of it/)
+  })
+
+  it('says the last items are missing when the answer was cut off (issue #45)', () => {
+    const notice = summaryCoverageNotice({ cutOff: true })
+    expect(notice).toMatch(/last items are missing/)
+    expect(notice).not.toMatch(/covers only part of it/)
+  })
+
+  it('says both when both limits were hit', () => {
+    const notice = summaryCoverageNotice({ truncated: true, cutOff: true })
+    expect(notice).toMatch(/covers only part of it/)
+    expect(notice).toMatch(/last items are missing/)
+  })
+})
+
+describe('formatWait', () => {
+  const queuedAt = Date.UTC(2026, 7, 13, 20, 0)
+  const after = (ms: number) => formatWait(queuedAt, queuedAt + ms)
+  const MINUTE = 60_000
+  const HOUR = 60 * MINUTE
+
+  it('reads as less than a minute at first', () => {
+    expect(after(0)).toBe('less than a minute')
+    expect(after(59_000)).toBe('less than a minute')
+  })
+
+  it('counts whole minutes, then hours, then days, rounding down', () => {
+    expect(after(MINUTE)).toBe('1 minute')
+    expect(after(59 * MINUTE)).toBe('59 minutes')
+    expect(after(HOUR)).toBe('1 hour')
+    expect(after(6 * HOUR + 50 * MINUTE)).toBe('6 hours')
+    expect(after(24 * HOUR)).toBe('1 day')
+    expect(after(49 * HOUR)).toBe('2 days')
+  })
+
+  it('reads a queue time in the future as no wait', () => {
+    expect(after(-5 * MINUTE)).toBe('less than a minute')
+  })
+})
+
+describe('nextSummaryQueuedAt', () => {
+  const now = 2_000
+
+  it('records when a note joined the queue', () => {
+    expect(nextSummaryQueuedAt({}, { noteId: 'a', state: 'queued', error: null, queuedAt: 1_000 }, now)).toEqual({ a: 1_000 })
+  })
+
+  it('falls back to now when a queued event carries no time', () => {
+    expect(nextSummaryQueuedAt({}, { noteId: 'a', state: 'queued', error: null }, now)).toEqual({ a: now })
+  })
+
+  it('keeps the first time when a waiting note is queued again without one', () => {
+    expect(nextSummaryQueuedAt({ a: 1_000 }, { noteId: 'a', state: 'queued', error: null }, now)).toEqual({ a: 1_000 })
+  })
+
+  it.each(['running', 'done', 'error'] as const)('drops the entry once the note is %s', state => {
+    expect(nextSummaryQueuedAt({ a: 1_000, b: 1_500 }, { noteId: 'a', state, error: null }, now)).toEqual({ b: 1_500 })
+  })
+
+  it('returns the same map when nothing changes', () => {
+    const prev = { a: 1_000 }
+    expect(nextSummaryQueuedAt(prev, { noteId: 'b', state: 'running', error: null }, now)).toBe(prev)
+    expect(nextSummaryQueuedAt(prev, { noteId: 'a', state: 'queued', error: null, queuedAt: 1_000 }, now)).toBe(prev)
   })
 })
 
