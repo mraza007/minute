@@ -56,11 +56,14 @@
 
     <main>
       <div class="hero">
+        <p class="kicker">Free, offline AI note taker for macOS</p>
         <h1>Meeting notes that <em>never leave</em> your Mac.</h1>
         <p class="lede">
           Minute records your meetings, transcribes them as you speak, labels
           who said what, and writes the summary, decisions, and action items.
-          The models run on your Mac — not somebody else's server.
+          No bot joins the call. It works with Zoom, Teams, Google Meet, and
+          other calls, and the models run offline on your Mac, not somebody
+          else's server.
         </p>
         <div class="cta">
           <a class="btn" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Apple Silicon</a>
@@ -73,6 +76,20 @@
                alt="A finished meeting note in Minute on a Mac, with the AI summary, decisions, and action items above the transcript" />
         </div>
       </div>
+
+      <section>
+        <h2>No bot joins your call</h2>
+        <p>Minute records on your Mac, not in the meeting. It captures your
+        microphone and, on macOS 13 or later, the system audio, which is how it
+        hears the other people on the call. Nobody sees a new participant, and
+        nobody has to let one in.</p>
+        <p>System audio needs the Screen Recording permission. Without it,
+        Minute records your microphone only.</p>
+        <div class="shot narrow">
+          <img src="assets/detection-settings.webp" width="1576" height="1404" loading="lazy"
+               alt="Minute's recording settings: a rule for each meeting app, the Capture system audio switch, and Stop when the meeting ends" />
+        </div>
+      </section>
 
       <section>
         <h2>Everything the app sends over the network</h2>
@@ -142,6 +159,53 @@
           <img src="assets/dark.webp" width="2600" height="1740" loading="lazy"
                alt="The same meeting note in Minute in dark mode" />
         </div>
+      </section>
+
+      <section class="faq" id="faq">
+        <h2>Frequently asked questions</h2>
+
+        <h3>Is Minute free?</h3>
+        <p>Yes. Minute is free and open source, and it needs no account.</p>
+
+        <h3>Does it work offline?</h3>
+        <p>Yes. After you download the models once, Minute records,
+        transcribes, summarizes, and answers questions with Wi-Fi turned off.
+        It goes online only to download a model, to list models, and to check
+        for an update. You can turn off the update check in Settings.</p>
+
+        <h3>Does a bot join my Zoom or Teams call?</h3>
+        <p>No. Minute records on your Mac. It captures your microphone and, on
+        macOS 13 or later, the system audio, so it hears the other people on
+        the call without joining it. Meeting detection covers Zoom, Teams,
+        Webex, Slack, FaceTime, Discord, and calls in a browser, such as
+        Google Meet.</p>
+
+        <h3>Which Macs does it run on?</h3>
+        <p>Minute needs macOS 11 or later. System audio needs macOS 13 or later
+        and the Screen Recording permission. To notice that a call ended while
+        the meeting app stays open, Minute needs macOS 14.2 or later. Apple
+        silicon is the tested target. The Intel build is not yet tested on
+        real Intel hardware, and the large Whisper models need Apple silicon.
+        The smaller models need 8 GB of memory, the larger ones 16 GB.</p>
+
+        <h3>Can it save notes to Obsidian?</h3>
+        <p>Yes. Choose your vault folder in Settings, and Minute writes a
+        Markdown file each time a summary finishes. It can add the date,
+        title, duration, and speakers as properties. Without Obsidian, export
+        any note as Markdown.</p>
+
+        <h3>Is it open source?</h3>
+        <p>Yes. The <a href="https://github.com/mraza007/minute">code is on
+        GitHub</a> under the MIT license, and each release is signed and
+        notarized by Apple.</p>
+
+        <h3>How does it compare with Granola and Otter?</h3>
+        <p>Granola and Otter transcribe in the cloud, and Otter's assistant
+        joins Zoom, Teams, and Google Meet calls. Minute writes the transcript
+        and the summary on your Mac, with no bot. Read how Minute compares as a
+        <a href="granola-alternative/">Granola alternative</a> and as an
+        <a href="otter-alternative/">Otter alternative</a>, including when
+        each of those apps is the better choice.</p>
       </section>
 
       <div class="fin">

@@ -226,6 +226,15 @@ section > p {
   .compare th, .compare td { padding-right: 10px; }
 }
 
+.faq h3 {
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 1.12rem;
+  line-height: 1.3;
+  margin-top: 28px;
+}
+.faq h3 + p { margin-top: 6px; }
+
 .tech {
   margin-top: 20px;
   font-family: var(--serif);
