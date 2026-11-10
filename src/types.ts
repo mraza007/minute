@@ -42,11 +42,3 @@ export interface TranscriptSegment {
   start: number
   end: number
 }
-
-export interface SttModelInfo {
-  id: string
-  name: string
-  desc: string
-  sub: string
-  subOn: string
-}
