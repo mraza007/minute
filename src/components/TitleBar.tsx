@@ -38,7 +38,7 @@ export const TitleBar = memo(function TitleBar({ isRecording, recTime, onStartRe
               width: 7,
               height: 7,
               borderRadius: '50%',
-              background: 'var(--accent)',
+              background: 'var(--red)',
               animation: 'blink 1.2s step-end infinite',
             }}
           />

@@ -573,7 +573,7 @@ function StatusPill({
     )
   } else if (meta.captureWarning) {
     content = (
-      <span style={{ ...pillBaseStyle, color: 'var(--accent-text)' }}>
+      <span style={{ ...pillBaseStyle, color: 'var(--red-text)' }}>
         <span aria-hidden="true">!</span>
         Needs review
       </span>
@@ -754,8 +754,8 @@ function DeleteNoteButton({ id, title, onDelete }: { id: string; title: string; 
           height: 26,
           border: 'none',
           borderRadius: 'var(--radius-sm)',
-          background: confirming ? 'var(--accent-tint)' : 'transparent',
-          color: confirming ? 'var(--accent-text)' : 'var(--ink-faint)',
+          background: confirming ? 'var(--red-tint)' : 'transparent',
+          color: confirming ? 'var(--red-text)' : 'var(--ink-faint)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',

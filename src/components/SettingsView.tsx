@@ -263,8 +263,8 @@ const secondaryBtnStyle: CSSProperties = {
 
 const dangerBtnStyle: CSSProperties = {
   ...secondaryBtnStyle,
-  border: '1px solid rgba(var(--accent-rgb), .4)',
-  color: 'var(--accent-text)',
+  border: '1px solid rgba(var(--red-rgb), .4)',
+  color: 'var(--red-text)',
 }
 
 interface ModelRowAction {

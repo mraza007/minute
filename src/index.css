@@ -1,270 +1,147 @@
-/* Instrument Sans, bundled locally (no runtime fetch) — variable weight
-   400–700, latin + latin-ext subsets, upright + italic. Files fingerprinted
-   by Vite on build; unicode-range values copied verbatim from Google's
-   css2 response so subset selection still matches per-glyph.
-
-   Instrument Sans is the app's *chrome* face only — labels, buttons,
-   metadata, timestamps. Document text (transcript body, summaries, note
-   titles) is set in the serif ramp below instead; see --serif. */
-@font-face {
-  font-family: 'Instrument Sans';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('./assets/fonts/instrument-sans-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'Instrument Sans';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('./assets/fonts/instrument-sans-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-@font-face {
-  font-family: 'Instrument Sans';
-  font-style: italic;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('./assets/fonts/instrument-sans-italic-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'Instrument Sans';
-  font-style: italic;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('./assets/fonts/instrument-sans-italic-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
+@import '@fontsource-variable/inter/wght.css';
 
 :root {
   color-scheme: light dark;
 
-  /* ── type ─────────────────────────────────────────────────────────────
-     Two families, one job each. Sans is chrome: buttons, labels,
-     timestamps, metadata — anything that is *about* the document. Serif is
-     the document itself: transcript body, summaries, decisions, note
-     titles. That split is what delivers .impeccable.md's "the transcript
-     is the interface" — text stops looking like UI copy and starts looking
-     like the material.
+  --sans: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+  --serif: var(--sans);
 
-     Charter is a system font on every supported macOS (Matthew Carter,
-     drawn for dense text at small sizes on imprecise output — almost
-     exactly this use case), so it costs zero bytes. Iowan Old Style and
-     New York (`ui-serif`) are the fallbacks, both also macOS-resident and
-     both warm enough to keep the character if Charter ever goes missing.
-     Swap in a bundled face by changing this one declaration. */
-  --sans: 'Instrument Sans', system-ui, -apple-system, sans-serif;
-  --serif: 'Charter', 'Iowan Old Style', 'Palatino Linotype', ui-serif, Georgia, serif;
+  --canvas: #eff3f9;
+  --panel: #ffffff;
+  --panel-warm: #eff3f9;
+  --surface-soft: #ffffff;
+  --surface-softer: #f5f7fb;
+  --card: #ffffff;
+  --control-track: #c5cedb;
+  --player-track: #dee5ef;
+  --selected-tint: #e8f0ff;
 
-  /* ── surfaces ─────────────────────────────────────────────────────────
-     Actual paper, not a nominally-warm gray. The previous ramp
-     (#e8e6e3 / #f2f0ee) was warm only on paper — at 8-bit it read as plain
-     light gray. These carry a real cream cast that survives on a display,
-     which is the whole point of the "warm paper light theme is the
-     identity" line in .impeccable.md. Two tones do almost all the work:
-     --panel/--surface-soft is the writing surface, --panel-warm is the
-     chrome around it (title bar, sidebar, player strip). */
-  --canvas: #e7dfce;
-  --panel: #f4efe4;           /* the leaf you write on */
-  --panel-warm: #ece5d6;      /* chrome: title bar, sidebar, player strip */
-  --surface-soft: #f4efe4;
-  --surface-softer: #f8f4ec;
-  --card: #faf7f0;
-  --control-track: #d5cab3;   /* Toggle off-track, disabled CTA fills */
-  --player-track: #d9cfba;    /* PlayerBar seek track */
-  --selected-tint: #fbf2ea;   /* selected-model row tint (SettingsView) */
+  --ink: #172033;
+  --ink-body: #172033;
+  --ink-muted: #596579;
+  --ink-faint: #647084;
 
-  /* ── ink ramp (all AA on every surface above; see scripts note below) ── */
-  --ink: #211d18;
-  --ink-body: #3b352c;
-  --ink-muted: #5c5446;
-  --ink-faint: #6b6252;
+  --text-on-accent: #fff;
 
-  --text-on-accent: #fff;           /* text over accent-solid fills */
-
-  /* Ink buttons — the solid disc/pill controls (PlayerBar's play/pause,
-     MarkdownCard's "Reveal in Finder"). These DO invert in the dark ramp.
-     They used to be pinned near-black in both appearances, on the reasoning
-     that they're shape-defined and carry a crisp white glyph. That held
-     while dark --panel-warm was a mid-brown, but this ramp's chrome is much
-     darker (#1b1813) and a #211d18 disc on it measures 1.06:1 — the control
-     stops existing as a shape at all. Ink on dark paper is light; these
-     follow that, which is also the more honest reading of the metaphor. */
-  --btn-ink-bg: #211d18;
+  --btn-ink-bg: #172033;
   --btn-ink-fg: #fff;
-  --btn-ink-hover: #3b352c;
+  --btn-ink-hover: #2a3550;
 
-  /* (The former --banner-* trust-banner tokens are gone: onboarding's
-     "nothing leaves this Mac" callout is no longer a near-black block on
-     the page but the page's own title, set at document scale in the serif.
-     A promise the product is built on shouldn't be boxed off as a notice
-     the eye learns to skip.) */
+  --accent-rgb: 23, 105, 246;
+  --accent: #1769f6;
+  --accent-solid: #1769f6;
+  --accent-solid-hover: #0f5ae0;
+  --accent-solid-active: #0b4cc2;
+  --accent-text: #1259d9;
+  --accent-tint: #e8f0ff;
+  --accent-selection: #cfe0ff;
+  --error-tint: #fdecef;
+  --error-text-strong: #9b1c31;
 
-  /* ── accent ───────────────────────────────────────────────────────────
-     One signal colour, pulled slightly toward oxide/iron-red so it sits on
-     cream as printed ink rather than as a web red. Still the only loud
-     thing in the app. */
-  --accent-rgb: 200, 65, 42;  /* == --accent, as r,g,b — for rgba() borders/shadows/rings that need a translucent accent rather than a solid one */
-  --accent: #c8412a;          /* graphics, rules, dots, REC — never text-bearing fills */
-  --accent-solid: #b8341d;    /* button fills with white text (5.4:1) */
-  --accent-solid-hover: #a32c17;
-  --accent-solid-active: #8e2512;
-  --accent-text: #a32c17;     /* red text on light tints (5.1:1 on --accent-tint) */
-  --accent-tint: #f7e0d7;
-  --accent-selection: #f2cfc3;
-  --error-tint: #fbeee8;      /* error-card bg (AiNotesPanel, ErrorBanner) */
-  --error-text-strong: #7a2410; /* darker error body text on --error-tint */
+  --ok-text: #237a50;
+  --ok-tint: #eaf4ee;
 
-  /* status */
-  --ok-text: #3f6b2c;
-  --ok-tint: #e2e8d2;
+  --rule: rgba(23, 32, 51, .10);
+  --rule-strong: rgba(23, 32, 51, .20);
+  --border-soft: rgba(23, 32, 51, .07);
+  --border: rgba(23, 32, 51, .12);
+  --border-strong: rgba(23, 32, 51, .18);
+  --border-heavy: rgba(23, 32, 51, .26);
+  --control-border: #7c8799;
 
-  /* ── hairlines ────────────────────────────────────────────────────────
-     Ink-tinted, never neutral black — a rule drawn on cream with a grey
-     hairline reads as a UI border; the same rule in dilute ink reads as
-     drawn. --rule is the workhorse (the manuscript margin, section-head
-     rules, panel divisions); the --border-* aliases below are kept so
-     surfaces not yet reworked stay coherent. */
-  --rule: rgba(33, 29, 24, .14);
-  --rule-strong: rgba(33, 29, 24, .26);
-  --border-soft: rgba(33, 29, 24, .09);
-  --border: rgba(33, 29, 24, .13);
-  --border-strong: rgba(33, 29, 24, .2);
-  --border-heavy: rgba(33, 29, 24, .28); /* dashed placeholder cards, delete-confirm border */
-  --control-border: #857b6a;  /* >=3:1 on --card for radio/toggle affordances */
+  --scrim: rgba(23, 32, 51, .32);
 
-  /* overlay scrim — the ⌘K search palette is the one deliberately-justified
-     overlay in the app (see .impeccable.md's "paper, not glass": no blur/
-     glow/gradients). A plain dim backdrop is still needed to separate the
-     palette from the app behind it, so this is ink-tinted (derived from
-     --ink, not a neutral/cool black) to stay warm rather than read as
-     glass. Reused wherever a future modal scrim is needed. */
-  --scrim: rgba(33, 29, 24, .40);
+  --hover-overlay: rgba(23, 32, 51, .04);
+  --hover-overlay-strong: rgba(23, 32, 51, .07);
+  --btn-light-hover: #f5f7fb;
+  --btn-dark-hover: #2a3550;
 
-  /* hover overlays (utility classes below) */
-  --hover-overlay: rgba(33, 29, 24, .05);
-  --hover-overlay-strong: rgba(33, 29, 24, .07);
-  --btn-light-hover: #f2ece0;
-  --btn-dark-hover: #3b352c;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 
-  /* radii — deliberately small. Paper is cut, not moulded; the 16px pill
-     radius the app used everywhere is the single strongest "web card" tell.
-     999px survives only where a control genuinely is a pill (the record
-     button, the REC chip). */
-  --radius-sm: 4px;
-  --radius-md: 5px;
-  --radius-lg: 6px;
-
-  /* Shared interaction rhythm. State changes should feel immediate while
-     still preserving the calm, physical quality of the manuscript UI. */
   --motion-fast: 120ms;
   --motion-standard: 180ms;
   --ease-out: cubic-bezier(.2, .8, .2, 1);
   --control-height: 36px;
 
-  /* Meeting-popup pill (src/popup/Pill.tsx) drop shadow — the one shadow
-     token in the app (the rest of the UI is flat per "paper, not glass").
-     It needs to vary by theme: unlike every other surface in the app (which
-     sits on the app's own paper), the popup floats directly over an
-     arbitrary desktop/call window, so its shadow is the only thing
-     separating it from whatever's behind it — never "none". */
   --shadow-pill: 0 4px 16px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .12);
 
-  /* Paper grain, as a data URI so it costs no request. Multiplied over the
-     app surface at low opacity — enough to break up flat fills and read as
-     stock, not enough to touch text contrast (verified: the overlay sits
-     behind nothing, it multiplies the *background* only where text is
-     absent, and its own alpha is far below the AA headroom in the ink
-     ramp). Disabled wholesale under forced-colors. */
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
-  --grain-opacity: .40;
+  --grain-opacity: 0;
   --grain-blend: multiply;
+  --red-rgb: 217, 45, 69;
+  --red: #d92d45;
+  --red-solid: #c8243b;
+  --red-solid-hover: #b01d32;
+  --red-solid-active: #98182a;
+  --red-text: #b81f35;
+  --red-tint: #fdecef;
+  --red-selection: #f9d2d9;
 }
 
-/* Dark ramp — follows macOS appearance. Keeps the warm paper-and-ink
-   character (see .impeccable.md: "dark warm ink surfaces, not cool slate or
-   neon-on-black"): this is ink-on-dark-paper, every surface a warm
-   near-black brown rather than a blue-grey. Values verified with the
-   contrast script — see the pairing table in the revamp notes. */
 @media (prefers-color-scheme: dark) {
   :root {
-    /* surfaces */
-    --canvas: #17150f;
-    --panel: #221e18;
-    --panel-warm: #1b1813;
-    --surface-soft: #221e18;
-    --surface-softer: #272219;
-    --card: #2b261e;
-    /* kept clearly "muted/off" while still clearing AA against
-       --ink-muted (the OnboardingView disabled-CTA label sits on it);
-       --control-border, not this token, carries the Toggle off/on
-       boundary, so its value doesn't affect that pairing. */
-    --control-track: #423b30;
-    --player-track: #3f382d;
-    --selected-tint: #382419;
 
-    /* ink ramp */
-    --ink: #f0e9db;
-    --ink-body: #ddd5c5;
-    --ink-muted: #b7ae9c;
-    --ink-faint: #a49a86;
+    --canvas: #0c1017;
+    --panel: #10151d;
+    --panel-warm: #151b25;
+    --surface-soft: #10151d;
+    --surface-softer: #151b25;
+    --card: #1a212d;
 
-    /* Ink buttons invert: a light disc with a dark glyph, 14:1 against the
-       chrome behind it — see the light ramp's note for why they no longer
-       stay pinned near-black. --text-on-accent is deliberately NOT
-       overridden: it labels accent-solid fills, which stay dark red in both
-       appearances. */
-    --btn-ink-bg: #ece4d5;
-    --btn-ink-fg: #17150f;
-    --btn-ink-hover: #d5cdbe;
+    --control-track: #364153;
+    --player-track: #263041;
+    --selected-tint: #1b2a45;
 
-    /* accent — same graphic accent, lifted for a dark ground; solid fill
-       darkened (same direction as light mode's own hover/active step) so
-       white text clears AA, hover/active continuing to darken for
-       consistent depress feedback. */
-    --accent-rgb: 224, 90, 66;  /* == dark --accent */
-    --accent: #e05a42;
-    --accent-solid: #b8341d;
-    --accent-solid-hover: #a32c17;
-    --accent-solid-active: #8e2512;
-    --accent-text: #ffa48d;
-    --accent-tint: #44201a;
-    --accent-selection: #5a2b21;
-    --error-tint: #3a1f18;
-    --error-text-strong: #ffb9a5;
+    --ink: #e8ecf3;
+    --ink-body: #d9dfe9;
+    --ink-muted: #9aa6b8;
+    --ink-faint: #8a96a8;
 
-    /* status */
-    --ok-text: #a8cc80;
-    --ok-tint: #2a3620;
+    --btn-ink-bg: #e8ecf3;
+    --btn-ink-fg: #10151d;
+    --btn-ink-hover: #cbd3df;
 
-    /* hairlines — light ink on dark paper */
-    --rule: rgba(240, 233, 219, .12);
-    --rule-strong: rgba(240, 233, 219, .22);
-    --border-soft: rgba(240, 233, 219, .08);
-    --border: rgba(240, 233, 219, .11);
-    --border-strong: rgba(240, 233, 219, .17);
-    --border-heavy: rgba(240, 233, 219, .22);
-    --control-border: #968c79;
+    --accent-rgb: 107, 164, 255;
+    --accent: #6ba4ff;
+    --accent-solid: #1769f6;
+    --accent-solid-hover: #0f5ae0;
+    --accent-solid-active: #0b4cc2;
+    --accent-text: #8db8ff;
+    --accent-tint: #1b2a45;
+    --accent-selection: #264272;
+    --error-tint: #3a1820;
+    --error-text-strong: #ffb3bf;
+
+    --ok-text: #5cc796;
+    --ok-tint: #17302a;
+
+    --rule: rgba(232, 236, 243, .10);
+    --rule-strong: rgba(232, 236, 243, .20);
+    --border-soft: rgba(232, 236, 243, .07);
+    --border: rgba(232, 236, 243, .11);
+    --border-strong: rgba(232, 236, 243, .17);
+    --border-heavy: rgba(232, 236, 243, .24);
+    --control-border: #8793a6;
     --scrim: rgba(0, 0, 0, .55);
-    --hover-overlay: rgba(240, 233, 219, .06);
-    --hover-overlay-strong: rgba(240, 233, 219, .09);
-    --btn-light-hover: #322c23;
-    --btn-dark-hover: #453e33;
+    --hover-overlay: rgba(232, 236, 243, .06);
+    --hover-overlay-strong: rgba(232, 236, 243, .09);
+    --btn-light-hover: #222b3a;
+    --btn-dark-hover: #364153;
 
-    /* Reduced (not "none"): a black drop shadow reads as heavy/muddy
-       against an already-dark surface, so dark mode keeps a lighter touch
-       and lets the pill's own `1px solid var(--border)` carry most of the
-       actual separation instead. */
     --shadow-pill: 0 4px 16px rgba(0, 0, 0, .1), 0 1px 3px rgba(0, 0, 0, .08);
 
-    /* Grain screens (rather than multiplies) on dark paper — multiplying
-       noise into an already-dark fill just muddies it; screening lifts the
-       same texture as flecks in the stock. */
-    --grain-opacity: .28;
+    --grain-opacity: 0;
     --grain-blend: screen;
+      --red-rgb: 255, 92, 114;
+    --red: #ff5c72;
+    --red-solid: #c8243b;
+    --red-solid-hover: #b01d32;
+    --red-solid-active: #98182a;
+    --red-text: #ff8fa0;
+    --red-tint: #3a1820;
+    --red-selection: #55222d;
   }
 }
 
@@ -319,8 +196,8 @@ a:hover { color: var(--accent-text); }
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes capture-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .24); }
-  50% { box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--red-rgb), .24); }
+  50% { box-shadow: 0 0 0 4px rgba(var(--red-rgb), 0); }
 }
 @keyframes transcript-line-in {
   from { opacity: 0; transform: translateY(4px); }
@@ -576,7 +453,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   height: 8px;
   border: 2px solid var(--panel);
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--red);
   animation: capture-pulse 1.8s ease-in-out infinite;
 }
 .capture-bar[data-paused='true'] .capture-live-dot {
@@ -665,9 +542,9 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .recording-health-item[data-tone='positive'] .recording-health-dot { background: var(--ok-text); }
 .recording-health-item[data-tone='positive'] strong { color: var(--ok-text); }
 .recording-health-item[data-tone='warning'] .recording-health-dot,
-.recording-health-item[data-tone='danger'] .recording-health-dot { background: var(--accent); }
+.recording-health-item[data-tone='danger'] .recording-health-dot { background: var(--red); }
 .recording-health-item[data-tone='warning'] strong,
-.recording-health-item[data-tone='danger'] strong { color: var(--accent-text); }
+.recording-health-item[data-tone='danger'] strong { color: var(--red-text); }
 .recording-health-divider {
   width: 1px;
   height: 22px;
@@ -776,7 +653,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   white-space: nowrap;
 }
 .detail-pair strong[data-tone='positive'] { color: var(--ok-text); }
-.detail-pair strong[data-tone='danger'] { color: var(--accent-text); }
+.detail-pair strong[data-tone='danger'] { color: var(--red-text); }
 
 .live-transcript-frame {
   position: relative;
@@ -1013,11 +890,11 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .recording-recovery {
   flex: none;
   padding: 10px 34px;
-  border-bottom: 1px solid var(--accent);
+  border-bottom: 1px solid var(--red);
   display: flex;
   align-items: center;
   gap: 9px;
-  background: var(--accent-tint);
+  background: var(--red-tint);
   color: var(--ink-muted);
   font-size: 11px;
 }
@@ -1229,7 +1106,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   right: 10%;
   width: 1px;
   height: 9px;
-  background: var(--accent);
+  background: var(--red);
   opacity: .58;
 }
 .input-level-copy {
@@ -1242,8 +1119,8 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   color: var(--ink-faint);
 }
 .input-level[data-tone='positive'] .input-level-copy { color: var(--ok-text); }
-.input-level[data-tone='warning'] .input-level-fill { background: var(--accent); }
-.input-level[data-tone='warning'] .input-level-copy { color: var(--accent-text); }
+.input-level[data-tone='warning'] .input-level-fill { background: var(--red); }
+.input-level[data-tone='warning'] .input-level-copy { color: var(--red-text); }
 .preflight-row-copy [role='switch'] {
   min-height: 28px;
   font-family: var(--sans) !important;
@@ -1267,8 +1144,8 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 }
 .preflight-state[data-tone='positive'] { color: var(--ok-text); }
 .preflight-state[data-tone='positive'] > span { background: var(--ok-text); }
-.preflight-state[data-tone='danger'] { color: var(--accent-text); }
-.preflight-state[data-tone='danger'] > span { background: var(--accent); }
+.preflight-state[data-tone='danger'] { color: var(--red-text); }
+.preflight-state[data-tone='danger'] > span { background: var(--red); }
 .preflight-permission {
   min-height: 30px;
   margin: 8px 0 0;
@@ -1575,7 +1452,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   color: var(--ink-muted);
   font: 13.5px/1.55 var(--serif);
 }
-.overview-recovery .mlab { color: var(--accent-text); }
+.overview-recovery .mlab { color: var(--red-text); }
 .overview-markers { margin-top: 30px; }
 .overview-markers ol {
   margin: 10px 0 0;
@@ -1607,8 +1484,8 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   font-size: 10.5px;
 }
 .marker-row-actions button[data-danger='true'] {
-  border-bottom-color: var(--accent);
-  color: var(--accent-text);
+  border-bottom-color: var(--red);
+  color: var(--red-text);
 }
 .marker-edit-form {
   grid-column: 2 / -1;
@@ -1631,11 +1508,11 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .note-processing-recovery {
   flex: none;
   padding: 9px 34px;
-  border-bottom: 1px solid var(--accent);
+  border-bottom: 1px solid var(--red);
   display: flex;
   align-items: center;
   gap: 9px;
-  background: var(--accent-tint);
+  background: var(--red-tint);
   color: var(--ink-muted);
   font-size: 11px;
 }
@@ -1894,7 +1771,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 }
 
 .sidebar-bulk-tools button.danger {
-  color: var(--accent-text);
+  color: var(--red-text);
 }
 
 .sidebar-bulk-tools button:disabled {
@@ -1959,7 +1836,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 }
 
 .context-menu-item[data-destructive="true"] {
-  color: var(--accent-text);
+  color: var(--red-text);
 }
 
 /* Inline sidebar rename — sits where the row's title/meta usually render. */
@@ -2048,7 +1925,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 }
 
 .overview-storage-line button[data-danger="true"] {
-  color: var(--accent-text);
+  color: var(--red-text);
 }
 
 .overview-storage-removed {
@@ -2162,12 +2039,12 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 
 .model-suitability[data-tone='constrained'] .model-suitability-dot,
 .model-suitability[data-tone='unsupported'] .model-suitability-dot {
-  background: var(--accent-text);
+  background: var(--red-text);
 }
 
 .model-suitability[data-tone='constrained'] strong,
 .model-suitability[data-tone='unsupported'] strong {
-  color: var(--accent-text);
+  color: var(--red-text);
 }
 
 @media (max-width: 720px) {
@@ -2418,7 +2295,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
   box-sizing: border-box;
   border: none;
   border-radius: 999px;
-  background: var(--accent-solid);
+  background: var(--red-solid);
   color: var(--text-on-accent);
   font-family: var(--sans);
   font-size: 12.5px;
@@ -2427,8 +2304,8 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
   cursor: pointer;
   transition: background var(--motion-fast), transform var(--motion-fast);
 }
-.btn-record:hover { background: var(--accent-solid-hover); }
-.btn-record:active { background: var(--accent-solid-active); transform: translateY(1px); }
+.btn-record:hover { background: var(--red-solid-hover); }
+.btn-record:active { background: var(--red-solid-active); transform: translateY(1px); }
 
 .rec-chip {
   display: inline-flex;
@@ -2436,8 +2313,8 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
   gap: 8px;
   border: none;
   border-radius: 999px;
-  background: var(--accent-tint);
-  color: var(--accent-text);
+  background: var(--red-tint);
+  color: var(--red-text);
   font-family: var(--sans);
   font-size: 11px;
   font-weight: 700;
@@ -2446,7 +2323,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
   padding: 8px 14px;
   cursor: pointer;
 }
-.rec-chip:hover { background: var(--accent-selection); }
+.rec-chip:hover { background: var(--red-selection); }
 
 .btn-outline {
   display: inline-flex;
@@ -2523,7 +2400,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
 .hov-dark:hover { background: var(--hover-overlay) !important; }
 .hov-dark6:hover { background: var(--hover-overlay-strong) !important; }
 .icon-btn:hover { background: var(--hover-overlay-strong) !important; color: var(--ink) !important; }
-.icon-btn-danger:hover { background: var(--accent-tint) !important; color: var(--accent-text) !important; }
+.icon-btn-danger:hover { background: var(--red-tint) !important; color: var(--red-text) !important; }
 .btn-light:hover { background: var(--btn-light-hover) !important; }
 .btn-dark-accent:hover { background: var(--accent) !important; }
 .btn-dark:hover { background: var(--btn-ink-hover) !important; }
@@ -2727,7 +2604,7 @@ html[data-reduced-motion="true"] .context-menu { animation: none; }
   left: 0;
   right: 0;
   height: 2px;
-  background: var(--accent);
+  background: var(--red);
   z-index: 60;
   pointer-events: none;
 }

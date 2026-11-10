@@ -115,10 +115,10 @@ function SttErrorRow({ sttError }: { sttError: string | null }) {
         display: 'flex',
         flexDirection: 'column',
         gap: 3,
-        borderLeft: '2px solid var(--accent)',
-        background: 'var(--accent-tint)',
+        borderLeft: '2px solid var(--red)',
+        background: 'var(--red-tint)',
         padding: '10px 14px',
-        color: 'var(--accent-text)',
+        color: 'var(--red-text)',
       }}
     >
       <div style={{ fontSize: 12.5, fontWeight: 600 }}>Recording continues — transcript unavailable</div>

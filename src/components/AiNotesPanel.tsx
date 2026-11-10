@@ -66,7 +66,7 @@ function Section({ label, children, tone }: { label: string; children: ReactNode
   return (
     <section style={{ marginBottom: 22 }}>
       <div className="sec-head" style={{ marginBottom: 9 }}>
-        <span className="mlab" style={tone === 'error' ? { color: 'var(--accent-text)' } : undefined}>
+        <span className="mlab" style={tone === 'error' ? { color: 'var(--red-text)' } : undefined}>
           {label}
         </span>
       </div>
@@ -315,7 +315,7 @@ function AskEntry({
       </div>
       {entry.error ? (
         <>
-          <div role="alert" style={{ fontSize: 12.5, lineHeight: 1.55, color: 'var(--accent-text)', marginBottom: 9 }}>
+          <div role="alert" style={{ fontSize: 12.5, lineHeight: 1.55, color: 'var(--red-text)', marginBottom: 9 }}>
             {entry.error}
           </div>
           <button

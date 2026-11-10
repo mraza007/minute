@@ -23,6 +23,7 @@
     "verify": "npm run lint && npm run test && npm run build && npm run test:rust && npm run check:release"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
     "@tanstack/react-virtual": "3.14.8",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
