@@ -194,6 +194,18 @@ describe('buildModelCatalog', () => {
     expect(result.llm.onThisMac[0].fit.label).toBe('Good fit')
   })
 
+  it('marks the Hugging Face files Minute saved, such as a cancelled download, apart from browsed and tested ones', () => {
+    const result = catalog({
+      listed: [tested('gemma-4-e4b', 'llm'), hf('jdoe/cancelled', { trusted: false, publisher: 'jdoe' })],
+      browsed: [hf('ggml-org/smollm3')],
+    })
+    expect(result.llm.tested.map(row => [row.model.id, row.saved])).toEqual([['gemma-4-e4b', false]])
+    expect(result.llm.huggingFace.map(row => [row.model.id, row.saved])).toEqual([
+      ['hf:jdoe/cancelled', true],
+      ['hf:ggml-org/smollm3', false],
+    ])
+  })
+
   it('never asks consent for a tested model and keeps Recommended on the tested pick', () => {
     const result = catalog({ listed: [tested('whisper-large-v3-turbo', 'stt')] })
     expect(result.stt.tested[0].unknownPublisher).toBeNull()

@@ -615,6 +615,39 @@ describe('SettingsView', () => {
       expect(screen.getByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' })).toHaveFocus()
     })
 
+    it('offers Remove beside Download for a saved Hugging Face file that is not downloaded, and only for it', () => {
+      const deleteModel = vi.fn()
+      const cancelled = hfModel('llama-Q4_K_M.gguf', { displayName: 'Llama 3.1 8B Instruct' }, { publisher: 'jdoe-quants', trusted: false })
+      const browsed = hfModel('granite-4.0-h-tiny-Q4_K_M.gguf', { displayName: 'Granite 4.0 H Tiny' })
+      renderSection('models', { models: [...models, cancelled], deleteModel, huggingFace: browse({ models: [browsed] }) })
+      const actionsOf = (download: string) => screen.getByRole('button', { name: download }).parentElement as HTMLElement
+
+      expect(within(actionsOf('Download Granite 4.0 H Tiny, 4.9 GB')).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+      expect(within(actionsOf('Download Gemma 4 E4B, 5.3 GB')).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+
+      const actions = actionsOf('Download Llama 3.1 8B Instruct, 4.9 GB')
+      fireEvent.click(within(actions).getByRole('button', { name: 'Remove' }))
+      expect(deleteModel).not.toHaveBeenCalled()
+      fireEvent.click(within(actions).getByRole('button', { name: 'Confirm removal?' }))
+      expect(deleteModel).toHaveBeenCalledWith(cancelled.id)
+    })
+
+    it('drops an open publisher question when a search hides its row, so the row comes back without taking focus', () => {
+      const llama = hfModel('llama-Q4_K_M.gguf', { displayName: 'Llama 3.1 8B Instruct' }, { publisher: 'jdoe-quants', trusted: false })
+      const found = browse({ models: [llama] })
+      const { rerender } = renderSection('models', { huggingFace: found })
+      fireEvent.click(screen.getByRole('button', { name: 'Download Llama 3.1 8B Instruct, 4.9 GB' }))
+      expect(screen.getByRole('group', { name: /Minute has not checked/ })).toBeInTheDocument()
+
+      rerender(<SettingsView {...base} section="models" huggingFace={{ ...found, models: [] }} />)
+      const field = screen.getByRole('searchbox', { name: 'Search any model on Hugging Face' })
+      field.focus()
+      rerender(<SettingsView {...base} section="models" huggingFace={found} />)
+
+      expect(screen.queryByRole('group', { name: /Minute has not checked/ })).not.toBeInTheDocument()
+      expect(field).toHaveFocus()
+    })
+
     it('folds away models that need more memory than this Mac has until asked', () => {
       const big = [
         hfModel('llama-70b.gguf', { displayName: 'Llama 3.3 70B', minRamGb: 48 }),

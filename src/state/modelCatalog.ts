@@ -13,6 +13,8 @@ export interface CatalogRow {
   detail: string
   /** Set for a Hugging Face file, not yet downloaded, from a publisher Minute has not checked: Download asks first. */
   unknownPublisher: string | null
+  /** A Hugging Face file `list_models` returns: Minute keeps it from the moment its download starts, so a cancelled or failed one can be removed. */
+  saved: boolean
 }
 
 /** One kind's models, split the way the Models page shows them. */
@@ -122,6 +124,7 @@ export function buildModelCatalog({ listed, browsed, hardware, recommendation, d
     stt: { onThisMac: [], tested: [], huggingFace: [], tooLarge: [] },
     llm: { onThisMac: [], tested: [], huggingFace: [], tooLarge: [] },
   }
+  const saved = new Set(listed.filter(model => model.origin.kind === 'huggingFace').map(model => model.id))
   const shown = new Set(listed.map(model => model.id))
   const fresh: ModelStatus[] = []
   for (const model of browsed) {
@@ -142,6 +145,7 @@ export function buildModelCatalog({ listed, browsed, hardware, recommendation, d
       fit: assessModelSuitability(model, hardware, recommendation),
       detail: modelDetail(model, now),
       unknownPublisher: model.origin.kind === 'huggingFace' && !model.origin.trusted && status !== 'installed' ? model.origin.publisher : null,
+      saved: saved.has(model.id),
     }
     const group = groups[model.kind]
     if (status === 'installed') group.onThisMac.push(row)

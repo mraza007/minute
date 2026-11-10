@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction } from 'react'
 import type { BrowseKind, Hardware, ModelStatus, Recommendation } from '../../ipc/types'
 import { formatBytes, type DownloadProgressState } from '../../state/adapters'
 import { buildModelCatalog, formatAge, type CatalogGroup, type CatalogRow } from '../../state/modelCatalog'
@@ -50,13 +50,14 @@ const GROUPS: Record<BrowseKind, { title: string; purpose: string; radioLabel: s
 interface DownloadActions {
   downloadModel: (id: string, allowUnknownPublisher?: boolean) => void
   cancelDownload: (id: string) => void
+  deleteModel: (id: string) => void
   /** The one row whose unknown-publisher confirm is open, page-wide. */
   consentId: string | null
-  setConsentId: (id: string | null) => void
+  setConsentId: Dispatch<SetStateAction<string | null>>
 }
 
 /** Remove needs a second click within four seconds, since the system confirm dialog does not fit the app. */
-function RemoveButton({ model, deleteModel }: { model: ModelStatus; deleteModel: (id: string) => void }) {
+function RemoveButton({ model, deleteModel, small = false }: { model: ModelStatus; deleteModel: (id: string) => void; small?: boolean }) {
   const [confirming, setConfirming] = useState(false)
   const timeout = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timeout.current), [])
@@ -65,7 +66,7 @@ function RemoveButton({ model, deleteModel }: { model: ModelStatus; deleteModel:
     <>
       <button
         type="button"
-        className="st-link"
+        className={small ? 'st-link st-link-small' : 'st-link'}
         data-tone="danger"
         data-armed={confirming ? 'true' : undefined}
         onClick={() => {
@@ -200,12 +201,16 @@ function ConsentConfirm({ publisher, onCancel, onConfirm }: ConsentConfirmProps)
   )
 }
 
-function AvailableRow({ row, downloadModel, cancelDownload, consentId, setConsentId }: { row: CatalogRow } & DownloadActions) {
+function AvailableRow({ row, downloadModel, cancelDownload, deleteModel, consentId, setConsentId }: { row: CatalogRow } & DownloadActions) {
   const { model, unknownPublisher } = row
   const consentPublisher = consentId === model.id ? unknownPublisher : null
   const consentOpen = consentPublisher !== null
   const actionRef = useRef<HTMLDivElement>(null)
   const wasOpen = useRef(false)
+
+  // A row that leaves the page, say behind a search, closes its confirm.
+  // Otherwise the confirm reopens when the row returns and takes focus from the search field.
+  useEffect(() => () => setConsentId(open => (open === model.id ? null : open)), [model.id, setConsentId])
 
   // When the confirm closes, focus would fall to the page. Put it back on the
   // row's action instead: Download after Cancel, the download's Cancel after
@@ -247,15 +252,18 @@ function AvailableRow({ row, downloadModel, cancelDownload, consentId, setConsen
             />
           ) : (
             !consentOpen && (
-              <button
-                type="button"
-                className="st-link"
-                data-tone="accent"
-                aria-label={`Download ${model.displayName}, ${formatBytes(model.sizeBytes)}`}
-                onClick={() => (unknownPublisher === null ? downloadModel(model.id) : setConsentId(model.id))}
-              >
-                Download
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="st-link"
+                  data-tone="accent"
+                  aria-label={`Download ${model.displayName}, ${formatBytes(model.sizeBytes)}`}
+                  onClick={() => (unknownPublisher === null ? downloadModel(model.id) : setConsentId(model.id))}
+                >
+                  Download
+                </button>
+                {row.saved && <RemoveButton model={model} deleteModel={deleteModel} small />}
+              </>
             )
           )}
         </div>
@@ -418,14 +426,13 @@ function Fold({ rows, label, ...actions }: { rows: CatalogRow[]; label: string }
 }
 
 interface ModelGroupProps extends DownloadActions {
-  deleteModel: (id: string) => void
   kind: BrowseKind
   group: CatalogGroup
   onSelect: (id: string) => void
   huggingFace: HuggingFaceBrowse
 }
 
-function ModelGroup({ kind, group, onSelect, huggingFace, deleteModel, ...actions }: ModelGroupProps) {
+function ModelGroup({ kind, group, onSelect, huggingFace, ...actions }: ModelGroupProps) {
   const config = GROUPS[kind]
   const browse = huggingFace.state[kind]
   const retry = () => huggingFace.refresh(kind)
@@ -439,7 +446,7 @@ function ModelGroup({ kind, group, onSelect, huggingFace, deleteModel, ...action
       </header>
 
       <SubgroupLabel text="On this Mac" />
-      <InstalledRows label={config.radioLabel} rows={group.onThisMac} onSelect={onSelect} deleteModel={deleteModel} />
+      <InstalledRows label={config.radioLabel} rows={group.onThisMac} onSelect={onSelect} deleteModel={actions.deleteModel} />
 
       {config.searchable ? (
         <>

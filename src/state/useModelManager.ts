@@ -88,10 +88,10 @@ export interface UseModelManagerOptions {
  *
  * Also re-gates: if the selected (or the only) installed STT model gets
  * removed out from under the user — e.g. deleted from Settings — this
- * bounces the view back to onboarding and reassigns `sttModel` off the
- * now-uninstalled pick, via the same `pickInitialSttModel` rule used on
- * initial load. One-directional: it only ever forces *into* onboarding,
- * never out of it — "Open Minute" is what clears the gate.
+ * bounces the view back to onboarding and reassigns `sttModel` (and
+ * `llmModel`) off the now-uninstalled pick, via the same `pickInitial*`
+ * rules used on initial load. One-directional: it only ever forces *into*
+ * onboarding, never out of it — "Open Minute" is what clears the gate.
  */
 export function useModelManager({ view, setView, loaded }: UseModelManagerOptions) {
   const [models, setModels] = useState<ModelStatus[]>([])
@@ -154,7 +154,7 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     [],
   )
 
-  // `view`/`setView`/`sttModel`/`recommendation` read through a ref so the
+  // `view`/`setView`/`sttModel`/`llmModel`/`recommendation` read through a ref so the
   // effect below triggers *only* off genuine `models` changes (a download
   // finishing, a delete's refetch, ...) — not off `view` changing for
   // unrelated reasons (e.g. the user clicking "Open Minute", or the
@@ -163,15 +163,17 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   // immediately re-fight; re-gating is specifically about the model catalog
   // changing out from under an already-settled view, not about reacting to
   // the view itself moving.
-  const latest = useRef({ view, setView, sttModel, recommendation, loaded })
-  latest.current = { view, setView, sttModel, recommendation, loaded }
+  const latest = useRef({ view, setView, sttModel, llmModel, recommendation, loaded })
+  latest.current = { view, setView, sttModel, llmModel, recommendation, loaded }
 
   // Re-gate onboarding + reassign the selection whenever `models` changes:
   // forces the view to 'onboarding' if no STT model is installed anymore,
-  // and reassigns `sttModel` if the currently-selected entry is no longer
-  // installed. One-directional — never auto-clears onboarding.
+  // and reassigns `sttModel`/`llmModel` when the selected id is no longer an
+  // installed model. A removed Hugging Face model drops out of `models`
+  // entirely, so a missing id counts too. One-directional — never
+  // auto-clears onboarding.
   useEffect(() => {
-    const { view, setView, sttModel, recommendation, loaded } = latest.current
+    const { view, setView, sttModel, llmModel, recommendation, loaded } = latest.current
     if (!loaded) return
 
     const hasInstalledStt = models.some(m => m.kind === 'stt' && m.state === 'installed')
@@ -180,9 +182,12 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     }
 
     if (recommendation) {
-      const selected = models.find(m => m.id === sttModel)
-      if (selected && selected.state !== 'installed') {
+      const isInstalled = (id: string) => models.some(m => m.id === id && m.state === 'installed')
+      if (!isInstalled(sttModel)) {
         setSttModelState(pickInitialSttModel(models, recommendation))
+      }
+      if (llmModel !== null && !isInstalled(llmModel)) {
+        setLlmModelState(pickInitialLlmModel(models, recommendation))
       }
     }
     // Deliberately depends on `models` only — see the comment above.

@@ -349,6 +349,37 @@ describe('useModelManager', () => {
     expect(result.current.sttModel).toBe('whisper-small')
   })
 
+  it('re-gate: removing the selected Hugging Face transcription model reassigns sttModel to an installed one', async () => {
+    const small = sttModelFixture({ state: 'installed' })
+    const tiny = hfModelFixture('whisper-tiny', { kind: 'stt', state: 'installed' })
+    // The backend forgets a removed Hugging Face file, so the refetch no longer lists it.
+    setupIPC(cmd => (cmd === 'list_models' ? [small] : undefined))
+    const { result } = renderHook(() => useHarness('settings'))
+    act(() => result.current.seed([small, tiny], recommendation, settingsFixture({ sttModel: tiny.id })))
+    expect(result.current.sttModel).toBe(tiny.id)
+
+    act(() => result.current.deleteModel(tiny.id))
+    await waitFor(() => expect(result.current.models).toEqual([small]))
+
+    expect(result.current.sttModel).toBe('whisper-small')
+    expect(result.current.view).toBe('settings')
+  })
+
+  it('re-gate: removing the selected Hugging Face summary model reassigns llmModel to an installed one', async () => {
+    const small = sttModelFixture({ state: 'installed' })
+    const qwen = llmModelFixture({ state: 'installed' })
+    const llama = hfModelFixture('llama', { state: 'installed' })
+    setupIPC(cmd => (cmd === 'list_models' ? [small, qwen] : undefined))
+    const { result } = renderHook(() => useHarness('settings'))
+    act(() => result.current.seed([small, qwen, llama], recommendation, settingsFixture({ llmModel: llama.id })))
+    expect(result.current.llmModel).toBe(llama.id)
+
+    act(() => result.current.deleteModel(llama.id))
+    await waitFor(() => expect(result.current.models).toEqual([small, qwen]))
+
+    expect(result.current.llmModel).toBe('qwen3.5-4b')
+  })
+
   it('does not force a redundant setView call once already on the onboarding view', async () => {
     let listModelsCalls = 0
     setupIPC(cmd => {
