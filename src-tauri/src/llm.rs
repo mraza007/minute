@@ -603,10 +603,10 @@ fn close_cut_off_json(s: &str, start: usize) -> Option<String> {
 /// Closes a JSON object whose text stops after a complete value, keeping
 /// every value, unlike [`close_cut_off_json`]. A model that ends its answer
 /// one `}` short (seen from Gemma 4 E4B and Qwen3.5 9B on long meetings)
-/// lost nothing. The returned flag is `true` when more than that final `}`
-/// was open: the answer stopped inside a list or a nested object, so later
-/// members may be missing. `None` when the text stops inside a string or
-/// right after a comma or colon.
+/// lost nothing. The returned flag says the answer may be incomplete: it
+/// stopped inside a list or a nested object, or before `action_items`, the
+/// schema's last member, which is where a token cap would leave it. `None`
+/// when the text stops inside a string or right after a comma or colon.
 fn close_missing_brackets(s: &str, start: usize) -> Option<(String, bool)> {
     let scan = scan_open_json(s, start);
     let text = s[start..].trim_end();
@@ -615,7 +615,10 @@ fn close_missing_brackets(s: &str, start: usize) -> Option<(String, bool)> {
     }
     let mut closed = text.to_string();
     closed.extend(scan.closers.iter().rev());
-    Some((closed, scan.closers.len() > 1))
+    let ends_with_action_items = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&closed)
+        .is_ok_and(|object| object.contains_key("action_items"));
+    let cut_off = scan.closers.len() > 1 || !ends_with_action_items;
+    Some((closed, cut_off))
 }
 
 /// Where an unbalanced JSON object stands at the end of `s`.
@@ -4302,6 +4305,14 @@ mod tests {
             assert!(!parts.doc.cut_off, "{file}: nothing was lost");
             assert!(!parts.suggested_title.is_empty(), "{file}: title");
         }
+    }
+
+    #[test]
+    fn an_answer_that_stops_before_its_action_items_says_it_was_cut_off() {
+        let raw = r#"{"summary": "They set the date.", "decisions": ["Ship on the 14th"]"#;
+        let parts = extract_summary_parts(raw).unwrap();
+        assert_eq!(parts.doc.decisions, ["Ship on the 14th"]);
+        assert!(parts.doc.cut_off, "action items never arrived");
     }
 
     #[test]
