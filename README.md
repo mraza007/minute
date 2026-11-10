@@ -7,9 +7,9 @@
 Minute records a meeting, transcribes it while you talk, and writes the summary.
 All of it runs on your Mac.
 
-**[Download for Apple silicon](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-arm64.zip)**
+**[Download for Apple silicon](https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip)**
 &nbsp;·&nbsp;
-[Download for Intel](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-x86_64.zip)
+[Download for Intel](https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-x86_64.zip)
 &nbsp;·&nbsp;
 [All releases](https://github.com/mraza007/minute/releases/latest)
 
@@ -297,10 +297,10 @@ The same page can convert older audio from WAV to AAC to save space.
 ## Install
 
 ![platform](https://img.shields.io/badge/platform-macOS%2011%2B-172033)
-![version](https://img.shields.io/badge/version-1.12.1-1769f6)
+![version](https://img.shields.io/badge/version-1.13.0-1769f6)
 ![license](https://img.shields.io/badge/license-MIT-1769f6)
 
-1. Download the ZIP for your Mac: [Apple silicon](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-arm64.zip) or [Intel](https://github.com/mraza007/minute/releases/download/v1.12.1/Minute-1.12.1-x86_64.zip).
+1. Download the ZIP for your Mac: [Apple silicon](https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip) or [Intel](https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-x86_64.zip).
 2. Unzip the file and move `Minute.app` to the Applications folder.
 3. Open Minute and download the recommended models.
 4. Start a recording. macOS asks for microphone access the first time.
