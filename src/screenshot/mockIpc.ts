@@ -39,12 +39,12 @@ function buildModels(state: ScreenshotState): ModelStatus[] {
   })
 }
 
-function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[]): NoteWithTranscript {
+function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[], summarized = true): NoteWithTranscript {
   if (meta.id === AURORA_NOTE_ID) {
     return {
       meta,
       transcript: { segments: transcriptOverride ?? AURORA_TRANSCRIPT },
-      summary: AURORA_SUMMARY satisfies SummaryDoc,
+      summary: summarized ? AURORA_SUMMARY satisfies SummaryDoc : null,
       markdown: AURORA_MARKDOWN,
       audioPath: '/Users/demo/Library/Application Support/Minute/notes/note-aurora/audio.wav',
     }
@@ -78,6 +78,9 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
       })),
     )
   }
+  // `?summary=queued` leaves Aurora unsummarized, with the Detailed length
+  // chosen, for the "This summary has waited" card.
+  const summaryQueued = params.get('summary') === 'queued'
   // `?suggest=1` gives the unnamed Aurora speaker a voice-profile match, for
   // the speaker popover's "Sounds like" row.
   if (params.get('suggest') === '1') {
@@ -106,7 +109,7 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
         case 'get_note': {
           const { id } = args as { id: string }
           const meta = notes.find(n => n.id === id) ?? notes[0]
-          return noteWithTranscript(meta, transcriptOverrides.get(meta.id))
+          return noteWithTranscript(meta, transcriptOverrides.get(meta.id), !summaryQueued)
         }
         case 'search_notes':
           return PRICING_SEARCH_HITS
@@ -283,7 +286,7 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           if (params.get('processing')) return new Promise(() => {})
           return notes[0]
         case 'get_settings':
-          return SETTINGS
+          return summaryQueued ? { ...SETTINGS, summaryStyle: 'detailed' } : SETTINGS
         case 'set_settings':
           return SETTINGS
         case 'sys_audio_status':

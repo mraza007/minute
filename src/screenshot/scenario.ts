@@ -6,7 +6,7 @@
 // honest: if a capture looks right, the real app produces that screen too.
 
 import { emit } from '@tauri-apps/api/event'
-import { AURORA_ASK_ENTRIES, PRICING_NOTE_ID, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID } from './demoData'
+import { AURORA_ASK_ENTRIES, AURORA_NOTE_ID, PRICING_NOTE_ID, RECORDING_ELAPSED_SECONDS, RECORDING_LIVE_TURNS, RECORDING_NOTE_ID, SAM_NOTE_ID } from './demoData'
 import type { ScreenshotState } from './mockIpc'
 
 function sleep(ms: number): Promise<void> {
@@ -280,6 +280,14 @@ async function driveNote(params: URLSearchParams): Promise<void> {
 
   await driveSidebar(params)
 
+  // `?summary=queued`: Aurora's summary has waited six hours behind the
+  // summary running for the 1:1 with Sam.
+  if (params.get('summary') === 'queued') {
+    await emit('summary-status', { noteId: SAM_NOTE_ID, state: 'running', error: null })
+    await emit('summary-status', { noteId: AURORA_NOTE_ID, state: 'queued', error: null, queuedAt: Date.now() - 6 * 3_600_000 })
+    await waitFor(() => document.querySelector('.summary-wait') !== null)
+  }
+
   const filter = params.get('filter')
   if (filter) {
     await openFilterMenu()
@@ -305,7 +313,8 @@ async function driveNote(params: URLSearchParams): Promise<void> {
   }
 
   // `?rename=<speaker>` opens that speaker's popover; `&mergeInto=<speaker>`
-  // goes on to merge, and `&speakerMerge=done` confirms it.
+  // goes on to merge, and `&speakerMerge=done` confirms it. `&markUnknown=done`
+  // marks that speaker's turns as unknown instead.
   const rename = params.get('rename')
   if (rename) {
     const chip = await waitForSelector<HTMLButtonElement>(`.speaker-chip[data-speaker="${rename}"]`)
@@ -324,6 +333,14 @@ async function driveNote(params: URLSearchParams): Promise<void> {
         await waitFor(() => findButtonByText('Undo') !== undefined)
       }
     }
+    if (params.get('markUnknown') === 'done') {
+      findButtonByText('Mark these turns as unknown')?.click()
+      await waitFor(() => findButtonByText('Undo') !== undefined)
+    }
+  }
+
+  if (params.get('scroll') === 'transcript') {
+    document.querySelector('.note-transcript')?.scrollIntoView({ block: 'start' })
   }
 
   if (params.get('menu') === 'note') {
