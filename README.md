@@ -168,6 +168,27 @@ themselves rather than run forever, and when a meeting is too long for
 the model's context window, the summary says it covers only part of the
 recording instead of silently coming out thin.
 
+## Save summaries to Obsidian
+
+Turn on Obsidian in Settings, pick your vault folder, and Minute writes a
+Markdown file into it each time a summary finishes, including a regenerated one.
+The default folder is `Meetings` and the default file name is
+`{date} - {title}`. The file name template accepts `{date}` and `{title}`.
+Minute removes characters that are not safe in a file name.
+
+- **Properties.** The file starts with YAML frontmatter: `date`, `title`,
+  `duration` (minutes) and `speakers`. You can turn this off.
+- **Transcript.** Off by default. Turn it on to add the full transcript.
+- **One file per note.** Minute remembers the path it saved. A later save
+  writes to the same file, even after you rename the note. A file that was
+  not written by Minute is never overwritten. Minute adds a number to the
+  name instead.
+- **Edits in Obsidian.** If you edit the file, Minute leaves it alone when a
+  summary finishes and shows a warning on the note. "Save to Obsidian again"
+  replaces your edits. If you delete the file, the next save creates it again.
+- **Errors.** A missing vault or a folder that cannot be written never stops
+  the summary. The note shows the error instead.
+
 ## Ask your notes, with receipts
 
 Ask a plain-language question about a meeting — "what did we decide about

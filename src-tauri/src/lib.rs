@@ -5,6 +5,7 @@ mod diar;
 mod download;
 mod error;
 mod llm;
+mod obsidian;
 mod popup;
 mod profiles;
 mod settings;
@@ -514,6 +515,27 @@ fn set_settings(
     Ok(updated)
 }
 
+/// "Save to Obsidian again": writes note `id` into the vault now, replacing
+/// the file Minute saved earlier. Resolves with the note's new export
+/// status. A save failure is reported inside that status (`error`), not as
+/// a rejection. Rejects only when the note cannot be read.
+#[tauri::command]
+async fn save_note_to_obsidian(
+    store: State<'_, SharedStore>,
+    settings: State<'_, SharedSettings>,
+    id: String,
+) -> Result<obsidian::ObsidianExport, String> {
+    obsidian::export_note(&store, &settings, &id, obsidian::Trigger::Manual)
+        .map_err(|e| e.to_string())
+}
+
+/// Checks that `path` is an existing folder, for the vault picker. Resolves
+/// with the user-facing reason when it is not.
+#[tauri::command]
+fn check_obsidian_vault(path: String) -> Result<(), String> {
+    obsidian::check_vault(&path).map(|_| ())
+}
+
 #[tauri::command]
 fn storage_stats(state: State<SharedStore>) -> Result<StorageStats, String> {
     // Clone the root path out from under a brief lock, then run the
@@ -750,6 +772,8 @@ pub fn run() {
             reveal_note,
             get_settings,
             set_settings,
+            save_note_to_obsidian,
+            check_obsidian_vault,
             download::download_model,
             download::cancel_download,
             download::delete_model,

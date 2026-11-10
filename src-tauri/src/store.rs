@@ -11,6 +11,7 @@ use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::error::{MinuteError, Result};
 use crate::llm::SummaryDoc;
+use crate::obsidian::ObsidianExport;
 
 /// Lifecycle status of a note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +104,11 @@ pub struct NoteMeta {
     /// entry. Written whole by each pass, like `speaker_suggestions`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub speaker_auto_applied: HashMap<String, SpeakerSuggestion>,
+    /// Obsidian export status (issue #47): where the note was last saved and
+    /// the last failure, if any. Absent until the first export attempt, so
+    /// older `meta.json` files round-trip byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obsidian: Option<ObsidianExport>,
 }
 
 /// One voice-profile match (issue #22): "this diarized voice sounds like
@@ -666,6 +672,7 @@ impl Store {
             speaker_aliases: HashMap::new(),
             speaker_suggestions: HashMap::new(),
             speaker_auto_applied: HashMap::new(),
+            obsidian: None,
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -700,6 +707,15 @@ impl Store {
     pub fn set_note_sources(&self, id: &str, sources: Vec<String>) -> Result<NoteMeta> {
         let mut meta = self.read_meta(id)?;
         meta.sources = sources;
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Records the outcome of an Obsidian export in `meta.json`. Re-reads the
+    /// meta first so a concurrent rename or pin is not overwritten.
+    pub fn set_obsidian_export(&self, id: &str, export: ObsidianExport) -> Result<NoteMeta> {
+        let mut meta = self.read_meta(id)?;
+        meta.obsidian = Some(export);
         self.write_meta(&meta)?;
         Ok(meta)
     }
@@ -2295,6 +2311,17 @@ pub fn render_note_md(
     summary: Option<&SummaryDoc>,
     transcript: &Transcript,
 ) -> String {
+    render_note_md_with(meta, summary, transcript, true)
+}
+
+/// [`render_note_md`] with the `## Transcript` section optional — the
+/// Obsidian export (`obsidian.rs`) leaves it out unless the user asked for it.
+pub fn render_note_md_with(
+    meta: &NoteMeta,
+    summary: Option<&SummaryDoc>,
+    transcript: &Transcript,
+    include_transcript: bool,
+) -> String {
     let minutes = (meta.duration_sec / 60.0).round() as i64;
     let mut out = format!(
         "# {}\n\n**Date:** {} · **Duration:** {} min · **Speakers:** {}",
@@ -2363,10 +2390,12 @@ pub fn render_note_md(
         out.push_str(&format!("\n\n## Markers\n\n{markers}"));
     }
 
-    out.push_str(&format!(
-        "\n\n## Transcript\n\n{}",
-        transcript_body(&transcript.segments)
-    ));
+    if include_transcript {
+        out.push_str(&format!(
+            "\n\n## Transcript\n\n{}",
+            transcript_body(&transcript.segments)
+        ));
+    }
     out
 }
 
@@ -3670,6 +3699,7 @@ mod tests {
             speaker_aliases: HashMap::new(),
             speaker_suggestions: HashMap::new(),
             speaker_auto_applied: HashMap::new(),
+            obsidian: None,
         }
     }
 
@@ -4736,6 +4766,7 @@ mod tests {
             speaker_aliases: HashMap::new(),
             speaker_suggestions: HashMap::new(),
             speaker_auto_applied: HashMap::new(),
+            obsidian: None,
         };
         overrides(&mut meta);
         meta

@@ -158,6 +158,52 @@ pub struct Settings {
     /// as enabled.
     #[serde(default = "default_true")]
     pub auto_apply_speaker_names: bool,
+    /// Issue #47: save finished summaries into an Obsidian vault. Opt-in.
+    /// `#[serde(default)]` so older `settings.json` files load as off.
+    #[serde(default)]
+    pub obsidian: ObsidianSettings,
+}
+
+/// Where and how Minute writes notes into an Obsidian vault. See
+/// `obsidian.rs` for the export itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ObsidianSettings {
+    pub enabled: bool,
+    /// Absolute path of the vault folder. Empty until the user picks one.
+    pub vault_path: String,
+    /// Folder inside the vault, `/`-separated. Empty means the vault root.
+    pub folder: String,
+    /// File name without extension. Tokens: `{date}` (YYYY-MM-DD) and `{title}`.
+    pub file_name_template: String,
+    /// Write date, title, duration and speakers as YAML frontmatter.
+    pub add_properties: bool,
+    pub include_transcript: bool,
+}
+
+impl Default for ObsidianSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vault_path: String::new(),
+            folder: crate::obsidian::DEFAULT_FOLDER.to_string(),
+            file_name_template: crate::obsidian::DEFAULT_FILE_NAME_TEMPLATE.to_string(),
+            add_properties: true,
+            include_transcript: false,
+        }
+    }
+}
+
+/// Partial update to [`ObsidianSettings`]; `None` leaves a field unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianPatch {
+    pub enabled: Option<bool>,
+    pub vault_path: Option<String>,
+    pub folder: Option<String>,
+    pub file_name_template: Option<String>,
+    pub add_properties: Option<bool>,
+    pub include_transcript: Option<bool>,
 }
 
 /// `serde(default = ...)` helper for fields that default to `true` —
@@ -186,6 +232,7 @@ impl Default for Settings {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
         }
     }
 }
@@ -227,6 +274,7 @@ pub struct SettingsPatch {
     pub compress_audio_after_days: Option<u32>,
     pub speaker_profiles: Option<bool>,
     pub auto_apply_speaker_names: Option<bool>,
+    pub obsidian: Option<ObsidianPatch>,
 }
 
 /// Merges `patch` into `settings` in place — only fields present (`Some`) in
@@ -274,6 +322,27 @@ pub fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.auto_apply_speaker_names {
         settings.auto_apply_speaker_names = v;
+    }
+    if let Some(p) = patch.obsidian {
+        let o = &mut settings.obsidian;
+        if let Some(v) = p.enabled {
+            o.enabled = v;
+        }
+        if let Some(v) = p.vault_path {
+            o.vault_path = v.trim().to_string();
+        }
+        if let Some(v) = p.folder {
+            o.folder = v.trim().to_string();
+        }
+        if let Some(v) = p.file_name_template {
+            o.file_name_template = v;
+        }
+        if let Some(v) = p.add_properties {
+            o.add_properties = v;
+        }
+        if let Some(v) = p.include_transcript {
+            o.include_transcript = v;
+        }
     }
 }
 
@@ -374,7 +443,16 @@ pub fn apply_and_save(
 ) -> Result<Settings> {
     let mut guard = lock_settings(state);
     let mut candidate = guard.clone();
+    let changes_vault_path = patch
+        .obsidian
+        .as_ref()
+        .is_some_and(|o| o.vault_path.is_some());
+    let touches_obsidian = patch.obsidian.is_some();
     apply_patch(&mut candidate, patch);
+    if touches_obsidian {
+        crate::obsidian::validate_settings(&candidate.obsidian, changes_vault_path)
+            .map_err(MinuteError::Other)?;
+    }
     save_settings(root, &candidate)?;
     *guard = candidate.clone();
     Ok(candidate)
@@ -414,6 +492,7 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
         };
 
         save_settings(dir.path(), &settings).unwrap();
@@ -462,6 +541,7 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+                obsidian: ObsidianSettings::default(),
             }
         );
     }
@@ -505,6 +585,7 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+                obsidian: ObsidianSettings::default(),
             }
         );
     }
@@ -549,6 +630,7 @@ mod tests {
                 compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+                obsidian: ObsidianSettings::default(),
             }
         );
     }
@@ -589,6 +671,7 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
         };
         save_settings(dir.path(), &settings).unwrap();
 
@@ -639,6 +722,7 @@ mod tests {
             compress_audio_after_days: Some(14),
             speaker_profiles: Some(true),
             auto_apply_speaker_names: Some(false),
+            obsidian: None,
         };
 
         apply_patch(&mut settings, patch);
@@ -841,6 +925,7 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
         };
         let patch = SettingsPatch {
             delete_audio_after_30d: Some(false),
@@ -874,6 +959,7 @@ mod tests {
             compress_audio_after_days: None,
             speaker_profiles: false,
             auto_apply_speaker_names: true,
+            obsidian: ObsidianSettings::default(),
         };
         let mut settings = original.clone();
 
