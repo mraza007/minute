@@ -247,6 +247,22 @@ function setupIPC(opts: SetupOpts = {}) {
             },
           }
         }
+        case 'mark_speaker_unknown': {
+          const { id, speaker } = args as { id: string; speaker: string }
+          const match = notes.find(n => n.id === id) ?? notes[0]
+          return {
+            transcript: { segments: [] },
+            meta: { ...match, speakers: Math.max(1, match.speakers - 1), unknownTurns: [1] },
+            undo: {
+              from: speaker,
+              into: null,
+              segmentIndices: [1],
+              summaryMentions: [],
+              summaryFingerprint: null,
+              checksum: 'unknown-checksum',
+            },
+          }
+        }
         case 'undo_speaker_merge': {
           const { id } = args as { id: string }
           const match = notes.find(n => n.id === id) ?? notes[0]
@@ -1551,6 +1567,29 @@ describe('useAppState', () => {
         cmd: 'undo_speaker_merge',
         args: { id: 'note-a', undo },
       })
+    })
+
+    it('marks a speaker unknown, refreshes the selected transcript, and undoes through the merge undo path', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ notes: [noteA], getNote: getNoteFixture, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+      await waitFor(() => expect(result.current.selectedMeta).toEqual(noteA))
+      const initialGetCalls = calls.filter(call => call.cmd === 'get_note').length
+
+      let undo!: Awaited<ReturnType<typeof result.current.markSpeakerUnknown>>
+      await act(async () => {
+        undo = await result.current.markSpeakerUnknown('note-a', 'Speaker 2')
+      })
+
+      expect(calls).toContainEqual({ cmd: 'mark_speaker_unknown', args: { id: 'note-a', speaker: 'Speaker 2' } })
+      expect(undo.into).toBeNull()
+      expect(result.current.notes[0].unknownTurns).toEqual([1])
+      expect(calls.filter(call => call.cmd === 'get_note')).toHaveLength(initialGetCalls + 1)
+
+      await act(async () => {
+        await result.current.undoSpeakerMerge('note-a', undo)
+      })
+      expect(calls).toContainEqual({ cmd: 'undo_speaker_merge', args: { id: 'note-a', undo } })
     })
 
     describe('deleteNote', () => {

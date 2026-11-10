@@ -99,6 +99,8 @@ export interface NoteMeta {
   speakerSuggestions?: Record<string, SpeakerSuggestion>
   /** Issue #32: names the diarization pass applied on its own (confident voice-profile matches), keyed by the raw label they replaced — rendered as an "auto-renamed — Undo" notice. */
   speakerAutoApplied?: Record<string, SpeakerSuggestion>
+  /** Issue #49: indices of turns the user marked unknown. A re-run keeps them unknown. */
+  unknownTurns?: number[]
   /**
    * Whether `summary.json` exists on disk (issue #18). Only `list_notes`
    * computes it — commands that return a single updated `NoteMeta` omit
@@ -109,7 +111,8 @@ export interface NoteMeta {
 
 /** `store::StoredSegment` — `#[serde(rename_all = "camelCase")]`. */
 export interface StoredSegment {
-  speaker: string
+  /** `null` is `store::Speaker::Unknown` (issue #49): speech Minute could not place. Never a name. */
+  speaker: string | null
   start: number
   end: number
   text: string
@@ -120,11 +123,17 @@ export interface Transcript {
   segments: StoredSegment[]
 }
 
-/** `store::SpeakerMergeUndo` — exact turn indices changed by one merge. */
+/**
+ * `store::SpeakerMergeUndo` — exact turn indices changed by one merge.
+ * Opaque to the frontend: pass it back to `undoSpeakerMerge` unchanged.
+ * `into` is `null` when the merge was "mark these turns as unknown".
+ */
 export interface SpeakerMergeUndo {
   from: string
-  into: string
+  into: string | null
   segmentIndices: number[]
+  summaryMentions: number[]
+  summaryFingerprint: string | null
   checksum: string
 }
 

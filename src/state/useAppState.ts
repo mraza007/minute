@@ -589,6 +589,23 @@ export function useAppState() {
     [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
   )
 
+  /** "Mark these turns as unknown" (issue #49). Resolves to the same undo token `undoSpeakerMerge` takes. */
+  const markSpeakerUnknown = useCallback(
+    async (id: string, speaker: string): Promise<SpeakerMergeUndo> => {
+      try {
+        const result = await ipc.markSpeakerUnknown(id, speaker)
+        setNotes(current => current.map(note => note.id === id ? mergeNoteUpdate(note, result.meta) : note))
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) await loadNoteTranscript(id, { force: true })
+        return result.undo
+      } catch (error) {
+        reportError(error)
+        throw error
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, reportError, selectedNoteId],
+  )
+
   const undoSpeakerMerge = useCallback(
     async (id: string, undo: SpeakerMergeUndo) => {
       try {
@@ -1851,6 +1868,7 @@ export function useAppState() {
     tAutoApplySpeakerNames,
     toggleAutoApplySpeakerNames,
     mergeSpeakers,
+    markSpeakerUnknown,
     undoSpeakerMerge,
     deleteNote,
     deleteNotes,

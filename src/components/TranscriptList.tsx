@@ -1,5 +1,6 @@
 import { memo, useLayoutEffect, useRef, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { UNKNOWN_SPEAKER_LABEL } from '../state/adapters'
 import type { TranscriptSegment } from '../types'
 
 export interface TranscriptListProps {
@@ -71,7 +72,9 @@ function Segment({
         {segment.time}
       </button>
       <div style={{ minWidth: 0 }}>
-        <div className="script-who">{segment.speaker}</div>
+        {segment.speaker === null
+          ? <div className="script-who" style={{ color: 'var(--ink-muted)' }}>{UNKNOWN_SPEAKER_LABEL}</div>
+          : <div className="script-who">{segment.speaker}</div>}
         <p className="script-said">{segment.text}</p>
       </div>
     </div>

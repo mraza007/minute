@@ -149,16 +149,19 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           transcriptOverrides.set(id, segments)
           return { segments }
         }
-        case 'merge_speakers': {
-          const { id, from, into } = args as { id: string; from: string; into: string }
+        case 'merge_speakers':
+        case 'mark_speaker_unknown': {
+          const { id, from, into, speaker } = args as { id: string; from?: string; into?: string; speaker?: string }
+          const source = from ?? speaker ?? ''
+          const target = into ?? null
           const noteIndex = notes.findIndex(note => note.id === id)
           const meta = noteIndex >= 0 ? notes[noteIndex] : notes[0]
           const current = noteWithTranscript(meta, transcriptOverrides.get(id)).transcript.segments
           const segmentIndices = current
-            .map((segment, index) => segment.speaker === from ? index : -1)
+            .map((segment, index) => segment.speaker === source ? index : -1)
             .filter(index => index >= 0)
           const segments = current.map((segment, index) => (
-            segmentIndices.includes(index) ? { ...segment, speaker: into } : segment
+            segmentIndices.includes(index) ? { ...segment, speaker: target } : segment
           ))
           const updatedMeta = { ...meta, speakers: Math.max(1, meta.speakers - 1) }
           if (noteIndex >= 0) notes[noteIndex] = updatedMeta
@@ -166,7 +169,14 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           return {
             transcript: { segments },
             meta: updatedMeta,
-            undo: { from, into, segmentIndices, checksum: 'screenshot-merge-checksum' },
+            undo: {
+              from: source,
+              into: target,
+              segmentIndices,
+              summaryMentions: [],
+              summaryFingerprint: null,
+              checksum: 'screenshot-merge-checksum',
+            },
           }
         }
         case 'undo_speaker_merge': {

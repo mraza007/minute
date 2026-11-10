@@ -8,7 +8,7 @@ import type {
   SummaryDoc,
 } from '../ipc/types'
 import type { NoteTab, SttStatus } from '../types'
-import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, storedSegmentsToDisplay } from '../state/adapters'
+import { findActiveSegmentIndex, formatBytes, formatMmSs, noteMetaToListItem, speakerRoster, storedSegmentsToDisplay, UNKNOWN_SPEAKER_LABEL } from '../state/adapters'
 import { useAudioPlayer } from '../state/useAudioPlayer'
 import type { ProcessingFailure, SummaryStatus } from '../state/useAppState'
 import type { AskHistoryEntry, AskStatus } from '../state/useNoteDetail'
@@ -945,7 +945,7 @@ export function NoteView({
   const detailMeta = transcriptReady && selectedMeta ? selectedMeta : meta
   const noteId = meta?.id ?? null
   const markers = detailMeta?.markers ?? []
-  const speakers = useMemo(() => Array.from(new Set(segments.map(segment => segment.speaker))), [segments])
+  const speakers = useMemo(() => speakerRoster(segments).speakers.map(entry => entry.speaker), [segments])
   const filteredSegments = useMemo(
     () => speakerFilter === 'all' ? segments : segments.filter(segment => segment.speaker === speakerFilter),
     [segments, speakerFilter],
@@ -1522,7 +1522,7 @@ export function NoteView({
                 {speakerMergeUndo && (
                   <div className="speaker-merge-notice">
                     <span role="status">
-                      <strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into}</strong>.
+                      <strong>{speakerMergeUndo.from}</strong> merged into <strong>{speakerMergeUndo.into ?? UNKNOWN_SPEAKER_LABEL}</strong>.
                     </span>
                     <button
                       type="button"
