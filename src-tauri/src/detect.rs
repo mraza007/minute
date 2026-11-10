@@ -2386,7 +2386,7 @@ struct RunningMeetingApp {
 /// | This poll | Followed app | Call over |
 /// |---|---|---|
 /// | The followed app is capturing | Unchanged | No |
-/// | It is not, and another app is capturing | The first such app, tracked from scratch | No |
+/// | It is not, and another app is capturing | The first such app not set to "Do nothing", tracked from scratch | No |
 /// | It runs and no app is capturing | Unchanged | After [`CAPTURE_GONE_DEBOUNCE`] of this |
 /// | It quit and no app is capturing | Unchanged | After [`APP_QUIT_DEBOUNCE`] of this |
 /// | Its capture cannot be read | Unchanged | No |
@@ -2414,7 +2414,13 @@ enum FollowedApp {
 }
 
 impl CaptureWatch {
-    fn tick(&mut self, recording: bool, running: &[RunningMeetingApp], now: Instant) -> bool {
+    fn tick(
+        &mut self,
+        recording: bool,
+        running: &[RunningMeetingApp],
+        policies: &MeetingPolicies,
+        now: Instant,
+    ) -> bool {
         if !recording {
             *self = Self::default();
             return false;
@@ -2439,7 +2445,10 @@ impl CaptureWatch {
             .as_deref()
             .map_or(FollowedApp::NotFollowing, seen_as);
         if followed != FollowedApp::Running(Some(true)) {
-            if let Some(on_the_mic) = running.iter().find(|app| app.capturing == Some(true)) {
+            let followable = |app: &&RunningMeetingApp| {
+                app.capturing == Some(true) && policies.resolve(&app.name) != MeetingPolicy::Ignore
+            };
+            if let Some(on_the_mic) = running.iter().find(followable) {
                 *self = Self {
                     app: Some(on_the_mic.name.clone()),
                     ..Self::default()
@@ -2478,15 +2487,34 @@ mod capture_watch_tests {
         }
     }
 
+    /// One poll with every app on its default policy.
+    fn tick(watch: &mut CaptureWatch, recording: bool, running: &[RunningMeetingApp], now: Instant) -> bool {
+        watch.tick(recording, running, &MeetingPolicies::default(), now)
+    }
+
+    #[test]
+    fn an_app_set_to_do_nothing_is_never_followed() {
+        let base = Instant::now();
+        let mut watch = CaptureWatch::default();
+        let mut policies = MeetingPolicies::default();
+        policies.set(crate::settings::MeetingApp::Browser, MeetingPolicy::Ignore);
+        assert!(!watch.tick(true, &[app("Chrome", Some(true))], &policies, base));
+        let tab_closed = [app("Chrome", Some(false))];
+        assert!(!watch.tick(true, &tab_closed, &policies, base));
+        assert!(!watch.tick(true, &tab_closed, &policies, base + CAPTURE_GONE_DEBOUNCE));
+        assert!(!watch.tick(true, &[], &policies, base + CAPTURE_GONE_DEBOUNCE));
+        assert!(!watch.tick(true, &[], &policies, base + CAPTURE_GONE_DEBOUNCE * 4));
+    }
+
     #[test]
     fn a_call_ending_in_a_later_app_fires_while_an_earlier_app_sits_idle() {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
         let in_call = [app("Zoom", Some(false)), app("Microsoft Teams", Some(true))];
         let call_over = [app("Zoom", Some(false)), app("Microsoft Teams", Some(false))];
-        assert!(!watch.tick(true, &in_call, base));
-        assert!(!watch.tick(true, &call_over, base));
-        assert!(watch.tick(true, &call_over, base + CAPTURE_GONE_DEBOUNCE));
+        assert!(!tick(&mut watch, true, &in_call, base));
+        assert!(!tick(&mut watch, true, &call_over, base));
+        assert!(tick(&mut watch, true, &call_over, base + CAPTURE_GONE_DEBOUNCE));
     }
 
     #[test]
@@ -2496,11 +2524,11 @@ mod capture_watch_tests {
         let both = [app("Zoom", Some(true)), app("Chrome", Some(true))];
         let one_left = [app("Zoom", Some(false)), app("Chrome", Some(true))];
         let none_left = [app("Zoom", Some(false)), app("Chrome", Some(false))];
-        assert!(!watch.tick(true, &both, base));
-        assert!(!watch.tick(true, &one_left, base));
-        assert!(!watch.tick(true, &one_left, base + CAPTURE_GONE_DEBOUNCE * 2));
-        assert!(!watch.tick(true, &none_left, base + CAPTURE_GONE_DEBOUNCE * 2));
-        assert!(watch.tick(true, &none_left, base + CAPTURE_GONE_DEBOUNCE * 3));
+        assert!(!tick(&mut watch, true, &both, base));
+        assert!(!tick(&mut watch, true, &one_left, base));
+        assert!(!tick(&mut watch, true, &one_left, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(!tick(&mut watch, true, &none_left, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(tick(&mut watch, true, &none_left, base + CAPTURE_GONE_DEBOUNCE * 3));
     }
 
     #[test]
@@ -2513,42 +2541,42 @@ mod capture_watch_tests {
             app("Chrome", Some(false)),
         ];
         let teams_quit = [app("Zoom", Some(false)), app("Chrome", Some(false))];
-        assert!(!watch.tick(true, &in_call, base));
-        assert!(!watch.tick(true, &teams_quit, base));
-        assert!(!watch.tick(true, &teams_quit, base + APP_QUIT_DEBOUNCE / 2));
-        assert!(watch.tick(true, &teams_quit, base + APP_QUIT_DEBOUNCE));
+        assert!(!tick(&mut watch, true, &in_call, base));
+        assert!(!tick(&mut watch, true, &teams_quit, base));
+        assert!(!tick(&mut watch, true, &teams_quit, base + APP_QUIT_DEBOUNCE / 2));
+        assert!(tick(&mut watch, true, &teams_quit, base + APP_QUIT_DEBOUNCE));
     }
 
     #[test]
     fn quitting_the_app_in_the_call_ends_it_while_another_app_is_joining() {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
-        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
+        assert!(!tick(&mut watch, true, &[app("Zoom", Some(true))], base));
         let joining = [app("Microsoft Teams", Some(false))];
-        assert!(!watch.tick(true, &joining, base));
-        assert!(watch.tick(true, &joining, base + APP_QUIT_DEBOUNCE));
+        assert!(!tick(&mut watch, true, &joining, base));
+        assert!(tick(&mut watch, true, &joining, base + APP_QUIT_DEBOUNCE));
     }
 
     #[test]
     fn an_app_relaunched_inside_the_debounce_keeps_the_call_open() {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
-        assert!(!watch.tick(true, &[app("Microsoft Teams", Some(true))], base));
-        assert!(!watch.tick(true, &[], base));
-        assert!(!watch.tick(true, &[app("Microsoft Teams", Some(true))], base + APP_QUIT_DEBOUNCE / 2));
-        assert!(!watch.tick(true, &[], base + APP_QUIT_DEBOUNCE));
-        assert!(!watch.tick(true, &[], base + APP_QUIT_DEBOUNCE * 3 / 2));
-        assert!(watch.tick(true, &[], base + APP_QUIT_DEBOUNCE * 2));
+        assert!(!tick(&mut watch, true, &[app("Microsoft Teams", Some(true))], base));
+        assert!(!tick(&mut watch, true, &[], base));
+        assert!(!tick(&mut watch, true, &[app("Microsoft Teams", Some(true))], base + APP_QUIT_DEBOUNCE / 2));
+        assert!(!tick(&mut watch, true, &[], base + APP_QUIT_DEBOUNCE));
+        assert!(!tick(&mut watch, true, &[], base + APP_QUIT_DEBOUNCE * 3 / 2));
+        assert!(tick(&mut watch, true, &[], base + APP_QUIT_DEBOUNCE * 2));
     }
 
     #[test]
     fn another_app_taking_the_microphone_after_a_quit_keeps_the_call_open() {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
-        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
-        assert!(!watch.tick(true, &[app("Chrome", Some(false))], base));
-        assert!(!watch.tick(true, &[app("Chrome", Some(true))], base + APP_QUIT_DEBOUNCE / 2));
-        assert!(!watch.tick(true, &[app("Chrome", Some(true))], base + APP_QUIT_DEBOUNCE * 2));
+        assert!(!tick(&mut watch, true, &[app("Zoom", Some(true))], base));
+        assert!(!tick(&mut watch, true, &[app("Chrome", Some(false))], base));
+        assert!(!tick(&mut watch, true, &[app("Chrome", Some(true))], base + APP_QUIT_DEBOUNCE / 2));
+        assert!(!tick(&mut watch, true, &[app("Chrome", Some(true))], base + APP_QUIT_DEBOUNCE * 2));
     }
 
     #[test]
@@ -2556,17 +2584,17 @@ mod capture_watch_tests {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
         let unknown = [app("Zoom", None), app("Microsoft Teams", None)];
-        assert!(!watch.tick(true, &unknown, base));
-        assert!(!watch.tick(true, &unknown, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(!tick(&mut watch, true, &unknown, base));
+        assert!(!tick(&mut watch, true, &unknown, base + CAPTURE_GONE_DEBOUNCE * 2));
     }
 
     #[test]
     fn capture_turning_unknown_after_it_was_seen_does_not_fire() {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
-        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
-        assert!(!watch.tick(true, &[app("Zoom", None)], base));
-        assert!(!watch.tick(true, &[app("Zoom", None)], base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(!tick(&mut watch, true, &[app("Zoom", Some(true))], base));
+        assert!(!tick(&mut watch, true, &[app("Zoom", None)], base));
+        assert!(!tick(&mut watch, true, &[app("Zoom", None)], base + CAPTURE_GONE_DEBOUNCE * 2));
     }
 
     #[test]
@@ -2574,11 +2602,11 @@ mod capture_watch_tests {
         let base = Instant::now();
         let mut watch = CaptureWatch::default();
         let idle = [app("Zoom", Some(false))];
-        assert!(!watch.tick(true, &[app("Zoom", Some(true))], base));
-        assert!(!watch.tick(true, &idle, base));
-        assert!(!watch.tick(false, &idle, base + CAPTURE_GONE_DEBOUNCE));
-        assert!(!watch.tick(true, &idle, base + CAPTURE_GONE_DEBOUNCE * 2));
-        assert!(!watch.tick(true, &idle, base + CAPTURE_GONE_DEBOUNCE * 4));
+        assert!(!tick(&mut watch, true, &[app("Zoom", Some(true))], base));
+        assert!(!tick(&mut watch, true, &idle, base));
+        assert!(!tick(&mut watch, false, &idle, base + CAPTURE_GONE_DEBOUNCE));
+        assert!(!tick(&mut watch, true, &idle, base + CAPTURE_GONE_DEBOUNCE * 2));
+        assert!(!tick(&mut watch, true, &idle, base + CAPTURE_GONE_DEBOUNCE * 4));
     }
 }
 
@@ -2899,9 +2927,10 @@ fn run_detector_thread(
                             capturing: macos::app_is_capturing(capturing.as_deref(), bundle),
                         })
                         .collect();
-                    let capture_gone = capture_watch.tick(recording, &observed, Instant::now());
-                    crate::audio::set_meeting_app_closed(&recorder, quit_closed || capture_gone);
                     let policies = settings::lock_settings(&settings).meeting_policies;
+                    let capture_gone =
+                        capture_watch.tick(recording, &observed, &policies, Instant::now());
+                    crate::audio::set_meeting_app_closed(&recorder, quit_closed || capture_gone);
                     selection = select_meeting_app(&policies, &observed);
                     core.process(
                         DetectorEvent::Tick {
