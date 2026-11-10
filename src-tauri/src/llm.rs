@@ -6122,4 +6122,216 @@ mod tests {
             "expected the answer to contain at least one [mm:ss]-shaped citation, got: {answer:?}"
         );
     }
+
+    /// Transcript for [`real_llm_eval_from_env`]: the file named by
+    /// `MINUTE_EVAL_TRANSCRIPT` (one `speaker<TAB>start seconds<TAB>text`
+    /// line per segment) when set, else [`fake_product_launch_transcript`].
+    fn eval_transcript_from_env() -> Vec<StoredSegment> {
+        let Ok(path) = std::env::var("MINUTE_EVAL_TRANSCRIPT") else {
+            return fake_product_launch_transcript();
+        };
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read MINUTE_EVAL_TRANSCRIPT {path:?}: {e}"))
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let speaker = fields.next().expect("speaker field");
+                let start: f64 = fields
+                    .next()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or_else(|| panic!("bad start seconds in line {line:?}"));
+                let text = fields
+                    .next()
+                    .unwrap_or_else(|| panic!("no text in line {line:?}"));
+                StoredSegment {
+                    speaker: speaker.to_string(),
+                    start,
+                    end: start + 6.0,
+                    text: text.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    /// One timed generation for [`real_llm_eval_from_env`]. Prints the
+    /// prompt and output token counts, the wall time, and the generation
+    /// speed, then the raw output. The prompt decode is timed by a separate
+    /// one-token run and subtracted, so tokens/s covers sampling only.
+    fn eval_generate(
+        state: &LlmEngineState,
+        label: &str,
+        prompt: &str,
+        params: GenerationParams,
+    ) -> Result<String> {
+        let prompt_start = Instant::now();
+        state.generate_with_params(
+            prompt,
+            GenerationParams {
+                max_tokens: 1,
+                ..params
+            },
+        )?;
+        let prompt_secs = prompt_start.elapsed().as_secs_f64();
+
+        let total_start = Instant::now();
+        let raw = state.generate_with_params(prompt, params)?;
+        let total_secs = total_start.elapsed().as_secs_f64();
+
+        let model = &state.loaded.as_ref().expect("model is loaded").model;
+        let count = |text: &str| {
+            model
+                .str_to_token(text, AddBos::Never)
+                .map(|t| t.len())
+                .unwrap_or(0)
+        };
+        let out_tokens = count(&raw);
+        let gen_secs = (total_secs - prompt_secs).max(0.001);
+        eprintln!(
+            "[{label}] prompt ~{} tokens in {prompt_secs:.2}s, output {out_tokens} tokens, \
+             total {total_secs:.2}s, generation {:.1} tokens/s (cap {})",
+            count(prompt),
+            out_tokens as f64 / gen_secs,
+            params.max_tokens
+        );
+        eprintln!("[{label}] raw output:\n{raw}\n[{label}] end of raw output");
+        Ok(raw)
+    }
+
+    /// Evaluates any GGUF through the app's real load and generation path,
+    /// so a catalog candidate can be proven before it is added. Runs the
+    /// Standard summary, the Detailed summary, and one Ask question, prints
+    /// timings and raw outputs, and fails with every problem it found.
+    ///
+    /// `MINUTE_EVAL_LLM_ID` is the catalog-style id (its family prefix picks
+    /// the prompt format). `MINUTE_EVAL_LLM_PATH` is the GGUF file.
+    /// `MINUTE_EVAL_TRANSCRIPT` optionally replaces the built-in transcript.
+    ///
+    /// ```sh
+    /// MINUTE_EVAL_LLM_ID=qwen3.5-4b MINUTE_EVAL_LLM_PATH=/path/to/model.gguf \
+    ///     cargo test --manifest-path src-tauri/Cargo.toml --lib \
+    ///     real_llm_eval_from_env -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_llm_eval_from_env() {
+        let model_id = std::env::var("MINUTE_EVAL_LLM_ID").expect("set MINUTE_EVAL_LLM_ID");
+        let model_path =
+            PathBuf::from(std::env::var("MINUTE_EVAL_LLM_PATH").expect("set MINUTE_EVAL_LLM_PATH"));
+        assert!(model_path.exists(), "no model file at {model_path:?}");
+        let segments = eval_transcript_from_env();
+        let title = "Aurora launch planning";
+
+        let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
+            loaded: None,
+            last_used: Instant::now(),
+        };
+        let load_start = Instant::now();
+        state
+            .ensure_loaded(&model_id, &model_path, None)
+            .unwrap_or_else(|e| panic!("failed to load {model_id}: {e}"));
+        eprintln!(
+            "[load] {model_id} in {:.2}s, context {:?} tokens",
+            load_start.elapsed().as_secs_f64(),
+            state.loaded_context_tokens()
+        );
+
+        {
+            let loaded = state.loaded.as_ref().expect("model is loaded");
+            let probe = vec![
+                LlamaChatMessage::new("user".to_string(), "PROBE".to_string())
+                    .expect("chat message"),
+            ];
+            let native = loaded
+                .model
+                .chat_template(None)
+                .map_err(|e| e.to_string())
+                .and_then(|tmpl| {
+                    loaded
+                        .model
+                        .apply_chat_template(&tmpl, &probe, true)
+                        .map_err(|e| e.to_string())
+                });
+            match native {
+                Ok(text) => eprintln!(
+                    "[template] native: {:?}",
+                    apply_no_think_prefill(&text, &model_id)
+                ),
+                Err(e) => eprintln!(
+                    "[template] fallback ({e}): {:?}",
+                    manual_chat_prompt(&model_id, "PROBE")
+                ),
+            }
+        }
+
+        let mut problems: Vec<String> = Vec::new();
+
+        let standard =
+            build_summary_prompt(title, &segments, usize::MAX, SummaryStyle::Standard, "");
+        match eval_generate(&state, "standard", &standard, GenerationParams::default())
+            .and_then(|raw| extract_summary_parts(&raw))
+        {
+            Ok(parts) => {
+                eprintln!("[standard] title: {:?}", parts.suggested_title);
+                eprintln!("[standard] doc: {:#?}", parts.doc);
+                if parts.doc.summary.trim().is_empty() {
+                    problems.push("standard: empty summary".to_string());
+                }
+                if rename_target(DEFAULT_NOTE_TITLE, &parts.suggested_title).is_none() {
+                    problems.push(format!(
+                        "standard: unusable title {:?}",
+                        parts.suggested_title
+                    ));
+                }
+                if parts.doc.decisions.is_empty() && parts.doc.action_items.is_empty() {
+                    problems.push("standard: no decisions and no action items".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("standard: {e}")),
+        }
+
+        let detailed =
+            build_summary_prompt(title, &segments, usize::MAX, SummaryStyle::Detailed, "");
+        match eval_generate(
+            &state,
+            "detailed",
+            &detailed,
+            generation_params_for(SummaryStyle::Detailed),
+        )
+        .and_then(|raw| extract_summary_parts(&raw))
+        {
+            Ok(parts) => {
+                eprintln!("[detailed] doc: {:#?}", parts.doc);
+                if parts.doc.topics.len() < 2 {
+                    problems.push(format!("detailed: {} topics", parts.doc.topics.len()));
+                }
+                if parts.doc.topics.iter().any(|t| t.title.trim().is_empty()) {
+                    problems.push("detailed: a topic has no title".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("detailed: {e}")),
+        }
+
+        let question = "What did they discuss and decide?";
+        let ask = build_ask_prompt(title, &segments, question, usize::MAX);
+        match eval_generate(&state, "ask", &ask, ASK_GENERATION_PARAMS)
+            .and_then(|raw| extract_ask_answer(&raw))
+        {
+            Ok(answer) => {
+                eprintln!("[ask] answer: {answer}");
+                if !contains_mm_ss_citation(&answer) {
+                    problems.push("ask: no [mm:ss] citation".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("ask: {e}")),
+        }
+
+        assert!(
+            problems.is_empty(),
+            "{model_id} failed the eval:\n{}",
+            problems.join("\n")
+        );
+        eprintln!("[result] {model_id} passed");
+    }
 }
