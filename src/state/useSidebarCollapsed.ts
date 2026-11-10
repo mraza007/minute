@@ -3,7 +3,9 @@ import { useCallback, useEffect, useState } from 'react'
 // Only the manual choice is stored (issue #34). A narrow window collapses
 // the sidebar regardless, and widening it again restores the stored choice.
 const SIDEBAR_COLLAPSED_KEY = 'minute.sidebarCollapsed'
-const NARROW_QUERY = '(max-width: 1280px)'
+// Below 1112px the 272px sidebar and the note page (a 720px column plus
+// 120px of padding) no longer fit side by side.
+const NARROW_QUERY = '(max-width: 1111px)'
 
 function storedCollapsed(): boolean {
   return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'

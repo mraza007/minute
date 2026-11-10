@@ -197,7 +197,7 @@ describe('App', () => {
     setupIPC()
     const { container } = render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: /new recording/i })).toBeInTheDocument())
-    expect(container.querySelector('.app-paper')).toHaveStyle({ minWidth: 'min(1180px, 100vw)' })
+    expect(container.querySelector('.app-paper')).toHaveStyle({ minWidth: 'min(860px, 100vw)' })
   })
 
   it('boots to the onboarding gate when no STT model is installed', async () => {

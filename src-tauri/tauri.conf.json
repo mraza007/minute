@@ -17,14 +17,14 @@
         "title": "Minute",
         "width": 1280,
         "height": 800,
-        "minWidth": 1180,
-        "minHeight": 700,
+        "minWidth": 860,
+        "minHeight": 640,
         "resizable": true,
         "fullscreen": false,
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {
           "x": 14,
-          "y": 25
+          "y": 28
         },
         "hiddenTitle": true
       }

@@ -225,10 +225,10 @@ export default function App() {
 
   return (
     <>
-      {/* The native window still enforces its 1180px minimum. Capping the
+      {/* The native window still enforces its 860px minimum. Capping the
           document minimum at 100vw lets browser zoom and enlarged-text
           layouts reflow instead of creating a second horizontal canvas. */}
-      <div className="app-paper" style={{ height: '100vh', minWidth: 'min(1180px, 100vw)', display: 'flex', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
+      <div className="app-paper" style={{ height: '100vh', minWidth: 'min(860px, 100vw)', display: 'flex', fontSize: 13, lineHeight: 1.5, background: 'var(--panel)' }}>
         {/* "Quiet by default, loud when recording" (.impeccable.md), spent in
             one place: a single accent hairline along the very top edge of the
             window. It's visible from the corner of the eye no matter which

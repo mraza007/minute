@@ -1113,9 +1113,11 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   height: 44px;
   flex: none;
 }
+/* Centered 26px from the top, on one line with the traffic lights and the
+   toolbar controls. */
 .sidebar-orientation {
   position: absolute;
-  top: 8px;
+  top: 12px;
   right: 10px;
   z-index: 1;
 }
@@ -2564,8 +2566,9 @@ html[data-reduced-motion='true'] .sidebar-record-dot.blink-dot { animation: none
   border-top: 1px solid var(--rule);
 }
 
-/* Narrow window: the sidebar is hidden, so the page pulls in its margins. */
-@media (max-width: 1280px) {
+/* Narrow window: the sidebar is hidden, so the page pulls in its margins.
+   The same breakpoint as useSidebarCollapsed. */
+@media (max-width: 1111px) {
   .app-toolbar { padding-right: 20px; }
   .note-scroll { padding: 16px 48px 32px; }
   .note-column { max-width: 764px; gap: 28px; }

@@ -1,5 +1,23 @@
+import { readFileSync } from 'node:fs'
 import { act, renderHook } from '@testing-library/react'
 import { useSidebarCollapsed } from './useSidebarCollapsed'
+
+const mainWindow = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).app.windows[0]
+
+/** Installs a `matchMedia` that answers `max-width` queries for a window `width` wide. */
+function windowOf(width: number): string[] {
+  const queries: string[] = []
+  vi.stubGlobal('matchMedia', (query: string) => {
+    queries.push(query)
+    const maxWidth = /\(max-width: (\d+)px\)/.exec(query)
+    return {
+      matches: maxWidth !== null && width <= Number(maxWidth[1]),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }
+  })
+  return queries
+}
 
 /** Installs a `matchMedia` whose narrow-window query can be flipped by the returned setter. */
 function mockNarrow(initial: boolean) {
@@ -51,6 +69,19 @@ describe('useSidebarCollapsed', () => {
     expect(result.current.collapsed).toBe(false)
     act(() => setNarrow(true))
     expect(result.current.collapsed).toBe(true)
+  })
+
+  it('shows the sidebar at the default window size and hides it at the smallest', () => {
+    windowOf(mainWindow.width)
+    expect(renderHook(() => useSidebarCollapsed()).result.current.collapsed).toBe(false)
+    windowOf(mainWindow.minWidth)
+    expect(renderHook(() => useSidebarCollapsed()).result.current.collapsed).toBe(true)
+  })
+
+  it('hides the sidebar at the width the narrow-window styles start', () => {
+    const queries = windowOf(1440)
+    renderHook(() => useSidebarCollapsed())
+    expect(readFileSync('src/index.css', 'utf8')).toContain(`@media ${queries[0]} {`)
   })
 
   it('lets the sidebar be reopened while the window is still narrow', () => {
