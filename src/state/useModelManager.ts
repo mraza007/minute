@@ -5,6 +5,7 @@ import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
 import type { View } from '../types'
 import { pickInitialLlmModel, pickInitialSttModel, type DownloadProgressState } from './adapters'
 import { useTauriEvent } from './useTauriEvent'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
 
 /** Used when `applyInitialLoad` is called without a real settings fixture (only ever happens in tests that don't care about settings-derived initial selections). */
 const DEFAULT_SETTINGS: Settings = {
@@ -23,6 +24,7 @@ const DEFAULT_SETTINGS: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Hardware, ModelStatus, Recommendation, StorageStats } from '../ipc/types'
 import { SettingsView, storageBarSegments } from './SettingsView'
+import { DEFAULT_OBSIDIAN_SETTINGS } from '../state/obsidian'
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
   return {
@@ -99,6 +100,7 @@ const base = {
   speakerProfiles: false,
   toggleSpeakerProfiles: vi.fn(),
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
   toggleAutoApplySpeakerNames: vi.fn(),
   voiceProfiles: [],
   onDeleteVoiceProfile: vi.fn(),

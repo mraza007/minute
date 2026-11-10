@@ -13,6 +13,9 @@ import type {
   NoteMarker,
   NoteMeta,
   NoteStorageStats,
+  ObsidianExport,
+  ObsidianPatch,
+  ObsidianSettings,
   SpeakerMergeUndo,
   StorageStats,
   SummaryStyle,
@@ -28,6 +31,7 @@ import {
   type CaptureHealth,
 } from '../components/recordingDiagnostics'
 import { formatBytes, formatMmSs, groupLiveSegments, modelDisplayName, notesToSidebarItems } from './adapters'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
 import { useModelManager } from './useModelManager'
 import { useNoteDetail } from './useNoteDetail'
 import { useTauriEvent } from './useTauriEvent'
@@ -192,6 +196,8 @@ export function useAppState() {
   const [tAutoStopRecording, setTAutoStopRecording] = useState(true)
   const [tSpeakerProfiles, setTSpeakerProfiles] = useState(false)
   const [tAutoApplySpeakerNames, setTAutoApplySpeakerNames] = useState(true)
+  const [tObsidian, setTObsidian] = useState<ObsidianSettings>(DEFAULT_OBSIDIAN_SETTINGS)
+  const [obsidianSavingId, setObsidianSavingId] = useState<string | null>(null)
   const [autoStopSeconds, setAutoStopSeconds] = useState<number | null>(null)
   /** Issue #42: seconds of the current quiet run, from `recording-state` — the pre-arm "Quiet for M:SS" feedback. */
   const [quietSecs, setQuietSecs] = useState(0)
@@ -737,6 +743,7 @@ export function useAppState() {
           setTAutoStopRecording(loadedSettings.autoStopRecording ?? true)
           setTSpeakerProfiles(loadedSettings.speakerProfiles ?? false)
           setTAutoApplySpeakerNames(loadedSettings.autoApplySpeakerNames ?? true)
+          setTObsidian({ ...DEFAULT_OBSIDIAN_SETTINGS, ...loadedSettings.obsidian })
           // Defensive `?.` — a mock/harness that doesn't stub `sys_audio_status`
           // at all (e.g. a test fixture with only a `default: return null`
           // fallback) resolves this to `null`/`undefined` rather than a real
@@ -1417,6 +1424,57 @@ export function useAppState() {
     })
   }, [reportError])
 
+  /**
+   * Saves a partial Obsidian settings change (issue #47). The backend
+   * rejects a vault path that is missing or not a folder, so this resolves
+   * with that message (and leaves the shown settings alone) instead of
+   * raising the global error banner. Resolves `null` on success.
+   */
+  const saveObsidianSettings = useCallback(async (patch: ObsidianPatch): Promise<string | null> => {
+    try {
+      const updated = await ipc.setSettings({ obsidian: patch })
+      setTObsidian({ ...DEFAULT_OBSIDIAN_SETTINGS, ...updated.obsidian })
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }, [])
+
+  /** Resolves `null` when `path` is an existing folder, else the reason. */
+  const checkObsidianVault = useCallback(async (path: string): Promise<string | null> => {
+    try {
+      await ipc.checkObsidianVault(path)
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }, [])
+
+  /**
+   * "Save to Obsidian again" for one note. The export status lives in the
+   * note's meta, so on return the cached detail and the list are refreshed
+   * to show the new path or error. A failed save arrives as `error` on the
+   * resolved status; only an IPC failure goes to the error banner.
+   */
+  const saveNoteToObsidian = useCallback(
+    async (id: string): Promise<ObsidianExport | null> => {
+      setObsidianSavingId(id)
+      try {
+        const status = await ipc.saveNoteToObsidian(id)
+        invalidateNoteCache(id)
+        if (id === selectedNoteId) loadNoteTranscript(id, { force: true })
+        refreshNotes()
+        return status
+      } catch (err) {
+        reportError(err)
+        return null
+      } finally {
+        setObsidianSavingId(current => (current === id ? null : current))
+      }
+    },
+    [invalidateNoteCache, loadNoteTranscript, refreshNotes, reportError, selectedNoteId],
+  )
+
   // Issue #22: load the saved profiles once at startup so Settings has
   // them ready; rename/delete refresh the list as they go.
   useEffect(() => {
@@ -1780,6 +1838,12 @@ export function useAppState() {
     toggleSpeakerProfiles,
     tAutoApplySpeakerNames,
     toggleAutoApplySpeakerNames,
+    tObsidian,
+    saveObsidianSettings,
+    checkObsidianVault,
+    saveNoteToObsidian,
+    obsidianSavingId,
+    selectedObsidian: noteDetail.selectedMeta?.obsidian ?? null,
     mergeSpeakers,
     undoSpeakerMerge,
     deleteNote,

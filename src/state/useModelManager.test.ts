@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
 import type { View } from '../types'
 import { useModelManager } from './useModelManager'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './obsidian'
 
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
 
@@ -25,6 +26,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     compressAudioAfterDays: null,
     speakerProfiles: false,
     autoApplySpeakerNames: true,
+    obsidian: DEFAULT_OBSIDIAN_SETTINGS,
     libraryRoot: null,
     ...overrides,
   }

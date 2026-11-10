@@ -21,6 +21,7 @@ import type {
   NoteWithTranscript,
   Recommendation,
   SearchHit,
+  ObsidianExport,
   Settings,
   SettingsPatch,
   StorageStats,
@@ -203,6 +204,18 @@ export const getSettings = (): Promise<Settings> => invokeCmd('get_settings')
 /** Merges `patch` into the persisted settings and resolves with the updated settings. */
 export const setSettings = (patch: SettingsPatch): Promise<Settings> =>
   invokeCmd('set_settings', { patch })
+
+/**
+ * "Save to Obsidian again": writes the note into the vault now, replacing
+ * the file saved earlier. Resolves with the note's export status; a failed
+ * save is reported in `status.error`, not as a rejection.
+ */
+export const saveNoteToObsidian = (id: string): Promise<ObsidianExport> =>
+  invokeCmd('save_note_to_obsidian', { id })
+
+/** Rejects with a readable reason when `path` is not an existing folder. */
+export const checkObsidianVault = (path: string): Promise<void> =>
+  invokeCmd('check_obsidian_vault', { path })
 
 /**
  * Triggers (or re-triggers — this is also what "Regenerate" calls)

@@ -11,6 +11,7 @@ import type {
   Settings,
   StorageStats,
 } from './ipc/types'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './state/obsidian'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -31,6 +32,7 @@ const settings: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
 }
 
 function model(kind: 'stt' | 'llm', installed: boolean): ModelStatus {

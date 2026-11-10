@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it } from 'vitest'
 import App from './App'
 import type { Hardware, ModelStatus, NoteMeta, NoteWithTranscript, Recommendation, Settings, StorageStats } from './ipc/types'
+import { DEFAULT_OBSIDIAN_SETTINGS } from './state/obsidian'
 
 const hardware: Hardware = { totalRamGb: 16, appleSilicon: true, cores: 8 }
 const recommendation: Recommendation = { stt: 'whisper-small', llm: 'qwen3.5-4b' }
@@ -24,6 +25,7 @@ const settings: Settings = {
   compressAudioAfterDays: null,
   speakerProfiles: false,
   autoApplySpeakerNames: true,
+  obsidian: DEFAULT_OBSIDIAN_SETTINGS,
 }
 
 function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {

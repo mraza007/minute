@@ -2827,6 +2827,10 @@ fn run_summarize(ctx: &SummarizeWorkerCtx) -> Result<()> {
             );
         }
     }
+
+    // Issue #47: after the rename, so the file name uses the final title.
+    // Infallible by construction; an export failure never fails the summary.
+    crate::obsidian::export_after_summary(&ctx.store, &ctx.settings, &ctx.note_id);
     Ok(())
 }
 
