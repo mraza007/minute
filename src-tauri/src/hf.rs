@@ -39,22 +39,13 @@ const TREE_CONCURRENCY: usize = 4;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const CACHE_TTL: time::Duration = time::Duration::hours(24);
 
-/// PROVISIONAL. GGUF `general.architecture` values the app is known or
-/// expected to prompt correctly. `qwen35`, `gemma4`, and `lfm2` are the
-/// families the built-in catalog runs. The rest are their closest relatives
-/// in the vendored llama.cpp (`llama-arch.cpp`): the mixture-of-experts
-/// variants share their dense sibling's chat format, and `qwen3` uses the
-/// same ChatML turns as `qwen35`. Everything else is hidden and counted in
-/// `unsupported_count` until someone runs it through the app.
-pub const SUPPORTED_ARCHITECTURES: &[&str] = &[
-    "qwen35",
-    "qwen35moe",
-    "qwen3",
-    "qwen3moe",
-    "gemma4",
-    "lfm2",
-    "lfm2moe",
-];
+/// GGUF `general.architecture` values proven to produce a valid summary
+/// through the app's prompt path, each run with `real_llm_eval_from_env` on
+/// the eval transcripts. `lfm2moe` (LFM2.5 8B A1B) was run and thinks to the
+/// token cap, so it stays out. Untested relatives (`qwen3`, `qwen35moe`,
+/// `granitehybrid`, ...) are hidden and counted in `unsupported_count` until
+/// someone runs them through the app.
+pub const SUPPORTED_ARCHITECTURES: &[&str] = &["qwen35", "gemma4", "lfm2", "granite", "mistral3"];
 
 /// Quantizations to offer, best first. Roughly 4 to 5 bits per weight: the
 /// same trade-off as every built-in LLM entry.
@@ -743,14 +734,13 @@ mod tests {
             [
                 "unsloth/Qwen3.8-27B-GGUF",
                 "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
-                "unsloth/Qwen3.6-35B-A3B-GGUF",
                 "lmstudio-community/Qwen3.8-27B-GGUF",
                 "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
             ]
         );
-        // qwen4exp and lfm3. The speech model has no chat template, so it
-        // is not a hidden chat model.
-        assert_eq!(selection.unsupported_count, 2);
+        // qwen4exp, lfm3, and the untested qwen35moe. The speech model has
+        // no chat template, so it is not a hidden chat model.
+        assert_eq!(selection.unsupported_count, 3);
     }
 
     #[test]

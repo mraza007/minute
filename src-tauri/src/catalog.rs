@@ -165,13 +165,15 @@ pub fn detect_hardware() -> Hardware {
 /// `load_catalog()` failed) — it still returns a well-formed `Recommendation`.
 pub fn recommend(catalog: &[CatalogEntry], hw: &Hardware) -> Recommendation {
     // The compact (q5) Whisper files wrote the same text as the full ones on
-    // the eval clip, at about a third of the download.
+    // the eval clip, at about a third of the download. Granite 4.2 8B and
+    // Gemma 4 12B wrote the most complete, error-free notes of their tiers
+    // on the eval transcripts (`real_llm_eval_from_env`).
     let (stt_tier, llm_tier) = if hw.total_ram_gb < 16 {
         ("whisper-small", "qwen3.5-4b")
     } else if hw.total_ram_gb < 32 {
-        ("whisper-medium-q5", "gemma-4-e4b")
+        ("whisper-medium-q5", "granite-4.2-8b")
     } else {
-        ("whisper-large-v3-turbo-q5", "qwen3.5-9b")
+        ("whisper-large-v3-turbo-q5", "gemma-4-12b")
     };
 
     let fits = |id: &str| -> bool {
@@ -764,13 +766,13 @@ mod tests {
     }
 
     #[test]
-    fn catalog_parses_with_thirteen_entries() {
+    fn catalog_parses_with_sixteen_entries() {
         let catalog = load_catalog().expect("catalog.json should parse");
-        assert_eq!(catalog.len(), 13);
+        assert_eq!(catalog.len(), 16);
     }
 
     #[test]
-    fn catalog_has_seven_stt_four_llm_and_two_diarization_entries() {
+    fn catalog_has_seven_stt_seven_llm_and_two_diarization_entries() {
         let catalog = load_catalog().unwrap();
         let stt = catalog.iter().filter(|e| e.kind == ModelKind::Stt).count();
         let llm = catalog.iter().filter(|e| e.kind == ModelKind::Llm).count();
@@ -779,7 +781,7 @@ mod tests {
             .filter(|e| e.kind == ModelKind::Diarization)
             .count();
         assert_eq!(stt, 7);
-        assert_eq!(llm, 4);
+        assert_eq!(llm, 7);
         assert_eq!(diar, 2);
     }
 
@@ -852,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn recommend_16gb_picks_medium_and_gemma() {
+    fn recommend_16gb_picks_medium_and_granite() {
         let hw = Hardware {
             total_ram_gb: 16,
             apple_silicon: true,
@@ -860,11 +862,11 @@ mod tests {
         };
         let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium-q5");
-        assert_eq!(rec.llm, "gemma-4-e4b");
+        assert_eq!(rec.llm, "granite-4.2-8b");
     }
 
     #[test]
-    fn recommend_24gb_picks_medium_and_gemma() {
+    fn recommend_24gb_picks_medium_and_granite() {
         let hw = Hardware {
             total_ram_gb: 24,
             apple_silicon: true,
@@ -872,11 +874,11 @@ mod tests {
         };
         let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium-q5");
-        assert_eq!(rec.llm, "gemma-4-e4b");
+        assert_eq!(rec.llm, "granite-4.2-8b");
     }
 
     #[test]
-    fn recommend_32gb_picks_turbo_and_qwen9b() {
+    fn recommend_32gb_picks_turbo_and_gemma12b() {
         let hw = Hardware {
             total_ram_gb: 32,
             apple_silicon: true,
@@ -884,7 +886,7 @@ mod tests {
         };
         let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-large-v3-turbo-q5");
-        assert_eq!(rec.llm, "qwen3.5-9b");
+        assert_eq!(rec.llm, "gemma-4-12b");
     }
 
     #[test]
@@ -896,7 +898,7 @@ mod tests {
         };
         let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium-q5");
-        assert_eq!(rec.llm, "qwen3.5-9b");
+        assert_eq!(rec.llm, "gemma-4-12b");
     }
 
     #[test]
@@ -920,7 +922,7 @@ mod tests {
         };
         let rec = recommend(&catalog(), &hw);
         assert_eq!(rec.stt, "whisper-medium-q5");
-        assert_eq!(rec.llm, "gemma-4-e4b");
+        assert_eq!(rec.llm, "granite-4.2-8b");
     }
 
     #[test]
@@ -940,7 +942,7 @@ mod tests {
             .collect();
         let rec = recommend(&partial, &hw);
         assert_eq!(rec.stt, "whisper-medium-q5");
-        assert_eq!(rec.llm, "qwen3.5-9b");
+        assert_eq!(rec.llm, "gemma-4-12b");
     }
 
     #[test]

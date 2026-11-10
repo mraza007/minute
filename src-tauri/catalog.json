@@ -141,5 +141,38 @@
     "sizeBytes": 5680522464,
     "minRamGb": 16,
     "requiresAppleSilicon": false
+  },
+  {
+    "id": "ministral-3-3b",
+    "kind": "llm",
+    "displayName": "Ministral 3 3B",
+    "traits": ["Fast", "Gets owners right"],
+    "url": "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "sha256": "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
+    "sizeBytes": 2147023008,
+    "minRamGb": 8,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "granite-4.2-8b",
+    "kind": "llm",
+    "displayName": "Granite 4.2 8B",
+    "traits": ["Balanced", "Most complete notes"],
+    "url": "https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF/resolve/main/granite-4.2-8b-Q4_K_M.gguf",
+    "sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+    "sizeBytes": 5347917952,
+    "minRamGb": 16,
+    "requiresAppleSilicon": false
+  },
+  {
+    "id": "gemma-4-12b",
+    "kind": "llm",
+    "displayName": "Gemma 4 12B",
+    "traits": ["Thorough", "Best in our tests"],
+    "url": "https://huggingface.co/lmstudio-community/gemma-4-12B-it-QAT-GGUF/resolve/main/gemma-4-12B-it-QAT-Q4_0.gguf",
+    "sha256": "f568ac5de71c8fcac5d5794494388ad94db9e18b4368ca897e21b30d2448eeec",
+    "sizeBytes": 6975879008,
+    "minRamGb": 16,
+    "requiresAppleSilicon": false
   }
 ]
