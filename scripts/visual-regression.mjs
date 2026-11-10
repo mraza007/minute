@@ -22,6 +22,9 @@ const scenarios = [
   { name: 'note-ask', url: 'screenshot-app.html?state=note&theme=light&ask=open', width: 1440, height: 900 },
   { name: 'note-menu', url: 'screenshot-app.html?state=note&theme=light&menu=note', width: 1440, height: 900 },
   { name: 'note-speaker-rename', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&suggest=1', width: 1440, height: 900 },
+  { name: 'note-speaker-unknown', url: 'screenshot-app.html?state=note&theme=light&rename=Speaker%203&markUnknown=done&scroll=transcript', width: 1440, height: 900 },
+  { name: 'note-summary-queued', url: 'screenshot-app.html?state=note&theme=light&summary=queued', width: 1440, height: 900 },
+  { name: 'note-summary-queued-dark', url: 'screenshot-app.html?state=note&theme=dark&summary=queued', width: 1440, height: 900 },
   { name: 'recording-reduced-motion', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced', width: 1440, height: 900 },
   { name: 'recording-preflight', url: 'screenshot-app.html?state=preflight&theme=light', width: 1440, height: 900 },
   { name: 'recording-live', url: 'screenshot-app.html?state=recording&theme=light&motion=reduced&sysaudio=1&marker=Download%20step%20follow-up', width: 1440, height: 900 },
@@ -104,7 +107,8 @@ try {
   await waitForServer()
   for (const scenario of scenarios) {
     if (only && !only.has(scenario.name)) continue
-    const session = `minute-visual-${scenario.name}`
+    // Keyed by port too, so two checkouts capturing at once never share a browser session.
+    const session = `minute-visual-${port}-${scenario.name}`
     const actualPath = path.join(actualDir, `${scenario.name}.png`)
     const baselinePath = path.join(baselineDir, `${scenario.name}.png`)
     const diffPath = path.join(diffDir, `${scenario.name}.png`)

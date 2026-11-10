@@ -238,12 +238,23 @@ describe('ipc/commands', () => {
     })
   })
 
+  it('markSpeakerUnknown invokes mark_speaker_unknown with the speaker', async () => {
+    const calls = captureIPC()
+
+    await commands.markSpeakerUnknown('20260722-120000', 'Speaker 3')
+
+    expect(calls[0].cmd).toBe('mark_speaker_unknown')
+    expect(calls[0].args).toEqual({ id: '20260722-120000', speaker: 'Speaker 3' })
+  })
+
   it('undoSpeakerMerge passes the exact backend-issued undo token', async () => {
     const calls = captureIPC()
     const undo = {
       from: 'Speaker 2',
       into: 'Sam',
       segmentIndices: [1, 4],
+      summaryMentions: [0],
+      summaryFingerprint: 'summary-fingerprint',
       checksum: 'merge-checksum',
     }
 

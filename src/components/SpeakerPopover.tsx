@@ -1,14 +1,11 @@
 import { useState, type CSSProperties } from 'react'
-import type { SpeakerSuggestion } from '../ipc/types'
+import type { SpeakerRosterEntry } from '../state/adapters'
 
 export interface SpeakerPopoverProps {
-  /** The speaker label being edited, as it appears in the transcript now. */
-  speaker: string
-  turnCount: number
+  /** The speaker being edited: its label as the transcript shows it now, its turn count, and any unconfirmed voice-profile match. */
+  entry: SpeakerRosterEntry
   /** Every other speaker in this note: the merge targets. */
   otherSpeakers: string[]
-  /** A voice-profile match for this speaker that has not been confirmed. */
-  suggestion?: SpeakerSuggestion
   /** `--speaker-color` for the dot. */
   colorStyle: CSSProperties
   /** Distance from the left edge of the chip row, so the popover opens under its chip. */
@@ -17,28 +14,30 @@ export interface SpeakerPopoverProps {
   onDismissSuggestion: () => void
   /** Resolves once the merge is saved. A rejection keeps the popover open for a retry. */
   onMerge: (into: string) => Promise<void>
+  /** Moves every turn of this speaker to Unknown. Same contract as `onMerge`. */
+  onMarkUnknown: () => Promise<void>
   onClose: () => void
 }
 
 /**
- * Rename or merge one speaker. Opens under the speaker's chip. Escape,
- * Cancel, or a press outside closes it without a change.
+ * Rename, merge, or mark unknown one speaker. Opens under the speaker's
+ * chip. Escape, Cancel, or a press outside closes it without a change.
  */
 export function SpeakerPopover({
-  speaker,
-  turnCount,
+  entry: { speaker, turns, suggestion },
   otherSpeakers,
-  suggestion,
   colorStyle,
   offsetLeft,
   onRename,
   onDismissSuggestion,
   onMerge,
+  onMarkUnknown,
   onClose,
 }: SpeakerPopoverProps) {
   const [draft, setDraft] = useState(speaker)
   const [mergeTarget, setMergeTarget] = useState<string | null>(null)
-  const [mergePending, setMergePending] = useState(false)
+  const [saving, setSaving] = useState<'merge' | 'unknown' | null>(null)
+  const pending = saving !== null
   const trimmed = draft.trim()
 
   function submitRename() {
@@ -46,28 +45,28 @@ export function SpeakerPopover({
     onClose()
   }
 
-  function submitMerge() {
-    if (!mergeTarget || mergePending) return
-    setMergePending(true)
-    onMerge(mergeTarget)
+  function save(kind: 'merge' | 'unknown', change: () => Promise<void>) {
+    if (pending) return
+    setSaving(kind)
+    change()
       .then(onClose)
       .catch(() => {
-        // The shared error banner owns the message. Keep both speakers
-        // selected for a retry.
+        // The shared error banner owns the message. Keep the popover as it
+        // was for a retry.
       })
-      .finally(() => setMergePending(false))
+      .finally(() => setSaving(null))
   }
 
   return (
     <>
-      <div className="context-menu-backdrop" onMouseDown={mergePending ? undefined : onClose} />
+      <div className="context-menu-backdrop" onMouseDown={pending ? undefined : onClose} />
       <div
         className="speaker-popover"
         role="dialog"
         aria-label={`Rename ${speaker}`}
         style={{ left: offsetLeft }}
         onKeyDown={event => {
-          if (event.key === 'Escape' && !mergePending) {
+          if (event.key === 'Escape' && !pending) {
             event.preventDefault()
             onClose()
           }
@@ -82,7 +81,7 @@ export function SpeakerPopover({
           <div className="speaker-popover-body">
             <div className="speaker-popover-who">
               <span className="speaker-dot" style={colorStyle} aria-hidden="true" />
-              <span>{speaker} · {turnCount} {turnCount === 1 ? 'turn' : 'turns'}</span>
+              <span>{speaker} · {turns} {turns === 1 ? 'turn' : 'turns'}</span>
             </div>
             <input
               autoFocus
@@ -122,10 +121,10 @@ export function SpeakerPopover({
               </span>
             </div>
           )}
-          {otherSpeakers.length > 0 && (
-            <div className="speaker-popover-options">
-              {mergeTarget === null ? (
-                <button type="button" className="speaker-popover-option" onClick={() => setMergeTarget(otherSpeakers[0])}>
+          <div className="speaker-popover-options">
+            {otherSpeakers.length > 0 && (
+              mergeTarget === null ? (
+                <button type="button" className="speaker-popover-option" disabled={pending} onClick={() => setMergeTarget(otherSpeakers[0])}>
                   Merge with another speaker…
                 </button>
               ) : (
@@ -136,22 +135,25 @@ export function SpeakerPopover({
                       autoFocus
                       aria-label="Merge into speaker"
                       value={mergeTarget}
-                      disabled={mergePending}
+                      disabled={pending}
                       onChange={event => setMergeTarget(event.target.value)}
                     >
                       {otherSpeakers.map(other => <option key={other} value={other}>{other}</option>)}
                     </select>
                   </label>
-                  <button type="button" className="btn-small" disabled={mergePending} onClick={submitMerge}>
-                    {mergePending ? 'Merging…' : 'Merge'}
+                  <button type="button" className="btn-small" disabled={pending} onClick={() => save('merge', () => onMerge(mergeTarget))}>
+                    {saving === 'merge' ? 'Merging…' : 'Merge'}
                   </button>
                 </div>
-              )}
-            </div>
-          )}
+              )
+            )}
+            <button type="button" className="speaker-popover-option" disabled={pending} onClick={() => save('unknown', onMarkUnknown)}>
+              {saving === 'unknown' ? 'Marking as unknown…' : 'Mark these turns as unknown'}
+            </button>
+          </div>
           <div className="speaker-popover-foot">
-            <button type="button" className="toolbar-btn" disabled={mergePending} onClick={onClose}>Cancel</button>
-            <button type="submit" className="toolbar-btn" data-variant="primary" disabled={!trimmed || mergePending}>Rename</button>
+            <button type="button" className="toolbar-btn" disabled={pending} onClick={onClose}>Cancel</button>
+            <button type="submit" className="toolbar-btn" data-variant="primary" disabled={!trimmed || pending}>Rename</button>
           </div>
         </form>
       </div>

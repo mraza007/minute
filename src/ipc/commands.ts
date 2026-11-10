@@ -108,6 +108,10 @@ export const deleteVoiceProfile = (name: string): Promise<void> =>
 export const mergeSpeakers = (id: string, from: string, into: string): Promise<SpeakerMergeResult> =>
   invokeCmd('merge_speakers', { id, from, into })
 
+/** "Mark these turns as unknown" (issue #49). Reversed by `undoSpeakerMerge` with the returned `undo`. */
+export const markSpeakerUnknown = (id: string, speaker: string): Promise<SpeakerMergeResult> =>
+  invokeCmd('mark_speaker_unknown', { id, speaker })
+
 export const undoSpeakerMerge = (id: string, undo: SpeakerMergeUndo): Promise<SpeakerMergeUndoResult> =>
   invokeCmd('undo_speaker_merge', { id, undo })
 

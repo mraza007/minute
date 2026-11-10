@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, TranscriptSegmentEvent } from '../ipc/types'
 import {
@@ -15,10 +18,14 @@ import {
   pickInitialLlmModel,
   pickInitialSttModel,
   speakerInitials,
+  speakerRoster,
   summaryCoverageNotice,
+  summaryWaitCause,
+  summaryWaitReason,
   splitAnswerCitations,
   splitHighlight,
   storedSegmentsToDisplay,
+  UNKNOWN_SPEAKER_LABEL,
 } from './adapters'
 
 function meta(overrides: Partial<NoteMeta> = {}): NoteMeta {
@@ -150,6 +157,31 @@ describe('summaryCoverageNotice', () => {
   })
 })
 
+describe('summaryWaitCause', () => {
+  it('blames a live recording first, since it holds the whole queue', () => {
+    expect(summaryWaitCause('a', true, { b: 'running' })).toBe('recording')
+  })
+
+  it('blames another note only while that note is summarizing', () => {
+    expect(summaryWaitCause('a', false, { a: 'queued', b: 'running' })).toBe('otherNote')
+    expect(summaryWaitCause('a', false, { a: 'queued', b: 'done' })).toBe('unknown')
+  })
+})
+
+describe('summaryWaitReason', () => {
+  it('names the length and what the summary waits behind', () => {
+    expect(summaryWaitReason({ queuedAt: 0, style: 'detailed', cause: 'otherNote' })).toBe(
+      'It was queued as Detailed behind another note and did not start. Your recording and transcript are safe.',
+    )
+    expect(summaryWaitReason({ queuedAt: 0, style: 'short', cause: 'recording' })).toBe(
+      'It was queued as Short and waits for the recording to end. Your recording and transcript are safe.',
+    )
+    expect(summaryWaitReason({ queuedAt: null, style: 'standard', cause: 'unknown' })).toBe(
+      'It was queued as Standard and did not start. Your recording and transcript are safe.',
+    )
+  })
+})
+
 describe('formatWait', () => {
   const queuedAt = Date.UTC(2026, 7, 13, 20, 0)
   const after = (ms: number) => formatWait(queuedAt, queuedAt + ms)
@@ -268,6 +300,41 @@ describe('storedSegmentsToDisplay', () => {
 
   it('returns an empty array for an empty transcript', () => {
     expect(storedSegmentsToDisplay([])).toEqual([])
+  })
+
+  it('keeps an unknown speaker as null rather than inventing a name', () => {
+    const [row] = storedSegmentsToDisplay([{ speaker: null, start: 3, end: 4, text: 'Hm.' }])
+    expect(row.speaker).toBeNull()
+    expect(row.initials).toBe('?')
+  })
+})
+
+describe('UNKNOWN_SPEAKER_LABEL', () => {
+  it('matches the label the backend writes into note.md, prompts, and summaries', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url))
+    const storeRs = readFileSync(path.resolve(here, '../../src-tauri/src/store.rs'), 'utf8')
+    expect(storeRs).toContain(`pub const UNKNOWN_SPEAKER_LABEL: &str = "${UNKNOWN_SPEAKER_LABEL}";`)
+  })
+})
+
+describe('speakerRoster', () => {
+  it('counts turns per named speaker in first-appearance order and attaches suggestions', () => {
+    const segments: StoredSegment[] = [
+      { speaker: 'Speaker 2', start: 0, end: 1, text: 'a' },
+      { speaker: null, start: 1, end: 2, text: 'b' },
+      { speaker: 'Speaker 1', start: 2, end: 3, text: 'c' },
+      { speaker: 'Speaker 2', start: 3, end: 4, text: 'd' },
+      { speaker: null, start: 4, end: 5, text: 'e' },
+    ]
+    const suggestion = { name: 'Priya Shah', similarity: 0.71 }
+
+    expect(speakerRoster(segments, { 'Speaker 1': suggestion })).toEqual({
+      speakers: [
+        { speaker: 'Speaker 2', turns: 2, suggestion: null },
+        { speaker: 'Speaker 1', turns: 1, suggestion },
+      ],
+      unknownTurns: 2,
+    })
   })
 })
 

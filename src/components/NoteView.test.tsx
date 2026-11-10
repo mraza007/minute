@@ -68,6 +68,8 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
     onToggleActionItem: vi.fn(),
     onRegenerateSummary: vi.fn(),
     onCancelSummary: vi.fn(),
+    summaryWait: null,
+    onSummarizeNow: vi.fn().mockResolvedValue('started'),
     onAsk: vi.fn(),
     onGoSettings: vi.fn(),
     onSetPinned: vi.fn(),
@@ -81,6 +83,14 @@ function makeProps(overrides: Partial<NoteViewProps> = {}): NoteViewProps {
       into: 'Speaker 2',
       segmentIndices: [0],
       checksum: 'merge-checksum',
+    }),
+    onMarkSpeakerUnknown: vi.fn().mockResolvedValue({
+      from: 'Speaker 1',
+      into: null,
+      segmentIndices: [0],
+      summaryMentions: [],
+      summaryFingerprint: null,
+      checksum: 'unknown-checksum',
     }),
     onUndoSpeakerMerge: vi.fn().mockResolvedValue(undefined),
     onDeleteAudio: vi.fn().mockResolvedValue(undefined),
@@ -254,14 +264,14 @@ describe('NoteView', () => {
           llmInstalled: true,
           selectedSummary: null,
           summaryStatus: 'queued',
+          summaryWait: { queuedAt: Date.now() - 6 * 3_600_000, style: 'detailed', cause: 'otherNote' },
         })}
       />,
     )
-    expect(screen.getByText('Queued. Starts when the engine is free.')).toBeInTheDocument()
+    expect(screen.getByText('This summary has waited 6 hours')).toBeInTheDocument()
     expect(
       screen.getAllByRole('status').some(node => node.textContent === 'Summary queued'),
     ).toBe(true)
-    expect(screen.getByText(/Minute is busy with a recording or another summary/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Generate summary' })).not.toBeInTheDocument()
     // Still not an error — no retry affordance either.
     expect(screen.queryByRole('button', { name: 'Retry summary' })).not.toBeInTheDocument()
@@ -339,6 +349,65 @@ describe('NoteView', () => {
     expect(screen.getByText('Second voice.')).toBeInTheDocument()
     fireEvent.change(speakerFilter, { target: { value: 'all' } })
     expect(screen.getByText('First voice.')).toBeInTheDocument()
+  })
+
+  it('offers an Unknown speaker filter only when unknown turns exist, and filters to them', () => {
+    const meta = noteFixture()
+    const { rerender } = render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: twoSpeakers })} />)
+    const speakerFilter = screen.getByRole('combobox', { name: 'Filter transcript by speaker' })
+    expect(within(speakerFilter).queryByRole('option', { name: 'Unknown speaker' })).not.toBeInTheDocument()
+
+    const withUnknown: StoredSegment[] = [...twoSpeakers, { speaker: null, start: 8, end: 9, text: 'Mystery voice.' }]
+    rerender(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: withUnknown })} />)
+    expect(screen.queryByRole('button', { name: 'Rename Unknown speaker' })).not.toBeInTheDocument()
+    fireEvent.change(speakerFilter, { target: { value: within(speakerFilter).getByRole('option', { name: 'Unknown speaker' }).getAttribute('value') } })
+    expect(screen.getByText('Mystery voice.')).toBeInTheDocument()
+    expect(screen.queryByText('First voice.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Second voice.')).not.toBeInTheDocument()
+  })
+
+  it('marks a speaker\'s turns as unknown from the popover and undoes it', async () => {
+    const undo = {
+      from: 'Speaker 2',
+      into: null,
+      segmentIndices: [1],
+      summaryMentions: [],
+      summaryFingerprint: null,
+      checksum: 'unknown-checksum',
+    }
+    const onMarkSpeakerUnknown = vi.fn().mockResolvedValue(undo)
+    const onUndoSpeakerMerge = vi.fn().mockResolvedValue(undefined)
+    const meta = noteFixture()
+    render(
+      <NoteView
+        {...makeProps({ meta, selectedMeta: meta, selectedTranscript: twoSpeakers, onMarkSpeakerUnknown, onUndoSpeakerMerge })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Speaker 2' }))
+    const popover = within(screen.getByRole('dialog', { name: 'Rename Speaker 2' }))
+    expect(popover.getByText('Speaker 2 · 1 turn')).toBeInTheDocument()
+    fireEvent.click(popover.getByRole('button', { name: 'Mark these turns as unknown' }))
+
+    await waitFor(() => expect(onMarkSpeakerUnknown).toHaveBeenCalledWith(meta.id, 'Speaker 2'))
+    expect(await screen.findByText(/marked as unknown/)).toHaveTextContent('Turns from Speaker 2 marked as unknown.')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename Speaker 2' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(onUndoSpeakerMerge).toHaveBeenCalledWith(meta.id, undo))
+  })
+
+  it('keeps the popover open for a retry when marking turns unknown fails', async () => {
+    const onMarkSpeakerUnknown = vi.fn().mockRejectedValue(new Error('disk full'))
+    const meta = noteFixture()
+    render(<NoteView {...makeProps({ meta, selectedMeta: meta, selectedTranscript: [twoSpeakers[0]], onMarkSpeakerUnknown })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Speaker 1' }))
+    const popover = within(screen.getByRole('dialog', { name: 'Rename Speaker 1' }))
+    expect(popover.queryByRole('button', { name: 'Merge with another speaker…' })).not.toBeInTheDocument()
+    fireEvent.click(popover.getByRole('button', { name: 'Mark these turns as unknown' }))
+
+    await waitFor(() => expect(popover.getByRole('button', { name: 'Mark these turns as unknown' })).toBeEnabled())
+    expect(screen.getByRole('dialog', { name: 'Rename Speaker 1' })).toBeInTheDocument()
   })
 
   it('shows one coloured chip per speaker, blue for You', () => {
@@ -1214,6 +1283,29 @@ describe('NoteView', () => {
       expect(onCancelSummary).toHaveBeenCalledWith(meta.id)
     })
 
+    it('a queued summary\'s Summarize now and Cancel act on this note', () => {
+      const onSummarizeNow = vi.fn().mockResolvedValue('started')
+      const onCancelSummary = vi.fn()
+      const meta = noteFixture()
+      render(
+        <NoteView
+          {...makeProps({
+            meta,
+            selectedMeta: meta,
+            selectedSummary: null,
+            summaryStatus: 'queued',
+            summaryWait: { queuedAt: Date.now(), style: 'standard', cause: 'recording' },
+            onSummarizeNow,
+            onCancelSummary,
+          })}
+        />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Summarize now' }))
+      expect(onSummarizeNow).toHaveBeenCalledWith(meta.id)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(onCancelSummary).toHaveBeenCalledWith(meta.id)
+    })
+
 
     it('shows the "Generate summary" empty state when llmInstalled and no summary yet', () => {
       const meta = noteFixture()
@@ -1483,7 +1575,7 @@ describe('NoteView', () => {
     it('leaves an older note with a queued summary to the summary section', () => {
       render(<NoteView {...makeProps({ ...fresh, justRecorded: false, summaryStatus: 'queued' })} />)
       expect(screen.queryByRole('region', { name: 'Finishing this note' })).not.toBeInTheDocument()
-      expect(screen.getByText('Queued. Starts when the engine is free.')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Summarize now' })).toBeInTheDocument()
     })
   })
 })

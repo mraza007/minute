@@ -4,7 +4,7 @@
 // (grouping, byte formatting, sub-text per model state) are unit-testable
 // in isolation.
 
-import type { InstallState, ModelStatus, NoteMeta, Recommendation, StoredSegment, SummaryDoc, SummaryStatusEvent, TranscriptSegmentEvent } from '../ipc/types'
+import type { InstallState, ModelStatus, NoteMeta, Recommendation, SpeakerSuggestion, StoredSegment, SummaryDoc, SummaryStatusEvent, SummaryStyle, TranscriptSegmentEvent } from '../ipc/types'
 import type { NoteListItem, TranscriptSegment } from '../types'
 
 /** In-flight download progress for one model, assembled client-side from `model-download-progress` events. */
@@ -312,6 +312,50 @@ export function formatWait(queuedAt: number, now: number): string {
   return plural(Math.floor(hours / 24), 'day')
 }
 
+export const SUMMARY_STYLE_NAMES: Record<SummaryStyle, string> = {
+  short: 'Short',
+  standard: 'Standard',
+  detailed: 'Detailed',
+}
+
+/** What holds a queued summary back, as far as the app can see. */
+export type SummaryWaitCause = 'recording' | 'otherNote' | 'unknown'
+
+/** A queued summary as the "This summary has waited …" card shows it (issue #44). */
+export interface SummaryWait {
+  /** When the note joined the queue, in ms since the epoch. `null` when no queued event said. */
+  queuedAt: number | null
+  /** The length the summary will be written at. The backend reads the setting when the summary starts, so this is the current setting. */
+  style: SummaryStyle
+  cause: SummaryWaitCause
+}
+
+/**
+ * Why `noteId`'s queued summary has not started. A live recording holds
+ * the whole queue, so it wins over another note's running summary.
+ * Anything else (an Ask, a stuck queue) is `'unknown'`.
+ */
+export function summaryWaitCause(
+  noteId: string,
+  isRecording: boolean,
+  summaryStatus: Readonly<Record<string, SummaryStatusEvent['state']>>,
+): SummaryWaitCause {
+  if (isRecording) return 'recording'
+  const otherRunning = Object.entries(summaryStatus).some(([id, state]) => id !== noteId && state === 'running')
+  return otherRunning ? 'otherNote' : 'unknown'
+}
+
+/** The queued-summary card's reason line. */
+export function summaryWaitReason({ style, cause }: SummaryWait): string {
+  const queued = `It was queued as ${SUMMARY_STYLE_NAMES[style]}`
+  const why = {
+    otherNote: `${queued} behind another note and did not start.`,
+    recording: `${queued} and waits for the recording to end.`,
+    unknown: `${queued} and did not start.`,
+  }[cause]
+  return `${why} Your recording and transcript are safe.`
+}
+
 function plural(count: number, unit: string): string {
   return `${count} ${unit}${count === 1 ? '' : 's'}`
 }
@@ -391,6 +435,43 @@ export function speakerInitials(speaker: string): string {
   return `${first[0]}${second[0]}`.toUpperCase()
 }
 
+/** What every surface prints for an unknown speaker. Mirrors `store::UNKNOWN_SPEAKER_LABEL`. */
+export const UNKNOWN_SPEAKER_LABEL = 'Unknown speaker'
+
+/** One named speaker as the speaker controls show it: "Speaker 3 · 14 turns", plus its "Sounds like …" suggestion. */
+export interface SpeakerRosterEntry {
+  speaker: string
+  turns: number
+  suggestion: SpeakerSuggestion | null
+}
+
+/** A note's speakers for the rename popover (issue #49). Unknown turns are counted but are never an entry: they can't be renamed or merged. */
+export interface SpeakerRoster {
+  speakers: SpeakerRosterEntry[]
+  unknownTurns: number
+}
+
+/** Builds a note's `SpeakerRoster`, speakers in order of first appearance. `suggestions` is `NoteMeta.speakerSuggestions`, keyed by the speaker's current label. */
+export function speakerRoster(
+  segments: StoredSegment[],
+  suggestions: Record<string, SpeakerSuggestion> = {},
+): SpeakerRoster {
+  const turns = new Map<string, number>()
+  let unknownTurns = 0
+  for (const { speaker } of segments) {
+    if (speaker === null) unknownTurns += 1
+    else turns.set(speaker, (turns.get(speaker) ?? 0) + 1)
+  }
+  return {
+    speakers: Array.from(turns, ([speaker, count]) => ({
+      speaker,
+      turns: count,
+      suggestion: suggestions[speaker] ?? null,
+    })),
+    unknownTurns,
+  }
+}
+
 /**
  * Maps a note's stored transcript segments (as persisted by the backend,
  * `{ speaker: "Speaker 1", start, end, text }`) to `TranscriptList`'s
@@ -400,7 +481,7 @@ export function speakerInitials(speaker: string): string {
  */
 export function storedSegmentsToDisplay(segments: StoredSegment[]): TranscriptSegment[] {
   return segments.map(seg => ({
-    initials: speakerInitials(seg.speaker),
+    initials: seg.speaker === null ? '?' : speakerInitials(seg.speaker),
     speaker: seg.speaker,
     time: formatMmSs(seg.start),
     text: seg.text,

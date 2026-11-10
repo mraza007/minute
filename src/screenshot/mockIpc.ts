@@ -42,12 +42,12 @@ function buildModels(state: ScreenshotState): ModelStatus[] {
   })
 }
 
-function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[]): NoteWithTranscript {
+function noteWithTranscript(meta: NoteMeta, transcriptOverride?: StoredSegment[], summarized = true): NoteWithTranscript {
   if (meta.id === AURORA_NOTE_ID) {
     return {
       meta,
       transcript: { segments: transcriptOverride ?? AURORA_TRANSCRIPT },
-      summary: AURORA_SUMMARY satisfies SummaryDoc,
+      summary: summarized ? AURORA_SUMMARY satisfies SummaryDoc : null,
       markdown: AURORA_MARKDOWN,
       audioPath: '/Users/demo/Library/Application Support/Minute/notes/note-aurora/audio.wav',
     }
@@ -81,6 +81,9 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
       })),
     )
   }
+  // `?summary=queued` leaves Aurora unsummarized, with the Detailed length
+  // chosen, for the "This summary has waited" card.
+  const summaryQueued = params.get('summary') === 'queued'
   // `?suggest=1` gives the unnamed Aurora speaker a voice-profile match, for
   // the speaker popover's "Sounds like" row.
   if (params.get('suggest') === '1') {
@@ -111,7 +114,7 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
         case 'get_note': {
           const { id } = args as { id: string }
           const meta = notes.find(n => n.id === id) ?? notes[0]
-          return noteWithTranscript(meta, transcriptOverrides.get(meta.id))
+          return noteWithTranscript(meta, transcriptOverrides.get(meta.id), !summaryQueued)
         }
         case 'search_notes':
           return PRICING_SEARCH_HITS
@@ -177,16 +180,19 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           transcriptOverrides.set(id, segments)
           return { segments }
         }
-        case 'merge_speakers': {
-          const { id, from, into } = args as { id: string; from: string; into: string }
+        case 'merge_speakers':
+        case 'mark_speaker_unknown': {
+          const { id, from, into, speaker } = args as { id: string; from?: string; into?: string; speaker?: string }
+          const source = from ?? speaker ?? ''
+          const target = into ?? null
           const noteIndex = notes.findIndex(note => note.id === id)
           const meta = noteIndex >= 0 ? notes[noteIndex] : notes[0]
           const current = noteWithTranscript(meta, transcriptOverrides.get(id)).transcript.segments
           const segmentIndices = current
-            .map((segment, index) => segment.speaker === from ? index : -1)
+            .map((segment, index) => segment.speaker === source ? index : -1)
             .filter(index => index >= 0)
           const segments = current.map((segment, index) => (
-            segmentIndices.includes(index) ? { ...segment, speaker: into } : segment
+            segmentIndices.includes(index) ? { ...segment, speaker: target } : segment
           ))
           const updatedMeta = { ...meta, speakers: Math.max(1, meta.speakers - 1) }
           if (noteIndex >= 0) notes[noteIndex] = updatedMeta
@@ -194,7 +200,14 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           return {
             transcript: { segments },
             meta: updatedMeta,
-            undo: { from, into, segmentIndices, checksum: 'screenshot-merge-checksum' },
+            undo: {
+              from: source,
+              into: target,
+              segmentIndices,
+              summaryMentions: [],
+              summaryFingerprint: null,
+              checksum: 'screenshot-merge-checksum',
+            },
           }
         }
         case 'undo_speaker_merge': {
@@ -281,6 +294,8 @@ export function installMockIpc(state: ScreenshotState, params = new URLSearchPar
           if (params.get('processing')) return new Promise(() => {})
           return notes[0]
         case 'get_settings':
+          if (summaryQueued) return { ...SETTINGS, summaryStyle: 'detailed' }
+          return state === 'settings' ? SETTINGS_SHOWCASE : SETTINGS
         case 'set_settings':
           return state === 'settings' ? SETTINGS_SHOWCASE : SETTINGS
         case 'list_voice_profiles':

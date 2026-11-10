@@ -1,6 +1,6 @@
 //! Folder-per-note persistence: note metadata, transcripts, and library scanning.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -109,6 +109,12 @@ pub struct NoteMeta {
     /// older `meta.json` files round-trip byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obsidian: Option<ObsidianExport>,
+    /// Issue #49: transcript turns the user marked unknown, by index.
+    /// Keyed by turn rather than by raw label because a re-run renumbers
+    /// labels: the turns the user judged stay unknown, and a new pass's
+    /// "Speaker 3" is never swallowed for sharing an old label.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unknown_turns: BTreeSet<usize>,
 }
 
 /// One voice-profile match (issue #22): "this diarized voice sounds like
@@ -129,11 +135,89 @@ fn default_sources() -> Vec<String> {
     vec!["mic".to_string()]
 }
 
+/// What every surface prints for [`Speaker::Unknown`]. Only a display
+/// string: the data never encodes unknown as text, and
+/// [`Store::rename_speaker`] refuses it as a name so the two can't be
+/// confused on screen.
+pub const UNKNOWN_SPEAKER_LABEL: &str = "Unknown speaker";
+
+/// Who a transcript turn is attributed to (issue #49). `Unknown` is speech
+/// Minute could not place, kept apart from every name so rename, merge,
+/// re-runs, and voice-profile naming can never turn it into one. On disk
+/// it is `"speaker": null`; named turns stay plain strings, so every
+/// transcript written before this type parses unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "Option<String>", into = "Option<String>")]
+pub enum Speaker {
+    Named(String),
+    Unknown,
+}
+
+impl Speaker {
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Speaker::Named(name) => Some(name),
+            Speaker::Unknown => None,
+        }
+    }
+
+    pub fn display(&self) -> &str {
+        self.name().unwrap_or(UNKNOWN_SPEAKER_LABEL)
+    }
+}
+
+impl From<Option<String>> for Speaker {
+    fn from(name: Option<String>) -> Self {
+        name.map_or(Speaker::Unknown, Speaker::Named)
+    }
+}
+
+impl From<Speaker> for Option<String> {
+    fn from(speaker: Speaker) -> Self {
+        match speaker {
+            Speaker::Named(name) => Some(name),
+            Speaker::Unknown => None,
+        }
+    }
+}
+
+impl From<&str> for Speaker {
+    fn from(name: &str) -> Self {
+        Speaker::Named(name.to_string())
+    }
+}
+
+impl From<String> for Speaker {
+    fn from(name: String) -> Self {
+        Speaker::Named(name)
+    }
+}
+
+/// A name matches only a named turn: `Unknown` equals no string at all,
+/// including [`UNKNOWN_SPEAKER_LABEL`].
+impl PartialEq<str> for Speaker {
+    fn eq(&self, other: &str) -> bool {
+        self.name() == Some(other)
+    }
+}
+
+impl PartialEq<&str> for Speaker {
+    fn eq(&self, other: &&str) -> bool {
+        self.name() == Some(*other)
+    }
+}
+
+impl PartialEq<String> for Speaker {
+    fn eq(&self, other: &String) -> bool {
+        self.name() == Some(other.as_str())
+    }
+}
+
 /// One transcript segment, as stored in `transcript.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSegment {
-    pub speaker: String,
+    pub speaker: Speaker,
     pub start: f64,
     pub end: f64,
     pub text: String,
@@ -148,13 +232,22 @@ pub struct Transcript {
 
 /// Exact information required to reverse one speaker merge without
 /// accidentally renaming turns that already belonged to the destination
-/// speaker before the merge.
+/// speaker before the merge. `into` is [`Speaker::Unknown`] when the merge
+/// was "mark these turns as unknown" (issue #49).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerMergeUndo {
     pub from: String,
-    pub into: String,
+    pub into: Speaker,
     pub segment_indices: Vec<usize>,
+    /// Indices into the summary's `speaker_mentions` the merge rewrote.
+    #[serde(default)]
+    pub summary_mentions: Vec<usize>,
+    /// The summary as the merge left it. Undo restores the mentions only
+    /// while the summary still matches, so a regenerated summary is never
+    /// rewritten by stale indices.
+    #[serde(default)]
+    pub summary_fingerprint: Option<String>,
     pub checksum: String,
 }
 
@@ -673,6 +766,7 @@ impl Store {
             speaker_suggestions: HashMap::new(),
             speaker_auto_applied: HashMap::new(),
             obsidian: None,
+            unknown_turns: BTreeSet::new(),
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -755,9 +849,9 @@ impl Store {
     /// write via `write_transcript`). Fine at this scale — transcripts are
     /// small and appends are infrequent (chunk cadence, not per-word).
     pub fn append_segment(&self, id: &str, mut segment: StoredSegment) -> Result<()> {
-        if let Ok(meta) = self.read_meta(id) {
-            if let Some(alias) = meta.speaker_aliases.get(&segment.speaker) {
-                segment.speaker = alias.clone();
+        if let (Ok(meta), Some(raw)) = (self.read_meta(id), segment.speaker.name()) {
+            if let Some(alias) = meta.speaker_aliases.get(raw) {
+                segment.speaker = Speaker::Named(alias.clone());
             }
         }
         let mut transcript = self.read_transcript(id)?;
@@ -850,8 +944,30 @@ impl Store {
     ///
     /// Called from `llm::run_summarize`'s success path, on the summarize
     /// worker thread.
-    pub fn write_summary_and_finalize(&self, id: &str, summary: &SummaryDoc) -> Result<NoteMeta> {
-        self.write_summary(id, summary)?;
+    ///
+    /// Issue #49: records where the summary names the speakers of
+    /// `summarized`, the transcript the model read, so later speaker edits
+    /// can rewrite exactly those spans. Speaker edits made while the model
+    /// ran are then applied to the summary through the turns
+    /// (`mentions::follow_turns`).
+    pub fn write_summary_and_finalize(
+        &self,
+        id: &str,
+        summary: &SummaryDoc,
+        summarized: &Transcript,
+    ) -> Result<NoteMeta> {
+        let read = speakers_of(summarized);
+        let mut names: Vec<Speaker> = Vec::new();
+        for speaker in &read {
+            if !names.contains(speaker) {
+                names.push(speaker.clone());
+            }
+        }
+        let mut summary = summary.clone();
+        summary.speaker_mentions = crate::mentions::find(&summary, &names);
+        let now = speakers_of(&self.read_transcript(id)?);
+        crate::mentions::follow_turns(&mut summary, &read, &now);
+        self.write_summary(id, &summary)?;
         let mut meta = self.read_meta(id)?;
         meta.status = NoteStatus::Ready;
         self.write_meta(&meta)?;
@@ -1215,13 +1331,22 @@ impl Store {
         Ok(meta)
     }
 
-    /// Rewrites every matching transcript speaker label and refreshes note.md.
+    /// Rewrites every matching transcript speaker label, and the summary's
+    /// recorded mentions of it (issue #49), and refreshes note.md. Renaming
+    /// back is the undo: the "already exists" guard below means no mention
+    /// already reads `to`, so the reverse rename restores the summary
+    /// exactly.
     pub fn rename_speaker(&self, id: &str, from: &str, to: &str) -> Result<Transcript> {
         let to = to.trim();
         if to.is_empty() {
             return Err(MinuteError::Other(
                 "speaker name cannot be empty".to_string(),
             ));
+        }
+        if to.eq_ignore_ascii_case(UNKNOWN_SPEAKER_LABEL) {
+            return Err(MinuteError::Other(format!(
+                "\"{UNKNOWN_SPEAKER_LABEL}\" is reserved; mark the turns as unknown instead"
+            )));
         }
         let mut transcript = self.read_transcript(id)?;
         if from != to
@@ -1237,14 +1362,23 @@ impl Store {
         let mut changed = false;
         for segment in &mut transcript.segments {
             if segment.speaker == from {
-                segment.speaker = to.to_string();
+                segment.speaker = Speaker::from(to);
                 changed = true;
             }
         }
         if !changed {
             return Err(MinuteError::Other(format!("speaker not found: {from}")));
         }
-        let mut meta = self.persist_speaker_edit(id, &transcript)?;
+        let summary = self.read_summary(id)?.and_then(|mut summary| {
+            let changed = crate::mentions::retarget(
+                &mut summary,
+                &Speaker::from(from),
+                &Speaker::from(to),
+                None,
+            );
+            (!changed.is_empty()).then_some(summary)
+        });
+        let mut meta = self.persist_speaker_edit(id, &transcript, summary.as_ref())?;
         // Issue #39: compact alias chains through the name that just
         // vanished. Two stale shapes used to survive here: (a) renaming
         // A -> B -> A left `A -> B` behind, silently resurrecting "B" on
@@ -1278,27 +1412,46 @@ impl Store {
     /// Merges every turn attributed to `from` into an already-existing
     /// destination speaker and returns an exact, index-based undo token.
     pub fn merge_speakers(&self, id: &str, from: &str, into: &str) -> Result<SpeakerMergeResult> {
-        let from = from.trim();
         let into = into.trim();
-        if from.is_empty() || into.is_empty() {
+        if into.is_empty() {
             return Err(MinuteError::Other(
                 "speaker names cannot be empty".to_string(),
             ));
         }
-        if from == into {
+        self.reassign_speaker(id, from, Speaker::from(into))
+    }
+
+    /// "Mark these turns as unknown" (issue #49): every turn attributed to
+    /// `speaker` becomes [`Speaker::Unknown`]. It is a merge into Unknown,
+    /// so it returns the same undo token and `undo_speaker_merge` reverses
+    /// it.
+    pub fn mark_speaker_unknown(&self, id: &str, speaker: &str) -> Result<SpeakerMergeResult> {
+        self.reassign_speaker(id, speaker, Speaker::Unknown)
+    }
+
+    fn reassign_speaker(&self, id: &str, from: &str, into: Speaker) -> Result<SpeakerMergeResult> {
+        let from = from.trim();
+        if from.is_empty() {
+            return Err(MinuteError::Other(
+                "speaker names cannot be empty".to_string(),
+            ));
+        }
+        if into == from {
             return Err(MinuteError::Other(
                 "cannot merge a speaker into itself".to_string(),
             ));
         }
 
         let mut transcript = self.read_transcript(id)?;
-        if !transcript
-            .segments
-            .iter()
-            .any(|segment| segment.speaker == into)
+        if into != Speaker::Unknown
+            && !transcript
+                .segments
+                .iter()
+                .any(|segment| segment.speaker == into)
         {
             return Err(MinuteError::Other(format!(
-                "destination speaker not found: {into}"
+                "destination speaker not found: {}",
+                into.display()
             )));
         }
         let segment_indices = transcript
@@ -1311,11 +1464,22 @@ impl Store {
             return Err(MinuteError::Other(format!("speaker not found: {from}")));
         }
         for index in &segment_indices {
-            transcript.segments[*index].speaker = into.to_string();
+            transcript.segments[*index].speaker = into.clone();
         }
-        let mut meta = self.persist_speaker_edit(id, &transcript)?;
-        meta.speaker_aliases
-            .insert(from.to_string(), into.to_string());
+        let mut summary = self.read_summary(id)?;
+        let summary_mentions = summary
+            .as_mut()
+            .map(|summary| crate::mentions::retarget(summary, &Speaker::from(from), &into, None))
+            .unwrap_or_default();
+        let summary_fingerprint = summary.as_ref().map(crate::mentions::fingerprint);
+        let rewritten = summary.as_ref().filter(|_| !summary_mentions.is_empty());
+        let mut meta = self.persist_speaker_edit(id, &transcript, rewritten)?;
+        match &into {
+            Speaker::Named(name) => {
+                meta.speaker_aliases.insert(from.to_string(), name.clone());
+            }
+            Speaker::Unknown => meta.unknown_turns.extend(&segment_indices),
+        }
         // Issue #32: merging away an auto-applied name answers its notice
         // — without this, the "auto-renamed — Undo" chip would linger and
         // its Undo (a rename from a name that no longer exists) would
@@ -1323,27 +1487,33 @@ impl Store {
         meta.speaker_auto_applied
             .retain(|_, applied| applied.name != from);
         self.write_meta(&meta)?;
-        let checksum = speaker_merge_undo_checksum(id, from, into, &segment_indices, &transcript)?;
+        let mut undo = SpeakerMergeUndo {
+            from: from.to_string(),
+            into,
+            segment_indices,
+            summary_mentions,
+            summary_fingerprint,
+            checksum: String::new(),
+        };
+        undo.checksum = speaker_merge_undo_checksum(id, &undo, &transcript)?;
         Ok(SpeakerMergeResult {
             transcript,
             meta,
-            undo: SpeakerMergeUndo {
-                from: from.to_string(),
-                into: into.to_string(),
-                segment_indices,
-                checksum,
-            },
+            undo,
         })
     }
 
-    /// Reverses exactly the turns changed by [`Store::merge_speakers`].
-    /// The full token is validated before any mutation reaches disk.
+    /// Reverses exactly the turns changed by [`Store::merge_speakers`] or
+    /// [`Store::mark_speaker_unknown`], and the summary mentions it
+    /// rewrote while the summary is unchanged since. The full token is
+    /// validated before any mutation reaches disk.
     pub fn undo_speaker_merge(
         &self,
         id: &str,
         undo: &SpeakerMergeUndo,
     ) -> Result<SpeakerMergeUndoResult> {
-        if undo.from.trim().is_empty() || undo.into.trim().is_empty() || undo.from == undo.into {
+        let into_blank = undo.into.name().is_some_and(|name| name.trim().is_empty());
+        if undo.from.trim().is_empty() || into_blank || undo.into == undo.from {
             return Err(MinuteError::Other(
                 "invalid speaker merge undo token".to_string(),
             ));
@@ -1361,14 +1531,7 @@ impl Store {
         }
 
         let mut transcript = self.read_transcript(id)?;
-        let expected_checksum = speaker_merge_undo_checksum(
-            id,
-            &undo.from,
-            &undo.into,
-            &undo.segment_indices,
-            &transcript,
-        )?;
-        if undo.checksum != expected_checksum {
+        if undo.checksum != speaker_merge_undo_checksum(id, undo, &transcript)? {
             return Err(MinuteError::Other(
                 "speaker merge undo token is stale or invalid".to_string(),
             ));
@@ -1383,31 +1546,56 @@ impl Store {
                 )));
             }
         }
+        let from = Speaker::from(undo.from.as_str());
         for index in &undo.segment_indices {
-            transcript.segments[*index].speaker = undo.from.clone();
+            transcript.segments[*index].speaker = from.clone();
         }
-        let mut meta = self.persist_speaker_edit(id, &transcript)?;
-        if meta.speaker_aliases.get(&undo.from) == Some(&undo.into) {
-            meta.speaker_aliases.remove(&undo.from);
-            self.write_meta(&meta)?;
+        let summary = self.read_summary(id)?.filter(|summary| {
+            undo.summary_fingerprint.as_deref() == Some(&crate::mentions::fingerprint(summary))
+        });
+        let summary = summary.and_then(|mut summary| {
+            let changed = crate::mentions::retarget(
+                &mut summary,
+                &undo.into,
+                &from,
+                Some(&undo.summary_mentions),
+            );
+            (!changed.is_empty()).then_some(summary)
+        });
+        let mut meta = self.persist_speaker_edit(id, &transcript, summary.as_ref())?;
+        match &undo.into {
+            Speaker::Named(into) => {
+                if meta.speaker_aliases.get(&undo.from) == Some(into) {
+                    meta.speaker_aliases.remove(&undo.from);
+                }
+            }
+            Speaker::Unknown => {
+                for index in &undo.segment_indices {
+                    meta.unknown_turns.remove(index);
+                }
+            }
         }
+        self.write_meta(&meta)?;
         Ok(SpeakerMergeUndoResult { transcript, meta })
     }
 
-    /// Persists a transcript speaker edit, keeps the list-level speaker
-    /// count honest, and refreshes the generated markdown.
     /// Diarization's write path (`diar.rs`): replaces every segment's
-    /// speaker label at once with `labels` (one per segment, in order),
-    /// applying any user-confirmed `speaker_aliases` on the way in (a note
-    /// whose "Speaker 1" was already renamed to "Alice" keeps saying
-    /// "Alice" when a re-run assigns "Speaker 1" again — same alias
-    /// treatment `append_segment` gives live segments). Persists via the
-    /// same `persist_speaker_edit` the rename/merge UI uses, so
-    /// `meta.speakers` and `note.md` stay in sync. Errors if `labels`'
-    /// length doesn't match the transcript — a mismatch means the transcript
-    /// changed under the diarization pass, and relabeling anyway would
-    /// attribute turns to the wrong people.
-    pub fn update_segment_speakers(&self, id: &str, labels: &[String]) -> Result<NoteMeta> {
+    /// speaker at once with `labels` (one per segment, in order), applying
+    /// the user's own decisions on the way in. A raw label the user renamed
+    /// keeps its name (a note whose "Speaker 1" was already renamed to
+    /// "Alice" keeps saying "Alice" when a re-run assigns "Speaker 1"
+    /// again, the same alias treatment `append_segment` gives live
+    /// segments), and a turn the user marked unknown stays unknown. Errors
+    /// if `labels`' length doesn't match the transcript — a mismatch means
+    /// the transcript changed under the diarization pass, and relabeling
+    /// anyway would attribute turns to the wrong people.
+    ///
+    /// Issue #49: the summary's speaker mentions follow the turns
+    /// (`mentions::follow_turns`). A mention names the previous pass's
+    /// speaker, so it moves to the new pass's speaker only when that
+    /// speaker took over all of the old one's turns; otherwise a rename of
+    /// the new "Speaker 2" could rewrite a sentence about someone else.
+    pub fn update_segment_speakers(&self, id: &str, labels: &[Speaker]) -> Result<NoteMeta> {
         let mut transcript = self.read_transcript(id)?;
         if transcript.segments.len() != labels.len() {
             return Err(MinuteError::Other(format!(
@@ -1416,20 +1604,45 @@ impl Store {
                 transcript.segments.len()
             )));
         }
-        let aliases = self.read_meta(id)?.speaker_aliases;
-        for (segment, label) in transcript.segments.iter_mut().zip(labels) {
-            segment.speaker = aliases.get(label).unwrap_or(label).clone();
+        let before = speakers_of(&transcript);
+        let meta = self.read_meta(id)?;
+        for (index, (segment, label)) in transcript.segments.iter_mut().zip(labels).enumerate() {
+            segment.speaker = match label {
+                _ if meta.unknown_turns.contains(&index) => Speaker::Unknown,
+                Speaker::Named(raw) => {
+                    Speaker::Named(meta.speaker_aliases.get(raw).unwrap_or(raw).clone())
+                }
+                Speaker::Unknown => Speaker::Unknown,
+            };
         }
-        self.persist_speaker_edit(id, &transcript)
+        let summary = self
+            .read_summary(id)?
+            .filter(|summary| !summary.speaker_mentions.is_empty())
+            .map(|mut summary| {
+                crate::mentions::follow_turns(&mut summary, &before, &speakers_of(&transcript));
+                summary
+            });
+        self.persist_speaker_edit(id, &transcript, summary.as_ref())
     }
 
-    fn persist_speaker_edit(&self, id: &str, transcript: &Transcript) -> Result<NoteMeta> {
+    /// Persists a transcript speaker edit and the summary it rewrote, keeps
+    /// the list-level speaker count honest (unknown turns belong to no one,
+    /// so they add no speaker), and refreshes the generated markdown.
+    fn persist_speaker_edit(
+        &self,
+        id: &str,
+        transcript: &Transcript,
+        summary: Option<&SummaryDoc>,
+    ) -> Result<NoteMeta> {
         self.write_transcript(id, transcript)?;
+        if let Some(summary) = summary {
+            self.write_summary(id, summary)?;
+        }
         let mut meta = self.read_meta(id)?;
         meta.speakers = transcript
             .segments
             .iter()
-            .map(|segment| segment.speaker.as_str())
+            .filter_map(|segment| segment.speaker.name())
             .collect::<HashSet<_>>()
             .len() as u32;
         self.write_meta(&meta)?;
@@ -1860,17 +2073,29 @@ fn safe_export_name(title: &str) -> String {
     }
 }
 
+fn speakers_of(transcript: &Transcript) -> Vec<Speaker> {
+    transcript
+        .segments
+        .iter()
+        .map(|segment| segment.speaker.clone())
+        .collect()
+}
+
 fn speaker_merge_undo_checksum(
     id: &str,
-    from: &str,
-    into: &str,
-    segment_indices: &[usize],
+    undo: &SpeakerMergeUndo,
     transcript: &Transcript,
 ) -> Result<String> {
-    let payload =
-        serde_json::to_vec(&(id, from, into, segment_indices, transcript)).map_err(|error| {
-            MinuteError::Other(format!("failed to fingerprint speaker merge: {error}"))
-        })?;
+    let payload = serde_json::to_vec(&(
+        id,
+        &undo.from,
+        &undo.into,
+        &undo.segment_indices,
+        &undo.summary_mentions,
+        &undo.summary_fingerprint,
+        transcript,
+    ))
+    .map_err(|error| MinuteError::Other(format!("failed to fingerprint speaker merge: {error}")))?;
     let digest = Sha256::digest(payload);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -2281,7 +2506,7 @@ fn transcript_body(segments: &[StoredSegment]) -> String {
         .map(|seg| {
             format!(
                 "**{}** ({})\n{}",
-                seg.speaker,
+                seg.speaker.display(),
                 format_mm_ss(seg.start),
                 seg.text
             )
@@ -2805,6 +3030,8 @@ mod tests {
                 from: "Speaker 1".into(),
                 into: "Sam".into(),
                 segment_indices: vec![0, 2],
+                summary_mentions: Vec::new(),
+                summary_fingerprint: None,
                 checksum: merged.undo.checksum.clone(),
             }
         );
@@ -3249,7 +3476,7 @@ mod tests {
             from: merged.undo.from.clone(),
             into: merged.undo.into.clone(),
             segment_indices: vec![1],
-            checksum: merged.undo.checksum.clone(),
+            ..merged.undo.clone()
         };
         assert!(store.undo_speaker_merge(&meta.id, &stale).is_err());
         assert_eq!(
@@ -3700,6 +3927,7 @@ mod tests {
             speaker_suggestions: HashMap::new(),
             speaker_auto_applied: HashMap::new(),
             obsidian: None,
+            unknown_turns: BTreeSet::new(),
         }
     }
 
@@ -4275,6 +4503,7 @@ mod tests {
                     summary: "They decided things.".to_string(),
                     ..Default::default()
                 },
+                &Transcript::default(),
             )
             .unwrap();
 
@@ -4340,7 +4569,7 @@ mod tests {
                 &meta.id,
                 &Transcript {
                     segments: vec![StoredSegment {
-                        speaker: "Speaker 2".to_string(),
+                        speaker: "Speaker 2".into(),
                         start: 0.0,
                         end: 1.0,
                         text: "hello".to_string(),
@@ -4431,7 +4660,7 @@ mod tests {
             .append_segment(
                 &meta.id,
                 StoredSegment {
-                    speaker: "Alice".to_string(),
+                    speaker: "Alice".into(),
                     start: 0.0,
                     end: 1.0,
                     text: "Project Nightingale is secret".to_string(),
@@ -4519,6 +4748,8 @@ mod tests {
 
     fn sample_summary() -> SummaryDoc {
         SummaryDoc {
+            speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Discussed Q3 roadmap.".to_string(),
@@ -4594,6 +4825,27 @@ mod tests {
         assert_eq!(summary.decisions, vec!["Ship Friday"]);
         assert_eq!(summary.action_items.len(), 1);
         assert!(summary.topics.is_empty());
+        assert_eq!(summary.style, None);
+    }
+
+    #[test]
+    fn summary_style_round_trips_through_summary_json() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let now = datetime!(2026-07-23 10:15:30 UTC);
+        let meta = store.create_note("Standup", "whisper-small", now).unwrap();
+        let summary = SummaryDoc {
+            style: Some(crate::settings::SummaryStyle::Short),
+            ..sample_summary()
+        };
+        store.write_summary(&meta.id, &summary).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.summary_path(&meta.id)).unwrap())
+                .unwrap();
+        assert_eq!(raw["style"], "short");
+        let read = store.read_summary(&meta.id).unwrap().unwrap();
+        assert_eq!(read.style, Some(crate::settings::SummaryStyle::Short));
     }
 
     #[test]
@@ -4618,7 +4870,7 @@ mod tests {
         store.finalize_note(&meta.id, 42.0, 1).unwrap();
 
         let updated = store
-            .write_summary_and_finalize(&meta.id, &sample_summary())
+            .write_summary_and_finalize(&meta.id, &sample_summary(), &Transcript::default())
             .unwrap();
 
         assert_eq!(updated.status, NoteStatus::Ready);
@@ -4636,7 +4888,7 @@ mod tests {
         let meta = store.create_note("Standup", "whisper-small", now).unwrap();
 
         store
-            .write_summary_and_finalize(&meta.id, &sample_summary())
+            .write_summary_and_finalize(&meta.id, &sample_summary(), &Transcript::default())
             .unwrap();
 
         let markdown = fs::read_to_string(store.note_md_path(&meta.id)).unwrap();
@@ -4769,6 +5021,7 @@ mod tests {
             speaker_suggestions: HashMap::new(),
             speaker_auto_applied: HashMap::new(),
             obsidian: None,
+            unknown_turns: BTreeSet::new(),
         };
         overrides(&mut meta);
         meta
@@ -4853,6 +5106,8 @@ mod tests {
     fn render_note_md_with_summary_includes_summary_decisions_and_action_items() {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
+            speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Reviewed the roadmap and aligned on priorities.".to_string(),
@@ -4910,6 +5165,8 @@ mod tests {
     fn render_note_md_renders_the_topic_breakdown_between_summary_and_decisions() {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
+            speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Reviewed the roadmap.".to_string(),
@@ -4964,6 +5221,8 @@ mod tests {
     fn render_note_md_omits_the_topics_section_entirely_when_there_are_none() {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
+            speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Reviewed the roadmap.".to_string(),
@@ -4982,6 +5241,8 @@ mod tests {
     fn render_note_md_omits_empty_decisions_and_action_items_sections() {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
+            speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "Quick sync, nothing decided.".to_string(),
@@ -5015,6 +5276,8 @@ mod tests {
     fn render_note_md_omits_only_decisions_when_action_items_present() {
         let meta = md_meta(|_| {});
         let summary = SummaryDoc {
+            speaker_mentions: Vec::new(),
+            style: None,
             truncated: false,
             cut_off: false,
             summary: "x".to_string(),
@@ -5514,5 +5777,343 @@ mod tests {
         let err = store.move_library(inside).unwrap_err();
 
         assert!(err.to_string().contains("inside the current library"));
+    }
+
+    // --- issue #49: unknown attribution and speaker names in the summary ---
+
+    /// A note whose four turns are Speaker 1, 2, 3, 1, summarized with a
+    /// summary that names Speakers 2 and 3.
+    fn note_with_summary(store: &Store) -> String {
+        let id = store
+            .create_note(
+                "Launch sync",
+                "whisper-small",
+                datetime!(2026-11-09 10:00:00 UTC),
+            )
+            .unwrap()
+            .id;
+        let turn = |speaker: &str, start: f64| StoredSegment {
+            speaker: speaker.into(),
+            start,
+            end: start + 4.0,
+            text: "Words.".into(),
+        };
+        store
+            .write_transcript(
+                &id,
+                &Transcript {
+                    segments: vec![
+                        turn("Speaker 1", 0.0),
+                        turn("Speaker 2", 5.0),
+                        turn("Speaker 3", 10.0),
+                        turn("Speaker 1", 15.0),
+                    ],
+                },
+            )
+            .unwrap();
+        store
+            .write_summary_and_finalize(
+                &id,
+                &SummaryDoc {
+                    summary: "Speaker 2 walked Speaker 22 through the plan.".into(),
+                    decisions: vec!["Speaker 3 owns the launch date.".into()],
+                    action_items: vec![ActionItem {
+                        text: "Speaker 2 sends the deck to Speaker 3.".into(),
+                        done: false,
+                    }],
+                    ..Default::default()
+                },
+                &store.read_transcript(&id).unwrap(),
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn unknown_turns_store_as_null_and_older_transcripts_still_parse() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = store.create_note_now("Sync", "whisper-small").unwrap().id;
+        let unknown = StoredSegment {
+            speaker: Speaker::Unknown,
+            start: 0.0,
+            end: 1.0,
+            text: "Hm.".into(),
+        };
+        store
+            .write_transcript(
+                &id,
+                &Transcript {
+                    segments: vec![unknown.clone()],
+                },
+            )
+            .unwrap();
+        let raw = fs::read_to_string(store.transcript_path(&id)).unwrap();
+        assert!(raw.contains("\"speaker\": null"), "{raw}");
+        assert_eq!(store.read_transcript(&id).unwrap().segments, vec![unknown]);
+
+        let legacy: Transcript = serde_json::from_str(
+            r#"{"segments":[{"speaker":"Speaker 1","start":0,"end":1,"text":"Hi."}]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.segments[0].speaker, Speaker::from("Speaker 1"));
+    }
+
+    #[test]
+    fn rename_reaches_the_summary_and_renaming_back_restores_it_exactly() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let original = store.read_summary(&id).unwrap().unwrap();
+
+        store
+            .rename_speaker(&id, "Speaker 2", "Priya Shah")
+            .unwrap();
+        let renamed = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(
+            renamed.summary,
+            "Priya Shah walked Speaker 22 through the plan."
+        );
+        assert_eq!(
+            renamed.action_items[0].text,
+            "Priya Shah sends the deck to Speaker 3."
+        );
+        let markdown = fs::read_to_string(store.note_md_path(&id)).unwrap();
+        assert!(
+            markdown.contains("- [ ] Priya Shah sends the deck to Speaker 3."),
+            "{markdown}"
+        );
+
+        store
+            .rename_speaker(&id, "Priya Shah", "Speaker 2")
+            .unwrap();
+        assert_eq!(store.read_summary(&id).unwrap().unwrap(), original);
+    }
+
+    #[test]
+    fn rename_never_rewrites_summary_text_it_did_not_record() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let mut edited = store.read_summary(&id).unwrap().unwrap();
+        edited
+            .decisions
+            .push("Ask Speaker 2 about the budget.".into());
+        store.write_summary(&id, &edited).unwrap();
+
+        store.rename_speaker(&id, "Speaker 2", "Priya").unwrap();
+        let summary = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(summary.decisions[1], "Ask Speaker 2 about the budget.");
+        assert_eq!(summary.summary, "Priya walked Speaker 22 through the plan.");
+    }
+
+    #[test]
+    fn the_unknown_label_is_not_a_speaker_name() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        assert!(store
+            .rename_speaker(&id, "Speaker 2", "unknown speaker")
+            .is_err());
+        assert_eq!(
+            store.read_transcript(&id).unwrap().segments[1].speaker,
+            "Speaker 2"
+        );
+    }
+
+    #[test]
+    fn marking_turns_unknown_reaches_the_summary_and_undo_restores_both() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let transcript_before = store.read_transcript(&id).unwrap();
+        let summary_before = store.read_summary(&id).unwrap().unwrap();
+
+        let marked = store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+        assert_eq!(marked.transcript.segments[2].speaker, Speaker::Unknown);
+        assert_eq!(marked.meta.speakers, 2);
+        assert_eq!(marked.undo.into, Speaker::Unknown);
+        let summary = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(
+            summary.decisions[0],
+            "Unknown speaker owns the launch date."
+        );
+        assert_eq!(
+            summary.action_items[0].text,
+            "Speaker 2 sends the deck to Unknown speaker."
+        );
+
+        let undone = store.undo_speaker_merge(&id, &marked.undo).unwrap();
+        assert_eq!(undone.transcript, transcript_before);
+        assert!(undone.meta.unknown_turns.is_empty());
+        assert_eq!(undone.meta.speakers, 3);
+        assert_eq!(store.read_summary(&id).unwrap().unwrap(), summary_before);
+    }
+
+    #[test]
+    fn unknown_turns_survive_rename_merge_rerun_and_profile_naming() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        store.mark_speaker_unknown(&id, "Speaker 3").unwrap();
+
+        store.rename_speaker(&id, "Speaker 1", "Sam").unwrap();
+        store.merge_speakers(&id, "Speaker 2", "Sam").unwrap();
+        let speakers = |store: &Store| -> Vec<Speaker> {
+            store
+                .read_transcript(&id)
+                .unwrap()
+                .segments
+                .into_iter()
+                .map(|segment| segment.speaker)
+                .collect()
+        };
+        assert_eq!(
+            speakers(&store),
+            vec![
+                Speaker::from("Sam"),
+                Speaker::from("Sam"),
+                Speaker::Unknown,
+                Speaker::from("Sam")
+            ]
+        );
+
+        // A re-run labels turn 2 as a real voice again, and a voice profile
+        // names that voice: the user's "unknown" still wins.
+        store
+            .apply_speaker_names(
+                &id,
+                &HashMap::from([("Speaker 3".to_string(), "Dana".to_string())]),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    "Speaker 2".into(),
+                    "Speaker 3".into(),
+                    Speaker::Unknown,
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            speakers(&store),
+            vec![
+                Speaker::from("Sam"),
+                Speaker::from("Sam"),
+                Speaker::Unknown,
+                Speaker::Unknown
+            ]
+        );
+        assert_eq!(store.read_meta(&id).unwrap().speakers, 1);
+    }
+
+    #[test]
+    fn merge_undo_restores_summary_mentions_unless_the_summary_was_regenerated() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let original = store.read_summary(&id).unwrap().unwrap();
+
+        let merged = store.merge_speakers(&id, "Speaker 3", "Speaker 1").unwrap();
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().decisions[0],
+            "Speaker 1 owns the launch date."
+        );
+        store.toggle_action_item(&id, 0, true).unwrap();
+        store.undo_speaker_merge(&id, &merged.undo).unwrap();
+        let restored = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(restored.decisions, original.decisions);
+        assert!(restored.action_items[0].done, "undo keeps the tick");
+
+        let merged = store.merge_speakers(&id, "Speaker 3", "Speaker 1").unwrap();
+        let regenerated = SummaryDoc {
+            summary: "Speaker 1 set the date.".into(),
+            ..Default::default()
+        };
+        store
+            .write_summary_and_finalize(&id, &regenerated, &store.read_transcript(&id).unwrap())
+            .unwrap();
+        let undone = store.undo_speaker_merge(&id, &merged.undo).unwrap();
+        assert_eq!(undone.transcript.segments[2].speaker, "Speaker 3");
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().summary,
+            "Speaker 1 set the date."
+        );
+    }
+
+    #[test]
+    fn a_rerun_moves_summary_mentions_with_the_turns_they_named() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        // Old Speaker 2 and Speaker 3 spoke turns 1 and 2; the re-run calls
+        // both of those turns Speaker 1 and gives old Speaker 1's turns to
+        // a new Speaker 2.
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 2".into(),
+                    "Speaker 1".into(),
+                    "Speaker 1".into(),
+                    "Speaker 2".into(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().summary,
+            "Speaker 1 walked Speaker 22 through the plan."
+        );
+
+        store.rename_speaker(&id, "Speaker 2", "Priya").unwrap();
+        store.rename_speaker(&id, "Speaker 1", "Ann").unwrap();
+        let summary = store.read_summary(&id).unwrap().unwrap();
+        assert_eq!(summary.summary, "Ann walked Speaker 22 through the plan.");
+        assert_eq!(summary.action_items[0].text, "Ann sends the deck to Ann.");
+    }
+
+    /// The model reads the transcript, then speaker edits land before the
+    /// summary does: the summary must end up naming who spoke those turns
+    /// now, and must forget a name whose turns were split up.
+    #[test]
+    fn speaker_edits_made_while_the_summary_generates_reach_it() {
+        let dir = tempdir().unwrap();
+        let store = store_at(dir.path());
+        let id = note_with_summary(&store);
+        let read = store.read_transcript(&id).unwrap();
+        store.rename_speaker(&id, "Speaker 2", "Sarah").unwrap();
+        store
+            .update_segment_speakers(
+                &id,
+                &[
+                    "Speaker 1".into(),
+                    "Speaker 2".into(),
+                    "Speaker 3".into(),
+                    "Speaker 4".into(),
+                ],
+            )
+            .unwrap();
+
+        let generated = SummaryDoc {
+            summary: "Speaker 1 decided; Speaker 2 agreed.".into(),
+            ..Default::default()
+        };
+        store
+            .write_summary_and_finalize(&id, &generated, &read)
+            .unwrap();
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().summary,
+            "Speaker 1 decided; Sarah agreed."
+        );
+
+        store.rename_speaker(&id, "Speaker 1", "Ann").unwrap();
+        assert_eq!(
+            store.read_summary(&id).unwrap().unwrap().summary,
+            "Speaker 1 decided; Sarah agreed."
+        );
     }
 }

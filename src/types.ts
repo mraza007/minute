@@ -33,7 +33,8 @@ export interface ActionItem {
 
 export interface TranscriptSegment {
   initials: string
-  speaker: string
+  /** `null` is an unknown speaker (issue #49): render `UNKNOWN_SPEAKER_LABEL`, muted. */
+  speaker: string | null
   /** Formatted `mm:ss` display of `start` — what the timestamp button renders. */
   time: string
   text: string

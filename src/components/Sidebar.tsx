@@ -22,7 +22,7 @@ interface SidebarProps {
   recTime: string
   /** The red "Recording" row returns to the live recording view from any screen. */
   onReturnToRecording: () => void
-  /** Per-note summary lifecycle; a queued or running entry puts "Summarizing…" on that note's row. */
+  /** Per-note summary lifecycle: a running entry puts "Summarizing…" on that note's row, a queued one "Summary waiting". */
   summaryStatus: Readonly<Record<string, string>>
   onTogglePinned: (id: string, pinned: boolean) => void
   onBulkExport: (ids: string[]) => Promise<void>
@@ -72,9 +72,8 @@ function applyFilters(notes: NoteListItem[], filters: LibraryFilters): NoteListI
 
 function RowStatus({ note, summaryState }: { note: NoteListItem; summaryState: string | undefined }) {
   if (note.status === 'recording') return <span className="side-row-status" data-tone="red">Recording…</span>
-  if (summaryState === 'queued' || summaryState === 'running') {
-    return <span className="side-row-status" data-tone="blue">Summarizing…</span>
-  }
+  if (summaryState === 'running') return <span className="side-row-status" data-tone="blue">Summarizing…</span>
+  if (summaryState === 'queued') return <span className="side-row-status" data-tone="amber">Summary waiting</span>
   return <span className="side-row-meta">{note.meta}</span>
 }
 

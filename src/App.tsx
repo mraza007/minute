@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppState } from './state/useAppState'
+import { summaryWaitCause, type SummaryWait } from './state/adapters'
 import { useSidebarCollapsed } from './state/useSidebarCollapsed'
 import { AppToolbar, SidebarReopen } from './components/AppToolbar'
 import { ErrorBanner } from './components/ErrorBanner'
@@ -138,6 +139,13 @@ export default function App() {
     rawSummaryEventState === 'queued' || rawSummaryEventState === 'running' || rawSummaryEventState === 'error'
       ? rawSummaryEventState
       : 'idle'
+  const selectedSummaryWait: SummaryWait | null = selectedNoteMeta && selectedSummaryStatus === 'queued'
+    ? {
+        queuedAt: s.summaryQueuedAt[selectedNoteMeta.id] ?? null,
+        style: s.tSummaryStyle,
+        cause: summaryWaitCause(selectedNoteMeta.id, s.isRecording, s.summaryStatus),
+      }
+    : null
 
   // Same collapse for speaker detection (`diar-status`): 'done' and "no
   // event" are both 'idle' — a finished pass just shows the relabeled
@@ -259,6 +267,7 @@ export default function App() {
               sttStatusNoteId={s.sttStatusNoteId}
               summaryStatus={selectedSummaryStatus}
               summaryError={selectedNoteMeta ? s.summaryError[selectedNoteMeta.id] : undefined}
+              summaryWait={selectedSummaryWait}
               diarStatus={selectedDiarStatus}
               diarError={selectedNoteMeta ? s.diarError[selectedNoteMeta.id] : undefined}
               canDetectSpeakers={canDetectSpeakers}
@@ -280,6 +289,7 @@ export default function App() {
               onToggleActionItem={s.toggleActionItem}
               onRegenerateSummary={s.regenerateSummary}
               onCancelSummary={s.cancelSummary}
+              onSummarizeNow={s.summarizeNow}
               onAsk={s.askQuestion}
               onGoSettings={s.goSettings}
               onSetPinned={s.setNotePinned}
@@ -289,6 +299,7 @@ export default function App() {
               onRenameSpeaker={s.renameSpeaker}
               onDismissSpeakerSuggestion={s.dismissSpeakerSuggestion}
               onMergeSpeakers={s.mergeSpeakers}
+              onMarkSpeakerUnknown={s.markSpeakerUnknown}
               onUndoSpeakerMerge={s.undoSpeakerMerge}
               onDeleteAudio={s.deleteSelectedNoteAudio}
               onStartRecording={openRecordingPreflight}
