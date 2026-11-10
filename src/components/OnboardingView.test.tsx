@@ -11,7 +11,8 @@ function sttModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'whisper-small',
     kind: 'stt',
     displayName: 'Whisper small',
-    desc: '62× realtime · good for meetings',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
     sha256: 'a'.repeat(64),
     sizeBytes: 466_000_000,
@@ -27,7 +28,8 @@ function llmModel(overrides: Partial<ModelStatus> = {}): ModelStatus {
     id: 'qwen3.5-4b',
     kind: 'llm',
     displayName: 'Qwen3.5-4B',
-    desc: 'fast default summarizer',
+    traits: [],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     sha256: 'b'.repeat(64),
     sizeBytes: 2_600_000_000,
@@ -64,6 +66,11 @@ describe('OnboardingView', () => {
   it('shows a "not downloaded" sub-line with size for a not-yet-installed model', () => {
     render(<OnboardingView {...base} />)
     expect(screen.getByText(/Not downloaded · 466 MB/)).toBeInTheDocument()
+  })
+
+  it('describes each model by its traits and size', () => {
+    render(<OnboardingView {...base} models={[sttModel({ traits: ['Fast', '99 languages'] }), llmModel()]} />)
+    expect(screen.getByText('Fast · 99 languages · 466 MB')).toBeInTheDocument()
   })
 
   it('notes the LLM card is optional and can be added later', () => {

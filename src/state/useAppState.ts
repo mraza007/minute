@@ -1887,6 +1887,7 @@ export function useAppState() {
     downloadModel: modelManager.downloadModel,
     cancelDownload: modelManager.cancelDownload,
     deleteModel: modelManager.deleteModel,
+    huggingFace: modelManager.huggingFace,
     completeOnboarding,
     renameNote,
     setNotePinned,

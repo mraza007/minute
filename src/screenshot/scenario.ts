@@ -241,7 +241,11 @@ const SETTINGS_SECTION_LABELS: Record<string, string> = {
   about: 'About',
 }
 
-/** `?section=<id>` picks the Settings page; `&downloading=1` puts one model mid-download. */
+/**
+ * `?section=<id>` picks the Settings page. On Models, `&downloading=1` puts
+ * one whisper.cpp file mid-download and `&consent=1` opens the
+ * unknown-publisher confirm.
+ */
 async function driveSettings(params: URLSearchParams): Promise<void> {
   const settingsButton = await waitForButtonByText('Settings')
   settingsButton?.click()
@@ -252,9 +256,16 @@ async function driveSettings(params: URLSearchParams): Promise<void> {
   navButton?.click()
   await waitFor(() => document.querySelector('.st-title')?.textContent?.startsWith(label) ?? false)
 
+  if (section === 'models') {
+    await waitFor(() => /Granite 4\.0 H Tiny|Could not reach Hugging Face/.test(document.body.textContent ?? ''))
+  }
   if (section === 'models' && params.get('downloading') === '1') {
-    await emit('model-download-progress', { modelId: 'gemma-4-e4b', downloaded: 3_300_000_000, total: 5_335_291_936 })
+    await emit('model-download-progress', { modelId: 'hf:ggerganov/whisper.cpp/ggml-small.en.bin', downloaded: 302_000_000, total: 487_614_201 })
     await waitFor(() => document.querySelector('[role="progressbar"]') !== null)
+  }
+  if (section === 'models' && params.get('consent') === '1') {
+    document.querySelector<HTMLButtonElement>('button[aria-label^="Download Llama 3.1 8B Instruct"]')?.click()
+    await waitFor(() => findButtonByText('Download anyway') !== undefined)
   }
   if (section === 'integrations') {
     // The vault check runs on mount; wait for it so the capture shows its verdict.

@@ -312,22 +312,47 @@ input.st-input:not([type='checkbox']):not([type='radio']):focus-visible,
 .st-voice-times { flex: none; width: 160px; color: var(--ink-muted); font: 400 13px/16px var(--sans); }
 .st-voice-action { flex: none; width: 56px; text-align: right; }
 
+.st-models { gap: 36px; }
+.st-model-group { display: flex; flex-direction: column; }
+.st-model-group-head { display: flex; flex-direction: column; gap: 3px; padding-bottom: 20px; }
+.st-model-group-title {
+  margin: 0;
+  color: var(--ink);
+  font: 700 16px/22px var(--sans);
+  letter-spacing: -.01em;
+}
+.st-model-group-purpose { margin: 0; color: var(--ink-muted); font: 400 13px/18px var(--sans); }
+.st-model-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+}
+.st-model-label[data-spaced='true'] { padding-top: 24px; }
+.st-model-label-text { margin: 0; color: var(--ink-muted); font: 500 12px/16px var(--sans); }
+.st-model-label-meta { color: var(--ink-muted); font: 400 12px/16px var(--sans); }
+.st-link.st-link-small { font-size: 12px; }
+.st-link[data-tone='muted'] { color: var(--ink-muted); }
+.st-model-note { margin: 0; padding-top: 10px; color: var(--ink-muted); font: 400 12px/16px var(--sans); }
+
+/* Each list closes with its own rule, so a row never needs to know it is last. */
+.st-model-list { display: flex; flex-direction: column; border-bottom: 1px solid var(--line); }
 .st-model-row {
   display: flex;
   align-items: center;
-  min-height: 52px;
+  min-height: 56px;
   box-sizing: border-box;
   border-top: 1px solid var(--line);
 }
-.st-model-row:last-child { border-bottom: 1px solid var(--line); }
 .st-model-pick {
   display: flex;
   align-items: center;
   flex: 1;
   min-width: 0;
   align-self: stretch;
+  cursor: pointer;
 }
-.st-model-pick[aria-disabled='false'] { cursor: pointer; }
 .st-radio-slot { display: flex; flex: none; width: 28px; }
 .st-radio {
   box-sizing: border-box;
@@ -338,7 +363,7 @@ input.st-input:not([type='checkbox']):not([type='radio']):focus-visible,
   transition: border var(--motion-fast);
 }
 .st-model-row[data-selected='true'] .st-radio { border: 5px solid var(--accent); }
-.st-model-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.st-model-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .st-model-name { color: var(--ink); font: 500 14px/18px var(--sans); }
 .st-model-sub { color: var(--ink-muted); font: 400 12px/16px var(--sans); }
 .st-fit {
@@ -350,17 +375,78 @@ input.st-input:not([type='checkbox']):not([type='radio']):focus-visible,
 .st-fit[data-tone='recommended'] { color: var(--ok-text); }
 .st-fit[data-tone='constrained'] { color: var(--warn-text); }
 .st-fit[data-tone='unsupported'] { color: var(--red-text); }
+.st-fit[data-tone='unverified'] { color: var(--warn-text); }
 .st-model-action {
   display: flex;
   flex: none;
   flex-direction: column;
   align-items: flex-end;
   gap: 5px;
-  width: 132px;
+  width: 84px;
   color: var(--ink-muted);
   font: 400 13px/16px var(--sans);
   text-align: right;
 }
+.st-model-action .dl-progress-line { justify-content: flex-end; gap: 0; }
+
+.st-consent { display: flex; align-items: center; gap: 16px; padding: 12px 0 14px 28px; }
+.st-consent-text { flex: 1; min-width: 0; margin: 0; color: var(--ink); font: 400 12px/17px var(--sans); }
+.st-consent-actions { display: flex; flex: none; align-items: center; gap: 14px; }
+
+.st-model-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  box-sizing: border-box;
+  margin: 2px 0 12px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+  cursor: text;
+}
+.st-model-search:focus-within { border-color: var(--accent); }
+.st-model-search svg { flex: none; }
+.st-model-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 400 13px/16px var(--sans);
+}
+.st-model-search input::placeholder { color: var(--ink-faint); }
+/* The wrapper's accent border shows focus, so the field drops the global underline. */
+.st-model-search input:not([type='checkbox']):not([type='radio']):focus-visible { outline: none; box-shadow: none; }
+
+.st-model-fold {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 44px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-muted);
+  font: 500 13px/16px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.st-model-list + .st-model-fold { border-top: 0; }
+.st-model-note + .st-model-fold { margin-top: 10px; }
+.st-model-fold + .st-model-list > .st-model-row:first-child { border-top: 0; }
+.st-model-fold .st-radio-slot { align-items: center; }
+.st-model-fold svg { transition: transform var(--motion-fast); }
+.st-model-fold svg[data-open='true'] { transform: rotate(90deg); }
+.st-model-fold-text { flex: 1; min-width: 0; }
+.st-model-fold-action { flex: none; width: 84px; color: var(--accent-text); text-align: right; }
+.st-model-fold:hover .st-model-fold-action { text-decoration: underline; }
 .st-swap { position: relative; display: inline-flex; justify-content: flex-end; }
 .st-swap .st-swap-rest { transition: opacity var(--motion-fast); }
 .st-swap .st-link { position: absolute; right: 0; opacity: 0; }
@@ -414,5 +500,4 @@ input.st-input:not([type='checkbox']):not([type='radio']):focus-visible,
 @media (max-width: 860px) {
   .st-row { gap: 16px; }
   .st-fit { width: 96px; }
-  .st-model-action { width: 112px; }
 }

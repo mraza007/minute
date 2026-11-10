@@ -2,7 +2,7 @@ import type { Hardware, ModelStatus } from '../ipc/types'
 import { transcriptionModeOf, transcriptionModeOptions } from './transcriptionModes'
 
 function stt(id: string, displayName: string, state: ModelStatus['state'], minRamGb = 0): ModelStatus {
-  return { id, kind: 'stt', displayName, desc: '', url: '', sha256: '', sizeBytes: 1, minRamGb, requiresAppleSilicon: false, state }
+  return { id, kind: 'stt', displayName, traits: [], origin: { kind: 'tested' }, url: '', sha256: '', sizeBytes: 1, minRamGb, requiresAppleSilicon: false, state }
 }
 
 const models: ModelStatus[] = [

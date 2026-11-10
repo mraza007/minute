@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ipc from '../ipc/commands'
 import { onDownloadDone, onDownloadProgress } from '../ipc/events'
-import type { ModelStatus, Recommendation, Settings } from '../ipc/types'
+import type { BrowseKind, ModelBrowse, ModelStatus, Recommendation, Settings } from '../ipc/types'
 import type { View } from '../types'
 import { pickInitialLlmModel, pickInitialSttModel, type DownloadProgressState } from './adapters'
 import { useTauriEvent } from './useTauriEvent'
@@ -28,9 +28,43 @@ const DEFAULT_SETTINGS: Settings = {
 }
 
 const LAST_ERROR_TIMEOUT_MS = 5000
+const SEARCH_DEBOUNCE_MS = 300
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record
+  const next = { ...record }
+  delete next[key]
+  return next
+}
+
+/** One kind's Hugging Face listing on the Models page. */
+export interface BrowseState {
+  /** The last answer, kept on screen while a newer request runs. `null` until the first answer. */
+  result: ModelBrowse | null
+  loading: boolean
+  /** The search field's text. Blank lists the trusted publishers' models. */
+  query: string
+}
+
+const NOT_BROWSED: BrowseState = { result: null, loading: false, query: '' }
+
+/** Hugging Face browsing. Nothing here contacts Hugging Face until the Models page calls `open`. */
+export interface HuggingFaceBrowse {
+  state: Record<BrowseKind, BrowseState>
+  /** Files from both kinds' answers, plus downloads started from an answer that a newer search replaced. */
+  models: ModelStatus[]
+  /** Fetches both kinds. The Models page calls it when it opens. */
+  open: () => void
+  /** Sets the search text and fetches once typing pauses. */
+  setQuery: (kind: BrowseKind, query: string) => void
+  /** Fetches the current search text now (Enter). */
+  search: (kind: BrowseKind) => void
+  /** Fetches again past the backend's cache. */
+  refresh: (kind: BrowseKind) => void
 }
 
 export interface UseModelManagerOptions {
@@ -48,7 +82,7 @@ export interface UseModelManagerOptions {
 
 /**
  * Owns the model catalog: install state, in-flight downloads, the selected
- * transcription model, and the download/cancel/delete actions — split out
+ * transcription model, Hugging Face browsing, and the download/cancel/delete actions — split out
  * of useAppState so that hook stays reviewable once Task 9 layers
  * recording events on top of it.
  *
@@ -66,8 +100,14 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   const [sttModel, setSttModelState] = useState('')
   const [llmModel, setLlmModelState] = useState<string | null>(null)
   const [lastError, setLastErrorState] = useState<string | null>(null)
+  const [browseState, setBrowseState] = useState<Record<BrowseKind, BrowseState>>({ stt: NOT_BROWSED, llm: NOT_BROWSED })
+  // Hugging Face files mid-download, so a new search cannot hide their progress and Cancel.
+  const [inFlight, setInFlight] = useState<Record<string, ModelStatus>>({})
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const browseRequest = useRef<Record<BrowseKind, number>>({ stt: 0, llm: 0 })
+  const browseQuery = useRef<Record<BrowseKind, string>>({ stt: '', llm: '' })
+  const searchTimer = useRef<Record<BrowseKind, ReturnType<typeof setTimeout> | undefined>>({ stt: undefined, llm: undefined })
 
   // Stable identity (only refs/setters in its closure) — same rationale as
   // useAppState's own `reportError`: everything below that depends on it via
@@ -79,7 +119,14 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     errorTimeout.current = setTimeout(() => setLastErrorState(null), LAST_ERROR_TIMEOUT_MS)
   }, [])
 
-  useEffect(() => () => clearTimeout(errorTimeout.current), [])
+  useEffect(
+    () => () => {
+      clearTimeout(errorTimeout.current)
+      clearTimeout(searchTimer.current.stt)
+      clearTimeout(searchTimer.current.llm)
+    },
+    [],
+  )
 
   useTauriEvent(
     onDownloadProgress,
@@ -92,16 +139,17 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
   useTauriEvent(
     onDownloadDone,
     payload => {
-      setDownloads(prev => {
-        if (!(payload.modelId in prev)) return prev
-        const next = { ...prev }
-        delete next[payload.modelId]
-        return next
-      })
+      setDownloads(prev => withoutKey(prev, payload.modelId))
       if (!payload.ok && !payload.cancelled) {
         reportError(payload.error ?? `Download failed for ${payload.modelId}`)
       }
-      ipc.listModels().then(setModels).catch(reportError)
+      // Dropped only after the refetch, so a finished file never vanishes
+      // between leaving the browse list and joining "On this Mac".
+      ipc
+        .listModels()
+        .then(setModels)
+        .catch(reportError)
+        .finally(() => setInFlight(prev => withoutKey(prev, payload.modelId)))
     },
     [],
   )
@@ -167,22 +215,64 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     [reportError],
   )
 
+  const browsedModels = useMemo(
+    () => [...(browseState.stt.result?.entries ?? []), ...(browseState.llm.result?.entries ?? []), ...Object.values(inFlight)],
+    [browseState, inFlight],
+  )
+
+  const fetchBrowse = useCallback((kind: BrowseKind, refresh: boolean) => {
+    clearTimeout(searchTimer.current[kind])
+    browseRequest.current[kind] += 1
+    const request = browseRequest.current[kind]
+    const query = browseQuery.current[kind].trim()
+    setBrowseState(prev => ({ ...prev, [kind]: { ...prev[kind], loading: true } }))
+    ipc
+      .browseModels(kind, query === '' ? null : query, refresh)
+      .catch((err): ModelBrowse => ({ entries: [], fetchedAt: null, unsupportedCount: 0, error: messageOf(err) }))
+      .then(result => {
+        // A slow answer to an older search must not replace a newer one.
+        if (request !== browseRequest.current[kind]) return
+        setBrowseState(prev => ({ ...prev, [kind]: { ...prev[kind], result, loading: false } }))
+      })
+  }, [])
+
+  const openBrowse = useCallback(() => {
+    fetchBrowse('stt', false)
+    fetchBrowse('llm', false)
+  }, [fetchBrowse])
+
+  const setBrowseQuery = useCallback(
+    (kind: BrowseKind, query: string) => {
+      browseQuery.current[kind] = query
+      setBrowseState(prev => ({ ...prev, [kind]: { ...prev[kind], query } }))
+      clearTimeout(searchTimer.current[kind])
+      searchTimer.current[kind] = setTimeout(() => fetchBrowse(kind, false), SEARCH_DEBOUNCE_MS)
+    },
+    [fetchBrowse],
+  )
+
+  const searchNow = useCallback((kind: BrowseKind) => fetchBrowse(kind, false), [fetchBrowse])
+  const refreshBrowse = useCallback((kind: BrowseKind) => fetchBrowse(kind, true), [fetchBrowse])
+
+  const huggingFace = useMemo<HuggingFaceBrowse>(
+    () => ({ state: browseState, models: browsedModels, open: openBrowse, setQuery: setBrowseQuery, search: searchNow, refresh: refreshBrowse }),
+    [browseState, browsedModels, openBrowse, setBrowseQuery, searchNow, refreshBrowse],
+  )
+
   const downloadModel = useCallback(
-    (id: string) => {
-      const entry = models.find(m => m.id === id)
+    (id: string, allowUnknownPublisher = false) => {
+      const entry = models.find(m => m.id === id) ?? browsedModels.find(m => m.id === id)
       // Optimistic: mark it "downloading" immediately so the card reflects
       // the click right away, ahead of the first (throttled) progress event.
       setDownloads(prev => ({ ...prev, [id]: { downloaded: 0, total: entry?.sizeBytes ?? 0 } }))
-      ipc.downloadModel(id).catch(err => {
+      if (entry?.origin.kind === 'huggingFace') setInFlight(prev => ({ ...prev, [id]: entry }))
+      ipc.downloadModel(id, allowUnknownPublisher).catch(err => {
         reportError(err)
-        setDownloads(prev => {
-          const next = { ...prev }
-          delete next[id]
-          return next
-        })
+        setDownloads(prev => withoutKey(prev, id))
+        setInFlight(prev => withoutKey(prev, id))
       })
     },
-    [models, reportError],
+    [models, browsedModels, reportError],
   )
 
   const cancelDownload = useCallback(
@@ -212,6 +302,7 @@ export function useModelManager({ view, setView, loaded }: UseModelManagerOption
     llmModel,
     setLlmModel,
     lastError,
+    huggingFace,
     downloadModel,
     cancelDownload,
     deleteModel,

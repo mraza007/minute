@@ -388,6 +388,7 @@ export default function App() {
               downloadModel={s.downloadModel}
               cancelDownload={s.cancelDownload}
               deleteModel={s.deleteModel}
+              huggingFace={s.huggingFace}
               storage={s.storage}
               libraryPath={s.libraryInfo?.displayPath ?? null}
               libraryTitle={s.libraryInfo?.path ?? null}

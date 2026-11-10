@@ -15,12 +15,36 @@ export interface Hardware {
 /** `catalog::ModelKind` — `#[serde(rename_all = "lowercase")]`. */
 export type ModelKind = 'stt' | 'llm' | 'diarization'
 
+/**
+ * Where a model comes from: Minute's built-in tested list, or one GGUF/bin
+ * file on Hugging Face. A Hugging Face model's id is `hf:<repo>/<file>`.
+ * `trusted` is true for publishers on Minute's allowlist; any other
+ * publisher's file downloads only with `allowUnknownPublisher`.
+ * `parameters` is the raw parameter count; `updatedAt` is an ISO 8601 time.
+ */
+export type ModelOrigin =
+  | { kind: 'tested' }
+  | {
+      kind: 'huggingFace'
+      repo: string
+      file: string
+      publisher: string
+      trusted: boolean
+      architecture: string | null
+      parameters: number | null
+      quantization: string | null
+      updatedAt: string | null
+      downloads: number | null
+    }
+
 /** `catalog::CatalogEntry` — `#[serde(rename_all = "camelCase")]`. */
 export interface CatalogEntry {
   id: string
   kind: ModelKind
   displayName: string
-  desc: string
+  /** Editorial labels, such as `["Most accurate", "99 languages"]`. Never the size: that is `sizeBytes`. */
+  traits: string[]
+  origin: ModelOrigin
   url: string
   sha256: string
   sizeBytes: number
@@ -46,6 +70,23 @@ export type InstallState = 'notInstalled' | 'downloading' | 'installed'
  */
 export interface ModelStatus extends CatalogEntry {
   state: InstallState
+}
+
+/** The two model kinds Hugging Face is browsed for. */
+export type BrowseKind = 'stt' | 'llm'
+
+/**
+ * `browse_models`'s answer. `entries` leaves out every model `list_models`
+ * already returns, and keeps models too big for this Mac (the UI folds them
+ * away). `unsupportedCount` counts newer models this Minute version cannot
+ * run. `error` is set when Hugging Face could not be reached; `fetchedAt` is
+ * when the list was last fetched from Hugging Face.
+ */
+export interface ModelBrowse {
+  entries: ModelStatus[]
+  fetchedAt: string | null
+  unsupportedCount: number
+  error: string | null
 }
 
 /** `catalog::Recommendation` — no `rename_all`, but fields are already lowercase. */

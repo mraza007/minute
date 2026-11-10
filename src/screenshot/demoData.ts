@@ -244,7 +244,8 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     id: 'whisper-small',
     kind: 'stt',
     displayName: 'Whisper small',
-    desc: '466 MB · 62× realtime · good for meetings',
+    traits: ['Fast', '99 languages'],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
     sha256: '1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987',
     sizeBytes: 487_601_967,
@@ -255,7 +256,8 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     id: 'whisper-medium',
     kind: 'stt',
     displayName: 'Whisper medium',
-    desc: '1.5 GB · 21× realtime · better accents & jargon',
+    traits: ['Balanced', '99 languages'],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin',
     sha256: '6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c15620',
     sizeBytes: 1_533_763_059,
@@ -266,7 +268,8 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     id: 'whisper-large-v3-turbo',
     kind: 'stt',
     displayName: 'Whisper large-v3-turbo',
-    desc: '1.6 GB · 6× realtime · maximum accuracy',
+    traits: ['Most accurate', '99 languages'],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin',
     sha256: '1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc6',
     sizeBytes: 1_624_555_275,
@@ -277,7 +280,8 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     id: 'qwen3.5-4b',
     kind: 'llm',
     displayName: 'Qwen3.5-4B',
-    desc: '2.6 GB · Q4_K_M · fast default summarizer',
+    traits: ['Fast', 'Everyday meetings'],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     sha256: '00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a',
     sizeBytes: 2_740_937_888,
@@ -288,7 +292,8 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     id: 'qwen3.5-9b',
     kind: 'llm',
     displayName: 'Qwen3.5-9B',
-    desc: '5.7 GB · Q4_K_M · quality tier summarizer',
+    traits: ['Thorough', 'Long meetings'],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
     sha256: '03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e',
     sizeBytes: 5_680_522_464,
@@ -299,13 +304,117 @@ export const CATALOG: Omit<ModelStatus, 'state'>[] = [
     id: 'gemma-4-e4b',
     kind: 'llm',
     displayName: 'Gemma 4 E4B',
-    desc: '5.3 GB · Q4_K_M · best at summarization',
+    traits: ['Balanced', 'Clear, careful writing'],
+    origin: { kind: 'tested' },
     url: 'https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
     sha256: '0ffb122c8b6921f13cbc34186e052524d0b5803b17f4867b7197a561400b377',
     sizeBytes: 5_335_291_936,
     minRamGb: 16,
     requiresAppleSilicon: false,
   },
+  {
+    id: 'lfm2-2.6b-transcript',
+    kind: 'llm',
+    displayName: 'LFM2-2.6B-Transcript',
+    traits: ['Fast', 'Tuned for meeting notes'],
+    origin: { kind: 'tested' },
+    url: 'https://huggingface.co/LiquidAI/LFM2-2.6B-Transcript-GGUF/resolve/main/LFM2-2.6B-Transcript-Q4_K_M.gguf',
+    sha256: '',
+    sizeBytes: 1_563_669_248,
+    minRamGb: 8,
+    requiresAppleSilicon: false,
+  },
+]
+
+type HuggingFaceOrigin = Extract<ModelStatus['origin'], { kind: 'huggingFace' }>
+
+/** One Hugging Face file as `browse_models` returns it, before install state is set. */
+function huggingFaceFile(
+  displayName: string,
+  repo: string,
+  file: string,
+  facts: Pick<HuggingFaceOrigin, 'trusted' | 'parameters' | 'quantization' | 'updatedAt'>,
+  entry: Pick<ModelStatus, 'kind' | 'sizeBytes' | 'minRamGb'> & { traits?: string[] },
+): Omit<ModelStatus, 'state'> {
+  const publisher = repo.split('/')[0]
+  return {
+    id: `hf:${repo}/${file}`,
+    kind: entry.kind,
+    displayName,
+    traits: entry.traits ?? [],
+    origin: { kind: 'huggingFace', repo, file, publisher, architecture: null, downloads: null, ...facts },
+    url: `https://huggingface.co/${repo}/resolve/main/${file}`,
+    sha256: '',
+    sizeBytes: entry.sizeBytes,
+    minRamGb: entry.minRamGb,
+    requiresAppleSilicon: false,
+  }
+}
+
+/** A Hugging Face model the demo user already downloaded: `list_models` returns it on "On this Mac". */
+export const HF_INSTALLED = huggingFaceFile(
+  'Granite 4.0 Micro',
+  'ibm-granite/granite-4.0-micro-GGUF',
+  'granite-4.0-micro-Q4_K_M.gguf',
+  { trusted: true, parameters: 3_400_000_000, quantization: 'Q4_K_M', updatedAt: '2026-10-02T09:00:00Z' },
+  { kind: 'llm', sizeBytes: 2_100_000_000, minRamGb: 8 },
+)
+
+/** `browse_models` for summaries: two trusted publishers, one unknown, and two too big for a 36 GB Mac. */
+export const HF_LLM = [
+  huggingFaceFile(
+    'Granite 4.0 H Tiny',
+    'ibm-granite/granite-4.0-h-tiny-GGUF',
+    'granite-4.0-h-tiny-Q4_K_M.gguf',
+    { trusted: true, parameters: 6_940_000_000, quantization: 'Q4_K_M', updatedAt: '2026-10-02T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 4_230_000_000, minRamGb: 8 },
+  ),
+  huggingFaceFile(
+    'SmolLM3 3B',
+    'ggml-org/SmolLM3-3B-GGUF',
+    'SmolLM3-Q4_K_M.gguf',
+    { trusted: true, parameters: 3_080_000_000, quantization: 'Q4_K_M', updatedAt: '2026-09-18T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 1_920_000_000, minRamGb: 4 },
+  ),
+  huggingFaceFile(
+    'Llama 3.1 8B Instruct',
+    'jdoe-quants/Llama-3.1-8B-Instruct-GGUF',
+    'Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    { trusted: false, parameters: 8_030_000_000, quantization: 'Q4_K_M', updatedAt: '2026-11-04T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 4_920_000_000, minRamGb: 8 },
+  ),
+  huggingFaceFile(
+    'Llama 3.3 70B Instruct',
+    'bartowski/Llama-3.3-70B-Instruct-GGUF',
+    'Llama-3.3-70B-Instruct-Q4_K_M.gguf',
+    { trusted: true, parameters: 70_550_000_000, quantization: 'Q4_K_M', updatedAt: '2026-08-21T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 42_520_000_000, minRamGb: 48 },
+  ),
+  huggingFaceFile(
+    'Qwen3 Next 80B A3B',
+    'unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF',
+    'Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf',
+    { trusted: true, parameters: 79_670_000_000, quantization: 'Q4_K_M', updatedAt: '2026-10-28T09:00:00Z' },
+    { kind: 'llm', sizeBytes: 48_400_000_000, minRamGb: 64 },
+  ),
+]
+
+/** `browse_models` for transcription: official whisper.cpp files the tested list does not carry. */
+export const HF_STT = [
+  huggingFaceFile(
+    'Whisper large-v3 turbo, compact',
+    'ggerganov/whisper.cpp',
+    'ggml-large-v3-turbo-q5_0.bin',
+    { trusted: true, parameters: null, quantization: 'Q5_0', updatedAt: '2026-09-02T09:00:00Z' },
+    { kind: 'stt', sizeBytes: 574_041_195, minRamGb: 8, traits: ['Most accurate', '99 languages'] },
+  ),
+  huggingFaceFile(
+    'Whisper small, English',
+    'ggerganov/whisper.cpp',
+    'ggml-small.en.bin',
+    { trusted: true, parameters: null, quantization: null, updatedAt: '2026-09-02T09:00:00Z' },
+    { kind: 'stt', sizeBytes: 487_614_201, minRamGb: 0, traits: ['Fast', 'English only'] },
+  ),
 ]
 
 export const HARDWARE: Hardware = { totalRamGb: 36, appleSilicon: true, cores: 12 }

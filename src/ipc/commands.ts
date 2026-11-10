@@ -7,6 +7,8 @@
 import { invoke, type InvokeArgs } from '@tauri-apps/api/core'
 import type {
   AudioInputStatus,
+  BrowseKind,
+  ModelBrowse,
   DeletedNoteUndo,
   Hardware,
   LibraryInfo,
@@ -54,7 +56,18 @@ export const listModels = (): Promise<ModelStatus[]> => invokeCmd('list_models')
 
 export const recommendedModels = (): Promise<Recommendation> => invokeCmd('recommended_models')
 
-export const downloadModel = (id: string): Promise<void> => invokeCmd('download_model', { id })
+/**
+ * Newer models on Hugging Face for one kind. Minute calls this only when the
+ * Models page opens, or when the user searches or refreshes. A null `query`
+ * lists the trusted publishers' models; a query searches any public repo.
+ * `refresh` skips the backend's cached list.
+ */
+export const browseModels = (kind: BrowseKind, query: string | null, refresh: boolean): Promise<ModelBrowse> =>
+  invokeCmd('browse_models', { kind, query, refresh })
+
+/** `allowUnknownPublisher` must be true for a Hugging Face file from a publisher Minute has not checked. */
+export const downloadModel = (id: string, allowUnknownPublisher = false): Promise<void> =>
+  invokeCmd('download_model', { id, allowUnknownPublisher })
 
 export const cancelDownload = (id: string): Promise<void> => invokeCmd('cancel_download', { id })
 

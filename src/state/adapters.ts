@@ -17,7 +17,6 @@ export interface DownloadProgressState {
 export interface ModelCardInfo {
   id: string
   displayName: string
-  desc: string
   sizeBytes: number
   state: InstallState
   inUse: boolean
@@ -146,7 +145,6 @@ export function modelStatusToSttInfo(
     return {
       id: m.id,
       displayName: m.displayName,
-      desc: m.desc,
       sizeBytes: m.sizeBytes,
       state: 'downloading',
       inUse,
@@ -159,7 +157,6 @@ export function modelStatusToSttInfo(
     return {
       id: m.id,
       displayName: m.displayName,
-      desc: m.desc,
       sizeBytes: m.sizeBytes,
       state: 'installed',
       inUse,
@@ -170,7 +167,6 @@ export function modelStatusToSttInfo(
   return {
     id: m.id,
     displayName: m.displayName,
-    desc: m.desc,
     sizeBytes: m.sizeBytes,
     state: 'notInstalled',
     inUse,

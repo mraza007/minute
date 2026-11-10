@@ -24,6 +24,7 @@ const FIT_LABEL: Record<ModelSuitabilityTone, string | null> = {
   comfortable: 'good fit for this Mac',
   constrained: 'near the memory limit of this Mac',
   unsupported: 'not supported on this Mac',
+  unverified: 'from a publisher Minute has not checked',
   unknown: null,
 }
 
