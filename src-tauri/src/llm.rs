@@ -60,13 +60,18 @@
 //! without evaluating any Jinja. Confirmed effective: the same test dropped
 //! from ~20s (mostly spent reasoning, then failing to finish before the
 //! token cap) to ~3.3s producing a clean, complete JSON summary with no
-//! `<think>` block at all. [`NO_THINK_TAG`] (harmless if ignored) is
-//! applied for every model; [`NO_THINK_PREFILL`] is only applied when the
-//! loaded model's id looks like a Qwen model (see
-//! [`apply_no_think_prefill`]) — it was verified against Qwen3.5-4B's
-//! specific baked template only, and blindly prefilling another family's
-//! (Gemma, etc.) template with this exact literal string is as likely to
-//! corrupt its structure as help it.
+//! `<think>` block at all. Both are applied only when the loaded GGUF's
+//! architecture is `qwen35` (see [`PromptFamily`]) — the prefill was
+//! verified against Qwen3.5-4B's specific baked template only, and blindly
+//! prefilling another family's (Gemma, etc.) template with this exact
+//! literal string is as likely to corrupt its structure as help it.
+//!
+//! **Prompt handling is keyed on the GGUF, not the model id.**
+//! [`PromptFamily`] is derived at load time from `general.architecture`
+//! and, where one architecture has builds that behave differently, from the
+//! baked chat template. Each family was added after a real GGUF failed on
+//! the generic path; run `tests::real_llm_eval_from_env` to check a new
+//! one.
 
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
@@ -1093,6 +1098,7 @@ fn extract_summary_parts(raw: &str) -> Result<SummaryExtraction> {
 /// automatically rather than requiring every call site to remember to.
 struct LoadedModel {
     model_id: String,
+    family: PromptFamily,
     backend: LlamaBackend,
     model: LlamaModel,
     /// Context window this model's generations run with — decided once at
@@ -1657,14 +1663,24 @@ impl LlmEngineState {
 
         let n_ctx_train = model.n_ctx_train();
         let ctx_tokens = resolve_context_tokens(preferred_context, n_ctx_train);
+        let architecture = model
+            .meta_val_str("general.architecture")
+            .unwrap_or_default();
+        let chat_template = model
+            .chat_template(None)
+            .ok()
+            .and_then(|t| t.to_string().ok())
+            .unwrap_or_default();
+        let family = PromptFamily::from_model(&architecture, &chat_template);
         log::info!(
             "llm: loaded {model_id} ({model_path:?}) in {:?}, context {ctx_tokens} tokens \
-             (trained ctx {n_ctx_train})",
+             (trained ctx {n_ctx_train}), architecture {architecture:?} ({family:?})",
             load_start.elapsed()
         );
 
         self.loaded = Some(LoadedModel {
             model_id: model_id.to_string(),
+            family,
             backend,
             model,
             ctx_tokens,
@@ -2010,10 +2026,67 @@ const NO_THINK_TAG: &str = "/no_think";
 /// preamble, but this prefill does.
 const NO_THINK_PREFILL: &str = "<think>\n\n</think>\n\n";
 
+/// The prompt conventions a loaded model needs, chosen from the GGUF's own
+/// `general.architecture` metadata. The model id cannot decide this: ids
+/// are arbitrary Hugging Face file names once the catalog is pulled live,
+/// while the architecture is written into the file by the converter.
+///
+/// An architecture gets a variant only when the generic path
+/// (`apply_chat_template`, then the ChatML fallback) was shown to fail for
+/// it against a real GGUF. Everything else is [`PromptFamily::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptFamily {
+    /// `qwen35`: Qwen3.5 and its fine-tunes. Thinks unless prefilled.
+    Qwen35,
+    /// `gemma4`: llama.cpp cannot format its `<|turn>` template.
+    Gemma4,
+    /// `gemma4` builds whose baked template ends the non-thinking generation
+    /// prompt with an empty thought channel (Gemma 4 12B). Without it the
+    /// model writes those markers itself, and they leak into Ask answers.
+    Gemma4EmptyThought,
+    /// `lfm2`/`lfm2moe` builds whose baked template opens a `<think>` block
+    /// in the generation prompt (LFM2.5-2.6B). They reason until the token
+    /// cap unless prefilled. Other LFM2 builds (LFM2-2.6B-Transcript) have
+    /// no such template and stay [`PromptFamily::Other`].
+    Lfm2Reasoning,
+    Other,
+}
+
+/// How the reasoning LFM2.5 templates end their generation prompt, as it is
+/// spelled in the Jinja source (the `\n` is the two-character escape).
+const LFM2_REASONING_TEMPLATE_MARKER: &str = r"assistant\n<think>";
+
+/// Closes the `<think>` block for [`PromptFamily::Lfm2Reasoning`]. Verified
+/// against the real LFM2.5-2.6B GGUF: without it every generation ended at
+/// the token cap still reasoning, with it the answer starts at once.
+const LFM2_NO_THINK_PREFILL: &str = "<think>\n</think>\n";
+
+/// The empty thought channel of the newer Gemma 4 templates, as spelled in
+/// the Jinja source and as emitted.
+const GEMMA4_EMPTY_THOUGHT_TEMPLATE_MARKER: &str = r"<|channel>thought\n<channel|>";
+const GEMMA4_EMPTY_THOUGHT: &str = "<|channel>thought\n<channel|>";
+
+impl PromptFamily {
+    /// `chat_template` is the GGUF's baked `tokenizer.chat_template` source,
+    /// used only to tell apart builds that share one architecture.
+    fn from_model(architecture: &str, chat_template: &str) -> Self {
+        match architecture {
+            "qwen35" => Self::Qwen35,
+            "gemma4" if chat_template.contains(GEMMA4_EMPTY_THOUGHT_TEMPLATE_MARKER) => {
+                Self::Gemma4EmptyThought
+            }
+            "gemma4" => Self::Gemma4,
+            "lfm2" | "lfm2moe" if chat_template.contains(LFM2_REASONING_TEMPLATE_MARKER) => {
+                Self::Lfm2Reasoning
+            }
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Appends [`NO_THINK_PREFILL`] after `templated`'s trailing
-/// `<|im_start|>assistant\n` — but only when `model_id` looks like a Qwen
-/// model (`starts_with("qwen")`, matching the catalog's id convention, e.g.
-/// `qwen3.5-4b`/`qwen3.5-9b`). The prefill was verified (see
+/// `<|im_start|>assistant\n` — but only for [`PromptFamily::Qwen35`]
+/// (the catalog's `qwen3.5-4b`/`qwen3.5-9b`). The prefill was verified (see
 /// [`NO_THINK_PREFILL`]'s docs and [`tests::real_llm_summarizes_transcript`])
 /// against Qwen3.5-4B's specific baked chat template only — its exact
 /// content (`<think>\n\n</think>\n\n`) is read directly out of *that*
@@ -2021,13 +2094,16 @@ const NO_THINK_PREFILL: &str = "<think>\n\n</think>\n\n";
 /// constant. Another model family (Gemma, etc.) has an entirely different
 /// template and no reason to expect this same literal string reproduces
 /// *its* non-thinking branch — it could just as easily corrupt that
-/// template's structure as help, so non-Qwen model ids get the templated
+/// template's structure as help, so other families get the templated
 /// prompt untouched instead of a blind guess.
-fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
-    if model_id.starts_with("qwen") {
-        format!("{templated}{NO_THINK_PREFILL}")
-    } else {
-        templated.to_string()
+fn apply_no_think_prefill(templated: &str, family: PromptFamily) -> String {
+    match family {
+        PromptFamily::Qwen35 => format!("{templated}{NO_THINK_PREFILL}"),
+        PromptFamily::Lfm2Reasoning => format!("{templated}{LFM2_NO_THINK_PREFILL}"),
+        // Both Gemma 4 families are formatted by `manual_chat_prompt`.
+        PromptFamily::Gemma4 | PromptFamily::Gemma4EmptyThought | PromptFamily::Other => {
+            templated.to_string()
+        }
     }
 }
 
@@ -2050,14 +2126,19 @@ fn apply_no_think_prefill(templated: &str, model_id: &str) -> String {
 /// content, `<turn|>\n`, then `<|turn>model\n`. Other unrecognized
 /// families fall back to plain ChatML — the same shape llama.cpp itself
 /// used as a fallback in versions that had one.
-fn manual_chat_prompt(model_id: &str, content: &str) -> String {
-    if model_id.starts_with("gemma") {
-        format!("<|turn>user\n{}<turn|>\n<|turn>model\n", content.trim())
-    } else {
-        format!(
+fn manual_chat_prompt(family: PromptFamily, content: &str) -> String {
+    match family {
+        PromptFamily::Gemma4 => {
+            format!("<|turn>user\n{}<turn|>\n<|turn>model\n", content.trim())
+        }
+        PromptFamily::Gemma4EmptyThought => format!(
+            "<|turn>user\n{}<turn|>\n<|turn>model\n{GEMMA4_EMPTY_THOUGHT}",
+            content.trim()
+        ),
+        PromptFamily::Qwen35 | PromptFamily::Lfm2Reasoning | PromptFamily::Other => format!(
             "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
             content.trim()
-        )
+        ),
     }
 }
 
@@ -2110,10 +2191,10 @@ fn generate_with_loaded(
     params: &GenerationParams,
     cancel: &AtomicBool,
 ) -> Result<String> {
-    // Qwen's `/no_think` suffix is only appended for Qwen ids — it's that
+    // Qwen's `/no_think` suffix is only appended for Qwen models — it's that
     // family's own convention; to any other model it's just a stray line
     // of user content.
-    let content = if loaded.model_id.starts_with("qwen") {
+    let content = if loaded.family == PromptFamily::Qwen35 {
         format!("{prompt}\n{NO_THINK_TAG}")
     } else {
         prompt.to_string()
@@ -2134,14 +2215,14 @@ fn generate_with_loaded(
                 .apply_chat_template(&tmpl, &messages, true)
                 .map_err(|e| e.to_string())
         }) {
-        Ok(templated) => apply_no_think_prefill(&templated, &loaded.model_id),
+        Ok(templated) => apply_no_think_prefill(&templated, loaded.family),
         Err(e) => {
             log::warn!(
                 "llm: chat template application failed for {} ({e}); using the built-in \
                  fallback format",
                 loaded.model_id
             );
-            manual_chat_prompt(&loaded.model_id, &content)
+            manual_chat_prompt(loaded.family, &content)
         }
     };
 
@@ -5829,34 +5910,65 @@ mod tests {
     // --- apply_no_think_prefill: gated per model family -------------------------
 
     #[test]
-    fn no_think_prefill_applied_for_qwen_model_ids() {
-        let templated = "<|im_start|>assistant\n";
-        let out = apply_no_think_prefill(templated, "qwen3.5-4b");
-        assert_eq!(out, format!("{templated}{NO_THINK_PREFILL}"));
+    fn prompt_family_comes_from_the_gguf_architecture() {
+        assert_eq!(PromptFamily::from_model("qwen35", ""), PromptFamily::Qwen35);
+        assert_eq!(PromptFamily::from_model("gemma4", ""), PromptFamily::Gemma4);
+        // A real allowlist: an unknown or missing architecture gets no
+        // family-specific handling.
+        assert_eq!(PromptFamily::from_model("granite", ""), PromptFamily::Other);
+        assert_eq!(PromptFamily::from_model("", ""), PromptFamily::Other);
     }
 
     #[test]
-    fn no_think_prefill_applied_for_other_qwen_ids_too() {
-        let out = apply_no_think_prefill("prefix", "qwen3.5-9b");
-        assert!(out.ends_with(NO_THINK_PREFILL));
-    }
-
-    #[test]
-    fn no_think_prefill_not_applied_for_gemma_model_ids() {
-        let templated = "<|im_start|>assistant\n";
-        let out = apply_no_think_prefill(templated, "gemma-4-e4b");
+    fn lfm2_is_a_reasoning_family_only_when_its_template_opens_a_think_block() {
+        // The generation prompts of LFM2.5-2.6B and LFM2-2.6B-Transcript, as
+        // spelled in their baked Jinja source.
+        let reasoning = r#"{{- "<|im_start|>assistant\n<think>" -}}"#;
+        let plain = r#"{{- "<|im_start|>assistant\n" -}}"#;
+        for architecture in ["lfm2", "lfm2moe"] {
+            assert_eq!(
+                PromptFamily::from_model(architecture, reasoning),
+                PromptFamily::Lfm2Reasoning
+            );
+            assert_eq!(
+                PromptFamily::from_model(architecture, plain),
+                PromptFamily::Other
+            );
+        }
+        // The marker alone does not make another architecture an LFM2.
         assert_eq!(
-            out, templated,
-            "non-Qwen models must get the templated prompt untouched"
+            PromptFamily::from_model("granite", reasoning),
+            PromptFamily::Other
         );
     }
 
     #[test]
-    fn no_think_prefill_not_applied_for_whisper_ids() {
-        // Nonsensical in practice (whisper is never the summarizer), but
-        // pins that the gate is a real allowlist, not just "not gemma".
-        let out = apply_no_think_prefill("prefix", "whisper-small");
-        assert_eq!(out, "prefix");
+    fn no_think_prefill_closes_the_think_block_for_reasoning_lfm2() {
+        let out = apply_no_think_prefill("<|im_start|>assistant\n", PromptFamily::Lfm2Reasoning);
+        assert_eq!(out, "<|im_start|>assistant\n<think>\n</think>\n");
+    }
+
+    #[test]
+    fn no_think_prefill_applied_for_qwen35() {
+        let templated = "<|im_start|>assistant\n";
+        let out = apply_no_think_prefill(templated, PromptFamily::Qwen35);
+        assert_eq!(out, format!("{templated}{NO_THINK_PREFILL}"));
+    }
+
+    #[test]
+    fn no_think_prefill_not_applied_for_other_families() {
+        let templated = "<|im_start|>assistant\n";
+        for family in [
+            PromptFamily::Gemma4,
+            PromptFamily::Gemma4EmptyThought,
+            PromptFamily::Other,
+        ] {
+            assert_eq!(
+                apply_no_think_prefill(templated, family),
+                templated,
+                "{family:?} must get the templated prompt untouched"
+            );
+        }
     }
 
     // --- manual_chat_prompt: the unrecognized-template fallback (issue #8) ---
@@ -5866,13 +5978,26 @@ mod tests {
         // Byte-for-byte what Gemma 4's baked template emits for one user
         // turn plus a generation prompt (bos comes from AddBos::Always at
         // tokenization, not from this string).
-        let out = manual_chat_prompt("gemma-4-e4b", "  Summarize this.  ");
+        let out = manual_chat_prompt(PromptFamily::Gemma4, "  Summarize this.  ");
         assert_eq!(out, "<|turn>user\nSummarize this.<turn|>\n<|turn>model\n");
     }
 
     #[test]
+    fn gemma4_with_an_empty_thought_template_gets_the_thought_channel_closed() {
+        // The non-thinking generation prompt of Gemma 4 12B, as spelled in
+        // its baked Jinja source.
+        let template = r"{{- '<|turn>model\n' -}}{{- '<|channel>thought\n<channel|>' -}}";
+        let family = PromptFamily::from_model("gemma4", template);
+        assert_eq!(family, PromptFamily::Gemma4EmptyThought);
+        assert_eq!(
+            manual_chat_prompt(family, "Summarize this."),
+            "<|turn>user\nSummarize this.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+        );
+    }
+
+    #[test]
     fn manual_chat_prompt_falls_back_to_chatml_for_unknown_families() {
-        let out = manual_chat_prompt("some-future-model", "Summarize this.");
+        let out = manual_chat_prompt(PromptFamily::Other, "Summarize this.");
         assert_eq!(
             out,
             "<|im_start|>user\nSummarize this.<|im_end|>\n<|im_start|>assistant\n"
@@ -6775,5 +6900,235 @@ mod tests {
             contains_mm_ss_citation(&answer),
             "expected the answer to contain at least one [mm:ss]-shaped citation, got: {answer:?}"
         );
+    }
+
+    /// Transcript for [`real_llm_eval_from_env`]: the file named by
+    /// `MINUTE_EVAL_TRANSCRIPT` (one `speaker<TAB>start seconds<TAB>text`
+    /// line per segment) when set, else [`fake_product_launch_transcript`].
+    fn eval_transcript_from_env() -> Vec<StoredSegment> {
+        let Ok(path) = std::env::var("MINUTE_EVAL_TRANSCRIPT") else {
+            return fake_product_launch_transcript();
+        };
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read MINUTE_EVAL_TRANSCRIPT {path:?}: {e}"))
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let speaker = fields.next().expect("speaker field");
+                let start: f64 = fields
+                    .next()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or_else(|| panic!("bad start seconds in line {line:?}"));
+                let text = fields
+                    .next()
+                    .unwrap_or_else(|| panic!("no text in line {line:?}"));
+                StoredSegment {
+                    speaker: speaker.into(),
+                    start,
+                    end: start + 6.0,
+                    text: text.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    /// One timed generation for [`real_llm_eval_from_env`]. Prints the
+    /// prompt and output token counts, the wall time, and the generation
+    /// speed, then the raw output. The prompt decode is timed by a separate
+    /// one-token run and subtracted, so tokens/s covers sampling only.
+    fn eval_generate(
+        state: &LlmEngineState,
+        label: &str,
+        prompt: &str,
+        params: GenerationParams,
+    ) -> Result<String> {
+        let prompt_start = Instant::now();
+        state.generate_with_params(
+            prompt,
+            GenerationParams {
+                max_tokens: 1,
+                ..params
+            },
+        )?;
+        let prompt_secs = prompt_start.elapsed().as_secs_f64();
+
+        let total_start = Instant::now();
+        let raw = state.generate_with_params(prompt, params)?;
+        let total_secs = total_start.elapsed().as_secs_f64();
+
+        let model = &state.loaded.as_ref().expect("model is loaded").model;
+        let count = |text: &str| {
+            model
+                .str_to_token(text, AddBos::Never)
+                .map(|t| t.len())
+                .unwrap_or(0)
+        };
+        let out_tokens = count(&raw);
+        let gen_secs = (total_secs - prompt_secs).max(0.001);
+        eprintln!(
+            "[{label}] prompt ~{} tokens in {prompt_secs:.2}s, output {out_tokens} tokens, \
+             total {total_secs:.2}s, generation {:.1} tokens/s (cap {})",
+            count(prompt),
+            out_tokens as f64 / gen_secs,
+            params.max_tokens
+        );
+        eprintln!("[{label}] raw output:\n{raw}\n[{label}] end of raw output");
+        Ok(raw)
+    }
+
+    /// Evaluates any GGUF through the app's real load and generation path,
+    /// so a catalog candidate can be proven before it is added. Runs the
+    /// Standard summary, the Detailed summary, and one Ask question, prints
+    /// timings and raw outputs, and fails with every problem it found.
+    ///
+    /// `MINUTE_EVAL_LLM_ID` is a label for the output. `MINUTE_EVAL_LLM_PATH`
+    /// is the GGUF file. `MINUTE_EVAL_TRANSCRIPT` optionally replaces the
+    /// built-in transcript. `MINUTE_EVAL_GENERIC`, when set, drops the
+    /// architecture-specific prompt handling, to show whether an
+    /// architecture works on the generic path alone.
+    ///
+    /// ```sh
+    /// MINUTE_EVAL_LLM_ID=qwen3.5-4b MINUTE_EVAL_LLM_PATH=/path/to/model.gguf \
+    ///     cargo test --manifest-path src-tauri/Cargo.toml --lib \
+    ///     real_llm_eval_from_env -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_llm_eval_from_env() {
+        let model_id = std::env::var("MINUTE_EVAL_LLM_ID").expect("set MINUTE_EVAL_LLM_ID");
+        let model_path =
+            PathBuf::from(std::env::var("MINUTE_EVAL_LLM_PATH").expect("set MINUTE_EVAL_LLM_PATH"));
+        assert!(model_path.exists(), "no model file at {model_path:?}");
+        let segments = eval_transcript_from_env();
+        // A custom transcript gets the title a fresh note has, so the model
+        // must name the meeting itself.
+        let title = if std::env::var("MINUTE_EVAL_TRANSCRIPT").is_ok() {
+            DEFAULT_NOTE_TITLE
+        } else {
+            "Aurora launch planning"
+        };
+
+        let mut state = LlmEngineState {
+            cancel: Arc::new(AtomicBool::new(false)),
+            loaded: None,
+            last_used: Instant::now(),
+        };
+        let load_start = Instant::now();
+        state
+            .ensure_loaded(&model_id, &model_path, None)
+            .unwrap_or_else(|e| panic!("failed to load {model_id}: {e}"));
+        eprintln!(
+            "[load] {model_id} in {:.2}s, context {:?} tokens",
+            load_start.elapsed().as_secs_f64(),
+            state.loaded_context_tokens()
+        );
+
+        {
+            let loaded = state.loaded.as_mut().expect("model is loaded");
+            eprintln!(
+                "[load] architecture {:?}, family {:?}",
+                loaded.model.meta_val_str("general.architecture"),
+                loaded.family
+            );
+            if std::env::var("MINUTE_EVAL_GENERIC").is_ok() {
+                loaded.family = PromptFamily::Other;
+                eprintln!("[load] MINUTE_EVAL_GENERIC set, family forced to Other");
+            }
+            let family = loaded.family;
+            let probe = vec![
+                LlamaChatMessage::new("user".to_string(), "PROBE".to_string())
+                    .expect("chat message"),
+            ];
+            let native = loaded
+                .model
+                .chat_template(None)
+                .map_err(|e| e.to_string())
+                .and_then(|tmpl| {
+                    loaded
+                        .model
+                        .apply_chat_template(&tmpl, &probe, true)
+                        .map_err(|e| e.to_string())
+                });
+            match native {
+                Ok(text) => eprintln!(
+                    "[template] native: {:?}",
+                    apply_no_think_prefill(&text, family)
+                ),
+                Err(e) => eprintln!(
+                    "[template] fallback ({e}): {:?}",
+                    manual_chat_prompt(family, "PROBE")
+                ),
+            }
+        }
+
+        let mut problems: Vec<String> = Vec::new();
+
+        let standard =
+            build_summary_prompt(title, &segments, usize::MAX, SummaryStyle::Standard, "");
+        match eval_generate(&state, "standard", &standard, GenerationParams::default())
+            .and_then(|raw| extract_summary_parts(&raw))
+        {
+            Ok(parts) => {
+                eprintln!("[standard] title: {:?}", parts.suggested_title);
+                eprintln!("[standard] doc: {:#?}", parts.doc);
+                if parts.doc.summary.trim().is_empty() {
+                    problems.push("standard: empty summary".to_string());
+                }
+                if rename_target(DEFAULT_NOTE_TITLE, &parts.suggested_title).is_none() {
+                    problems.push(format!(
+                        "standard: unusable title {:?}",
+                        parts.suggested_title
+                    ));
+                }
+                if parts.doc.decisions.is_empty() && parts.doc.action_items.is_empty() {
+                    problems.push("standard: no decisions and no action items".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("standard: {e}")),
+        }
+
+        let detailed =
+            build_summary_prompt(title, &segments, usize::MAX, SummaryStyle::Detailed, "");
+        match eval_generate(
+            &state,
+            "detailed",
+            &detailed,
+            generation_params_for(SummaryStyle::Detailed),
+        )
+        .and_then(|raw| extract_summary_parts(&raw))
+        {
+            Ok(parts) => {
+                eprintln!("[detailed] doc: {:#?}", parts.doc);
+                if parts.doc.topics.len() < 2 {
+                    problems.push(format!("detailed: {} topics", parts.doc.topics.len()));
+                }
+                if parts.doc.topics.iter().any(|t| t.title.trim().is_empty()) {
+                    problems.push("detailed: a topic has no title".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("detailed: {e}")),
+        }
+
+        let question = "What did they discuss and decide?";
+        let ask = build_ask_prompt(title, &segments, question, usize::MAX);
+        match eval_generate(&state, "ask", &ask, ASK_GENERATION_PARAMS)
+            .and_then(|raw| extract_ask_answer(&raw))
+        {
+            Ok(answer) => {
+                eprintln!("[ask] answer: {answer}");
+                if !contains_mm_ss_citation(&answer) {
+                    problems.push("ask: no [mm:ss] citation".to_string());
+                }
+            }
+            Err(e) => problems.push(format!("ask: {e}")),
+        }
+
+        assert!(
+            problems.is_empty(),
+            "{model_id} failed the eval:\n{}",
+            problems.join("\n")
+        );
+        eprintln!("[result] {model_id} passed");
     }
 }
