@@ -199,13 +199,26 @@ async function waitForSelector<T extends Element>(selector: string): Promise<T |
   return found
 }
 
+/**
+ * Sends one event until `text` is on screen. An event sent before the page's
+ * async `listen()` has registered is dropped, not queued, so a single emit can
+ * lose the race with the subscription.
+ */
+async function emitUntilShown(event: string, payload: unknown, text: string): Promise<void> {
+  await waitFor(() => {
+    if (document.body.textContent?.includes(text)) return true
+    void emit(event, payload)
+    return false
+  })
+}
+
 async function drivePopup(params: URLSearchParams): Promise<void> {
   await waitFor(() => document.querySelector('[role="dialog"]') !== null)
   // Same events the backend sends the popup webview: the payload from
   // popup.rs, and for the auto-started pill the recorder's clock. The app
   // names mirror the detector's own list.
   if (params.get('kind') === 'started') {
-    await emit('meeting-popup-payload', { kind: 'started', appName: 'Microsoft Teams' })
+    await emitUntilShown('meeting-popup-payload', { kind: 'started', appName: 'Microsoft Teams' }, 'Recording Microsoft Teams')
     const tick = {
       noteId: 'demo-note',
       state: 'recording',
@@ -219,15 +232,10 @@ async function drivePopup(params: URLSearchParams): Promise<void> {
       quietSecs: 0,
       origin: { kind: 'automatic', appName: 'Microsoft Teams' },
     }
-    // The pill subscribes to the recorder clock after its payload renders,
-    // so keep sending the tick until it lands.
-    await waitFor(() => {
-      void emit('recording-state', tick)
-      return document.body.textContent?.includes('Started automatically · 0:04') ?? false
-    })
+    // The pill subscribes to the recorder clock only after its payload renders.
+    await emitUntilShown('recording-state', tick, 'Started automatically · 0:04')
   } else {
-    await emit('meeting-popup-payload', { kind: 'ask', appName: 'Zoom' })
-    await waitFor(() => document.body.textContent?.includes('Zoom meeting started') ?? false)
+    await emitUntilShown('meeting-popup-payload', { kind: 'ask', appName: 'Zoom' }, 'Zoom meeting started')
   }
 }
 
