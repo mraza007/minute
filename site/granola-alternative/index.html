@@ -4,7 +4,7 @@
   <!-- Base URL: https://minutenotes.app/ -->
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
+  <meta name="color-scheme" content="light" />
   <title>Offline Granola Alternative for Mac, Free | Minute</title>
   <meta name="description" content="Minute is a free, open-source Granola alternative for Mac. It transcribes and summarizes your meetings on your Mac, so audio and notes stay on your computer." />
   <link rel="canonical" href="https://minutenotes.app/granola-alternative/" />
@@ -21,7 +21,7 @@
   <meta name="twitter:title" content="Offline Granola Alternative for Mac, Free | Minute" />
   <meta name="twitter:description" content="Minute is a free, open-source Granola alternative for Mac. It transcribes and summarizes your meetings on your Mac, so audio and notes stay on your computer." />
   <meta name="twitter:image" content="https://minutenotes.app/assets/og.jpg" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e7dfce'/%3E%3Cg fill='%23211d18'%3E%3Crect x='7' y='13' width='2.6' height='9' rx='1.3'/%3E%3Crect x='12' y='9' width='2.6' height='13' rx='1.3'/%3E%3Crect x='22' y='11' width='2.6' height='11' rx='1.3'/%3E%3C/g%3E%3Crect x='17' y='6' width='2.6' height='16' rx='1.3' fill='%23c8412a'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0a0a'/%3E%3Cg fill='%23fff'%3E%3Crect x='4' y='12' width='4' height='8' rx='2'/%3E%3Crect x='11' y='6' width='4' height='20' rx='2'/%3E%3Crect x='25' y='13' width='4' height='6' rx='2'/%3E%3C/g%3E%3Crect x='18' y='9' width='4' height='14' rx='2' fill='%23c8412a'/%3E%3C/svg%3E" />
   <link rel="preload" href="../assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="../assets/site.css" />
   <!-- Privacy-friendly analytics by Plausible -->
@@ -32,114 +32,171 @@
   </script>
 </head>
 <body>
-  <div class="page">
-    <header>
-      <a class="wordmark" href="../">Minute<span>.</span></a>
-      <a href="https://github.com/mraza007/minute">GitHub</a>
-    </header>
-
-    <main>
-      <div class="hero">
-        <p class="kicker">Minute vs Granola</p>
-        <h1>A Granola alternative that runs entirely on your Mac</h1>
-        <p class="lede">
-          Granola and Minute both take meeting notes without a bot in the call.
-          The difference is where the AI runs. Granola uses cloud providers to
-          write the transcript and the summary. Minute is a free,
-          open-source Granola AI alternative that does both on your Mac, offline.
-        </p>
-        <div class="cta">
-          <a class="btn" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Apple Silicon</a>
-          <a href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-x86_64.zip">Intel build</a>
-        </div>
-        <p class="cta-note">Version 1.13.0 · Mac only, macOS 11 or later · signed &amp; notarized by Apple</p>
-        <div class="shot">
-          <img src="../assets/hero.webp" width="2760" height="1820"
-               alt="A finished meeting note in Minute, with the summary, decisions, and action items above the transcript" />
-        </div>
+  <header class="nav">
+    <div class="wrap nav__bar">
+      <div class="nav__left">
+        <a class="brand" href="../" aria-label="Minute home">
+          <svg width="22" height="22" viewBox="0 0 26 26" aria-hidden="true">
+            <rect x="1" y="9" width="4" height="8" rx="2" fill="#0a0a0a" />
+            <rect x="8" y="3" width="4" height="20" rx="2" fill="#0a0a0a" />
+            <rect x="15" y="6" width="4" height="14" rx="2" fill="#c8412a" />
+            <rect x="22" y="10" width="4" height="6" rx="2" fill="#0a0a0a" />
+          </svg>
+          <span class="brand__name">Minute<span>.</span></span>
+        </a>
+        <nav aria-label="Main">
+          <ul class="nav__links">
+            <li><a href="../#features">Features</a></li>
+            <li><a href="../#privacy">Privacy</a></li>
+            <li><a href="../#compare">Compare</a></li>
+            <li><a href="../#faq">FAQ</a></li>
+          </ul>
+        </nav>
       </div>
+      <div class="nav__right">
+        <a class="btn btn--ghost btn--small nav__github" href="https://github.com/mraza007/minute">GitHub</a>
+        <a class="btn btn--dark btn--small" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Mac</a>
+        <details class="menu">
+          <summary aria-label="Menu">
+            <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true"><path d="M0 1h20M0 7h20M0 13h20" stroke="#0a0a0a" stroke-width="1.6" /></svg>
+          </summary>
+          <ul>
+            <li><a href="../#features">Features</a></li>
+            <li><a href="../#privacy">Privacy</a></li>
+            <li><a href="../#compare">Compare</a></li>
+            <li><a href="../#faq">FAQ</a></li>
+            <li><a href="https://github.com/mraza007/minute">GitHub</a></li>
+          </ul>
+        </details>
+      </div>
+    </div>
+  </header>
 
-      <section>
+  <main>
+    <div class="wrap hero hero--sub">
+      <p class="pill">Minute vs Granola</p>
+      <h1>A Granola alternative that runs entirely on your Mac</h1>
+      <p class="hero__lede">Granola and Minute both take meeting notes without a bot in the call. The difference is where the AI runs. Granola uses cloud providers to write the transcript and the summary. Minute is a free, open-source Granola AI alternative that does both on your Mac, offline.</p>
+      <div class="actions">
+        <a class="btn btn--primary" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Apple silicon</a>
+        <a class="btn btn--ghost" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-x86_64.zip">Intel build</a>
+      </div>
+      <p class="hero__note">Version 1.13.0 · Mac only, macOS 11 or later · Signed and notarized by Apple</p>
+      <div class="window">
+        <img src="../assets/hero.webp" width="2760" height="1820" fetchpriority="high"
+             alt="A finished meeting note in Minute, with the summary, decisions, and action items above the transcript" />
+      </div>
+    </div>
+
+    <section class="section">
+      <div class="wrap stack">
         <h2>Minute and Granola, side by side</h2>
-        <div class="compare">
+        <div class="table">
           <table>
             <thead>
               <tr><th scope="col"><span hidden>Feature</span></th><th scope="col">Minute</th><th scope="col">Granola</th></tr>
             </thead>
             <tbody>
-              <tr><th scope="row">Price</th><td>Free and open source, MIT license</td><td>Basic is $0 with 30 days of meeting history. Business is $14 per user per month. Enterprise is $35.</td></tr>
-              <tr><th scope="row">Bot in the call</th><td>No. Minute records your Mac's audio.</td><td>No. Granola captures your device's audio.</td></tr>
-              <tr><th scope="row">Transcription</th><td>Whisper, on your Mac</td><td>In the cloud, by providers such as Deepgram and Assembly</td></tr>
-              <tr><th scope="row">Summaries</th><td>A local language model, on your Mac</td><td>In the cloud, by AI providers such as OpenAI and Anthropic</td></tr>
-              <tr><th scope="row">Where notes live</th><td>Plain files in a folder on your Mac</td><td>A US-hosted AWS VPC</td></tr>
-              <tr><th scope="row">Offline</th><td>Records, transcribes, and summarizes after a one-time model download</td><td>You can view stored notes. Transcription and summaries need the cloud.</td></tr>
-              <tr><th scope="row">Audio</th><td>Stays on your Mac. By default, Minute deletes it 30 days after transcription.</td><td>Granola deletes it after transcription</td></tr>
-              <tr><th scope="row">Devices</th><td>Mac only</td><td>Mac, Windows, iOS, Android, and Apple Watch</td></tr>
+              <tr><th scope="row">Price</th><td data-label="Minute">Free and open source, MIT license</td><td data-label="Granola">Basic is $0 with 30 days of meeting history. Business is $14 per user per month. Enterprise is $35.</td></tr>
+              <tr><th scope="row">Bot in the call</th><td data-label="Minute">No. Minute records your Mac's audio.</td><td data-label="Granola">No. Granola captures your device's audio.</td></tr>
+              <tr><th scope="row">Transcription</th><td data-label="Minute">Whisper, on your Mac</td><td data-label="Granola">In the cloud, by providers such as Deepgram and Assembly</td></tr>
+              <tr><th scope="row">Summaries</th><td data-label="Minute">A local language model, on your Mac</td><td data-label="Granola">In the cloud, by AI providers such as OpenAI and Anthropic</td></tr>
+              <tr><th scope="row">Where notes live</th><td data-label="Minute">Plain files in a folder on your Mac</td><td data-label="Granola">A US-hosted AWS VPC</td></tr>
+              <tr><th scope="row">Offline</th><td data-label="Minute">Records, transcribes, and summarizes after a one-time model download</td><td data-label="Granola">You can view stored notes. Transcription and summaries need the cloud.</td></tr>
+              <tr><th scope="row">Audio</th><td data-label="Minute">Stays on your Mac. By default, Minute deletes it 30 days after transcription.</td><td data-label="Granola">Granola deletes it after transcription</td></tr>
+              <tr><th scope="row">Devices</th><td data-label="Minute">Mac only</td><td data-label="Granola">Mac, Windows, iOS, Android, and Apple Watch</td></tr>
             </tbody>
           </table>
-        </div>
-        <p>Checked on 10 November 2026 against
-        <a href="https://www.granola.ai/pricing">granola.ai/pricing</a> and
-        <a href="https://www.granola.ai/security">granola.ai/security</a>.
-        Minute facts come from its <a href="https://github.com/mraza007/minute#readme">README</a>.</p>
-      </section>
-
-      <section>
-        <h2>What an offline Granola alternative changes</h2>
-        <p>In Minute, the speech model and the language model run inside the
-        app. The audio, the transcript, and the summary stay in a folder on
-        your Mac. Turn off Wi-Fi and Minute still records, transcribes, and
-        writes the summary.</p>
-        <p>Minute has no account and no analytics. It goes online only to
-        download a model, to list models, and to check for an update, and you
-        can switch off the update check. The code is open, so you can check
-        all of this yourself.</p>
-      </section>
-
-      <section>
-        <h2>What you get</h2>
-        <p>Whisper transcribes as people talk, in 99 languages. When the call
-        ends, a local model writes the summary, the decisions, and the action
-        items. Ask answers questions about a meeting, and each answer links to
-        the moment it was said. Minute labels speakers, can remember the voices
-        you name, and saves each note to Obsidian or as Markdown.</p>
-        <p>Turn on meeting detection and Minute offers to record when a call
-        starts in Zoom, Teams, Webex, Slack, FaceTime, Discord, or a browser,
-        Google Meet included.</p>
-      </section>
-
-      <section>
-        <h2>When Granola is the better choice</h2>
-        <p>Minute is not the right Granola AI alternative for everyone. Granola
-        fits better in two cases.</p>
-        <p>You take notes on more than a Mac. Granola has apps for Windows,
-        iOS, Android, and Apple Watch. Minute runs only on macOS 11 or later.</p>
-        <p>You do not want to run the models yourself. Granola does
-        transcription and summaries in the cloud. Minute downloads its models
-        once, and Whisper small with Qwen3.5-4B takes about 3.2 GB. The smaller models
-        need 8 GB of memory. Apple silicon is the tested target. The Intel build is not yet
-        tested on real Intel hardware, and the large Whisper models need Apple
-        silicon.</p>
-      </section>
-
-      <div class="fin">
-        <h2>Your meetings are yours. <em>Keep them on your Mac.</em></h2>
-        <div class="cta">
-          <a class="btn" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Apple Silicon</a>
-          <a href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-x86_64.zip">Intel build</a>
-          <a href="../">See everything Minute does</a>
+          <div class="table__note">
+            <p>Checked on 10 November 2026 against
+            <a href="https://www.granola.ai/pricing">granola.ai/pricing</a> and
+            <a href="https://www.granola.ai/security">granola.ai/security</a>.
+            Minute facts come from its <a href="https://github.com/mraza007/minute#readme">README</a>.</p>
+          </div>
         </div>
       </div>
-    </main>
+    </section>
 
-    <footer>
-      <span>Minute, the offline AI note taker for Mac.</span>
-      <span class="spacer"></span>
-      <a href="../">Home</a>
-      <a href="../otter-alternative/">Otter alternative</a>
-      <a href="https://github.com/mraza007/minute">GitHub</a>
-      <a href="https://github.com/mraza007/minute/blob/main/LICENSE">MIT License</a>
-    </footer>
-  </div>
+    <section class="section section--pad">
+      <div class="wrap split split--top split--narrow">
+        <h2>What an offline Granola alternative changes</h2>
+        <div class="prose">
+          <p>In Minute, the speech model and the language model run inside the
+          app. The audio, the transcript, and the summary stay in a folder on
+          your Mac. Turn off Wi-Fi and Minute still records, transcribes, and
+          writes the summary.</p>
+          <p>Minute has no account and no analytics. It goes online only to
+          download a model, to list models, and to check for an update, and you
+          can switch off the update check. The code is open, so you can check
+          all of this yourself.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="wrap split split--top split--narrow">
+        <h2>What you get</h2>
+        <div class="prose">
+          <p>Whisper transcribes as people talk, in 99 languages. When the call
+          ends, a local model writes the summary, the decisions, and the action
+          items. Ask answers questions about a meeting, and each answer links to
+          the moment it was said. Minute labels speakers, can remember the voices
+          you name, and saves each note to Obsidian or as Markdown.</p>
+          <p>Turn on meeting detection and Minute offers to record when a call
+          starts in Zoom, Teams, Webex, Slack, FaceTime, Discord, or a browser,
+          Google Meet included.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section--pad">
+      <div class="wrap stack">
+        <div class="intro">
+          <h2>When Granola is the better choice</h2>
+          <p class="lead">Minute is not the right Granola AI alternative for everyone. Granola
+          fits better in two cases.</p>
+        </div>
+        <div class="cases">
+          <div class="case">
+            <h3>You take notes on more than a Mac.</h3>
+            <p>Granola has apps for Windows, iOS, Android, and Apple Watch.
+            Minute runs only on macOS 11 or later.</p>
+          </div>
+          <div class="case">
+            <h3>You do not want to run the models yourself.</h3>
+            <p>Granola does transcription and summaries in the cloud. Minute
+            downloads its models once, and Whisper small with Qwen3.5-4B takes
+            about 3.2 GB. The smaller models need 8 GB of memory. Apple silicon
+            is the tested target. The Intel build is not yet tested on real
+            Intel hardware, and the large Whisper models need Apple silicon.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="wrap cta-wrap">
+      <section class="cta">
+        <h2>Keep your meetings on your Mac.</h2>
+        <p class="lead">Minute is the free, offline AI note taker for macOS.</p>
+        <div class="actions">
+          <a class="btn btn--primary" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Apple silicon</a>
+          <a class="btn btn--ghost" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-x86_64.zip">Intel build</a>
+        </div>
+        <p class="hero__note">Version 1.13.0 · Signed and notarized by Apple · macOS 11 or later</p>
+        <a class="link" href="../">See everything Minute does</a>
+      </section>
+    </div>
+  </main>
+
+  <footer class="wrap footer">
+    <p class="footer__brand"><span class="footer__name">Minute<span>.</span></span> The offline AI note taker for Mac</p>
+    <ul class="footer__links">
+      <li><a href="https://github.com/mraza007/minute">GitHub</a></li>
+      <li><a href="https://github.com/mraza007/minute/releases">Releases</a></li>
+      <li><a href="../granola-alternative/">Granola alternative</a></li>
+      <li><a href="../otter-alternative/">Otter alternative</a></li>
+      <li><a href="https://github.com/mraza007/minute/blob/main/LICENSE">MIT License</a></li>
+    </ul>
+  </footer>
 </body>
 </html>
