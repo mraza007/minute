@@ -529,13 +529,6 @@ h3 {
   line-height: 1.56;
 }
 
-.prose ol {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-left: 1.4em;
-}
-
 /* Demo video */
 
 .demo {
@@ -650,16 +643,6 @@ h3 {
 
 .table tbody tr:last-child > * {
   border-bottom: 0;
-}
-
-/* A two-column table of long quotes: a narrow topic column, regular weight. */
-
-.table--quotes thead th:first-child {
-  width: 26%;
-}
-
-.table--quotes td:first-of-type {
-  font-weight: 400;
 }
 
 .table__note {
@@ -1267,14 +1250,6 @@ h3 {
   .table td:first-of-type::before {
     color: var(--ink);
     font-weight: 600;
-  }
-
-  .table--quotes td {
-    display: block;
-  }
-
-  .table--quotes td::before {
-    content: none;
   }
 
   .table__note {
