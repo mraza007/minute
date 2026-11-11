@@ -1016,7 +1016,9 @@ mod tests {
     fn fake_install(entry: &CatalogEntry, models_root: &Path) {
         let path = installed_path(entry, models_root);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, vec![0u8; entry.size_bytes as usize]).unwrap();
+        // A sparse file: install_state checks only the length, and real model
+        // sizes would otherwise write gigabytes of zeros per call.
+        fs::File::create(&path).unwrap().set_len(entry.size_bytes).unwrap();
     }
 
     fn recommendation_of(llm: &str) -> Recommendation {
