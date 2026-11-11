@@ -1,234 +1,57 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <!-- Base URL: https://minutenotes.app/ -->
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>Minute — Meeting notes that never leave your Mac</title>
-  <meta name="description" content="Minute is a fully offline meeting notetaker for macOS. It records, transcribes live with on-device Whisper, labels who spoke, and writes summaries with a local LLM. Free and open source." />
-  <meta property="og:title" content="Minute — Meeting notes that never leave your Mac" />
-  <meta property="og:description" content="A fully offline meeting notetaker for macOS. Records, transcribes, labels speakers, and summarizes — all on-device. Free and open source." />
-  <meta property="og:image" content="https://mraza007.github.io/minute/assets/hero.jpg" />
+  <title>Minute: Free, Offline AI Note Taker for Mac</title>
+  <meta name="description" content="Minute records, transcribes, and summarizes your meetings on your Mac. No bot joins the call, and nothing leaves your computer. Free and open source." />
+  <link rel="canonical" href="https://minutenotes.app/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Minute" />
+  <meta property="og:url" content="https://minutenotes.app/" />
+  <meta property="og:title" content="Minute: Free, Offline AI Note Taker for Mac" />
+  <meta property="og:description" content="Minute records, transcribes, and summarizes your meetings on your Mac. No bot joins the call, and nothing leaves your computer. Free and open source." />
+  <meta property="og:image" content="https://minutenotes.app/assets/og.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="A meeting note in Minute with the summary, decisions, and action items" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Minute: Free, Offline AI Note Taker for Mac" />
+  <meta name="twitter:description" content="Minute records, transcribes, and summarizes your meetings on your Mac. No bot joins the call, and nothing leaves your computer. Free and open source." />
+  <meta name="twitter:image" content="https://minutenotes.app/assets/og.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Minute",
+    "description": "Minute records, transcribes, and summarizes your meetings on your Mac. No bot joins the call, and nothing leaves your computer. Free and open source.",
+    "url": "https://minutenotes.app/",
+    "applicationCategory": "BusinessApplication",
+    "operatingSystem": "macOS 11 or later",
+    "softwareVersion": "1.13.0",
+    "downloadUrl": "https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip",
+    "license": "https://opensource.org/licenses/MIT",
+    "screenshot": "https://minutenotes.app/assets/hero.webp",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e7dfce'/%3E%3Cg fill='%23211d18'%3E%3Crect x='7' y='13' width='2.6' height='9' rx='1.3'/%3E%3Crect x='12' y='9' width='2.6' height='13' rx='1.3'/%3E%3Crect x='22' y='11' width='2.6' height='11' rx='1.3'/%3E%3C/g%3E%3Crect x='17' y='6' width='2.6' height='16' rx='1.3' fill='%23c8412a'/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-  <style>
-    :root {
-      --canvas: #e7dfce;
-      --ink: #211d18;
-      --ink-2: #4d463c;
-      --ink-3: #75695a;
-      --rule: rgba(33, 29, 24, 0.2);
-      --rule-soft: rgba(33, 29, 24, 0.1);
-      --accent: #c8412a;
-      --accent-solid: #b8341d;
-      --serif: 'Charter', 'Iowan Old Style', 'Palatino Linotype', ui-serif, Georgia, serif;
-      --sans: 'Instrument Sans', system-ui, -apple-system, sans-serif;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --canvas: #17150f;
-        --ink: #f0e9db;
-        --ink-2: #c9c0af;
-        --ink-3: #948a78;
-        --rule: rgba(240, 233, 219, 0.22);
-        --rule-soft: rgba(240, 233, 219, 0.1);
-        --accent: #e05a42;
-        --accent-solid: #b8341d;
-      }
-    }
-
-    * { box-sizing: border-box; margin: 0; }
-
-    body {
-      font-family: var(--sans);
-      background: var(--canvas);
-      color: var(--ink);
-      line-height: 1.55;
-      -webkit-font-smoothing: antialiased;
-    }
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 1;
-      opacity: 0.5;
-      mix-blend-mode: multiply;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.13 0 0 0 0 0.11 0 0 0 0 0.09 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
-    }
-    @media (prefers-color-scheme: dark) {
-      body::before { mix-blend-mode: screen; opacity: 0.35; }
-    }
-
-    a { color: inherit; }
-    img { max-width: 100%; height: auto; display: block; }
-
-    .page {
-      position: relative;
-      z-index: 2;
-      max-width: 860px;
-      margin: 0 auto;
-      padding: 0 24px;
-    }
-
-    header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      padding: 24px 0 16px;
-      border-bottom: 1px solid var(--rule);
-    }
-    .wordmark {
-      font-family: var(--serif);
-      font-size: 1.3rem;
-      font-weight: 700;
-      text-decoration: none;
-    }
-    .wordmark span { color: var(--accent); }
-    header a[href*="github"] {
-      font-size: 0.86rem;
-      color: var(--ink-2);
-      text-decoration: none;
-    }
-    header a[href*="github"]:hover { color: var(--ink); }
-
-    .hero { padding: 72px 0 0; }
-    h1 {
-      font-family: var(--serif);
-      font-weight: 700;
-      font-size: clamp(2.3rem, 5.8vw, 3.6rem);
-      line-height: 1.08;
-      letter-spacing: -0.015em;
-      max-width: 18ch;
-      text-wrap: balance;
-    }
-    h1 em { font-style: italic; color: var(--accent); }
-    .lede {
-      font-family: var(--serif);
-      font-size: clamp(1.02rem, 1.8vw, 1.2rem);
-      color: var(--ink-2);
-      max-width: 52ch;
-      margin-top: 18px;
-    }
-    .cta {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 16px;
-      margin-top: 30px;
-    }
-    .btn {
-      font-size: 0.92rem;
-      font-weight: 600;
-      text-decoration: none;
-      padding: 12px 24px;
-      border-radius: 999px;
-      background: var(--accent-solid);
-      color: #fdf8ee;
-    }
-    .btn:hover { background: #a52c17; }
-    .cta a:not(.btn) {
-      font-size: 0.88rem;
-      color: var(--ink-2);
-    }
-    .cta-note {
-      font-size: 0.8rem;
-      color: var(--ink-3);
-      margin-top: 12px;
-    }
-    .facts {
-      margin-top: 26px;
-      padding-top: 16px;
-      border-top: 1px solid var(--rule-soft);
-      font-size: 0.8rem;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: var(--ink-3);
-    }
-
-    .shot { margin-top: 40px; }
-    .shot img {
-      border-radius: 8px;
-      border: 1px solid var(--rule-soft);
-    }
-
-    section { padding-top: 72px; }
-    h2 {
-      font-family: var(--serif);
-      font-weight: 700;
-      font-size: clamp(1.4rem, 2.8vw, 1.9rem);
-      line-height: 1.15;
-      letter-spacing: -0.01em;
-      max-width: 30ch;
-    }
-    section > p {
-      font-family: var(--serif);
-      font-size: 1.04rem;
-      color: var(--ink-2);
-      max-width: 58ch;
-      margin-top: 12px;
-    }
-
-    .ledger { margin-top: 24px; }
-    .ledger-row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 20px;
-      align-items: baseline;
-      padding: 12px 0;
-      border-bottom: 1px solid var(--rule-soft);
-      font-family: var(--serif);
-      font-size: 1.02rem;
-    }
-    .ledger-row:first-child { border-top: 1px solid var(--rule); }
-    .verdict {
-      font-family: var(--sans);
-      font-size: 0.73rem;
-      font-weight: 600;
-      letter-spacing: 0.09em;
-      text-transform: uppercase;
-      color: var(--ink-3);
-      white-space: nowrap;
-    }
-    .verdict.never { color: var(--accent); }
-    .ledger + p {
-      font-size: 0.85rem;
-      color: var(--ink-3);
-      margin-top: 12px;
-      font-family: var(--sans);
-    }
-    .ledger + p a { color: var(--ink-3); }
-
-    .tech {
-      margin-top: 20px;
-      font-family: var(--serif);
-      font-size: 1.02rem;
-      color: var(--ink-2);
-    }
-
-    .fin {
-      margin-top: 88px;
-      border-top: 1px solid var(--rule);
-      padding-top: 56px;
-    }
-    .fin h2 { max-width: none; }
-    .fin em { font-style: italic; color: var(--accent); }
-
-    footer {
-      margin-top: 72px;
-      border-top: 1px solid var(--rule);
-      padding: 18px 0 36px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 24px;
-      font-size: 0.82rem;
-      color: var(--ink-3);
-    }
-    footer a { color: var(--ink-3); }
-    footer .spacer { flex: 1; }
-  </style>
+  <link rel="stylesheet" href="assets/site.css" />
+  <!-- Privacy-friendly analytics by Plausible -->
+  <script async src="https://plausible.io/js/pa-EC7Fl8b7mGBAlazjPV0mT.js"></script>
+  <script>
+    window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+    plausible.init()
+  </script>
 </head>
 <body>
   <div class="page">
@@ -239,11 +62,14 @@
 
     <main>
       <div class="hero">
+        <p class="kicker">Free, offline AI note taker for macOS</p>
         <h1>Meeting notes that <em>never leave</em> your Mac.</h1>
         <p class="lede">
           Minute records your meetings, transcribes them as you speak, labels
           who said what, and writes the summary, decisions, and action items.
-          The models run on your Mac — not somebody else's server.
+          No bot joins the call. It works with Zoom, Teams, Google Meet, and
+          other calls, and the models run offline on your Mac, not somebody
+          else's server.
         </p>
         <div class="cta">
           <a class="btn" href="https://github.com/mraza007/minute/releases/download/v1.13.0/Minute-1.13.0-arm64.zip">Download for Apple Silicon</a>
@@ -252,10 +78,24 @@
         <p class="cta-note">Version 1.13.0 · signed &amp; notarized by Apple · <a href="https://github.com/mraza007/minute/releases/latest">all releases</a></p>
         <p class="facts">Free · Open source, MIT · macOS · No account</p>
         <div class="shot">
-          <img src="assets/hero.jpg" width="1800" height="1125"
-               alt="Minute showing a meeting note with live transcript, speaker labels, summary, decisions, and action items" />
+          <img src="assets/hero.webp" width="2760" height="1820"
+               alt="A finished meeting note in Minute on a Mac, with the AI summary, decisions, and action items above the transcript" />
         </div>
       </div>
+
+      <section>
+        <h2>No bot joins your call</h2>
+        <p>Minute records on your Mac, not in the meeting. It captures your
+        microphone and, on macOS 13 or later, the system audio, which is how it
+        hears the other people on the call. Nobody sees a new participant, and
+        nobody has to let one in.</p>
+        <p>System audio needs the Screen Recording permission. Without it,
+        Minute records your microphone only.</p>
+        <div class="shot narrow">
+          <img src="assets/detection-settings.webp" width="1576" height="1404" loading="lazy"
+               alt="Minute's recording settings: a rule for each meeting app, the Capture system audio switch, and Stop when the meeting ends" />
+        </div>
+      </section>
 
       <section>
         <h2>Everything the app sends over the network</h2>
@@ -268,6 +108,8 @@
         </div>
         <p>That's the whole list. Turn off Wi-Fi and everything still works.
         The <a href="https://github.com/mraza007/minute">code is open</a> — you can check.</p>
+        <p>This website counts visits with <a href="https://plausible.io/data-policy">Plausible</a>,
+        which uses no cookies. The Minute app has no analytics at all.</p>
       </section>
 
       <section>
@@ -277,8 +119,8 @@
         you name and write "Sarah" into the next transcript by itself —
         with an Undo. Timestamps play the audio.</p>
         <div class="shot">
-          <img src="assets/recording.jpg" width="1800" height="1125" loading="lazy"
-               alt="A live recording in Minute with real-time transcription and speaker labels" />
+          <img src="assets/recording.webp" width="2600" height="1740" loading="lazy"
+               alt="A live recording in Minute, with the transcript appearing by speaker as people talk, a marker, and the audio status" />
         </div>
       </section>
 
@@ -287,8 +129,8 @@
         <p>Ask any meeting a question. Answers cite the second it was said,
         and clicking a citation jumps there.</p>
         <div class="shot">
-          <img src="assets/ask.jpg" width="1800" height="1125" loading="lazy"
-               alt="Asking questions about a meeting and getting answers with timestamp citations" />
+          <img src="assets/ask.webp" width="2600" height="1740" loading="lazy"
+               alt="The Ask panel in Minute answers two questions about a meeting, with clickable timestamps" />
         </div>
       </section>
 
@@ -300,8 +142,8 @@
         watches device and process state, never audio. Detection is off by
         default.</p>
         <div class="shot">
-          <img src="assets/popup.jpg" width="1800" height="1125" loading="lazy"
-               alt="Minute's meeting-detected pill offering to start recording when Zoom is using the microphone" />
+          <img src="assets/detection.webp" width="2200" height="480" loading="lazy"
+               alt="Two meeting detection pills: one offers to record a Zoom meeting, one shows a Microsoft Teams recording that started automatically" />
         </div>
       </section>
 
@@ -309,9 +151,9 @@
         <h2>Pick your models</h2>
         <p>Choose the Whisper size and summary model that fit your Mac's
         memory. Offline after the download.</p>
-        <div class="shot">
-          <img src="assets/models.jpg" width="1800" height="1125" loading="lazy"
-               alt="Model manager showing Whisper and local LLM options with hardware recommendations" />
+        <div class="shot narrow">
+          <img src="assets/models.webp" width="1576" height="1772" loading="lazy"
+               alt="Minute's model settings: local language models on this Mac, models tested by Minute, and newer models from Hugging Face, each marked by how well it fits" />
         </div>
       </section>
 
@@ -322,9 +164,56 @@
         and WAV in a folder you own. Signed and notarized by Apple. MIT
         licensed.</p>
         <div class="shot">
-          <img src="assets/dark.jpg" width="1800" height="1125" loading="lazy"
-               alt="Minute in dark mode" />
+          <img src="assets/dark.webp" width="2600" height="1740" loading="lazy"
+               alt="The same meeting note in Minute in dark mode" />
         </div>
+      </section>
+
+      <section class="faq" id="faq">
+        <h2>Frequently asked questions</h2>
+
+        <h3>Is Minute free?</h3>
+        <p>Yes. Minute is free and open source, and it needs no account.</p>
+
+        <h3>Does it work offline?</h3>
+        <p>Yes. After you download the models once, Minute records,
+        transcribes, summarizes, and answers questions with Wi-Fi turned off.
+        It goes online only to download a model, to list models, and to check
+        for an update. You can turn off the update check in Settings.</p>
+
+        <h3>Does a bot join my Zoom or Teams call?</h3>
+        <p>No. Minute records on your Mac. It captures your microphone and, on
+        macOS 13 or later, the system audio, so it hears the other people on
+        the call without joining it. Meeting detection covers Zoom, Teams,
+        Webex, Slack, FaceTime, Discord, and calls in a browser, such as
+        Google Meet.</p>
+
+        <h3>Which Macs does it run on?</h3>
+        <p>Minute needs macOS 11 or later. System audio needs macOS 13 or later
+        and the Screen Recording permission. To notice that a call ended while
+        the meeting app stays open, Minute needs macOS 14.2 or later. Apple
+        silicon is the tested target. The Intel build is not yet tested on
+        real Intel hardware, and the large Whisper models need Apple silicon.
+        The smaller models need 8 GB of memory, the larger ones 16 GB.</p>
+
+        <h3>Can it save notes to Obsidian?</h3>
+        <p>Yes. Choose your vault folder in Settings, and Minute writes a
+        Markdown file each time a summary finishes. It can add the date,
+        title, duration, and speakers as properties. Without Obsidian, export
+        any note as Markdown.</p>
+
+        <h3>Is it open source?</h3>
+        <p>Yes. The <a href="https://github.com/mraza007/minute">code is on
+        GitHub</a> under the MIT license, and each release is signed and
+        notarized by Apple.</p>
+
+        <h3>How does it compare with Granola and Otter?</h3>
+        <p>Granola and Otter transcribe in the cloud, and Otter's assistant
+        joins Zoom, Teams, and Google Meet calls. Minute writes the transcript
+        and the summary on your Mac, with no bot. Read how Minute compares as a
+        <a href="granola-alternative/">Granola alternative</a> and as an
+        <a href="otter-alternative/">Otter alternative</a>, including when
+        each of those apps is the better choice.</p>
       </section>
 
       <div class="fin">
@@ -339,6 +228,8 @@
     <footer>
       <span>Minute — a notebook, not a microphone.</span>
       <span class="spacer"></span>
+      <a href="granola-alternative/">Granola alternative</a>
+      <a href="otter-alternative/">Otter alternative</a>
       <a href="https://github.com/mraza007/minute">GitHub</a>
       <a href="https://github.com/mraza007/minute/releases">Releases</a>
       <a href="https://github.com/mraza007/minute/blob/main/LICENSE">MIT License</a>
