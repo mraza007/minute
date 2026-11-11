@@ -4689,28 +4689,29 @@ mod tests {
     }
 
     #[test]
-    fn adversarial_run_of_unmatched_braces_fails_fast_instead_of_hanging() {
+    fn a_run_of_unmatched_braces_counts_toward_the_candidate_cap() {
         // A degenerate small-model repetition failure: tens of thousands of
-        // bare '{' with no closing brace anywhere and no valid JSON object
-        // at all. Without a cap on candidates tried, retrying from every
-        // one of these positions is quadratic in the length of the run.
-        let raw = "{".repeat(50_000);
+        // bare '{' with no closing brace anywhere. Retrying from every one of
+        // them is quadratic in the length of the run, so each must count
+        // toward MAX_JSON_CANDIDATES. No wall-clock limit: CI runs this debug
+        // build beside tests that write multi-GB files, so a timer measures
+        // the runner, not the extraction.
+        let summary_after = |unmatched: usize| {
+            format!(
+                "{}{{\"summary\": \"Last candidate.\", \"decisions\": [], \"action_items\": []}}",
+                "{".repeat(unmatched)
+            )
+        };
 
-        let start = std::time::Instant::now();
-        let result = extract_summary_json(&raw);
-        let elapsed = start.elapsed();
+        let within_cap = extract_summary_json(&summary_after(MAX_JSON_CANDIDATES - 1)).unwrap();
+        assert_eq!(within_cap.summary, "Last candidate.");
+        let past_cap = extract_summary_json(&summary_after(MAX_JSON_CANDIDATES)).unwrap_err();
+        assert!(past_cap.to_string().contains("no JSON object found"));
 
-        assert!(result.is_err());
+        let err = extract_summary_json(&"{".repeat(50_000)).unwrap_err();
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no JSON object found"),
-            "should fail via the ordinary not-found path, not panic or time out"
-        );
-        assert!(
-            elapsed.as_secs() < 1,
-            "extraction on adversarial input took {elapsed:?}, expected well under 1s"
+            err.to_string().contains("no JSON object found"),
+            "should fail via the ordinary not-found path, not panic"
         );
     }
 
