@@ -195,8 +195,9 @@ export const startRecording = (
   includeSystemAudio: boolean,
   inputDeviceId: string | null = null,
   origin: RecordingOrigin = { kind: 'manual' },
+  title: string | null = null,
 ): Promise<string> =>
-  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId, origin })
+  invokeCmd('start_recording', { modelId, includeSystemAudio, inputDeviceId, origin, title })
 
 export const pauseRecording = (): Promise<void> => invokeCmd('pause_recording')
 
