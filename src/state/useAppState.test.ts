@@ -769,6 +769,32 @@ describe('useAppState', () => {
       expect(result.current.sttStatus).toBe('idle')
     })
 
+    it('startRec with a title sends it to start_recording and shows it as the recording title', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ startRecordingId: noteId, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+
+      act(() => result.current.startRec('Weekly design sync'))
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+
+      const start = calls.find(c => c.cmd === 'start_recording')
+      expect((start!.args as { title: string | null }).title).toBe('Weekly design sync')
+      expect(result.current.recordingTitle).toBe('Weekly design sync')
+    })
+
+    it('startRec without a title sends none and keeps the default recording title', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      setupIPC({ startRecordingId: noteId, onCmd: (cmd, args) => calls.push({ cmd, args }) })
+      const result = await loaded()
+
+      act(() => result.current.startRec(null))
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+
+      const start = calls.find(c => c.cmd === 'start_recording')
+      expect((start!.args as { title: string | null }).title).toBeNull()
+      expect(result.current.recordingTitle).toBe('New recording')
+    })
+
     it('renames the active recording through the persisted note title', async () => {
       const calls: Array<{ cmd: string; args: unknown }> = []
       const result = await loadedAndRecording({ onCmd: (cmd, args) => calls.push({ cmd, args }) })
@@ -1183,6 +1209,28 @@ describe('useAppState', () => {
       // First from loadedAndRecording's own startRec, second from the restart.
       expect(startCalls).toHaveLength(2)
       expect((startCalls[1].args as { includeSystemAudio: boolean }).includeSystemAudio).toBe(true)
+    })
+
+    it('restartWithSystemAudio carries the current recording title to the new note', async () => {
+      const calls: Array<{ cmd: string; args: unknown }> = []
+      const newNote = noteFixture({ id: noteId, title: 'Weekly design sync' })
+      setupIPC({
+        startRecordingId: noteId,
+        notes: [newNote],
+        stopRecording: { result: newNote },
+        onCmd: (cmd, args) => calls.push({ cmd, args }),
+      })
+      const result = await loaded()
+      act(() => result.current.startRec('Weekly design sync'))
+      await waitFor(() => expect(result.current.view).toBe('recording'))
+
+      act(() => result.current.restartWithSystemAudio())
+      await waitFor(() => expect(calls.filter(c => c.cmd === 'start_recording')).toHaveLength(2))
+      await waitFor(() => expect(result.current.stopping).toBe(false))
+
+      const restart = calls.filter(c => c.cmd === 'start_recording')[1]
+      expect((restart.args as { title: string | null }).title).toBe('Weekly design sync')
+      expect(result.current.recordingTitle).toBe('Weekly design sync')
     })
 
     it('restartWithSystemAudio keeps an automatic recording automatic', async () => {

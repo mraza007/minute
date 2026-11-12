@@ -966,7 +966,7 @@ export function useAppState() {
    * backend's settings read. A ref closes the sub-render gap where two
    * rapid clicks could otherwise issue two start commands.
    */
-  const beginRecording = useCallback((origin: RecordingOrigin) => {
+  const beginRecording = useCallback((origin: RecordingOrigin, title: string | null = null) => {
     if (recordingStartInFlight.current) return
     recordingStartInFlight.current = true
     setRecordingStarting(true)
@@ -975,7 +975,13 @@ export function useAppState() {
       device => device.id === selectedPreflightMicrophoneId,
     )
     ipc
-      .startRecording(modelManager.sttModel, includeSystemAudio, selectedPreflightMicrophoneId, origin)
+      .startRecording(
+        modelManager.sttModel,
+        includeSystemAudio,
+        selectedPreflightMicrophoneId,
+        origin,
+        title,
+      )
       .then(noteId => {
         setActiveNoteId(noteId)
         setLiveSegmentsRaw([])
@@ -997,7 +1003,7 @@ export function useAppState() {
         setSystemAudioActive(false)
         setMicrophoneName(selectedMicrophone?.name ?? 'Default microphone')
         setRecOrigin(origin)
-        setRecordingTitle('New recording')
+        setRecordingTitle(title ?? 'New recording')
         setRecordingMarkers([])
         setRecordingPreflightOpen(false)
         // A recording the user did not ask for must not take the window
@@ -1024,7 +1030,10 @@ export function useAppState() {
     tCaptureSystemAudio,
   ])
 
-  const startRec = useCallback(() => beginRecording(MANUAL_ORIGIN), [beginRecording])
+  const startRec = useCallback(
+    (title: string | null = null) => beginRecording(MANUAL_ORIGIN, title),
+    [beginRecording],
+  )
 
   /**
    * The meeting-popup's "Start recording" click (`popup::popup_start`'s
@@ -1270,7 +1279,7 @@ export function useAppState() {
           })
           .catch(reportError)
         return ipc
-          .startRecording(modelManager.sttModel, true, selectedPreflightMicrophoneId, recOrigin)
+          .startRecording(modelManager.sttModel, true, selectedPreflightMicrophoneId, recOrigin, recordingTitle)
           .then(noteId => {
             setActiveNoteId(noteId)
             setLiveSegmentsRaw([])
@@ -1287,7 +1296,6 @@ export function useAppState() {
             // starting point as `startRec`'s.
             setSystemAudioActive(false)
             setRecOrigin(recOrigin)
-            setRecordingTitle('New recording')
             setRecordingMarkers([])
             setView('recording')
           })
@@ -1309,7 +1317,7 @@ export function useAppState() {
         recordingStartInFlight.current = false
         setStopping(false)
       })
-  }, [finishStop, invalidateNoteCache, modelManager.sttModel, recOrigin, reportError, selectedPreflightMicrophoneId])
+  }, [finishStop, invalidateNoteCache, modelManager.sttModel, recOrigin, recordingTitle, reportError, selectedPreflightMicrophoneId])
 
   const retryProcessingFailure = useCallback(() => {
     if (processingFailure?.stage === 'saving') {

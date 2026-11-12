@@ -68,9 +68,9 @@ export default function App() {
   const saveToObsidian = useCallback((id: string) => {
     void saveNoteToObsidian(id)
   }, [saveNoteToObsidian])
-  const startRecording = useCallback(() => {
+  const startRecording = useCallback((title: string | null) => {
     preflightReturnFocusRef.current = null
-    startRec()
+    startRec(title)
   }, [startRec])
   const transcriptionModes = useMemo(
     () => transcriptionModeOptions(s.models, s.sttModel, s.hardware, s.recommendation),
