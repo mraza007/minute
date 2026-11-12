@@ -71,6 +71,55 @@ describe('RecordingPreflight', () => {
     expect(onStart).toHaveBeenCalledTimes(1)
   })
 
+  it('starts with the typed title, from the button or Enter', () => {
+    const onStart = vi.fn()
+    render(<RecordingPreflight {...base} onStart={onStart} />)
+    const field = screen.getByRole('textbox', { name: 'Title' })
+    fireEvent.change(field, { target: { value: 'Weekly design sync' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
+    expect(onStart).toHaveBeenLastCalledWith('Weekly design sync')
+
+    fireEvent.keyDown(field, { key: 'Enter' })
+    expect(onStart).toHaveBeenCalledTimes(2)
+    expect(onStart).toHaveBeenLastCalledWith('Weekly design sync')
+  })
+
+  it('trims the typed title', () => {
+    const onStart = vi.fn()
+    render(<RecordingPreflight {...base} onStart={onStart} />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: '  Weekly design sync ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
+    expect(onStart).toHaveBeenCalledWith('Weekly design sync')
+  })
+
+  it('passes no title when the field is blank or only spaces', () => {
+    const onStart = vi.fn()
+    render(<RecordingPreflight {...base} onStart={onStart} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
+    expect(onStart).toHaveBeenLastCalledWith(null)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start recording' }))
+    expect(onStart).toHaveBeenLastCalledWith(null)
+  })
+
+  it('does not start on Enter while the microphone is not ready, starting, or composing', () => {
+    const onStart = vi.fn()
+    const { rerender } = render(
+      <RecordingPreflight {...base} onStart={onStart} microphoneDevices={[]} selectedMicrophoneId={null} />,
+    )
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Title' }), { key: 'Enter' })
+    expect(onStart).not.toHaveBeenCalled()
+
+    rerender(<RecordingPreflight {...base} onStart={onStart} />)
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Title' }), { key: 'Enter', isComposing: true })
+    expect(onStart).not.toHaveBeenCalled()
+
+    rerender(<RecordingPreflight {...base} onStart={onStart} starting={true} />)
+    expect(screen.getByRole('textbox', { name: 'Title' })).toBeDisabled()
+  })
+
   it('keeps the meter space reserved while devices re-check so Start does not move', () => {
     const { container, rerender } = render(<RecordingPreflight {...base} />)
     const readySlot = container.querySelector('.input-level-slot')
@@ -155,7 +204,7 @@ describe('RecordingPreflight', () => {
   it('keeps Tab and Shift+Tab inside the sheet, from the sheet itself too', () => {
     render(<RecordingPreflight {...base} />)
     const sheet = screen.getByRole('dialog')
-    const first = screen.getByRole('combobox', { name: 'Microphone' })
+    const first = screen.getByRole('textbox', { name: 'Title' })
     const last = screen.getByRole('button', { name: 'Start recording' })
     expect(sheet).toHaveFocus()
 

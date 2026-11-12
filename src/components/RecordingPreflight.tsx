@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import type { AudioInputDevice, MicrophonePermission, SysAudioAvailability } from '../ipc/types'
 import { InputLevelMeter } from './InputLevelMeter'
 import { Toggle } from './Toggle'
@@ -23,7 +23,7 @@ export interface RecordingPreflightProps {
   /** Leaves the sheet for Settings, where models are downloaded. */
   onOpenSettings: () => void
   onClose: () => void
-  onStart: () => void
+  onStart: (title: string | null) => void
 }
 
 function systemAudioCopy(availability: SysAudioAvailability): string {
@@ -71,6 +71,7 @@ export function RecordingPreflight({
   onStart,
 }: RecordingPreflightProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  const [title, setTitle] = useState('')
   const selectedMicrophone = microphoneDevices.find(device => device.id === selectedMicrophoneId) ?? null
   const microphoneAuthorized = microphonePermission === 'authorized'
   const microphoneReady = !microphoneLoading && microphoneAuthorized && selectedMicrophone !== null
@@ -84,6 +85,16 @@ export function RecordingPreflight({
   useEffect(() => {
     panelRef.current?.focus()
   }, [])
+
+  function start() {
+    onStart(title.trim() || null)
+  }
+
+  function handleTitleKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing || !microphoneReady || starting) return
+    e.preventDefault()
+    start()
+  }
 
   function handleOverlayMouseDown(e: ReactMouseEvent<HTMLDivElement>) {
     if (!starting && e.target === e.currentTarget) onClose()
@@ -139,6 +150,23 @@ export function RecordingPreflight({
           <h2 id="recording-preflight-title">New recording</h2>
           <p>Sources cannot change after you start.</p>
         </div>
+
+        <section className="preflight-section">
+          <div className="preflight-row">
+            <label className="preflight-label" htmlFor="preflight-title">Title</label>
+            <input
+              id="preflight-title"
+              type="text"
+              className="preflight-title-input"
+              value={title}
+              maxLength={120}
+              placeholder="Optional, e.g. Weekly design sync"
+              disabled={starting}
+              onChange={event => setTitle(event.target.value)}
+              onKeyDown={handleTitleKeyDown}
+            />
+          </div>
+        </section>
 
         <section className="preflight-section" aria-labelledby="preflight-microphone-label">
           <div className="preflight-row">
@@ -255,7 +283,7 @@ export function RecordingPreflight({
         <footer className="preflight-actions">
           <div className="preflight-privacy">Audio stays on this Mac.</div>
           <button type="button" className="preflight-btn" onClick={onClose} disabled={starting}>Cancel</button>
-          <button type="button" className="preflight-btn" data-variant="primary" onClick={onStart} disabled={!microphoneReady || starting}>
+          <button type="button" className="preflight-btn" data-variant="primary" onClick={start} disabled={!microphoneReady || starting}>
             <span className="preflight-record-dot" aria-hidden="true" />
             {starting ? 'Starting…' : 'Start recording'}
           </button>

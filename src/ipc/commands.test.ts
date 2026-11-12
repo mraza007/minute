@@ -372,6 +372,7 @@ describe('ipc/commands', () => {
       includeSystemAudio: true,
       inputDeviceId: 'studio',
       origin: { kind: 'manual' },
+      title: null,
     })
     expect(result).toBe('20260722-130000')
   })

@@ -2029,6 +2029,13 @@ fn resolve_include_system_audio(
     want && availability == SysAudioAvailability::Ready
 }
 
+fn initial_note_title(requested: Option<&str>) -> &str {
+    requested
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(DEFAULT_NOTE_TITLE)
+}
+
 /// **System audio (Stage 5 Task 5).** `include_system_audio` is resolved via
 /// [`resolve_include_system_audio`] — see that function's docs for the
 /// explicit-then-settings-default-then-availability-gate shape.
@@ -2051,6 +2058,7 @@ pub async fn start_recording(
     include_system_audio: Option<bool>,
     input_device_id: Option<String>,
     origin: Option<RecordingOrigin>,
+    title: Option<String>,
 ) -> std::result::Result<String, String> {
     let origin = origin.unwrap_or_default();
     if lock_recorder_state(&recorder).active.is_some() {
@@ -2082,7 +2090,7 @@ pub async fn start_recording(
     );
 
     let meta = lock_store(&store)
-        .create_note_now(DEFAULT_NOTE_TITLE, &model_id)
+        .create_note_now(initial_note_title(title.as_deref()), &model_id)
         .map_err(|e| e.to_string())?;
     let note_dir = lock_store(&store).note_dir(&meta.id);
 
@@ -2964,6 +2972,22 @@ mod tests {
             false,
             SysAudioAvailability::NotGranted
         ));
+    }
+
+    #[test]
+    fn initial_note_title_defaults_when_absent() {
+        assert_eq!(initial_note_title(None), DEFAULT_NOTE_TITLE);
+    }
+
+    #[test]
+    fn initial_note_title_defaults_when_blank() {
+        assert_eq!(initial_note_title(Some("")), DEFAULT_NOTE_TITLE);
+        assert_eq!(initial_note_title(Some("  \t\n ")), DEFAULT_NOTE_TITLE);
+    }
+
+    #[test]
+    fn initial_note_title_trims_a_padded_title() {
+        assert_eq!(initial_note_title(Some("  Weekly sync ")), "Weekly sync");
     }
 
     // --- input preview levels ------------------------------------------

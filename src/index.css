@@ -827,6 +827,21 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   cursor: pointer;
 }
 .preflight-select-wrap select:disabled { cursor: default; opacity: .6; }
+.preflight-title-input {
+  flex: 1;
+  min-width: 0;
+  max-width: 300px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink);
+  font: 400 13px/16px var(--sans);
+}
+.preflight-title-input::placeholder { color: var(--ink-muted); }
+.preflight-title-input:disabled { opacity: .6; }
 .preflight-select-wrap option {
   background: var(--card);
   color: var(--ink);
