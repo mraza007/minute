@@ -96,6 +96,7 @@ dependencies = [
  "dispatch2",
  "futures-util",
  "hound",
+ "libc",
  "llama-cpp-2",
  "log",
  "objc2",

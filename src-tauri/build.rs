@@ -24,6 +24,7 @@
 // invoke in every affected view, not silently).
 const APP_COMMANDS: &[&str] = &[
     "hardware_info",
+    "app_location_read_only",
     "list_models",
     "browse_models",
     "recommended_models",

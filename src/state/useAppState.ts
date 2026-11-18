@@ -223,7 +223,7 @@ export function useAppState() {
   // render-facing projection of it.
   const [tAutoUpdateCheck, setTAutoUpdateCheck] = useState<boolean | null>(null)
   const [appVersion, setAppVersion] = useState('')
-  const [updateAvailable, setUpdateAvailable] = useState<{ version: string } | null>(null)
+  const [updateAvailable, setUpdateAvailable] = useState<{ version: string; canInstall: boolean } | null>(null)
   const [updateInstalling, setUpdateInstalling] = useState(false)
   const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error'>('idle')
   const updateRef = useRef<Update | null>(null)
@@ -1630,7 +1630,10 @@ export function useAppState() {
       const update = await checkForUpdate()
       if (update) {
         updateRef.current = update
-        setUpdateAvailable({ version: update.version })
+        // Issue #59: the updater can't replace a bundle on a read-only volume.
+        // If the check itself fails, let the updater try as before.
+        const readOnly = await ipc.appLocationReadOnly().catch(() => false)
+        setUpdateAvailable({ version: update.version, canInstall: !readOnly })
         if (manual) setUpdateCheckStatus('idle')
       } else if (manual) {
         setUpdateCheckStatus('upToDate')

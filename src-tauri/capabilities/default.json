@@ -9,6 +9,7 @@
     "core:default",
     "core:window:allow-start-dragging",
     "allow-hardware-info",
+    "allow-app-location-read-only",
     "allow-list-models",
     "allow-browse-models",
     "allow-recommended-models",
