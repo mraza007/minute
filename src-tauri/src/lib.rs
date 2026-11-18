@@ -5,6 +5,7 @@ mod diar;
 mod download;
 mod error;
 mod hf;
+mod install_location;
 mod llm;
 mod local_time;
 mod obsidian;
@@ -33,6 +34,13 @@ use tauri::{AppHandle, Manager, State};
 #[tauri::command]
 fn hardware_info() -> Hardware {
     catalog::detect_hardware()
+}
+
+/// Issue #59: true when the app runs from a read-only volume (the mounted
+/// DMG, or an App Translocation mount), where an in-app update can't install.
+#[tauri::command]
+fn app_location_read_only() -> bool {
+    install_location::app_bundle_is_read_only()
 }
 
 /// Lists every built-in entry, plus each Hugging Face entry the user has
@@ -768,6 +776,7 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             hardware_info,
+            app_location_read_only,
             list_models,
             recommended_models,
             list_notes,

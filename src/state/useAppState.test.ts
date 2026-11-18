@@ -1,5 +1,6 @@
 import { emit } from '@tauri-apps/api/event'
 import { mockIPC } from '@tauri-apps/api/mocks'
+import { check, type Update } from '@tauri-apps/plugin-updater'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
@@ -142,6 +143,8 @@ interface SetupOpts {
   audioInputName?: string | null
   /** Full microphone list returned to the recording preflight. */
   audioInputDevices?: AudioInputDevice[]
+  /** `app_location_read_only`'s response — defaults to `false`. */
+  appLocationReadOnly?: boolean
 }
 
 function setupIPC(opts: SetupOpts = {}) {
@@ -166,6 +169,8 @@ function setupIPC(opts: SetupOpts = {}) {
             if (opts.listNotesAfter) return opts.listNotesAfter()
           }
           return notes
+        case 'app_location_read_only':
+          return opts.appLocationReadOnly ?? false
         case 'hardware_info':
           return hardware
         case 'recommended_models':
@@ -2733,5 +2738,25 @@ describe('useAppState: per-app meeting policies (issue #46)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     process.off('unhandledRejection', unhandled)
     expect(unhandled).not.toHaveBeenCalled()
+  })
+})
+
+describe('useAppState: update install location (issue #59)', () => {
+  function offerUpdate() {
+    vi.mocked(check).mockResolvedValueOnce({ version: '1.15.0', downloadAndInstall: vi.fn() } as unknown as Update)
+  }
+
+  it('offers the install when the app bundle is writable', async () => {
+    offerUpdate()
+    setupIPC({ appLocationReadOnly: false })
+    const result = await loaded()
+    await waitFor(() => expect(result.current.updateAvailable).toEqual({ version: '1.15.0', canInstall: true }))
+  })
+
+  it('blocks the install when the app runs from a read-only volume', async () => {
+    offerUpdate()
+    setupIPC({ appLocationReadOnly: true })
+    const result = await loaded()
+    await waitFor(() => expect(result.current.updateAvailable).toEqual({ version: '1.15.0', canInstall: false }))
   })
 })

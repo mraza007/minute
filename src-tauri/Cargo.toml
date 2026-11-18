@@ -52,6 +52,8 @@ tokio = { version = "1", features = ["fs", "rt", "time"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+# Issue #59: `statvfs` to tell when the app bundle is on a read-only volume.
+libc = "0.2"
 # Issue #34: persists the main window's geometry across launches.
 tauri-plugin-window-state = "2.4"
 # Speaker diarization (issue #6, diar.rs): the *official* k2-fsa Rust API

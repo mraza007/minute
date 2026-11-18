@@ -4,7 +4,8 @@ export interface AboutSectionProps {
   appVersion: string
   autoUpdateCheck: boolean
   toggleAutoUpdateCheck: () => void
-  updateAvailable: { version: string } | null
+  /** `canInstall` is false when Minute runs from a read-only volume (issue #59). */
+  updateAvailable: { version: string; canInstall: boolean } | null
   updateInstalling: boolean
   updateCheckStatus: 'idle' | 'checking' | 'upToDate' | 'error'
   onCheckForUpdates: () => void
@@ -63,18 +64,27 @@ export function AboutSection({
               </>
             )}
             {updateCheckStatus === 'error' && <span>Couldn’t reach GitHub — try again later.</span>}
-            {updateAvailable && <span>Minute {updateAvailable.version} is ready to install.</span>}
+            {updateAvailable?.canInstall && <span>Minute {updateAvailable.version} is ready to install.</span>}
+            {updateAvailable && !updateAvailable.canInstall && <span>Minute {updateAvailable.version} is available.</span>}
           </div>
           {updateAvailable ? (
-            <button type="button" className="st-btn" data-variant="primary" disabled={updateInstalling} onClick={onInstallUpdate}>
-              {updateInstalling ? 'Installing…' : `Update to ${updateAvailable.version} & restart`}
-            </button>
+            updateAvailable.canInstall && (
+              <button type="button" className="st-btn" data-variant="primary" disabled={updateInstalling} onClick={onInstallUpdate}>
+                {updateInstalling ? 'Installing…' : `Update to ${updateAvailable.version} & restart`}
+              </button>
+            )
           ) : (
             <button type="button" className="st-btn" disabled={updateCheckStatus === 'checking'} onClick={onCheckForUpdates}>
               {updateCheckStatus === 'checking' ? 'Checking…' : 'Check now'}
             </button>
           )}
         </div>
+        {updateAvailable?.canInstall === false && (
+          <p className="st-help">
+            Minute can’t update itself here because it is running from a read-only location, such as the disk image.
+            Quit Minute, drag it to your Applications folder in Finder, and open it from there. Then update.
+          </p>
+        )}
       </div>
 
       <div className="st-list">

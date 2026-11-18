@@ -932,13 +932,21 @@ describe('SettingsView', () => {
 
     it('offers Update & restart when an update is available, and disables it while installing', () => {
       const onInstallUpdate = vi.fn()
-      renderSection('about', { updateAvailable: { version: '1.4.0' }, onInstallUpdate })
+      renderSection('about', { updateAvailable: { version: '1.4.0', canInstall: true }, onInstallUpdate })
       fireEvent.click(screen.getByRole('button', { name: 'Update to 1.4.0 & restart' }))
       expect(onInstallUpdate).toHaveBeenCalledTimes(1)
       expect(screen.queryByRole('button', { name: 'Check now' })).not.toBeInTheDocument()
       cleanup()
-      renderSection('about', { updateAvailable: { version: '1.4.0' }, updateInstalling: true })
+      renderSection('about', { updateAvailable: { version: '1.4.0', canInstall: true }, updateInstalling: true })
       expect(screen.getByRole('button', { name: 'Installing…' })).toBeDisabled()
+    })
+
+    it('explains how to update instead of offering an install that would fail on a read-only volume', () => {
+      renderSection('about', { updateAvailable: { version: '1.4.0', canInstall: false } })
+      expect(screen.getByText('Minute 1.4.0 is available.')).toBeInTheDocument()
+      expect(screen.getByText(/drag it to your Applications folder/)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Update to 1.4.0/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Check now' })).not.toBeInTheDocument()
     })
 
     it('reports the up-to-date and error outcomes of a manual check', () => {

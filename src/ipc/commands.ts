@@ -52,6 +52,9 @@ async function invokeCmd<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 
 export const hardwareInfo = (): Promise<Hardware> => invokeCmd('hardware_info')
 
+/** Issue #59: true when Minute runs from a read-only volume, so an in-app update can't install. */
+export const appLocationReadOnly = (): Promise<boolean> => invokeCmd('app_location_read_only')
+
 export const listModels = (): Promise<ModelStatus[]> => invokeCmd('list_models')
 
 export const recommendedModels = (): Promise<Recommendation> => invokeCmd('recommended_models')
