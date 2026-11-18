@@ -39,7 +39,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Rust 1.100 moved build outputs to build/<pkg>/<hash>/out. llama-cpp-sys-2's
+      # build script then hard-links its dylibs into a missing target/debug/build/deps.
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
