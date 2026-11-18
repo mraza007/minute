@@ -168,6 +168,9 @@ h3 {
   padding: 13px 22px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
   font-size: 1rem;
   font-weight: 500;
   line-height: 22px;

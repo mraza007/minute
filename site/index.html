@@ -44,6 +44,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0a0a'/%3E%3Cg fill='%23fff'%3E%3Crect x='4' y='12' width='4' height='8' rx='2'/%3E%3Crect x='11' y='6' width='4' height='20' rx='2'/%3E%3Crect x='25' y='13' width='4' height='6' rx='2'/%3E%3C/g%3E%3Crect x='18' y='9' width='4' height='14' rx='2' fill='%23c8412a'/%3E%3C/svg%3E" />
   <link rel="preload" href="assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="assets/site.css" />
+  <script src="assets/download.js" defer></script>
   <!-- Privacy-friendly analytics by Plausible -->
   <script async src="https://plausible.io/js/pa-EC7Fl8b7mGBAlazjPV0mT.js"></script>
   <script>
@@ -104,6 +105,8 @@
       <p class="hero__note">Version 1.14.0 · Signed and notarized by Apple · macOS 11 or later</p>
       <div class="window">
         <img src="assets/hero.webp" width="2760" height="1820" fetchpriority="high"
+             srcset="assets/hero-800.webp 800w, assets/hero-1200.webp 1200w, assets/hero-1800.webp 1800w, assets/hero.webp 2760w"
+             sizes="(min-width: 1240px) 1294px, calc(108vw - 43px)"
              alt="A finished meeting note in Minute on a Mac, with the AI summary, decisions, and action items above the transcript" />
       </div>
     </div>
