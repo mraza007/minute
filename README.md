@@ -12,6 +12,8 @@ All of it runs on your Mac.
 [Download for Intel](https://github.com/mraza007/minute/releases/download/v1.14.0/Minute-1.14.0-x86_64.zip)
 &nbsp;·&nbsp;
 [All releases](https://github.com/mraza007/minute/releases/latest)
+&nbsp;·&nbsp;
+[Website](https://minutenotes.app/)
 
 <a href="screenshots/demo.mp4"><img src="screenshots/demo.gif" alt="Minute in 18 seconds: it notices a Zoom call, transcribes it live, and writes the note. Click for the full demo with sound." width="720"></a>
 
