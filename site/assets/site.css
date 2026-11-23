@@ -1008,6 +1008,11 @@ h3 {
   padding-block: 48px;
 }
 
+.footer__badge {
+  display: block;
+  line-height: 0;
+}
+
 .footer__brand {
   display: flex;
   flex-wrap: wrap;
